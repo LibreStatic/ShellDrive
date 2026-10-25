@@ -152,10 +152,11 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
 - Code signing via SignPath Foundation, else Certum OSS, obtained before a public 1.0.
 
 ## Project
-- Private GitHub repository for now, GitHub Actions CI building every flavour listed under "Build flavours".
+- Private GitHub repository `github.com/LibreStatic/ShellDrive` for now (D45), GitHub Actions CI building every flavour listed under "Build flavours".
 - Localization rules: see `AGENTS.md` (en/es/fr/pt/it/de). Plural messages support the full CLDR plural
   categories (zero/one/two/few/many/other) for every locale.
 
 ## Changelog
 - Final reconciliation (threat model) 2026-10-24: added D33 (legacy policy unchanged), D34, D35, D36, D37, D38,
   D40, D41, D42 and the update trust model summary.
+- LibreStatic naming (D45) 2026-10-24: repository is `github.com/LibreStatic/ShellDrive`.

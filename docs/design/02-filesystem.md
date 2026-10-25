@@ -537,8 +537,8 @@ Block-based. Block size 256 KiB, aligned. Two tiers.
 
 **Disk tier** (optional, per profile `read_cache_disk`, default 0 = off; UI suggests 2048 MB)
 - Location: chosen by the host and passed as `sd_vfs_options.disk_cache_dir` (C12; 03 §3.2 owns the
-  paths): per-user `<LocalAppData>\ShellDrive\cache\<profile-id>\`, service/global mounts
-  `%ProgramData%\ShellDrive\service\cache\<profile-id>\` with an explicit SYSTEM+Administrators-only DACL.
+  paths): per-user `<LocalAppData>\LibreStatic\ShellDrive\cache\<profile-id>\`, service/global mounts
+  `%ProgramData%\LibreStatic\ShellDrive\service\cache\<profile-id>\` with an explicit SYSTEM+Administrators-only DACL.
   `sd_vfs` creates nothing outside the directory it is given.
 - One sparse data file per remote file (`FSCTL_SET_SPARSE`; on FAT just a regular file). Named by the hex
   SHA-256 of (host key fingerprint, remote absolute path).
@@ -2174,3 +2174,6 @@ and adjusted by D35:
   `follow_inside` default confirmed by D40 (decisions.md now records it); `[backend] dokany = no` / `DOKANY=0` makes
   Dokany unavailable to `auto` (10.1); audit events are Event 1200 (6.7); token-only confirmation is asked by the
   host (7.4). The items listed above as needed from 01, 03 and 04 are now present there.
+
+LibreStatic naming (D45) 2026-10-24: cache paths under `<LocalAppData>\LibreStatic\ShellDrive` and
+`%ProgramData%\LibreStatic\ShellDrive\service\cache` (4.2). The Dokany UNC name `\\shelldrive\<share>` is unchanged.

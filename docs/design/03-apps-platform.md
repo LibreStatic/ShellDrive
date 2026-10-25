@@ -54,7 +54,7 @@ Why these four and not one:
 ### 1.2 The agent (`shelldrive-host.exe agent`)
 
 - **One agent per (user SID, Terminal Services session ID).** Identity is enforced by the pipe name (2.1) and a
-  session-local mutex `Local\ShellDrive.agent.<SID>`. `Local\` objects are per session on XP and later, so the
+  session-local mutex `Local\com.librestatic.shelldrive.agent.<SID>`. `Local\` objects are per session on XP and later, so the
   mutex gives the per-session uniqueness; the SID in the name guards against the rare case of a different user
   in the same session (`runas` in the same desktop). The mutex, the ready event and the snapshot section are
   created with the explicit owner and DACL of 2.2 "Named kernel objects" (TM-R26, T-47); a pre-existing object with
@@ -78,14 +78,14 @@ Why these four and not one:
   profile (own or `scope = users` template), no Network location entry to maintain (8.7) and no tray enabled; the
   session mutex prevents a double start when both keys exist (C11); (b) on demand by the CLI, UI or shell extension when the pipe does not exist
   (spawned with `CreateProcessW`, `DETACHED_PROCESS`, inheriting no handles; the client then waits on the named
-  event `Local\ShellDrive.agent.ready.<SID>` for up to 10 s).
+  event `Local\com.librestatic.shelldrive.agent.ready.<SID>` for up to 10 s).
 - **Stop:** when the logon session ends (`WM_QUERYENDSESSION`/`WM_ENDSESSION` on a hidden top-level window; a
   message-only window does not receive these broadcasts), on `agent.shutdown` IPC (used by `shelldrive agent stop`),
   when its **shutdown event** is signaled (below; used by setup and the updater), or after it has been idle (no
   mounts, no connected clients) for 5 minutes when it was started on demand. An agent started with `--logon` stays
   resident so that tray state and autostart remounts work.
 - **Shutdown event (C3):** at start each agent creates the manual-reset event
-  `Global\ShellDrive.agent.shutdown.<UserSidString>.<SessionId>` with the DACL
+  `Global\com.librestatic.shelldrive.agent.shutdown.<UserSidString>.<SessionId>` with the DACL
   `D:P(A;;0x00100002;;;<UserSID>)(A;;0x00100002;;;SY)(A;;0x00100002;;;BA)` (`EVENT_MODIFY_STATE | SYNCHRONIZE`
   for the user, SYSTEM and Administrators) and waits on it in the main thread's `MsgWaitForMultipleObjects` loop.
   `Global\` events work on XP and need no `SeCreateGlobalPrivilege` (that privilege applies to file mappings and
@@ -162,7 +162,7 @@ Why these four and not one:
 
 ### 1.4 The UI (`shelldrive-ui.exe`)
 
-- One instance per (user, session): mutex `Local\ShellDrive.ui.<SID>` (explicit DACL as in 2.2, TM-R26); a second
+- One instance per (user, session): mutex `Local\com.librestatic.shelldrive.ui.<SID>` (explicit DACL as in 2.2, TM-R26); a second
   launch forwards its command line to the first via `WM_COPYDATA` to a window with a private class name and exits.
 - **`WM_COPYDATA` validation (TM-R26, T-48):** the receiving window takes the sender from `wParam`
   (`GetWindowThreadProcessId` → `OpenProcess(PROCESS_QUERY_INFORMATION` on XP, `PROCESS_QUERY_LIMITED_INFORMATION`
@@ -202,7 +202,7 @@ Why these four and not one:
 - In-process COM server, apartment threaded. Loaded by Explorer and by every process that shows common file
   dialogs, so it must be tiny, never block, never crash its host, and never call into the network.
 - It reads mount state from a per-session read-only shared-memory snapshot published by the agent
-  (`Local\ShellDrive.state.<SID>`, 8.2) and performs actions by launching `shelldrive-ui.exe --action ...`. It does
+  (`Local\com.librestatic.shelldrive.state.<SID>`, 8.2) and performs actions by launching `shelldrive-ui.exe --action ...`. It does
   not speak the IPC protocol and does not start the agent itself (the UI does).
 - **The snapshot is untrusted input to Explorer (TM-R26, T-47, T-60).** The DLL maps the section only if its owner
   (`GetSecurityInfo(SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION)`) is the current
@@ -370,12 +370,12 @@ resolve profile + overrides + policy → secrets (4) → known_hosts store list 
 
 | Endpoint | Server | Name |
 |---|---|---|
-| Agent control pipe | agent | `\\.\pipe\ShellDrive.agent.<UserSidString>.<SessionId>` |
-| Service control pipe | service | `\\.\pipe\ShellDrive.service` |
-| Agent ready event | agent | `Local\ShellDrive.agent.ready.<UserSidString>` |
-| Agent shutdown event (manual reset, 1.2) | agent | `Global\ShellDrive.agent.shutdown.<UserSidString>.<SessionId>` |
-| State snapshot (read-only shared memory) | agent | `Local\ShellDrive.state.<UserSidString>` |
-| UI forwarding | UI | `WM_COPYDATA` to window class `ShellDrive.UI.<UserSidString>` (same session only) |
+| Agent control pipe | agent | `\\.\pipe\com.librestatic.shelldrive.agent.<UserSidString>.<SessionId>` |
+| Service control pipe | service | `\\.\pipe\com.librestatic.shelldrive.service` |
+| Agent ready event | agent | `Local\com.librestatic.shelldrive.agent.ready.<UserSidString>` |
+| Agent shutdown event (manual reset, 1.2) | agent | `Global\com.librestatic.shelldrive.agent.shutdown.<UserSidString>.<SessionId>` |
+| State snapshot (read-only shared memory) | agent | `Local\com.librestatic.shelldrive.state.<UserSidString>` |
+| UI forwarding | UI | `WM_COPYDATA` to window class `com.librestatic.shelldrive.ui.<UserSidString>` (same session only) |
 
 `<UserSidString>` from `ConvertSidToStringSidW` (XP+), session ID from `ProcessIdToSessionId` (XP+).
 
@@ -422,9 +422,9 @@ Server side:
   `status` details, `log.tail`, `diag.collect` and the topics `prompt`, `log` and `hostkeys` are elevated-admin
   only (`access_denied` otherwise). Non-admins may subscribe to `mount` and `warning` (filtered the same way) and to
   `attention` (2.6 rule 3).
-- **Named kernel objects (TM-R26, T-47).** The agent creates `Local\ShellDrive.agent.<SID>` (mutex),
-  `Local\ShellDrive.agent.ready.<SID>` (event) and `Local\ShellDrive.state.<SID>` (section), and the UI creates
-  `Local\ShellDrive.ui.<SID>`, each with `O:<UserSID>D:P(A;;GA;;;<UserSID>)(A;;GA;;;SY)` and, on Vista+, the
+- **Named kernel objects (TM-R26, T-47).** The agent creates `Local\com.librestatic.shelldrive.agent.<SID>` (mutex),
+  `Local\com.librestatic.shelldrive.agent.ready.<SID>` (event) and `Local\com.librestatic.shelldrive.state.<SID>` (section), and the UI creates
+  `Local\com.librestatic.shelldrive.ui.<SID>`, each with `O:<UserSID>D:P(A;;GA;;;<UserSID>)(A;;GA;;;SY)` and, on Vista+, the
   explicit label `S:(ML;;NW;;;ME)` (XP has no labels). Readers open the section with `FILE_MAP_READ` only. If `Create*W` reports `ERROR_ALREADY_EXISTS`, the creator reads the owner: our SID means a second
   instance of ours (normal); any other owner, or a label below medium, is squatting: the agent logs an error, runs
   without that object (no snapshot: the shell extension shows no drive items; no ready event: clients fall back to
@@ -575,7 +575,7 @@ The service cannot show UI. Rules:
    the host key of every hop is in the machine known_hosts, and the authentication method is publickey with a
    key stored in the service secret store or an unencrypted key file readable only by SYSTEM/Administrators, or
    password stored in the service secret store. **Key files are read safely (TM-R27, T-51):** the service accepts
-   only paths under `%ProgramData%\ShellDrive\service\` or paths whose every component is owned by SYSTEM or
+   only paths under `%ProgramData%\LibreStatic\ShellDrive\service\` or paths whose every component is owned by SYSTEM or
    Administrators and not writable by others; it opens the file with `FILE_FLAG_OPEN_REPARSE_POINT` and refuses it if
    the file or any path component is a reparse point (each component is opened the same way); owner and DACL are
    checked **on the opened handle** (`GetSecurityInfo(SE_FILE_OBJECT…)` via the handle) and the bytes are read from
@@ -666,14 +666,14 @@ void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event)
   for machine-to-machine (IPC, `--json`).
 - One file per profile gives atomic per-profile writes, trivial import/export (`.ini` is the export format) and
   simple machine deployment (drop a file).
-- **Group Policy** uses the registry, because that is what ADMX templates write: `HKLM\SOFTWARE\Policies\ShellDrive`
-  and `HKCU\Software\Policies\ShellDrive` (one key each, no subkeys such as `\Update`). Policies override files; the
+- **Group Policy** uses the registry, because that is what ADMX templates write: `HKLM\SOFTWARE\Policies\LibreStatic\ShellDrive`
+  and `HKCU\Software\Policies\LibreStatic\ShellDrive` (one key each, no subkeys such as `\Update`). Policies override files; the
   UI greys out policy-controlled settings and says why.
 - **This document owns the settings schema, including update settings (C8).** Update settings live in
-  `settings.ini [update]`, not in `HKLM|HKCU\Software\ShellDrive\Update\*`; the last accepted manifest serial lives
+  `settings.ini [update]`, not in `HKLM|HKCU\Software\LibreStatic\ShellDrive\Update\*`; the last accepted manifest serial lives
   in `state\last_serial.<channel>` (3.4). MSI properties (`UPDATECHECK`, `UPDATEURL`, `ENABLELINKEDCONNECTIONS`, …) are applied by
   writing the machine `settings.ini` (or, for `EnableLinkedConnections`, the Windows value itself). The only
-  non-policy registry value of ours is `HKLM\Software\ShellDrive\Version`, written by the MSI for Intune detection
+  non-policy registry value of ours is `HKLM\Software\LibreStatic\ShellDrive\Version`, written by the MSI for Intune detection
   and never read by the apps.
 
 ### 3.2 Locations
@@ -682,17 +682,17 @@ Paths come from `SHGetFolderPathW` (XP+), never from Known Folder APIs (Vista+).
 
 | What | Per user | Machine |
 |---|---|---|
-| Settings | `%APPDATA%\ShellDrive\settings.ini` | `%ProgramData%\ShellDrive\settings.ini` (defaults for all users + service settings) |
-| Profiles | `%APPDATA%\ShellDrive\profiles\*.ini` | `%ProgramData%\ShellDrive\profiles\*.ini` (also the target of the MSI `DEFAULTPROFILES` folder copy, C9) |
-| Overrides of machine templates | `%APPDATA%\ShellDrive\overrides\<profile id>.ini` (3.4) | — |
-| known_hosts | `%APPDATA%\ShellDrive\known_hosts` | `%ProgramData%\ShellDrive\known_hosts` |
-| Protected keys | `%APPDATA%\ShellDrive\keys\<id>.sdkey` | `%ProgramData%\ShellDrive\service\keys\<id>.sdkey` |
-| Fallback secrets | `%APPDATA%\ShellDrive\secrets\<hash>.sdsec` (4.3) | `%ProgramData%\ShellDrive\service\secrets\<hash>.sdsec` |
-| Cache | `%LOCALAPPDATA%\ShellDrive\cache\` | `%ProgramData%\ShellDrive\service\cache\` |
-| Logs, dumps | `%LOCALAPPDATA%\ShellDrive\logs\` | `%ProgramData%\ShellDrive\logs\` |
-| Runtime state (`explorer.ini`, `menu.cache`; updater state `last_serial.<channel>`, `last_verified.<channel>`, `keyset`, cached `dokany-deny` list, 04 §9.2/§9.3) | `%LOCALAPPDATA%\ShellDrive\state\` | updater state: `%ProgramData%\ShellDrive\state\` (written by elevated setup, readable by users); service runtime state: `%ProgramData%\ShellDrive\service\state\` |
+| Settings | `%APPDATA%\LibreStatic\ShellDrive\settings.ini` | `%ProgramData%\LibreStatic\ShellDrive\settings.ini` (defaults for all users + service settings) |
+| Profiles | `%APPDATA%\LibreStatic\ShellDrive\profiles\*.ini` | `%ProgramData%\LibreStatic\ShellDrive\profiles\*.ini` (also the target of the MSI `DEFAULTPROFILES` folder copy, C9) |
+| Overrides of machine templates | `%APPDATA%\LibreStatic\ShellDrive\overrides\<profile id>.ini` (3.4) | — |
+| known_hosts | `%APPDATA%\LibreStatic\ShellDrive\known_hosts` | `%ProgramData%\LibreStatic\ShellDrive\known_hosts` |
+| Protected keys | `%APPDATA%\LibreStatic\ShellDrive\keys\<id>.sdkey` | `%ProgramData%\LibreStatic\ShellDrive\service\keys\<id>.sdkey` |
+| Fallback secrets | `%APPDATA%\LibreStatic\ShellDrive\secrets\<hash>.sdsec` (4.3) | `%ProgramData%\LibreStatic\ShellDrive\service\secrets\<hash>.sdsec` |
+| Cache | `%LOCALAPPDATA%\LibreStatic\ShellDrive\cache\` | `%ProgramData%\LibreStatic\ShellDrive\service\cache\` |
+| Logs, dumps | `%LOCALAPPDATA%\LibreStatic\ShellDrive\logs\` | `%ProgramData%\LibreStatic\ShellDrive\logs\` |
+| Runtime state (`explorer.ini`, `menu.cache`; updater state `last_serial.<channel>`, `last_verified.<channel>`, `keyset`, cached `dokany-deny` list, 04 §9.2/§9.3) | `%LOCALAPPDATA%\LibreStatic\ShellDrive\state\` | updater state: `%ProgramData%\LibreStatic\ShellDrive\state\` (written by elevated setup, readable by users); service runtime state: `%ProgramData%\LibreStatic\ShellDrive\service\state\` |
 | Network location entries (8.7) | `CSIDL_NETHOOD` (`%APPDATA%\Microsoft\Windows\Network Shortcuts` on Vista+, `%USERPROFILE%\NetHood` on XP) | — |
-| Network location placeholders (8.7) | `%LOCALAPPDATA%\ShellDrive\places\<profile id>\` | — |
+| Network location placeholders (8.7) | `%LOCALAPPDATA%\LibreStatic\ShellDrive\places\<profile id>\` | — |
 
 `%APPDATA%` = `CSIDL_APPDATA` (roams; profiles and known_hosts should follow the user). `%LOCALAPPDATA%` =
 `CSIDL_LOCAL_APPDATA`. `%ProgramData%` = `CSIDL_COMMON_APPDATA` (on XP `All Users\Application Data`).
@@ -700,26 +700,29 @@ Paths come from `SHGetFolderPathW` (XP+), never from Known Folder APIs (Vista+).
 Machine directory ACLs (set by the installer, re-applied by the service at start if wrong), as SDDL with
 inheritance:
 
-- `ShellDrive\`, `profiles\`, `known_hosts`, `settings.ini`: `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)`
+- `LibreStatic\` (vendor folder, shared with other LibreStatic products; created by setup if missing, never removed
+  while non-empty): `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)`.
+- `LibreStatic\ShellDrive\`, `profiles\`, `known_hosts`, `settings.ini`: `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)`
   — users can read machine profiles (they may use `scope = users` templates) but not change them.
 - `service\` and below: `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`; `service\secrets\` and `service\keys\`:
   `D:PAI(A;OICI;FA;;;SY)` only (admins can still take ownership, which is accepted: admins are trusted).
 - `logs\`: SYSTEM and Administrators full; users none (logs contain host names of global mounts).
 
-Before re-applying machine ACLs, the service (and elevated setup, 04 §6.4) checks the **owner** of
-`%ProgramData%\ShellDrive` and of each subfolder, opening every component with `FILE_FLAG_OPEN_REPARSE_POINT` and
+Before re-applying machine ACLs, the service (and elevated setup, 04 §6.4) checks the **owner** of the vendor
+folder `%ProgramData%\LibreStatic` (D45; any standard user could pre-create it), of
+`%ProgramData%\LibreStatic\ShellDrive` and of each subfolder, opening every component with `FILE_FLAG_OPEN_REPARSE_POINT` and
 following no reparse point (TM-R34, T-63). If an owner is not SYSTEM or Administrators, or a component is a reparse
 point, the service does not "fix" the ACL and does not load anything from that tree (machine profiles,
 `known_hosts`, `settings.ini`, service keys and secrets): it logs Event 3102 (10.3) and
 stays idle until an elevated setup or `shelldrive service repair-data` (elevated) renames the folder aside and
-recreates it (04 §6.4). Content of a renamed folder is never imported. Setup creates `%ProgramData%\ShellDrive`
+recreates it (04 §6.4). Content of a renamed folder is never imported. Setup creates `%ProgramData%\LibreStatic\ShellDrive`
 (or resets it this way) with the DACLs above before it writes anything there: the elevated setup EXE itself
 (04 §6.4), and the `programdata-secure` hook (6.1) for MSI installs that bypass the EXE (04 §8.3).
 
 Per-user data gets an explicit protected DACL `D:P(A;OICI;FA;;;<UserSID>)(A;OICI;FA;;;SY)` at creation, in case
 `%APPDATA%` was redirected to a share with loose ACLs or a tool created the folder with inherited ACLs (TM-R07,
-T-13): `%APPDATA%\ShellDrive\` itself, `profiles\`, `overrides\`, `keys\`, `secrets\` and `known_hosts`, and
-`%LOCALAPPDATA%\ShellDrive\` (`cache\`, `logs\`, `state\`, `places\`, which holds the `menu.cache` the shell
+T-13): `%APPDATA%\LibreStatic\ShellDrive\` itself, `profiles\`, `overrides\`, `keys\`, `secrets\` and `known_hosts`, and
+`%LOCALAPPDATA%\LibreStatic\ShellDrive\` (`cache\`, `logs\`, `state\`, `places\`, which holds the `menu.cache` the shell
 extension reads, 8.2). When the agent finds an existing per-user folder whose DACL grants write to anyone other
 than the user, SYSTEM or Administrators, it re-applies the protected DACL (it owns the folder) and logs a warning;
 if it is not the owner, it logs an error and the UI shows "ShellDrive's settings folder can be changed by other
@@ -743,7 +746,7 @@ users." with a link to the admin guide. Portable mode skips this on volumes with
 ### 3.4 Profile model
 
 ```ini
-; %APPDATA%\ShellDrive\profiles\web-server.ini
+; %APPDATA%\LibreStatic\ShellDrive\profiles\web-server.ini
 [profile]
 format = 1
 id = 7f3c2a90d1e44b6c9a0e5b21c4d7f8aa      ; 128-bit random, stable across renames
@@ -906,7 +909,7 @@ Semantics owned by this layer:
 - Scope `users`: machine-provided template; each user's agent mounts it with the user's own credentials and
   known_hosts. **Per-user overrides are limited to `mount.target`, `mount.autostart` and
   `mount.autostart_sessions` (D25)**, plus hiding the template. They are stored in
-  `%APPDATA%\ShellDrive\overrides\<profile id>.ini` (`[override] target, autostart, autostart_sessions, hidden`);
+  `%APPDATA%\LibreStatic\ShellDrive\overrides\<profile id>.ini` (`[override] target, autostart, autostart_sessions, hidden`);
   any other key in that file is ignored with a log line. The profile editor shows a template read-only except the
   Drive letter/folder and autostart controls.
 - **Write mode (D9):** `through` (default): every write is acknowledged by the server before it completes for the
@@ -940,7 +943,7 @@ unless a policy is set.
 
 ### 3.5 Group Policy values (registry, read-only for us)
 
-All values live in the single key `HKLM|HKCU\Software\Policies\ShellDrive` (HKLM wins), listed here once (C8):
+All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (HKLM wins), listed here once (C8):
 `LegacyAlgorithms` (0 allow, 1 warn, 2 refuse), `AllowUserProfiles`, `AllowAdHocMounts`, `AllowedBackends`
 (`webdav,dokany`), `DisableCredentialSaving`, `StrictHostKeyChecking` (1 = no TOFU, only machine known_hosts),
 `DisableKnownHostsSources` (1 = do not read `~/.ssh/known_hosts` or PuTTY), `UpdateHostKeys` (0 never, 1 ask,
@@ -950,12 +953,12 @@ All values live in the single key `HKLM|HKCU\Software\Policies\ShellDrive` (HKLM
 WPAD or PAC; 1 lifts that restriction, the scheme rules of 3.8 still apply; TM-R10), `AllowWebDavTokenOnly` (1 default; 0 forbids the
 token-only WebDAV fallback, 02 §7.4, TM-R19), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
 `HideTrayIcon`, `DisableNetworkLocations`, `DisableModernContextMenu`, `LogPrivacy` (0 standard, 1 strict; 10.1,
-TM-R31). ADMX/ADML produced by 04, localized from our catalogs
+TM-R31). ADMX/ADML produced by 04 (target namespace `com.librestatic.shelldrive.policies`, D45), localized from our catalogs
 (`sdl10n` emits the ADML, C41).
 
 ### 3.6 Concurrency
 
-All writers (agent, UI, CLI) use `sd_config_lock()`: `LockFileEx` exclusive on `ShellDrive\config.lock`. Writes go
+All writers (agent, UI, CLI) use `sd_config_lock()`: `LockFileEx` exclusive on `LibreStatic\ShellDrive\config.lock`. Writes go
 to `name.ini.tmp` then `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`. The agent watches the
 directories with `FindFirstChangeNotificationW` and reloads changed profiles (debounced 500 ms). A profile change
 does not affect a live mount until it is remounted, except `read_only` going to yes (applied immediately) and
@@ -1024,7 +1027,7 @@ through as `SD_PROXY_SYSTEM`.
   default; policy `AllowSystemProxy = 0` forbids it. **[verify that IE `socks=` entries mean SOCKS4 vs SOCKS5 in
   practice; we only speak SOCKS5]**. Resolution runs on a worker item and is re-done on every (re)connect.
 - **Secrets:** proxy passwords live in Credential Manager like SSH passwords (4.1), target
-  `ShellDrive:proxy:<http|socks5>:<user>@<proxyhost>:<port>`; service proxy secrets in the service secret store.
+  `com.librestatic.shelldrive:proxy:<http|socks5>:<user>@<proxyhost>:<port>`; service proxy secrets in the service secret store.
 - **Clear-text warning:** HTTP Basic and SOCKS5 username/password send the proxy password unencrypted to the proxy.
   The profile editor shows "This proxy receives your proxy password unencrypted." and the mount raises `warning
   proxy_cleartext` once per (profile, proxy). SSH traffic itself stays end-to-end encrypted.
@@ -1042,7 +1045,7 @@ through as `SD_PROXY_SYSTEM`.
 | Passphrase of a key file | Credential Manager, `CRED_TYPE_GENERIC` | keyed by the public key fingerprint, survives moving the file |
 | Private key "kept by ShellDrive" | DPAPI file `keys\<id>.sdkey` | user-scope DPAPI |
 | Keyboard-interactive answers | never stored | exception: single non-echo prompt matching "password" (4.2) |
-| Proxy password (HTTP Basic, SOCKS5) | Credential Manager, `CRED_TYPE_GENERIC` | target `ShellDrive:proxy:…` (3.8); service: service store |
+| Proxy password (HTTP Basic, SOCKS5) | Credential Manager, `CRED_TYPE_GENERIC` | target `com.librestatic.shelldrive:proxy:…` (3.8); service: service store |
 | Service secrets | DPAPI files under `service\` | SYSTEM user-scope DPAPI (4.5) |
 | WebDAV per-mount path token | memory only | random per mount, part of the UNC (`/s-<token>/`, 02 §7.3); no Basic credential (C26) |
 
@@ -1058,9 +1061,9 @@ APIs: `CredWriteW`, `CredReadW`, `CredDeleteW`, `CredEnumerateW`, `CredFree`, `C
   credentials are readable by the owning user's processes, which is what we need.
 - **Target names** (TargetName is case-insensitive per the same page, but Unix user names are case-sensitive, so
   uppercase ASCII letters in the user part are escaped as `%XX`; hosts are lowercased; IPv6 in brackets):
-  - `ShellDrive:password:<user>@<host>:<port>`
-  - `ShellDrive:passphrase:SHA256:<base64 fingerprint of the public key>`
-  - `ShellDrive:proxy:<http|socks5>:<user>@<proxyhost>:<port>` (3.8)
+  - `com.librestatic.shelldrive:password:<user>@<host>:<port>`
+  - `com.librestatic.shelldrive:passphrase:SHA256:<base64 fingerprint of the public key>`
+  - `com.librestatic.shelldrive:proxy:<http|socks5>:<user>@<proxyhost>:<port>` (3.8)
   - `UserName` = remote user (informational), `Comment` = localized "Saved by ShellDrive for <profile name>"
     (visible in the Windows Credential Manager UI, so it is user-facing text), `TargetAlias` unused, no attributes.
 - **Blob:** UTF-16LE secret without terminator. The documented maximum is `CRED_MAX_CREDENTIAL_BLOB_SIZE`
@@ -1083,7 +1086,7 @@ APIs: `CredWriteW`, `CredReadW`, `CredDeleteW`, `CredEnumerateW`, `CredFree`, `C
 ### 4.3 DPAPI fallback secret files
 
 `CryptProtectData` / `CryptUnprotectData` (Windows 2000+), user scope, `CRYPTPROTECT_UI_FORBIDDEN`,
-`pOptionalEntropy` = UTF-8 `"ShellDrive/secret/v1/" + target name`. File `secrets\<hex SHA-256 of target>.sdsec`:
+`pOptionalEntropy` = UTF-8 `"com.librestatic.shelldrive/secret/v1/" + target name`. File `secrets\<hex SHA-256 of target>.sdsec`:
 magic `SDSEC1\0\0`, u32 version, u32 blob length, DPAPI blob. Same target naming as 4.2, so `shelldrive credential`
 treats both stores uniformly (`sd_secret` API below).
 
@@ -1092,7 +1095,7 @@ treats both stores uniformly (`sd_secret` API below).
 When importing a key the user can choose "Keep a protected copy in ShellDrive" (no passphrase prompt afterwards,
 protected by the Windows logon): the key is decrypted once (passphrase prompt), re-serialized in OpenSSH format
 without encryption, and stored as `keys\<id>.sdkey` = magic `SDKEY1\0\0` + metadata (key type, public key blob,
-comment) in clear + `CryptProtectData` blob of the private part, entropy `"ShellDrive/key/v1/" + id`,
+comment) in clear + `CryptProtectData` blob of the private part, entropy `"com.librestatic.shelldrive/key/v1/" + id`,
 `szDataDescr` = profile name. The public part in clear lets the UI list keys without decrypting. Caveat surfaced in
 the UI: an administrator *reset* (not a user change) of the Windows password makes user DPAPI data unrecoverable;
 the original key file remains the user's backup.
@@ -1148,19 +1151,19 @@ void sd_secret_buf_free(sd_secret_buf *b);                                     /
 
 ### 4.7 Secrets at uninstall (TM-R28, T-54)
 
-- **Per-machine uninstall** removes `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\` **by default**
+- **Per-machine uninstall** removes `%ProgramData%\LibreStatic\ShellDrive\service\secrets\` and `service\keys\` **by default**
   (MSI property `REMOVESECRETS=1` default, EXE checkbox "Remove the service's saved passwords and keys" checked;
   04 §6.7, §8.4). Machine profiles, `known_hosts` and settings still follow `REMOVEDATA` (default keep). Files are
   overwritten with zeros before deletion where the volume allows it (best effort; SSDs give no guarantee, so the
   admin guide points to full-disk encryption, TM-R31).
 - **Every uninstall** (per-user, per-machine, ARP, `msiexec /x`, SYSTEM/Intune) deletes the cache directories
-  (`%LOCALAPPDATA%\ShellDrive\cache\` of the invoking user, `service\cache\`); they hold plaintext copies of remote
+  (`%LOCALAPPDATA%\LibreStatic\ShellDrive\cache\` of the invoking user, `service\cache\`); they hold plaintext copies of remote
   files.
-- The invoking user's per-user secrets (Credential Manager targets `ShellDrive:*`, `secrets\`, `keys\`) are removed
+- The invoking user's per-user secrets (Credential Manager targets `com.librestatic.shelldrive:*`, `secrets\`, `keys\`) are removed
   by `--installer-hook user-cleanup --secrets` when "Also remove my settings" is checked. Other users' Credential
   Manager entries and profile folders cannot be cleaned by setup (their profiles and credential sets are not
   loaded, and no ShellDrive code runs for them after uninstall). This residue is listed in the summary and the admin
-  guide gives the per-user commands (`cmdkey /list` filtered on `ShellDrive:`, and the folders of 3.2).
+  guide gives the per-user commands (`cmdkey /list` filtered on `com.librestatic.shelldrive:`, and the folders of 3.2).
 - The uninstall summary (EXE final page, MSI log, `uninstall.exe /quiet` log) lists what was kept: profiles,
   `known_hosts`, per-user data of other users.
 
@@ -1180,8 +1183,8 @@ mutex.
 
 | Order | Store | Access | Agent | Service |
 |---|---|---|---|---|
-| 1 | Machine `%ProgramData%\ShellDrive\known_hosts` | read-only for users, read-write for elevated admins/service | yes | yes (only store) |
-| 2 | User `%APPDATA%\ShellDrive\known_hosts` | read-write | yes | — |
+| 1 | Machine `%ProgramData%\LibreStatic\ShellDrive\known_hosts` | read-only for users, read-write for elevated admins/service | yes | yes (only store) |
+| 2 | User `%APPDATA%\LibreStatic\ShellDrive\known_hosts` | read-write | yes | — |
 | 3 | `%USERPROFILE%\.ssh\known_hosts` (and `known_hosts2`) | live, read-only source | yes, default on (D7) | — |
 | 4 | PuTTY `HKCU\Software\SimonTatham\PuTTY\SshHostKeys` | live, read-only source | yes, default on (D7) | — |
 
@@ -1364,11 +1367,11 @@ window appears (04 §8.3). The hook names are fixed here and used unchanged by 0
 
 | Hook | Effect |
 |---|---|
-| `webdav-tune` | sets `FileSizeLimitInBytes=0xFFFFFFFF` and `FileAttributesLimitInBytes=100000000` under the WebClient parameters, records the originals in `%ProgramData%\ShellDrive\service\state\webdav-tune.ini`, restores them on `--revert`; never touches `BasicAuthLevel` (C28). Per-machine only. |
-| `user-cleanup` | for the current user: removes Network location entries (8.7), `HKCU` Run/tray keys, label/icon keys from `state\explorer.ini`, per-user shell registration and the cache directory (TM-R28); with `--secrets` also the `ShellDrive:*` Credential Manager targets, `keys\` and `secrets\` (4.7). Per-user uninstall runs it; per-machine uninstall runs it for the invoking user. |
+| `webdav-tune` | sets `FileSizeLimitInBytes=0xFFFFFFFF` and `FileAttributesLimitInBytes=100000000` under the WebClient parameters, records the originals in `%ProgramData%\LibreStatic\ShellDrive\service\state\webdav-tune.ini`, restores them on `--revert`; never touches `BasicAuthLevel` (C28). Per-machine only. |
+| `user-cleanup` | for the current user: removes Network location entries (8.7), `HKCU` Run/tray keys, label/icon keys from `state\explorer.ini`, per-user shell registration and the cache directory (TM-R28); with `--secrets` also the `com.librestatic.shelldrive:*` Credential Manager targets, `keys\` and `secrets\` (4.7). Per-user uninstall runs it; per-machine uninstall runs it for the invoking user. |
 | `modern-menu` | registers (`--apply`, current user) or removes (`--revert`; elevated: for all users with `RemoveForAllUsers`) the sparse package for the Windows 11 menu (8.6). No-op when no signed package is present or the OS is older than build 22000. |
 | `signal-shutdown` | signals the shutdown events of every running agent it may open (12.3). |
-| `programdata-secure` | per-machine only, runs as SYSTEM: the owner/reparse-point check of 3.2 on `%ProgramData%\ShellDrive` and its subfolders; a foreign-owned folder or a reparse point is renamed aside (`ShellDrive.untrusted-<n>`, never imported) and the tree is created fresh with the 3.2 DACLs; correct folders only get their DACLs re-applied. Reads no file content. Used by MSI installs that do not go through the setup EXE (04 §8.3, TM-R34); `--revert` is a no-op. |
+| `programdata-secure` | per-machine only, runs as SYSTEM: the owner/reparse-point check of 3.2 on `%ProgramData%\LibreStatic`, `%ProgramData%\LibreStatic\ShellDrive` and its subfolders; a foreign-owned folder or a reparse point is renamed aside (`LibreStatic.untrusted-<n>` or `ShellDrive.untrusted-<n>`, never imported) and the tree is created fresh with the 3.2 DACLs; correct folders only get their DACLs re-applied. Reads no file content. Used by MSI installs that do not go through the setup EXE (04 §8.3, TM-R34); `--revert` is a no-op. |
 
 Exit codes of hooks: 0 success, 1 failure (details in the log, English). `--selftest` of the host is a separate
 flag of `shelldrive-host.exe`, not a hook.
@@ -1376,8 +1379,8 @@ flag of `shelldrive-host.exe`, not a hook.
 **Hooks running as SYSTEM (TM-R35, T-64):** when the hook host's token is LocalSystem (MSI deferred `NoImpersonate`
 custom actions, Intune), it loads no user configuration (no `%APPDATA%`, no HKCU, no per-user `settings.ini`),
 resolves no environment-relative or user-writable path (only `%SystemRoot%`, `%ProgramFiles%` and the
-admin-owned `%ProgramData%\ShellDrive` checked as in 3.2), opens no window and starts no child process, and writes
-its log only under `%ProgramData%\ShellDrive\logs\`. `user-cleanup` and `modern-menu --apply` refuse to run as
+admin-owned `%ProgramData%\LibreStatic\ShellDrive` checked as in 3.2), opens no window and starts no child process, and writes
+its log only under `%ProgramData%\LibreStatic\ShellDrive\logs\`. `user-cleanup` and `modern-menu --apply` refuse to run as
 SYSTEM. Which hooks run during repair is decided by 04 §8.3 (only the idempotent `webdav-tune` and
 `programdata-secure`, which reads no content).
 
@@ -1636,7 +1639,7 @@ transient balloon.
   runs and show "Could not reconnect all network drives". Requirement to 02.
 - "Mount with ShellDrive" is offered on the This PC/My Computer item's context menu (submenu with profiles) and as
   the default verb of `.sdmount` files (a one-line file `profile = <id>` the user can put on the desktop; static
-  verb `HKCR\ShellDrive.Mount\shell\open\command = "shelldrive-ui.exe" --action mount-file "%1"`, no handler code).
+  verb `HKCR\LibreStatic.ShellDrive.Mount\shell\open\command = "shelldrive-ui.exe" --action mount-file "%1"`, no handler code).
 - **`.sdmount` grammar (TM-R32, T-61):** the file is at most 4 KiB of UTF-8 (BOM allowed) and contains exactly one
   non-comment line `profile = <32 lowercase hex>` naming an **existing** profile visible to the user (own or
   `scope = users` template). Any other key, a second `profile` line, a missing or unknown profile id makes the file
@@ -1664,10 +1667,10 @@ transient balloon.
     only — Copy remote path.
   - `HKCR\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shellex\ContextMenuHandlers\ShellDrive` (This PC):
     "Mount with ShellDrive ▸ <profiles>", "Open ShellDrive".
-- `QueryContextMenu` must return within microseconds: it maps `Local\ShellDrive.state.<SID>` (a read-only section
+- `QueryContextMenu` must return within microseconds: it maps `Local\com.librestatic.shelldrive.state.<SID>` (a read-only section
   the agent rewrites with a sequence counter; content: version, seq, array of {target, profile id, profile name,
   state, remote URL}) and reads profile names for the This PC submenu from a small cache file
-  `%LOCALAPPDATA%\ShellDrive\state\menu.cache` written by the agent/UI. It never opens the pipe, never touches the
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\state\menu.cache` written by the agent/UI. It never opens the pipe, never touches the
   network, never loads profile files. Both inputs are untrusted (TM-R26): the section is used only after the owner
   and label checks of 1.6, `menu.cache` only if its owner is the user (folder DACL from 3.2), and every offset,
   length and count in either is bounds-checked against the mapped/read size (size caps: section 256 KiB,
@@ -1740,10 +1743,10 @@ The Windows 11 top-level menu shows only `IExplorerCommand` handlers registered 
 logos, and points to the already installed files.
 
 - **Ships in v1 only if** the code-signing certificate (D29) exists before the release; the package must be signed
-  with a certificate whose subject equals the manifest `Publisher`, and Windows refuses unsigned or untrusted
+  with a certificate whose subject equals the manifest `Publisher` (`PublisherDisplayName="LibreStatic"`, D45), and Windows refuses unsigned or untrusted
   packages. Without it, 1.0 ships the classic menu only (8.2) and the modern menu lands in 1.x with no other change.
 - **Package:** `ShellDrive.ShellExt.msix` built by 04, installed next to the binaries. Manifest essentials:
-  `Identity Name="ShellDrive.ShellExt"`, `uap10:AllowExternalContent="true"`, `TargetDeviceFamily
+  `Identity Name="com.librestatic.shelldrive.shellext"`, `uap10:AllowExternalContent="true"`, `TargetDeviceFamily
   Name="Windows.Desktop" MinVersion="10.0.22000.0"`, `uap10:TrustLevel="mediumIL"` and
   `uap10:RuntimeBehavior="win32App"` on an application entry for `shelldrive-ui.exe`; extensions
   `com:Extension Category="windows.comServer"` (`com:SurrogateServer` → `com:Class Id="{modern CLSID}"
@@ -1796,7 +1799,7 @@ Design:
   trimmed, ` (2)` suffix on collision with a foreign entry). Icon: `IconResource=<path>\shelldrive-ui.exe,-<id>`
   in `[.ShellClassInfo]` **[verify that folder shortcuts honor it; otherwise the target's icon is shown]**.
 - **Target while unmounted:** `target.lnk` points to the placeholder folder
-  `%LOCALAPPDATA%\ShellDrive\places\<profile id>\`, which contains one file `Connect to <name>.sdmount`
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\places\<profile id>\`, which contains one file `Connect to <name>.sdmount`
   (`profile = <id>`, the existing `.sdmount` verb and its strict grammar, 8.1). Double-click mounts through
   `shelldrive-ui.exe --action mount-file` and opens the drive. A placeholder is used instead of a link to
   `shelldrive-ui.exe` because a Network location must be a folder to look like one, and a folder shortcut to a
@@ -2015,14 +2018,17 @@ plural entries with every CLDR form of 9.4. Log lines, Event Log messages and JS
 
 ### 10.2 ETW (optional, Vista+)
 
-`sd_log` has a sink interface. An ETW sink registers a provider with `EventRegister` (advapi32, Vista+, resolved at
+`sd_log` has a sink interface. An ETW sink registers the provider `com.librestatic.shelldrive` (provider GUID
+derived from that name with the standard EventSource name hash, so it is stable and needs no manifest) with `EventRegister` (advapi32, Vista+, resolved at
 runtime) and writes manifest-free events with `EventWrite` (UTF-8 string payload + level + component keyword). It is
 off unless `log.etw = yes`; useful for enterprise tracing with WPR/`logman`. Not available on XP, not required for
 v1.0 (can ship in v1.x without format changes).
 
 ### 10.3 Event Log (service only)
 
-- Source `ShellDrive` under `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\ShellDrive`,
+- Source `ShellDrive` under `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\ShellDrive` (the source
+  name stays the readable product name, D45; the publisher `LibreStatic` appears through the message file's version
+  resource `CompanyName`),
   `EventMessageFile = <path>\shelldrive-host.exe`, `TypesSupported = 7`. Registered by the installer/`service install`.
 - One message table (`.mc` compiled by `mc.exe`), **English only**, few event IDs, each with `%1`… inserts:
   1000 service started, 1001 stopped, 1100 global drive mounted (`%1` profile, `%2` target, `%3` host),
@@ -2231,14 +2237,14 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   default 0, D24), shell extension registration incl. Approved list and both registry views, versioned
   `shellext\<version>\` directories with `InprocServer32` rewrite (C4), Event Log source, machine directory ACLs
   (3.2), `.sdmount` file type, `DEFAULTPROFILES` = a folder of `.ini` profiles copied to
-  `%ProgramData%\ShellDrive\profiles\` (C9), `UPDATECHECK`/`UPDATEURL` written to the machine `settings.ini` (C8).
+  `%ProgramData%\LibreStatic\ShellDrive\profiles\` (C9), `UPDATECHECK`/`UPDATEURL` written to the machine `settings.ini` (C8).
 - Custom actions only through the hidden hooks of 6.1 (`webdav-tune`, `user-cleanup`, `modern-menu`,
   `signal-shutdown`).
 - Windows 11 sparse package `ShellDrive.ShellExt.msix`, built and signed only when the certificate exists (D27, 8.6).
 - `tools/sdl10n` integrated in the build; PO completeness (all CLDR plural forms, D26) is a build failure; C tables,
   STRINGTABLEs, `.wxl` and ADML generated from PO (C41).
 - **Stopping agents for upgrade/uninstall (C3):** setup signals
-  `Global\ShellDrive.agent.shutdown.<SID>.<SessionId>` (1.2). Per-user setup signals the events for its own SID
+  `Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<SessionId>` (1.2). Per-user setup signals the events for its own SID
   (it can open them: the user has `EVENT_MODIFY_STATE`). Elevated setup enumerates running `shelldrive-host.exe`
   processes (Toolhelp32 + `OpenProcessToken`, XP+), derives SID and session ID from each token and signals each
   event; Administrators and SYSTEM are in the event DACL. It then waits up to 15 s per agent and falls back to
@@ -2248,7 +2254,7 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   when user data removal was chosen), unregisters the sparse package, optionally removes user data (asked), removes
   service secrets and keys **by default** (`REMOVESECRETS=1`, TM-R28, 4.7), deletes every cache directory, and lists
   what was kept in its summary.
-- Setup checks the owner of `%ProgramData%\ShellDrive` before use and renames a foreign-owned folder aside
+- Setup checks the owner of `%ProgramData%\LibreStatic\ShellDrive` before use and renames a foreign-owned folder aside
   (TM-R34, 04 §6.4); 03 §3.2 gives the service-side behaviour and `service repair-data`.
 - Hooks run as SYSTEM obey 6.1 "Hooks running as SYSTEM" (TM-R35); repair conditions are 04's.
 - The updater stores `last_serial.<channel>`, `last_verified.<channel>`, `keyset` and the cached `dokany-deny`
@@ -2329,7 +2335,7 @@ plurals (D26, 9.4); `CryptProtectMemory` on XP is moot because `sd_ssh` owns the
 | `CRED_PERSIST_LOCAL_MACHINE` on Home SKUs → fallback path taken | Home: test | n/a | test | test |
 | Credential blob 512 vs 2560 bytes | test | test | — | — |
 | Owner check rejects pipe squatted by another user | test | test | test | test |
-| Low-IL process creating `Local\ShellDrive.state.<SID>` first gets a Low label; AppContainer creation is redirected (TM-R26) | n/a | test | test | test |
+| Low-IL process creating `Local\com.librestatic.shelldrive.state.<SID>` first gets a Low label; AppContainer creation is redirected (TM-R26) | n/a | test | test | test |
 | `GetWindowThreadProcessId` + token check of a `WM_COPYDATA` sender from another user (`runas`) in the same desktop | test | test | test | test |
 | `MiniDumpWriteDump` callback excludes threads and strips the faulting thread's stack with the XP dbghelp | test | test | test | test |
 | `SEC_WINNT_AUTH_IDENTITY_EX` package list `Kerberos` (no NTLM) honored by Negotiate to an HTTP proxy | test | test | test | test |
@@ -2383,7 +2389,7 @@ they must show here. P1 blocks the milestone demo.
 | TST-26 | M5 | P1 | `service_access` required at save and for deployed files; non-admins read-only unless in `service_access_write`; Event 1200 per change | R24 (D35) |
 | TST-27 | M4 | P2 | uninstall residue: service secrets/keys and caches gone by default; summary lists what was kept | R28 |
 | TST-28 | M3 | P2 | dumps taken during a password prompt, KEX and KDF contain neither the test password nor key bytes; WER not invoked | R30 |
-| TST-29 | M4 | P1 | foreign-owned `%ProgramData%\ShellDrive`: service stays idle, `service repair-data` recovers; hooks as SYSTEM touch no user-writable path | R34, R35 |
+| TST-29 | M4 | P1 | foreign-owned `%ProgramData%\LibreStatic\ShellDrive`: service stays idle, `service repair-data` recovers; hooks as SYSTEM touch no user-writable path | R34, R35 |
 | (03-local) | M1 | P2 | log privacy: no remote path at info in `standard`; no host/user/path in `strict`; bundle anonymized by default | R31 |
 | (03-local) | M2 | P2 | portable mode on FAT: disk cache refused, one-time warning | R29 |
 | (03-local) | M2 | P2 | prompts with bidi/zero-width characters in kbdint text and host names render stripped; hop host outside the server box | R09 |
@@ -2439,7 +2445,7 @@ changed by D33).
   rules (2.5, 4.6, 5.4, 12.1).
 - **TM-R06 / D7:** live-source DACL/owner checks on every read, wildcard-only lines never MATCH,
   `warning hostkey_source_insecure` (5.1, 7.5, 10.5).
-- **TM-R07:** protected per-user DACL on all of `%APPDATA%\ShellDrive` and `%LOCALAPPDATA%\ShellDrive` (3.2).
+- **TM-R07:** protected per-user DACL on all of `%APPDATA%\LibreStatic\ShellDrive` and `%LOCALAPPDATA%\LibreStatic\ShellDrive` (3.2).
 - **TM-R08:** shared `sd_pipe_verify_server` helper for 01's agent pipe checks (2.2, 12.1).
 - **TM-R09:** bidi/zero-width stripping; hop host outside the server-text box (2.5).
 - **TM-R10:** Kerberos-only Negotiate for `proxy_auth = auto`, no SSPI to discovered proxies, policy
@@ -2487,7 +2493,17 @@ changed by D33).
   process; `mark_of_the_web` default `off`, no longer derived from trust; `symlinks` default `follow_inside` for
   every profile (D40); editor texts and strings `editor.trust_trusted`, `editor.symlinks_inside`,
   `warn.agent_untrusted`; `warning agent_untrusted` (2.4); `--include-secret-stacks` removed (D43, 10.4);
-  `programdata-secure` hook and repair note (6.1); setup creates/resets `%ProgramData%\ShellDrive` (3.2); updater
+  `programdata-secure` hook and repair note (6.1); setup creates/resets `%ProgramData%\LibreStatic\ShellDrive` (3.2); updater
   state files `last_serial.<channel>`, `last_verified.<channel>`, `keyset`, cached `dokany-deny` list, machine
-  updater state in `%ProgramData%\ShellDrive\state\` (3.2, 3.4, 12.3); `[backend] dokany` (3.4); Dokany option
+  updater state in `%ProgramData%\LibreStatic\ShellDrive\state\` (3.2, 3.4, 12.3); `[backend] dokany` (3.4); Dokany option
   names `DOKANY`, `/dokany=` (12.3).
+
+LibreStatic naming (D45) 2026-10-24: pipes `\\.\pipe\com.librestatic.shelldrive.*`, kernel objects and the snapshot
+section `Local\|Global\com.librestatic.shelldrive.*`, window class `com.librestatic.shelldrive.ui.<SID>` (1.2, 1.4, 2.1, 2.2);
+registry `SOFTWARE\LibreStatic\ShellDrive` and `SOFTWARE\Policies\LibreStatic\ShellDrive` (3.5); folders under
+`%APPDATA%`/`%LOCALAPPDATA%`/`%ProgramData%\LibreStatic\ShellDrive`, with the `%ProgramData%\LibreStatic` vendor folder
+owner-checked and given its own DACL (3.2, 6.1); Credential Manager prefix `com.librestatic.shelldrive:` and DPAPI
+entropy strings `com.librestatic.shelldrive/...` (3.8, 4.2-4.4); ProgID `LibreStatic.ShellDrive.Mount` (8.1); MSIX
+identity `com.librestatic.shelldrive.shellext`, `PublisherDisplayName` `LibreStatic` (8.6); ADMX namespace
+`com.librestatic.shelldrive.policies` (3.5); ETW provider `com.librestatic.shelldrive` (10.2); Event Log source stays
+`ShellDrive` (10.3).

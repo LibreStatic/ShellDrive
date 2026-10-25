@@ -42,7 +42,7 @@ test lab (§11.4) before release 1.0.
 | Dokany | Pinned version **2.3.1.1000**; offline setup EXEs embed upstream `Dokan_<arch>.msi` or the upstream `DokanSetup.exe` bundle, depending on the VC++ dependency check (D32, §7.3); universal EXE downloads on demand; SHA-256 and upstream signer pinned and checked at embed and at install (TM-R23); never modified. Installing it is an **explicit, pre-checked option** on the per-machine options page (7 SP1+), mirrored by the MSI property `DOKANY` (D36, §6.3) |
 | Localization | PO is the only source; `tools/sdl10n` generates C tables, STRINGTABLEs, `.wxl` and ADML with full CLDR plural categories (D26) |
 | Updates | Signed text manifest (ed25519, `sd_crypto`); offline **root** keys certify per-channel release keys in a signed `keyset` (rotation, revocation), per-channel anti-rollback, `expires` ≤ 30/14 days (TM-R36, TM-R37, §9.2–§9.3); HTTPS first, **plain-HTTP mirror on static object storage** (D30) for XP/Vista/unpatched 7; consent required; settings in `settings.ini [update]` |
-| Installer elevation | Setup stub and `uninstall.exe` import only KnownDLLs and restrict the DLL search path; the elevated instance never runs its work from `Downloads` but from a copy in a fresh admin-only directory; `%ProgramData%\ShellDrive` ownership checked and reset; no SYSTEM custom action runs during repair except idempotent ones (TM-R33–R35, §6.4, §8.3) |
+| Installer elevation | Setup stub and `uninstall.exe` import only KnownDLLs and restrict the DLL search path; the elevated instance never runs its work from `Downloads` but from a copy in a fresh admin-only directory; `%ProgramData%\LibreStatic\ShellDrive` ownership checked and reset; no SYSTEM custom action runs during repair except idempotent ones (TM-R33–R35, §6.4, §8.3) |
 | Release gates | No public download links until Authenticode exists (TM-R38); no public beta before crypto review pass 1, 1.0 only after pass 2 (D38); stable signing only after an independent rebuild by the maintainer outside GitHub Actions (TM-R39, §12.3) |
 | Authenticode | Pipeline designed, disabled until a certificate exists (SignPath Foundation, else Certum OSS, before a public 1.0 — D29); PE dual-signed SHA-1 + SHA-256; MSI single SHA-256 |
 | Windows 11 modern menu (D27) | Signed sparse MSIX package in 1.0 **only if** the certificate exists in time; otherwise classic menu only |
@@ -65,7 +65,8 @@ Normative table (from `decisions.md`). A *flavour* is one compiled set of the fo
 | `arm64` | v143, 10.0.26100 | `/guard:cf` | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs |
 
 Flavours of the same architecture share all source code; the flavour only changes the configure preset. Every
-binary carries its flavour name in its version resource (`SD_FLAVOUR`, e.g. `"x64-modern"`), which the updater
+binary carries its flavour name in its version resource (`SD_FLAVOUR`, e.g. `"x64-modern"`; the same resource has
+`CompanyName` = `LibreStatic` and `ProductName` = `ShellDrive`, D45), which the updater
 and `shelldrive selftest --json` report.
 
 ---
@@ -461,7 +462,7 @@ SSE2); on ARM64 we install ARM64 + `x86-sse2` (and `x64-modern` on Windows 11, f
 
 | | Per-user (default for non-admins) | Per-machine (default for admins) | Portable |
 |---|---|---|---|
-| Location | `%LOCALAPPDATA%\Programs\ShellDrive` (XP: `CSIDL_LOCAL_APPDATA` = `…\Local Settings\Application Data\Programs\ShellDrive`) | `%ProgramFiles%\ShellDrive` (native-arch Program Files) | Any folder (USB stick) |
+| Location | `%LOCALAPPDATA%\Programs\LibreStatic\ShellDrive` (XP: `CSIDL_LOCAL_APPDATA` = `…\Local Settings\Application Data\Programs\LibreStatic\ShellDrive`) | `%ProgramFiles%\LibreStatic\ShellDrive` (native-arch Program Files) | Any folder (USB stick) |
 | Engine | Setup copies files itself | **Our MSI** via `msiexec`/`MsiInstallProduct` with our external UI | Setup extracts (or user unzips) |
 | Admin | No | Yes | No |
 | Registration | HKCU: Uninstall key, Run keys, COM (HKCU\Software\Classes), context-menu handlers, `.sdmount`, App Paths | HKLM via MSI | **None** |
@@ -533,8 +534,8 @@ for the setup stub, every elevated stage and `uninstall.exe`:
 
 1. **Stage 1** (`/elevated-stage1`, started by `runas` from wherever the user ran setup) creates no window and
    loads no module beyond its KnownDLL imports. It (a) applies the DLL rules above; (b) secures
-   `%ProgramData%\ShellDrive` (XP: `CSIDL_COMMON_APPDATA`) as described below; (c) creates a **new**
-   directory `%ProgramData%\ShellDrive\setup\<random 128-bit hex>` with `CreateDirectoryW` and an explicit
+   `%ProgramData%\LibreStatic\ShellDrive` (XP: `CSIDL_COMMON_APPDATA`) as described below; (c) creates a **new**
+   directory `%ProgramData%\LibreStatic\ShellDrive\setup\<random 128-bit hex>` with `CreateDirectoryW` and an explicit
    security descriptor in the same call (owner Administrators, protected DACL: SYSTEM and Administrators full
    control, nothing else; the call fails if the name exists, and stage 1 then picks a new name); (d) copies its
    own image into it, reading the source opened with `FILE_SHARE_READ` only (no write or delete sharing, so it
@@ -552,17 +553,19 @@ for the setup stub, every elevated stage and `uninstall.exe`:
    exists; until then the payload-table signature limits it to swapping in another genuine, signed-table build.
 4. The update path (§9.6) and `setup /uninstall` for per-machine installs use the same two stages.
 
-**Securing `%ProgramData%\ShellDrive` before use (TM-R34, T-63).** Standard users can create subfolders of
-`%ProgramData%`; whoever creates `ShellDrive` first owns it. Before stage 1 (or the MSI hook
+**Securing `%ProgramData%\LibreStatic\ShellDrive` before use (TM-R34, T-63).** Standard users can create subfolders of
+`%ProgramData%`; whoever creates `LibreStatic` (or `LibreStatic\ShellDrive`) first owns it. The checks below apply to
+the vendor folder `%ProgramData%\LibreStatic` first (D45; trusted means the same, its DACL is the 03 §3.2 `LibreStatic\`
+entry, and an untrusted one is renamed aside to `%ProgramData%\LibreStatic.untrusted-<n>`), then to `ShellDrive` inside it. Before stage 1 (or the MSI hook
 `programdata-secure`, §8.3, for direct `msiexec` installs) touches the folder:
 
 - Each path component is opened with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`; a reparse
-  point anywhere in `%ProgramData%\ShellDrive\…` makes the tree untrusted. Owner and DACL are read **on the
+  point anywhere in `%ProgramData%\LibreStatic\ShellDrive\…` makes the tree untrusted. Owner and DACL are read **on the
   opened handle** (`GetSecurityInfo`).
 - Trusted means: owner is Administrators or SYSTEM, the DACL grants write, `WRITE_DAC`, `WRITE_OWNER`, `DELETE`
   or `FILE_DELETE_CHILD` to nobody else, and the same holds for every existing first-level child (`setup\`,
   `updates\`, `profiles\`, `service\`, `state\`, `logs\`, `settings.ini`).
-- Untrusted: the folder is renamed aside to `%ProgramData%\ShellDrive.untrusted-<n>` (never followed, never
+- Untrusted: the folder is renamed aside to `%ProgramData%\LibreStatic\ShellDrive.untrusted-<n>` (never followed, never
   read, never imported; `setup.programdata_untrusted` is logged with the previous owner SID), and a fresh
   folder is created with `CreateDirectoryW` and the 03 §3.2 security descriptor in the same call. If the
   rename fails (for example an attacker holds a handle without delete sharing) or the create races with a
@@ -608,10 +611,10 @@ by installers.
 
 ### 6.7 Uninstall entry (Add/Remove Programs)
 
-- Per-machine: provided by MSI (`ARPPRODUCTICON`, `ARPURLINFOABOUT`, `ARPNOMODIFY=0` so "Change" offers
+- Per-machine: provided by MSI (`Package Manufacturer="LibreStatic"`, which ARP shows as publisher, D45; `ARPPRODUCTICON`, `ARPURLINFOABOUT`, `ARPNOMODIFY=0` so "Change" offers
   feature selection).
 - Per-user: `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive` with `DisplayName`,
-  `DisplayVersion`, `Publisher`, `DisplayIcon`, `InstallLocation`, `UninstallString` = `"<root>\uninstall.exe"
+  `DisplayVersion`, `Publisher` = `LibreStatic` (D45), `DisplayIcon`, `InstallLocation`, `UninstallString` = `"<root>\uninstall.exe"
   /uninstall`, `QuietUninstallString`, `EstimatedSize`, `NoModify=1`, `NoRepair=1`. **[lab-verify]** that XP
   ARP lists HKCU entries.
 - `uninstall.exe` is the stub without payload and follows the DLL rules of §6.4 (TM-R33).
@@ -622,14 +625,14 @@ by installers.
     proceed from `%TEMP%` but asks the user to run it unelevated.
   - **Per-machine installs:** uninstall goes through the MSI (ARP, `msiexec /x`) or `setup /uninstall`, which
     uses the two elevated stages of §6.4. `uninstall.exe`, if invoked on a per-machine install, runs only from
-    `%ProgramFiles%\ShellDrive` (admin-only) and hands over to `MsiConfigureProductExW`; it never copies itself
+    `%ProgramFiles%\LibreStatic\ShellDrive` (admin-only) and hands over to `MsiConfigureProductExW`; it never copies itself
     to `%TEMP%`, and Windows Installer removes the file itself.
-- User data (profiles, `known_hosts`, logs under `%APPDATA%\ShellDrive`) is kept by default; "Also remove my
+- User data (profiles, `known_hosts`, logs under `%APPDATA%\LibreStatic\ShellDrive`) is kept by default; "Also remove my
   settings" checkbox; Credential Manager entries removed only with that checkbox (enumerated by our target
   name prefix, owned by the credentials design).
 - **Caches are always removed (TM-R28, T-54):** every uninstall deletes the uninstalling user's disk cache
-  (`%LOCALAPPDATA%\ShellDrive\cache\`, by `uninstall.exe` per user and by the impersonated `user-cleanup` hook
-  per machine) and, per machine, the service's cache under `%ProgramData%\ShellDrive\`. Other users' caches
+  (`%LOCALAPPDATA%\LibreStatic\ShellDrive\cache\`, by `uninstall.exe` per user and by the impersonated `user-cleanup` hook
+  per machine) and, per machine, the service's cache under `%ProgramData%\LibreStatic\ShellDrive\`. Other users' caches
   cannot be reached safely (the SYSTEM context never walks user-writable profile paths, TM-R35); the host
   deletes a cache whose profile no longer exists at its next start, and the limit is documented next to the
   Network Shortcuts one.
@@ -638,7 +641,7 @@ by installers.
   saved credentials of the current user when not removed, other users' data, caches and Network Shortcuts,
   machine profiles and settings (`REMOVEDATA=0`), service secrets and keys if `REMOVESECRETS=0`, and Dokany.
 - Dokany is **never removed automatically** (shared component). If ShellDrive installed it
-  (`HKLM\Software\ShellDrive\DokanyInstalledBySetup=1`) the uninstaller offers removal, default unchecked.
+  (`HKLM\Software\LibreStatic\ShellDrive\DokanyInstalledBySetup=1`) the uninstaller offers removal, default unchecked.
 - **Network Shortcuts (D14, design in 03 §8.7).** Each entry the agent creates is a read-only folder with
   `desktop.ini` and `target.lnk` under `CSIDL_NETHOOD` (`%APPDATA%\Microsoft\Windows\Network Shortcuts` on
   Vista+, `%USERPROFILE%\NetHood` on XP); its `desktop.ini` carries the marker `[ShellDrive] profile=<id>`,
@@ -657,12 +660,12 @@ by installers.
   `RemovalOptions.RemoveForAllUsers` (Windows 10 1809+, elevated) so no other user keeps a package pointing at
   the deleted install directory (§10.1).
 - **Service secrets and keys are removed by default (TM-R28, T-54):** a per-machine uninstall deletes
-  `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\` (SYSTEM-DPAPI-protected passwords and private
+  `%ProgramData%\LibreStatic\ShellDrive\service\secrets\` and `service\keys\` (SYSTEM-DPAPI-protected passwords and private
   keys of global mounts) unless the admin unchecks "Remove the service's saved passwords and keys" (checked by
   default) or passes `REMOVESECRETS=0`. Implementation: MSI `RemoveFile`/`RemoveFolder` entries in a component
   conditioned on `REMOVESECRETS=1 AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` (no custom action; upgrades keep
   them).
-- **Machine profiles and settings** (`%ProgramData%\ShellDrive\`, 03 §3.2) are removed only when the admin
+- **Machine profiles and settings** (`%ProgramData%\LibreStatic\ShellDrive\`, 03 §3.2) are removed only when the admin
   checks "Also remove settings" (MSI property `REMOVEDATA=1`, which implies `REMOVESECRETS=1`).
 
 ### 6.8 Portable mode
@@ -686,7 +689,7 @@ by installers.
 Per-user mode (setup does the file work):
 
 1. **Ask politely (C3):** every running agent owns a manual-reset event
-   `Global\ShellDrive.agent.shutdown.<SID>.<SessionId>` with DACL `user, SY, BA: EVENT_MODIFY_STATE |
+   `Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<SessionId>` with DACL `user, SY, BA: EVENT_MODIFY_STATE |
    SYNCHRONIZE` (03 §2.1) and waits on it. Setup finds running `shelldrive-host.exe` processes with Toolhelp32
    (`CreateToolhelp32Snapshot`, XP+), opens each token (`OpenProcessToken`) to derive SID and session id, and
    signals the matching events — per-user setup only for its own SID, elevated setup for every SID. The agent
@@ -702,7 +705,7 @@ Per-user mode (setup does the file work):
 4. **Versioned shell extension directory:** the DLL is installed as `shellext\<version>\shelldrive-shellext.dll`
    and the COM `InprocServer32` path is rewritten (C4: no reboot needed). Explorer keeps the old DLL until it
    restarts, new instances load the new one. The shell extension has no IPC; it reads the
-   `Local\ShellDrive.state.<SID>` section and launches `shelldrive-ui.exe --action`. Therefore the section
+   `Local\com.librestatic.shelldrive.state.<SID>` section and launches `shelldrive-ui.exe --action`. Therefore the section
    layout is versioned and architecture-independent (fixed-width fields, no pointers), and `--action` verbs
    are additive only (C5, §14). If the sparse package is shipped, a new package version pointing at the new
    versioned path is registered in the same step (§10.1).
@@ -821,8 +824,8 @@ Per-machine mode (MSI does the file work):
   was rejected (D12): it would need our own EV certificate and attestation signing, load only on Windows 10+,
   and conflict with an existing official Dokany install.
 - Install command (MSI form): `msiexec /i Dokan_<arch>.msi /qn /norestart /l*v
-  "%ProgramData%\ShellDrive\logs\dokany-install.log"`. Bundle form: `DokanSetup.exe /install /quiet /norestart
-  /log "%ProgramData%\ShellDrive\logs\dokany-install.log"` **[lab-verify]** the bundle's switches (WiX Burn
+  "%ProgramData%\LibreStatic\ShellDrive\logs\dokany-install.log"`. Bundle form: `DokanSetup.exe /install /quiet /norestart
+  /log "%ProgramData%\LibreStatic\ShellDrive\logs\dokany-install.log"` **[lab-verify]** the bundle's switches (WiX Burn
   conventions). `3010` is propagated (reboot required); Dokany can be used without reboot in most cases
   **[lab-verify]**.
 - Detection of an existing installation (in this order): `MsiEnumRelatedProducts` with the Dokany UpgradeCode(s)
@@ -923,7 +926,7 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
   GUI-subsystem, so no console window), are idempotent, and have a rollback counterpart. The hook names are
   03's: `webdav-tune`, `user-cleanup`, `modern-menu`, `signal-shutdown`, plus `programdata-secure` (TM-R34, 03 §6.1). Uses:
   - `programdata-secure` (deferred, `NoImpersonate`, before `CreateFolders`, `WriteIniValues` and `MoveFiles`,
-    install/upgrade/repair): the `%ProgramData%\ShellDrive` check and reset of §6.4 for installs that do not go
+    install/upgrade/repair): the `%ProgramData%\LibreStatic\ShellDrive` check and reset of §6.4 for installs that do not go
     through our setup EXE (GPO, Intune, `msiexec /i`). It reads no file content, only owners and DACLs.
   - `webdav-tune` (C28): sets only `FileSizeLimitInBytes=0xFFFFFFFF` and
     `FileAttributesLimitInBytes=100000000` under the WebClient parameters, records the original values and
@@ -942,7 +945,7 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
     | Hook | Context | Condition |
     |---|---|---|
     | `programdata-secure --apply` | deferred, SYSTEM | `NOT REMOVE~="ALL"` — runs during repair too: it is itself the protection and reads no content |
-    | `webdav-tune --apply` / `--revert` | deferred, SYSTEM | apply: `WEBDAV_TUNING=1 AND NOT REMOVE~="ALL"` (idempotent, so repair is allowed; the recorded originals in `%ProgramData%\ShellDrive\service\state\webdav-tune.ini` (03 §6.1) are never overwritten by a repeat run); revert: `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` |
+    | `webdav-tune --apply` / `--revert` | deferred, SYSTEM | apply: `WEBDAV_TUNING=1 AND NOT REMOVE~="ALL"` (idempotent, so repair is allowed; the recorded originals in `%ProgramData%\LibreStatic\ShellDrive\service\state\webdav-tune.ini` (03 §6.1) are never overwritten by a repeat run); revert: `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` |
     | `signal-shutdown` | deferred, SYSTEM | `NOT REINSTALL AND (REMOVE~="ALL" OR WIX_UPGRADE_DETECTED)` |
     | `modern-menu --revert` | deferred, SYSTEM | `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND NOT REINSTALL` |
     | `user-cleanup --apply` | deferred, **impersonated** | `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` |
@@ -960,19 +963,19 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
 - `EnableLinkedConnections` (D24): see `ENABLELINKEDCONNECTIONS` in §8.4. Plain `Registry` table component,
   no custom action.
 - Machine settings: `UPDATECHECK`, `UPDATEURL` and `UPDATECHANNEL` are written to
-  `[CommonAppDataFolder]ShellDrive\settings.ini` `[update]` with the native `IniFile` table (MSI 3.1, C8),
+  `[CommonAppDataFolder]LibreStatic\ShellDrive\settings.ini` `[update]` with the native `IniFile` table (MSI 3.1, C8),
   sequenced after `programdata-secure`.
-  `HKLM\Software\ShellDrive\Version` is written by the MSI only, for Intune detection.
+  `HKLM\Software\LibreStatic\ShellDrive\Version` is written by the MSI only, for Intune detection.
 - Localization: §8.6.
 
 ### 8.4 Public properties for silent configuration
 
 | Property | Default | Meaning |
 |---|---|---|
-| `INSTALLDIR` | `[ProgramFiles64Folder]ShellDrive` | Install location |
+| `INSTALLDIR` | `[ProgramFiles64Folder]LibreStatic\ShellDrive` | Install location |
 | `ADDLOCAL` / `REMOVE` | all | Standard feature selection |
-| `DEFAULTPROFILES` | empty | Path to a **folder** of `.ini` profiles (03 §3.4 format, typically `scope = users`) that the MSI copies into `[CommonAppDataFolder]ShellDrive\profiles\` with the native `MoveFile` table (copy mode, `*.ini` wildcard, no custom action) (C9) |
-| `UPDATECHECK` | `0` when installed with `/qn`, else `1` | Writes `settings.ini [update] enabled` in `%ProgramData%\ShellDrive\` (C8) |
+| `DEFAULTPROFILES` | empty | Path to a **folder** of `.ini` profiles (03 §3.4 format, typically `scope = users`) that the MSI copies into `[CommonAppDataFolder]LibreStatic\ShellDrive\profiles\` with the native `MoveFile` table (copy mode, `*.ini` wildcard, no custom action) (C9) |
+| `UPDATECHECK` | `0` when installed with `/qn`, else `1` | Writes `settings.ini [update] enabled` in `%ProgramData%\LibreStatic\ShellDrive\` (C8) |
 | `UPDATEURL` | empty | Writes `settings.ini [update] manifest_url` (internal mirror) |
 | `UPDATECHANNEL` | `stable` | Writes `settings.ini [update] channel` |
 | `SERVICE` | `1` | `0` = do not install the service (D6) |
@@ -981,12 +984,13 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
 | `WEBDAV_TUNING` | `1` | See §8.3 |
 | `ENABLELINKEDCONNECTIONS` | `0` | D24. `1` writes `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableLinkedConnections = 1` (DWORD) on Vista+ (`VersionNT >= 600`) so elevated processes see per-user mapped drives; takes effect after a reboot (setup returns 3010). An `AppSearch` detects a pre-existing value; if the admin had already set it, the MSI neither writes nor removes it, otherwise uninstall removes the value it wrote. Per-user setup never sets it |
 | `DOKANY` | `1` | D36: mirrors the setup option. The MSI never installs Dokany itself (§8.5); setup passes `DOKANY=0` for `/dokany=skip` or an unchecked box, and `DOKANY=0` writes the machine default `settings.ini [backend] dokany = no` (key owned by 03 §3.4) so ShellDrive stays on WebDAV even if Dokany is present or installed later. `1` writes nothing |
-| `REMOVESECRETS` | `1` | Uninstall only (TM-R28): `1` removes `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\`; `0` keeps them. Not applied during upgrades |
-| `REMOVEDATA` | `0` | Uninstall only: `1` removes `%ProgramData%\ShellDrive\` (machine profiles, settings, state, and — implied — service secrets and keys) |
+| `REMOVESECRETS` | `1` | Uninstall only (TM-R28): `1` removes `%ProgramData%\LibreStatic\ShellDrive\service\secrets\` and `service\keys\`; `0` keeps them. Not applied during upgrades |
+| `REMOVEDATA` | `0` | Uninstall only: `1` removes `%ProgramData%\LibreStatic\ShellDrive\` (machine profiles, settings, state, and — implied — service secrets and keys) |
 
-Policies live in one key, `HKLM|HKCU\Software\Policies\ShellDrive` (HKLM wins; the list and semantics are
+Policies live in one key, `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (HKLM wins; the list and semantics are
 owned by 03 §3.5), override these at run time and are documented in an ADMX/ADML pair shipped in the release
-(`policy\ShellDrive.admx` + ADML for the six languages, generated by `sdl10n`, §8.6). The ADMX has one policy
+(`policy\ShellDrive.admx` + ADML for the six languages, generated by `sdl10n`, §8.6). The ADMX target namespace
+is `com.librestatic.shelldrive.policies` (prefix `shelldrive`), under a `LibreStatic` > `ShellDrive` category (D45). The ADMX has one policy
 per 03 §3.5 value, machine and user class unless noted; a check in `tools/sdl10n` fails the build when the
 policy list in the catalog and the ADMX differ:
 
@@ -1018,7 +1022,7 @@ MSI cannot nest MSI installs. Options documented for administrators:
   a signed third-party kernel driver available to every local user; fleets that do not want it deploy
   ShellDrive alone with `DOKANY=0`.
 - **Intune Win32 app:** two apps (Dokany, ShellDrive) with a *dependency* relationship; detection rule by
-  `HKLM\Software\ShellDrive\Version` ≥ X (ProductCode changes every release, so not by ProductCode).
+  `HKLM\Software\LibreStatic\ShellDrive\Version` ≥ X (ProductCode changes every release, so not by ProductCode).
 - **Setup EXE as chainer:** `ShellDrive-<ver>-setup-x64.exe /quiet /permachine /dokany=install
   DEFAULTPROFILES=\\srv\share\shelldrive-profiles` installs both (in the bundle form, the VC++ runtime too) —
   valid for Intune Win32 apps, SCCM, PDQ.
@@ -1074,9 +1078,9 @@ MSI cannot nest MSI installs. Options documented for administrators:
 - Target flavour: re-evaluated at every check with §6.2 (CPU SSE2 and OS version), not copied from the running
   binary, so an OS upgrade moves `x64-xp` to `x64-modern`. The running flavour is read from `SD_FLAVOUR`.
 - Settings (C8, owned by 03 §3.4/§3.5): `settings.ini [update] enabled, channel, manifest_url` — machine
-  defaults in `%ProgramData%\ShellDrive\settings.ini` (written by the MSI), user overrides in
-  `%APPDATA%\ShellDrive\settings.ini`, portable in `<exe dir>\data\settings.ini`. Policy values
-  (`HKLM\Software\Policies\ShellDrive`: `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`) win over both.
+  defaults in `%ProgramData%\LibreStatic\ShellDrive\settings.ini` (written by the MSI), user overrides in
+  `%APPDATA%\LibreStatic\ShellDrive\settings.ini`, portable in `<exe dir>\data\settings.ini`. Policy values
+  (`HKLM\Software\Policies\LibreStatic\ShellDrive`: `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`) win over both.
   No update setting is stored elsewhere in the registry.
 - Disabled when: portable (check only, user downloads manually), `[update] enabled = no`, or policy
   `DisableUpdateCheck`. When an organization manages updates the UI shows "Updates are managed by your
@@ -1090,6 +1094,7 @@ the file bytes).
 
 ```
 shelldrive-manifest 1
+product com.librestatic.shelldrive
 channel stable
 keyset 1
 serial 2026102401
@@ -1102,7 +1107,7 @@ min-os x64-xp 5.2
 min-os x64-modern 10.0
 min-os arm32 6.3
 min-os arm64 10.0
-notes https://github.com/<org>/shelldrive/releases/tag/v1.0.0
+notes https://github.com/LibreStatic/ShellDrive/releases/tag/v1.0.0
 file setup-universal ShellDrive-1.0.0-setup.exe 7123456 sha256:<64 hex>
 file setup-x86 ShellDrive-1.0.0-setup-x86.exe 9876543 sha256:<64 hex>
 file setup-x64 ShellDrive-1.0.0-setup-x64.exe ...
@@ -1118,21 +1123,24 @@ file portable-x86-ia32 ShellDrive-1.0.0-portable-x86-ia32.zip ...
 file portable-x64-modern ShellDrive-1.0.0-portable-x64-modern.zip ...
 dokany 2.3.1.1000 x64 Dokan_x64.msi 9269248 sha256:69ff8cb37bfec3a75921c85ffd1c6370b50a9ec4ecef2cf3a009d488dcbf5465
 dokany-deny <min-version>-<max-version> <reason-id>        (zero or more lines, TM-R23)
-base https://github.com/<org>/shelldrive/releases/download/v1.0.0/
+base https://github.com/LibreStatic/ShellDrive/releases/download/v1.0.0/
 base http://dl.<our-domain>/releases/1.0.0/
 sig ed25519 <key-id-16hex> <signature-base64>
 ```
 
-- Signature: ed25519 over `"ShellDrive release manifest v1\n" || <all bytes up to and including the LF before
+- Signature: ed25519 over `"com.librestatic.shelldrive release manifest v1\n" || <all bytes up to and including the LF before
   the sig line>`. Verification code is in `sd_crypto` (shared with SSH ed25519); `tools/sd-release` signs.
 - Unknown keys are ignored (forward compatible); unknown `shelldrive-manifest` major version → "update the
   application manually".
+- **Product binding (D45):** a manifest whose `product` is not `com.librestatic.shelldrive` is rejected. Channel
+  names are short (`stable`, `beta`) and scoped by that product id; their full ids are
+  `com.librestatic.shelldrive.stable` / `.beta`.
 - **Channel binding (TM-R37, T-67):** a manifest is accepted only if its `channel` equals the configured channel
   and its `sig` key is authorized for that channel by the current keyset (§9.3). A beta-signed manifest is
   therefore never accepted on stable, and a stable key cannot sign beta.
 - **Anti-rollback per channel (TM-R37):** `serial` must be > the last accepted serial **of the same channel**,
   stored as `last_serial.<channel>` (`last_serial.stable`, `last_serial.beta`) in the `state\` directory (C8):
-  per user `<LocalAppData>\ShellDrive\state\` (written by the agent), per machine `%ProgramData%\ShellDrive\state\`
+  per user `<LocalAppData>\LibreStatic\ShellDrive\state\` (written by the agent), per machine `%ProgramData%\LibreStatic\ShellDrive\state\`
   (written by the elevated setup after a per-machine update; users can read but not write it), portable
   `<exe dir>\data\state\`. The agent uses, per channel, the maximum of the values it can read. A huge beta
   serial therefore cannot block stable updates. The pre-integration single `last_serial` file is migrated to
@@ -1160,12 +1168,15 @@ manifests and payload tables only and cannot change who is trusted.
 | **release-stable** | one active ed25519 key (plus at most one overlapping successor during rotation) | the maintainer's offline signing machine, encrypted key file with passphrase | stable `manifest.txt`, stable payload tables (§6.1), `SHA256SUMS.sig` |
 | **release-beta** | one active ed25519 key | GitHub environment secret `beta-signing` (protected, required reviewer = maintainer) | beta manifests, beta payload tables |
 
-- Key ID = first 8 bytes of SHA-256(public key). The two **root public keys** and the keyset current at build
+- Key ID = first 8 bytes of SHA-256(public key). Key labels (key file names, keyset comments, CI secret
+  descriptions) are reverse-DNS (D45): `com.librestatic.shelldrive.root-a`, `.root-b`, `.release-stable`,
+  `.release-beta`. The two **root public keys** and the keyset current at build
   time (`installer/keys/`) are compiled into every binary and stub.
 - **Keyset format** (`keyset.txt`, same line syntax and size limit as the manifest):
 
   ```
   shelldrive-keyset 1
+  product com.librestatic.shelldrive
   version 3
   issued 2026-10-24T00:00:00Z
   key <key-id> stable <pubkey-base64> 2026-10-24 2028-10-24
@@ -1174,7 +1185,7 @@ manifests and payload tables only and cannot change who is trusted.
   sig ed25519 <root-key-id> <signature-base64>
   ```
 
-  Signed with the domain string `"ShellDrive keyset v1\n"`. A keyset is valid if signed by **either** root key;
+  Signed with the domain string `"com.librestatic.shelldrive keyset v1\n"`. A keyset is valid if signed by **either** root key;
   a keyset that changes the root keys (`root <key-id> <pubkey>` lines) needs signatures by **both** current
   roots. Keyset `version` is monotonic: clients store the highest accepted one in `state\keyset` (with the
   file) and refuse lower versions, so revocations cannot be rolled back; the compiled-in keyset is the floor.
@@ -1218,7 +1229,7 @@ winhttp` proxy; on XP also `WinHttpGetIEProxyConfigForCurrentUser` + auto-proxy)
    used. HTTP redirects allowed only to URLs in the manifest's `base` list or GitHub's release-asset storage
    hosts.
 4. Bootstrap manifest URLs compiled in (overridable by policy/`UPDATEURL`):
-   `https://github.com/<org>/shelldrive/releases/latest/download/manifest.txt` and
+   `https://github.com/LibreStatic/ShellDrive/releases/latest/download/manifest.txt` and
    `http://dl.<our-domain>/stable/manifest.txt`.
 
 The HTTP mirror (D30) is **static object storage** that serves plain HTTP without a forced redirect to HTTPS
@@ -1242,12 +1253,12 @@ do not apply to update traffic.
 
 ### 9.6 Staging, apply, rollback
 
-- Staging dir: per-user `%LOCALAPPDATA%\ShellDrive\updates\<version>\`; per-machine downloads by the user's
+- Staging dir: per-user `%LOCALAPPDATA%\LibreStatic\ShellDrive\updates\<version>\`; per-machine downloads by the user's
   agent go there too, then the elevated setup **copies them into an admin-only directory and re-verifies
   signature and hash** before execution (no TOCTOU, no execution from user-writable paths while elevated).
   Concretely the per-machine update runs the two elevated stages of §6.4 (TM-R33, T-70): stage 1 is started from
   the user's staging folder but creates no window and loads no non-KnownDLL module; it copies the setup EXE into
-  a fresh `%ProgramData%\ShellDrive\setup\<random>` directory and stage 2 re-verifies the manifest signature, the
+  a fresh `%ProgramData%\LibreStatic\ShellDrive\setup\<random>` directory and stage 2 re-verifies the manifest signature, the
   file hash from the manifest and the payload table before doing anything else.
 - Apply: launch `setup.exe /update /passive` (per-machine: via `runas` → UAC; XP limited user: "ask an
   administrator to install this update" and stop).
@@ -1257,7 +1268,7 @@ do not apply to update traffic.
   no "healthy" marker within 60 s of first start → restore from `.rollback`, record the bad version as
   skipped, report.
 - Per-machine rollback: MSI transactions handle install failures. For post-install health failure, the
-  previous MSI is kept in `%ProgramData%\ShellDrive\updates\last-good\`; setup uninstalls the new product and
+  previous MSI is kept in `%ProgramData%\LibreStatic\ShellDrive\updates\last-good\`; setup uninstalls the new product and
   reinstalls the previous one (an explicit uninstall+install, since `AllowDowngrades="no"`).
 - Cleanup: keep only the current and last-good versions; delete old `.sd-old-*` files at agent start.
 
@@ -1401,7 +1412,7 @@ else in the installer changes when it is OFF.
 | `package` | windows-2022 | needs build: Dokany files verified against `dokany.lock` (size, SHA-256, signer; at embed time, also when served from the cache, TM-R23) → payload CABs (six flavours) → six MSIs (WiX 3.14, ICE validation) → `sd-msilang` transforms → `sd-msilang --dump-sequences` custom-action condition check (TM-R35, §8.3) → sparse MSIX (only with `SD_SPARSE_MSIX=ON`) → setup EXEs with a test-key payload-table signature → test-sign → `sd-release manifest --unsigned` → artifacts |
 | `release-checks` | windows-2022 | TST-30 on every Release build: no `none` cipher or test-only flags, no fuzz hooks, no test certificates or test keys (only `installer/keys/` public keys), no `__DATE__`/`__TIME__` strings; `sd-importcheck --stub` (KnownDLLs-only imports, no delay-load, TM-R33) |
 | `workflow-lint` | windows-2022 | TM-R39/TST-32: every `uses:` is a first-party (`actions/*`) or in-repo (`./.github/actions/*`) action pinned by a 40-hex commit SHA; no `pull_request_target`; every workflow declares top-level `permissions: contents: read` and widens only per job; `release.yml` and `resign.yml` contain no `actions/cache` and no restore of other workflows' artifacts; `CODEOWNERS` covers `.github/` and `installer/` |
-| `install-smoke` | windows-2022 | silent per-user install/upgrade/uninstall, per-machine MSI install/upgrade/uninstall (service on by default, then `SERVICE=0`); universal EXE (expects `x64-modern` on Server 2022), `/flavour=x64-xp`, `/flavour=x86-sse2`; same-version flavour switch `x64-xp` → `x64-modern` MSI; language transform selection for es-AR (11274) and pt-PT (2070); `DOKANY=0` / `/dokany=skip` writes the WebDAV-only default; per-machine uninstall removes `service\secrets\`/`service\keys\` by default and keeps them with `REMOVESECRETS=0`, and the uninstall log lists what was kept (TM-R28); `%ProgramData%\ShellDrive` pre-created by a non-admin test account is renamed aside before any file is written (TM-R34, reduced TST-29); Dokany install optional step **[verify drivers can be installed on hosted runners]** |
+| `install-smoke` | windows-2022 | silent per-user install/upgrade/uninstall, per-machine MSI install/upgrade/uninstall (service on by default, then `SERVICE=0`); universal EXE (expects `x64-modern` on Server 2022), `/flavour=x64-xp`, `/flavour=x86-sse2`; same-version flavour switch `x64-xp` → `x64-modern` MSI; language transform selection for es-AR (11274) and pt-PT (2070); `DOKANY=0` / `/dokany=skip` writes the WebDAV-only default; per-machine uninstall removes `service\secrets\`/`service\keys\` by default and keeps them with `REMOVESECRETS=0`, and the uninstall log lists what was kept (TM-R28); `%ProgramData%\LibreStatic\ShellDrive` pre-created by a non-admin test account is renamed aside before any file is written (TM-R34, reduced TST-29); Dokany install optional step **[verify drivers can be installed on hosted runners]** |
 
 `ARM32` binaries cannot run on any hosted runner (Windows 11 24H2+ ARM64 images no longer run ARM32), so ARM32
 tests run only in the lab.
@@ -1490,7 +1501,7 @@ Windows RT 8.1 runs only Microsoft-signed desktop code, so it is "not runnable" 
 
 | Test | Milestone / priority | VMs | What |
 |---|---|---|---|
-| TST-29 installer elevation | M4, P1 | XP SP3, 7 SP1, 10, 11 | Procmon "NAME NOT FOUND" capture in the stub's directory for setup, both elevated stages, `uninstall.exe` and the update path; planted-DLL canaries (`version.dll`, `cryptbase.dll`, `uxtheme.dll`, `dwmapi.dll`, `cabinet.dll`, `msi.dll`…) in `Downloads`, `%TEMP%` and the update staging folder must never load in an elevated process (TM-R33); `%ProgramData%\ShellDrive` pre-created by a standard user (owner, DACL, junctions, pre-seeded `settings.ini`/`profiles\`) before install and before service start (TM-R34); `msiexec /fa` and `/fu` as a standard user under Procmon: no SYSTEM process touches a user-writable path (TM-R35); Dokany MSI with wrong hash or signer refused (TM-R23) |
+| TST-29 installer elevation | M4, P1 | XP SP3, 7 SP1, 10, 11 | Procmon "NAME NOT FOUND" capture in the stub's directory for setup, both elevated stages, `uninstall.exe` and the update path; planted-DLL canaries (`version.dll`, `cryptbase.dll`, `uxtheme.dll`, `dwmapi.dll`, `cabinet.dll`, `msi.dll`…) in `Downloads`, `%TEMP%` and the update staging folder must never load in an elevated process (TM-R33); `%ProgramData%\LibreStatic\ShellDrive` pre-created by a standard user (owner, DACL, junctions, pre-seeded `settings.ini`/`profiles\`) before install and before service start (TM-R34); `msiexec /fa` and `/fu` as a standard user under Procmon: no SYSTEM process touches a user-writable path (TM-R35); Dokany MSI with wrong hash or signer refused (TM-R23) |
 | TST-27 uninstall residue | M4, P2 | 7, 10, 11 | per-user and per-machine (setup, ARP, `msiexec /x`, SYSTEM/Intune), with and without "remove data"/`REMOVESECRETS=0`; list every remaining secret, cache and registry value and compare with §6.7 and the uninstall summary (TM-R28) |
 | TST-31 updater | M4, P1 | XP SP3 (HTTP), 7, 11 | against a lab mirror: tampered manifest/file, replayed old manifest, expired manifest, beta-signed manifest on stable, beta serial poisoning, keyset rollback, revoked key, key rotation across two keysets, redirect to a foreign host, oversized responses, interrupted downloads, stale-information warning after 14 days (TM-R36, TM-R37) |
 | TST-32 provenance | M4, P2 | dedicated clean build VM (not a runner) | the maintainer's independent rebuild of the release tag (§12.3) and hash comparison with CI |
@@ -1661,7 +1672,7 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
 - Refuse the disk cache on volumes without `FILE_PERSISTENT_ACLS` (TM-R29, §6.8).
 
 **Apps team (03)**
-- Each agent creates and waits on `Global\ShellDrive.agent.shutdown.<SID>.<SessionId>` (manual-reset, DACL in
+- Each agent creates and waits on `Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<SessionId>` (manual-reset, DACL in
   §6.9) and exits cleanly within 15 s after telling its UI clients to exit (C3; specified in
   03 §1.2 and §12.3, which never enumerate or connect to agent pipes).
 - Service: `shelldrive-host.exe service`, name `ShellDriveSvc`; listen to SCM stop; set its own failure
@@ -1672,23 +1683,23 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
   `diag --bundle`, `diag --fix webclient` (C7).
 - Update settings in `settings.ini [update] enabled, channel, manifest_url`; in `state\`:
   `last_serial.<channel>`, `last_verified.<channel>`, `keyset` and the cached `dokany-deny` list (TM-R36,
-  TM-R37); policies in `HKLM\Software\Policies\ShellDrive` (C8, §9.1). UI notice `warn.update_stale` (03 §9.6)
+  TM-R37); policies in `HKLM\Software\Policies\LibreStatic\ShellDrive` (C8, §9.1). UI notice `warn.update_stale` (03 §9.6)
   after 14 days (TM-R36).
 - New installer hook `programdata-secure` (TM-R34, §8.3) in 03 §6.1's list; the hook host's SYSTEM-mode rules
   of §8.3 (no user configuration, no environment-relative paths, no window, no child process; TM-R35); 03 §3.2
-  states that setup creates or resets `%ProgramData%\ShellDrive` with its DACL before use (§6.4).
+  states that setup creates or resets `%ProgramData%\LibreStatic\ShellDrive` with its DACL before use (§6.4).
 - Settings key `[backend] dokany = yes|no` in the machine `settings.ini` (D36, §8.4).
 - Portable mode: one-time warning on volumes without persistent ACLs (TM-R29, 03 §1.9).
 - Per-machine uninstall removes `service\secrets\` and `service\keys\` unless `REMOVESECRETS=0`; caches are
   always removed; the host deletes caches of deleted profiles at start (TM-R28, §6.7).
 - Portable detection via `sd_platform_is_portable()` and `shelldrive.portable`.
-- Shell extension: DLL may be loaded from `shellext\<version>\`; the `Local\ShellDrive.state.<SID>` layout is
+- Shell extension: DLL may be loaded from `shellext\<version>\`; the `Local\com.librestatic.shelldrive.state.<SID>` layout is
   versioned and architecture-independent and `--action` verbs are additive only (C5); registration is declared
   in `installer/registry/*.tbl` (no self-registration at install time); `IExplorerCommand` implementation for
   the sparse package (D27, §10.1); `DllMain` refuses to load an `x86-sse2` DLL on a non-SSE2 CPU (§3.2).
 - Network Shortcuts (D14): created per user at run time under `CSIDL_NETHOOD` with the `desktop.ini` marker
   `[ShellDrive] profile=<id>` (03 §8.7); reconciled at agent start and removed by `user-cleanup` (§6.7).
-- `DEFAULTPROFILES` is a folder of `.ini` profiles copied to `%ProgramData%\ShellDrive\profiles\` (C9).
+- `DEFAULTPROFILES` is a folder of `.ini` profiles copied to `%ProgramData%\LibreStatic\ShellDrive\profiles\` (C9).
 - `tools/sdl10n` emits C tables, STRINGTABLEs, `.wxl`, ADML and the LCID lists used by `sd-msilang` (C41, C43).
 
 ---
@@ -1762,7 +1773,7 @@ imports enforced by `sd-importcheck --stub`, no delay-load, `SetDefaultDllDirect
 fallback on XP/Vista/7, full System32 paths, `/DEPENDENTLOADFLAG:0x800`, two-stage elevation that runs the
 elevated work only from a copy in a fresh admin-only directory, `uninstall.exe` never elevated from `%TEMP%`,
 `dokan2.dll` checked from the native host by full System32 path; §2.4, §3.2, §6.4, §6.7, §7.3, §9.6), **TM-R34**
-(`%ProgramData%\ShellDrive` owner/DACL/reparse check on the handle, rename-aside and fresh creation with an
+(`%ProgramData%\LibreStatic\ShellDrive` owner/DACL/reparse check on the handle, rename-aside and fresh creation with an
 explicit SD, also as the new MSI hook `programdata-secure`; §6.4, §8.3), **TM-R35** (normative custom-action
 condition table, no SYSTEM action during repair except idempotent ones, SYSTEM-mode rules for the hook host,
 CI dump of `InstallExecuteSequence`; §8.3), **TM-R36** (`expires` ≤ 30/14 days, re-signing every 14 days via
@@ -1785,3 +1796,11 @@ Final reconciliation (threat model) 2026-10-24: `sd-ctcheck` constant-time disas
 and `tools/` (01 §2.7.5, TM-R02, TST-03; §4, §11.2); signing sessions labelled D42 (§12.3); staleness text is 03's
 `warn.update_stale` (§9.2, §14); `webdav-tune` originals live in 03's `service\state\webdav-tune.ini`, not HKLM
 (§8.3); `programdata-secure` is now in 03 §6.1. The items listed above for 02 and 03 are present there.
+
+LibreStatic naming (D45) 2026-10-24: install dirs `%ProgramFiles%\LibreStatic\ShellDrive` and
+`%LOCALAPPDATA%\Programs\LibreStatic\ShellDrive` (§6.3, §8.4); `%ProgramData%\LibreStatic` vendor folder checked
+before `ShellDrive` (§6.4); `Publisher`/`Manufacturer`/`CompanyName` = `LibreStatic` (§1.1, §6.7, §8); registry
+`Software\LibreStatic\ShellDrive` and `Software\Policies\LibreStatic\ShellDrive`, ADMX namespace
+`com.librestatic.shelldrive.policies` (§8.4); manifest and keyset carry `product com.librestatic.shelldrive`, signing
+domain strings and key labels use `com.librestatic.shelldrive` (§9.2, §9.3); URLs `github.com/LibreStatic/ShellDrive`
+(§9.2, §9.4); shutdown event and snapshot names `Global\|Local\com.librestatic.shelldrive.*` (§6.9, §14).

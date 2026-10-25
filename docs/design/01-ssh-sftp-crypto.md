@@ -1342,8 +1342,8 @@ files. Lookups and writes run on worker items, never on an I/O or Dokany thread.
 
 ```c
 typedef enum sd_kh_store_kind {
-  SD_KH_STORE_MACHINE,     /* %ProgramData%\ShellDrive\known_hosts */
-  SD_KH_STORE_USER,        /* %APPDATA%\ShellDrive\known_hosts */
+  SD_KH_STORE_MACHINE,     /* %ProgramData%\LibreStatic\ShellDrive\known_hosts */
+  SD_KH_STORE_USER,        /* %APPDATA%\LibreStatic\ShellDrive\known_hosts */
   SD_KH_SRC_OPENSSH,       /* live read-only source: %USERPROFILE%\.ssh\known_hosts (+ known_hosts2) */
   SD_KH_SRC_PUTTY          /* live read-only source: HKCU\...\PuTTY\SshHostKeys */
 } sd_kh_store_kind;
@@ -1410,7 +1410,7 @@ void   sd_known_hosts_close(sd_known_hosts *kh);
 - **Writing:** we append to the target store, and rewrite it only for `remove` and for section 7.5 updates. Each
   write goes to a temp file in the same directory, followed by `MoveFileExW(MOVEFILE_REPLACE_EXISTING |
   MOVEFILE_WRITE_THROUGH)` (XP+). Cross-process serialization uses a named mutex
-  `Local\ShellDrive.known_hosts.<hash of path>` (`Global\` for the ProgramData file). The in-memory cache is reloaded
+  `Local\com.librestatic.shelldrive.known_hosts.<hash of path>` (`Global\` for the ProgramData file). The in-memory cache is reloaded
   when the file's last-write time changes. Entries are always written **plain** (decisions.md D8; the files are
   ACL-protected). Hashed entries from other tools are still read and matched.
 - **ACLs on write (TM-R07, T-13).** Because `MoveFileExW` keeps the security descriptor of the temp file, the temp
@@ -2581,7 +2581,7 @@ lab verifications and details for the implementers:
 - **known_hosts (03 §5):** use `sd_known_hosts` for every read/write; pass the ordered store list (machine, user,
   live sources). Entries are written plain.
 - **Service:** no agents in service context (decisions.md D17); DPAPI service keys as `SD_ID_BLOB`. The machine
-  known_hosts lives in `%ProgramData%\ShellDrive\known_hosts`; the service is the only writer. The system proxy in
+  known_hosts lives in `%ProgramData%\LibreStatic\ShellDrive\known_hosts`; the service is the only writer. The system proxy in
   the service is the WinHTTP machine setting.
 - **Build (04):** two x86 crypto flavours (`x86-ia32` without any vector code, `x86-sse2`), `x64-modern` with CFG/CET,
   flags per 04 §3.2. `sd_stubcore` reuses the `x86-ia32` sources for SHA-2 and Ed25519 verify. No `third_party/`
@@ -2683,3 +2683,6 @@ Applied from `05-threat-model.md` §8 as accepted by decisions.md D33-D39:
   name for TM-R05 (03 uses it too) and also covers proxy-password prompts of tunneled legs (6.4); dump hooks named
   `sd_dump_mark_sensitive()` and stacks are always omitted (D43, no `--include-secret-stacks`; 2.4, 12.1, 16);
   agent checks use `sd_pipe_verify_server()` (6.5); disassembly check runs as `tools/sd-ctcheck` (2.7.5).
+
+LibreStatic naming (D45) 2026-10-24: known_hosts store paths under `%APPDATA%`/`%ProgramData%\LibreStatic\ShellDrive`
+and the lock object `Local\|Global\com.librestatic.shelldrive.known_hosts.<hash>` (§7.2, §16).

@@ -2,6 +2,11 @@
 
 These rules apply to the whole repository. Component notes live next to the code (`<component>/AGENTS.md`).
 
+## Commits
+- Every commit is authored and committed by the user: `FacuM <facumo.fm@gmail.com>` (set `--author` and
+  `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` if the local config differs).
+- Never add `Co-Authored-By` trailers or any AI/tool attribution to commit messages or PR descriptions.
+
 ## Language
 - Commit messages, PR titles and descriptions, branch names, code identifiers, code comments, test names,
   log messages and machine-readable output (JSON diagnostics, protocol strings, event log payloads) are

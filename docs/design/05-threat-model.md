@@ -50,13 +50,13 @@ risk (H/M/L), and what is missing.
 
 | Id | Asset | Where it lives (design ref) | Security property |
 |---|---|---|---|
-| A-01 | SSH private keys (user files, DPAPI-kept `keys\*.sdkey`, service keys) | user paths; `%APPDATA%\ShellDrive\keys`; `%ProgramData%\ShellDrive\service\keys` (03 §3.2, §4.4, §4.5); decrypted in `sd_secbuf` (01 §7.4) | C, I |
+| A-01 | SSH private keys (user files, DPAPI-kept `keys\*.sdkey`, service keys) | user paths; `%APPDATA%\LibreStatic\ShellDrive\keys`; `%ProgramData%\LibreStatic\ShellDrive\service\keys` (03 §3.2, §4.4, §4.5); decrypted in `sd_secbuf` (01 §7.4) | C, I |
 | A-02 | Passwords, key passphrases, OTP/kbd-interactive answers | Credential Manager / DPAPI files (03 §4.2, §4.3), reconnect cache (01 §7.4), IPC prompt answers (03 §2.5) | C |
-| A-03 | Proxy credentials (Basic, SOCKS5, Windows logon via SSPI) | Credential Manager `ShellDrive:proxy:*` (03 §3.8), SSPI (01 §5.2) | C |
+| A-03 | Proxy credentials (Basic, SOCKS5, Windows logon via SSPI) | Credential Manager `com.librestatic.shelldrive:proxy:*` (03 §3.8), SSPI (01 §5.2) | C |
 | A-04 | Host-key trust stores and live sources | machine/user `known_hosts`, `~/.ssh/known_hosts`, PuTTY `SshHostKeys` (01 §7.2, 03 §5.1) | I |
 | A-05 | Remote file data and metadata (names, sizes, paths) | in flight, memory and disk cache (02 §4.2), WebDAV redirector cache (02 §7.6) | C, I |
-| A-06 | Local caches and state (`cache\`, `state\`, menu cache, snapshot section) | `%LOCALAPPDATA%`, `%ProgramData%\ShellDrive\service\cache` (03 §3.2) | C, I |
-| A-07 | Profiles, settings, policies, machine templates | `%APPDATA%`/`%ProgramData%` INI, `HKLM/HKCU\Software\Policies\ShellDrive` (03 §3.2–§3.5) | I |
+| A-06 | Local caches and state (`cache\`, `state\`, menu cache, snapshot section) | `%LOCALAPPDATA%`, `%ProgramData%\LibreStatic\ShellDrive\service\cache` (03 §3.2) | C, I |
+| A-07 | Profiles, settings, policies, machine templates | `%APPDATA%`/`%ProgramData%` INI, `HKLM/HKCU\Software\Policies\LibreStatic\ShellDrive` (03 §3.2–§3.5) | I |
 | A-08 | WebDAV per-mount path token, SSPI-authenticated connections | agent/service memory, UNC strings (02 §7.3, §7.4) | C |
 | A-09 | Update signing keys (`release-primary`, `release-backup`, `beta`) and the anti-rollback state | maintainer offline machine, CI secret, `state\last_serial.<channel>`, `state\keyset` (04 §9.2, §9.3) | C, I |
 | A-10 | Release pipeline and artifacts (source, toolchain, CI, Authenticode, mirror) | GitHub, runners, HTTP mirror (04 §11, §12) | I |
@@ -101,15 +101,15 @@ risk (H/M/L), and what is missing.
 |   sd_vfs (nodes, caches) --- disk cache %LOCALAPPDATA% (TB-15)    |                                 |
 |   sd_webdav 127.0.0.1/::1:port ----TB-05----> WebClient (LocalService) + mrxdav.sys -> drive X:    |
 |   sd_dokan  <----TB-06---- dokan2.sys (kernel) <---- any process opening X: (requestor token)      |
-|   IPC pipe \\.\pipe\ShellDrive.agent.<SID>.<sess>  <--TB-07--  CLI, UI (tray, dialogs)             |
-|   snapshot Local\ShellDrive.state.<SID> ----TB-10----> shelldrive-shellext.dll in Explorer         |
+|   IPC pipe \\.\pipe\com.librestatic.shelldrive.agent.<SID>.<sess> <-TB-07- CLI, UI                 |
+|   snapshot Local\com.librestatic.shelldrive.state.<SID> --TB-10--> shelldrive-shellext.dll         |
 +-----------------------------------------------------------------+---------------------------------+
           ^ TB-08 (list, attach_info)                              Explorer shell handlers parse
 +---------+-------------------------------------+                  remote files on X: (TB-10)
 | ShellDriveSvc = shelldrive-host.exe service   |
-| (LocalSystem): global Dokany / WebDAV mounts, |---- %ProgramData%\ShellDrive\service\{keys,secrets,cache}
+| (LocalSystem): global Dokany / WebDAV mounts, |---- %ProgramData%\LibreStatic\ShellDrive\service\{keys,secrets,cache}
 | machine known_hosts, SYSTEM-DPAPI secrets     |     (SYSTEM-only ACLs)
-| \\.\pipe\ShellDrive.service  <-- IU read-only, elevated admins mutate
+| \\.\pipe\com.librestatic.shelldrive.service  <-- IU read-only, elevated admins mutate
 +-----------------------------------------------+
 ```
 
@@ -428,7 +428,7 @@ vfs check allows writes, so the intended right is unclear. *New:* **TM-R24**, **
 **T-44 [S,D] Pipe name squatting.** *Docs:* 03 §2.2 (`FILE_FLAG_FIRST_PIPE_INSTANCE`, client owner check, SQOS
 identification, PID/session check logged on Vista+). *Have:* a spoofed server never gets secrets and can impersonate
 only at identification level. *Residual:* **L**: another user can pre-create
-`\\.\pipe\ShellDrive.agent.<SID>.<session>` and the agent exits (DoS), or squat `ShellDrive.service` while the
+`\\.\pipe\com.librestatic.shelldrive.agent.<SID>.<session>` and the agent exits (DoS), or squat `com.librestatic.shelldrive.service` while the
 service restarts (03 §1.3 recovery). *New:* TST-23 (squat by a second user on XP and 10; clients refuse; the
 service logs Event 3100-class errors).
 
@@ -444,7 +444,7 @@ hold all 32 instances (admins cannot connect) and, as a subscriber, read prompt 
 of global mounts. *New:* **TM-R25**, TST-02 (`sd_json` and method dispatch fuzzing), TST-23.
 
 **T-47 [T,E] Squatting the snapshot section that Explorer reads.** *Docs:* 03 §1.6, §2.1
-(`Local\ShellDrive.state.<SID>`), §8.2. *Residual:* **M**: objects in the session's `Local\` namespace can be created
+(`Local\com.librestatic.shelldrive.state.<SID>`), §8.2. *Residual:* **M**: objects in the session's `Local\` namespace can be created
 first by another user in the same session (`runas`) or by a lower-integrity process, and the shell DLL then parses
 attacker-controlled offsets **inside Explorer and inside elevated processes' file dialogs**. The ready event
 and the agent mutex can be squatted the same way (DoS). *New:* **TM-R26**, TST-24.
@@ -538,8 +538,8 @@ system DLLs load on our behalf (for example `cryptbase.dll`, `version.dll`, `uxt
 application directory first unless they are KnownDLLs. A DLL dropped into `Downloads` by an earlier drive-by
 download then runs in the **elevated** child before any of our code. *New:* **TM-R33**, TST-29.
 
-**T-63 [E] `%ProgramData%\ShellDrive` pre-created by a standard user.** *Docs:* 04 §6.4 (extraction into
-`%ProgramData%\ShellDrive\setup\<random>` "a directory it creates with an Administrators/SYSTEM-only DACL"),
+**T-63 [E] `%ProgramData%\LibreStatic\ShellDrive` pre-created by a standard user.** *Docs:* 04 §6.4 (extraction into
+`%ProgramData%\LibreStatic\ShellDrive\setup\<random>` "a directory it creates with an Administrators/SYSTEM-only DACL"),
 03 §3.2 (the service re-applies ACLs at start, after setup). *Residual:* **H**: standard users can create
 subfolders of `%ProgramData%`. An attacker who creates `ShellDrive` before the first per-machine install owns
 it, keeps `WRITE_DAC` and can swap the child `setup\<random>` folder, plant junctions, or pre-seed `profiles\`,
@@ -652,12 +652,12 @@ Priority: P1 blocks the milestone demo, P2 blocks the next milestone, P3 blocks 
 | TST-21 | M3 | P2 | Zone and MotW lab: zone of files on each backend; SmartScreen on an unsigned EXE and Office Protected View on a `.docm` opened from the drive; with TM-R15 option on/off | T-29 |
 | TST-22 | M1 | P2 | WebClient cache: location and ACL per OS (XP, 7, 10, 11) with two users | T-39 |
 | TST-23 | M5 | P1 | IPC ACL suite (XP, 7, 10, 11): pipe squat by a second user (agent and service), anonymous/identification clients, non-elevated admin on mutating service methods, low-IL and AppContainer clients refused, 32-instance exhaustion by non-admins (per-SID quota of 4 instances) while an elevated admin still connects through the 2 reserved instances, 64 KiB request cap and 10 requests/s rate limit for non-admins (TM-R25, 03 §2.2), `prompt`/`log` topics refused to non-admins, `attach_info` schema and membership | T-44–T-46, T-49 |
-| TST-24 | M3 | P1 | Snapshot squat: second user in the same session (`runas`) and a low-IL process pre-create `Local\ShellDrive.state.<SID>`, the ready event and the mutex; agent refuses, shell DLL ignores foreign-owned sections; fuzzed snapshot never crashes the DLL (run inside a test host and inside Explorer in the lab) | T-47, T-60 |
+| TST-24 | M3 | P1 | Snapshot squat: second user in the same session (`runas`) and a low-IL process pre-create `Local\com.librestatic.shelldrive.state.<SID>`, the ready event and the mutex; agent refuses, shell DLL ignores foreign-owned sections; fuzzed snapshot never crashes the DLL (run inside a test host and inside Explorer in the lab) | T-47, T-60 |
 | TST-25 | M5 | P1 | Service inputs: service profile key file replaced through a junction between check and use; key file with a user-writable ACL; profile in a user-writable folder → refused | T-51 |
 | TST-26 | M5 | P1 | Global WebDAV G1–G7 per OS (02 §7.7 + TM-R18 G7 negatives) | T-52 |
 | TST-27 | M4 | P2 | Uninstall residue: per-user and per-machine (EXE, ARP, `msiexec /x`, SYSTEM/Intune), with and without "remove data"; list every remaining secret, cache and registry value; compare with TM-R28 | T-54 |
 | TST-28 | M3 | P2 | Dump hygiene: crash host/UI/CLI during a password prompt, during KEX and during a KDF with a known test password and key; scan the dump for those bytes; verify WER is not invoked after our dump | T-57 |
-| TST-29 | M4 | P1 | Installer elevation lab (XP, 7, 10, 11): Procmon "NAME NOT FOUND" in the stub's directory for setup, elevated child, uninstall and update setup; planted-DLL canaries in `Downloads`, `%TEMP%` and the staging folder must not load; `%ProgramData%\ShellDrive` pre-created by a standard user (owner, DACL, junctions) before install and before service start; `msiexec /fa` and `/fu` as a standard user with Procmon (no SYSTEM process touches user-writable paths); Dokany MSI hash/signer mismatch refused | T-62–T-65, T-70 |
+| TST-29 | M4 | P1 | Installer elevation lab (XP, 7, 10, 11): Procmon "NAME NOT FOUND" in the stub's directory for setup, elevated child, uninstall and update setup; planted-DLL canaries in `Downloads`, `%TEMP%` and the staging folder must not load; `%ProgramData%\LibreStatic\ShellDrive` pre-created by a standard user (owner, DACL, junctions) before install and before service start; `msiexec /fa` and `/fu` as a standard user with Procmon (no SYSTEM process touches user-writable paths); Dokany MSI hash/signer mismatch refused | T-62–T-65, T-70 |
 | TST-30 | M0 | P2 | Release-binary checks: no `none` cipher, no fuzz hooks, no test certificates, no `__DATE__`; `sd-importcheck` lists only KnownDLLs as static imports of the setup stub | T-06, T-62 |
 | TST-31 | M4 | P1 | Updater: tampered manifest/file, replayed old manifest (rollback), expired manifest (freeze), beta-signed manifest on stable, beta serial poisoning, redirect to a foreign host, oversized responses, interrupted downloads, key-set rotation and revocation per TM-R37 | T-66, T-67, T-69 |
 | TST-32 | M4 | P2 | Provenance: maintainer rebuilds the tag on the lab machine from a clean checkout and toolchain and compares hashes with CI before signing stable; workflow lint: Actions pinned by SHA, no `pull_request_target`, release job reads no caches | T-72 |
@@ -696,7 +696,7 @@ Format: id, document § to change, change, rationale.
   SYSTEM and Administrators (otherwise skipped with `warning hostkey_source_insecure`); lines whose host pattern is
   only wildcards (`*`, `*.*`, `?*`) are ignored for MATCH from live sources (still counted for MISMATCH).
   *Rationale:* T-11.
-- **TM-R07** — 03 §3.2. Apply the protected per-user DACL (user + SYSTEM) also to `%APPDATA%\ShellDrive\`,
+- **TM-R07** — 03 §3.2. Apply the protected per-user DACL (user + SYSTEM) also to `%APPDATA%\LibreStatic\ShellDrive\`,
   `profiles\`, `overrides\` and `known_hosts` at creation, as already done for `keys\` and `secrets\`.
   *Rationale:* T-13 on redirected profiles.
 - **TM-R08** — 01 §6.5. Before talking to an agent: for Pageant, resolve the window's process with
@@ -783,7 +783,7 @@ Format: id, document § to change, change, rationale.
   sender's process SID and accepts only the documented verbs. *Rationale:* T-47, T-48.
 - **TM-R27** — 03 §2.6 rule 1, §3.2. The service opens key files with `FILE_FLAG_OPEN_REPARSE_POINT`, refuses reparse
   points in the path, checks owner and DACL **on the opened handle** (`GetSecurityInfo`), and reads only from
-  `%ProgramData%\ShellDrive\service\` or paths whose every component is admin-owned; it never reads HKCU or user
+  `%ProgramData%\LibreStatic\ShellDrive\service\` or paths whose every component is admin-owned; it never reads HKCU or user
   profile paths. *Rationale:* T-51.
 - **TM-R28** — 04 §6.7, §8.4; 03 §4. Per-machine uninstall removes `service\secrets\` and `service\keys\` by default
   (`REMOVESECRETS=1` default; machine profiles and settings still follow `REMOVEDATA`); every uninstall deletes the
@@ -808,8 +808,9 @@ Format: id, document § to change, change, rationale.
   `/DEPENDENTLOADFLAG:0x800`. The elevated child copies itself into the admin-only staging directory (TM-R34) and
   the unelevated parent launches **that copy** with `runas`, never the copy in `Downloads`; `uninstall.exe` for
   per-machine installs runs from `%ProgramFiles%`, never from `%TEMP%`. *Rationale:* T-62, T-70.
-- **TM-R34** — 04 §6.4; 03 §3.2. Elevated setup, before using `%ProgramData%\ShellDrive`, checks its owner; if it is
-  not Administrators/SYSTEM it renames the folder aside (`ShellDrive.untrusted-<n>`), logs it, and creates a fresh
+- **TM-R34** — 04 §6.4; 03 §3.2. Elevated setup, before using `%ProgramData%\LibreStatic\ShellDrive`, checks the owner of
+  `%ProgramData%\LibreStatic` and of `ShellDrive` (D45); if one is not Administrators/SYSTEM it renames that folder aside
+  (`LibreStatic.untrusted-<n>` / `ShellDrive.untrusted-<n>`), logs it, and creates a fresh
   one with the 03 §3.2 DACL; no reparse points are followed (`FILE_FLAG_OPEN_REPARSE_POINT` on every component).
   Extraction goes to a new directory created with `CreateDirectoryW` and an explicit SD in the same call (fails if it
   exists). Imported content of a renamed folder is never reused. *Rationale:* T-63.
@@ -952,3 +953,6 @@ All are accepted (D39); "adjusted" names the decision that changed the recommend
   "rejected"; TST-07, TST-13, TST-20 and TST-23 (per-SID quota, reserved instances, 64 KiB cap) follow D33, D40,
   D41 and 03 §2.2; decision notes on TM-R04, R13, R14, R24, R30; A-09 per-channel state; new section 11 (Q
   outcomes, TM-R placement).
+- LibreStatic naming (D45) 2026-10-24: pipe, snapshot and folder names in the diagram, A-01/A-03/A-06, TB and
+  TM-R text use `com.librestatic.shelldrive.*`, the `com.librestatic.shelldrive:` credential prefix and
+  `LibreStatic\ShellDrive` paths; TM-R34 also covers the `%ProgramData%\LibreStatic` vendor folder.
