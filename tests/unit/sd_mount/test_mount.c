@@ -1,0 +1,359 @@
+/* sd_mount state machine against the scripted fake backend (no network). */
+#include <windows.h>
+#include <string.h>
+
+#include "sd_test.h"
+#include "fake_backend.h"
+#include "sd_base/sd_mem.h"
+#include "sd_platform/sd_thread.h"
+#include "sd_platform/sd_time.h"
+
+/* ---- a tiny control-thread queue driven by the test ---- */
+
+typedef struct qitem { struct qitem *next; void (*fn)(void *); void *arg; } qitem;
+
+typedef struct harness {
+  sd_mutex lock;
+  HANDLE ev;
+  qitem *head, *tail;
+  sd_mount *m;
+  sd_mount_state states[32];
+  uint32_t nstates;
+  sd_mount_prompt last_prompt;
+  uint32_t nprompts, nclosed;
+  /* auto answers */
+  sd_mount_answer_kind hk_answer;
+  const char *password;      /* NULL = do not answer */
+  int answer_inline;
+} harness;
+
+static void h_post(void *ctx, void (*fn)(void *), void *arg)
+{
+  harness *h = (harness *)ctx;
+  qitem *q = (qitem *)sd_calloc(1, sizeof(*q));
+  if (q == NULL) return;
+  q->fn = fn;
+  q->arg = arg;
+  sd_mutex_lock(&h->lock);
+  if (h->tail) h->tail->next = q; else h->head = q;
+  h->tail = q;
+  sd_mutex_unlock(&h->lock);
+  SetEvent(h->ev);
+}
+
+static void h_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
+{
+  harness *h = (harness *)ctx;
+  SD_UNUSED(m);
+  SD_UNUSED(why);
+  if (h->nstates < 32) h->states[h->nstates++] = st;
+}
+
+static void h_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
+{
+  harness *h = (harness *)ctx;
+  h->last_prompt = *p;
+  h->nprompts++;
+  if (!h->answer_inline)
+    return;
+  if (p->kind == SD_MP_HOSTKEY) {
+    sd_mount_answer(m, p->id, h->hk_answer, 0, NULL);
+  } else if (h->password) {
+    const char *r[1];
+    r[0] = h->password;
+    sd_mount_answer(m, p->id, SD_MA_RESPONSES, 1, r);
+  }
+}
+
+static void h_on_closed(void *ctx, sd_mount *m, uint32_t id)
+{
+  harness *h = (harness *)ctx;
+  SD_UNUSED(m);
+  SD_UNUSED(id);
+  h->nclosed++;
+}
+
+static void pump(harness *h, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  while (sd_tick_ms() < end) {
+    qitem *q;
+    sd_mutex_lock(&h->lock);
+    q = h->head;
+    if (q) { h->head = q->next; if (!h->head) h->tail = NULL; }
+    sd_mutex_unlock(&h->lock);
+    if (q) {
+      q->fn(q->arg);
+      sd_free(q);
+      continue;
+    }
+    WaitForSingleObject(h->ev, 20);
+  }
+}
+
+static int pump_until_final(harness *h, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  while (sd_tick_ms() < end) {
+    pump(h, 20);
+    if (h->m && sd_mount_is_final(h->m))
+      return 1;
+  }
+  return 0;
+}
+
+static int pump_until_state(harness *h, sd_mount_state st, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  while (sd_tick_ms() < end) {
+    pump(h, 20);
+    if (h->m && sd_mount_get_state(h->m) == st)
+      return 1;
+  }
+  return 0;
+}
+
+static void h_init(harness *h)
+{
+  memset(h, 0, sizeof(*h));
+  sd_mutex_init(&h->lock);
+  h->ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+  h->answer_inline = 1;
+  h->hk_answer = SD_MA_HOSTKEY_TRUST;
+  h->password = FAKE_PASSWORD;
+}
+
+static void h_free(harness *h)
+{
+  pump(h, 50);
+  CloseHandle(h->ev);
+  sd_mutex_destroy(&h->lock);
+}
+
+static sd_err h_create(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter)
+{
+  sd_mount_params p;
+  sd_mount_callbacks cb;
+  memset(&p, 0, sizeof(p));
+  p.struct_size = sizeof(p);
+  p.host = host;
+  p.user = "alice";
+  p.identity_path = identity;
+  p.letter = letter;
+  p.remote_path = "/srv/data";
+  memset(&cb, 0, sizeof(cb));
+  cb.ctx = h;
+  cb.post = h_post;
+  cb.on_state = h_on_state;
+  cb.on_prompt = h_on_prompt;
+  cb.on_prompt_closed = h_on_closed;
+  return sd_mount_create(fake_backend(), &p, &cb, &h->m);
+}
+
+SD_TEST(mount_tofu_password_mount_unmount)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"good.test", NULL, L'Q') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(fake_backend_letter_mounted(L'Q'));
+  SD_CHECK(fake_backend_is_trusted("good.test"));
+  SD_CHECK_STR(fake_backend_last_remote_root(), "/srv/data");
+  SD_CHECK_EQ_INT(h.nprompts, 2);                 /* hostkey + password */
+  SD_CHECK(h.nstates >= 3);
+  SD_CHECK_EQ_INT(h.states[0], SD_MOUNT_CONNECTING);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_UNMOUNTED);
+  SD_CHECK(!fake_backend_letter_mounted(L'Q'));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  SD_CHECK_EQ_INT(fake_backend_live_sessions(), 0);
+}
+
+SD_TEST(mount_second_connection_skips_tofu)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"again.test", NULL, L'R') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_REQUIRE(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  sd_mount_stop(h.m);
+  SD_REQUIRE(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+
+  h_init(&h);
+  SD_REQUIRE(h_create(&h, L"again.test", NULL, L'R') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK_EQ_INT(h.nprompts, 1);                 /* password only */
+  SD_CHECK_EQ_INT(h.last_prompt.kind, SD_MP_PASSWORD);
+  sd_mount_stop(h.m);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_hostkey_rejected_fails)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  h.hk_answer = SD_MA_REJECT;
+  SD_REQUIRE(h_create(&h, L"reject.test", NULL, L'S') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_REJECTED);
+  SD_CHECK(!fake_backend_is_trusted("reject.test"));
+  SD_CHECK(!fake_backend_letter_mounted(L'S'));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_hostkey_once_is_not_stored)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  h.hk_answer = SD_MA_HOSTKEY_ONCE;
+  SD_REQUIRE(h_create(&h, L"once.test", NULL, L'S') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(!fake_backend_is_trusted("once.test"));
+  sd_mount_stop(h.m);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_mismatch_is_hard_failure_with_details)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"mismatch.test", NULL, L'T') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  SD_CHECK_EQ_INT(h.nprompts, 0);                 /* never a prompt */
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_MISMATCH);
+  SD_CHECK_STR(f.offered_fp, FAKE_FP);
+  SD_CHECK_STR(f.stored_type, "ssh-ed25519");
+  SD_CHECK_EQ_INT(f.store_line, 3);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_wrong_password_fails_auth)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  h.password = "wrong";
+  SD_REQUIRE(h_create(&h, L"pw.test", NULL, L'U') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK_EQ_INT(f.err, SD_E_AUTH_FAILED);
+  SD_CHECK_EQ_INT(h.last_prompt.round, 1);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_passphrase_and_identity)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  h.password = FAKE_PASSPHRASE;
+  SD_REQUIRE(h_create(&h, L"key.test", L"C:\\keys\\encrypted_ed25519", L'V') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK_EQ_INT(h.last_prompt.kind, SD_MP_PASSPHRASE);
+  SD_CHECK(strstr(h.last_prompt.key_path, "encrypted") != NULL);
+  sd_mount_stop(h.m);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_unreachable_and_no_dokany)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"unreachable.test", NULL, L'W') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK_EQ_INT(f.err, SD_E_CONN_REFUSED);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+
+  h_init(&h);
+  SD_REQUIRE(h_create(&h, L"nodokany.test", L"C:\\keys\\id_ed25519", L'W') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK(f.code != NULL && strcmp(f.code, "backend_unavailable") == 0);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_stop_while_prompting)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  h.answer_inline = 0;                            /* leave the TOFU prompt open */
+  SD_REQUIRE(h_create(&h, L"pending.test", NULL, L'X') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  pump(&h, 300);
+  SD_CHECK_EQ_INT(h.nprompts, 1);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_UNMOUNTED);
+  SD_CHECK(h.nclosed >= 1);
+  /* the prompt is gone: a late answer is refused */
+  SD_CHECK(sd_mount_answer(h.m, h.last_prompt.id, SD_MA_HOSTKEY_TRUST, 0, NULL) == SD_E_NOT_FOUND);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  SD_CHECK(!fake_backend_is_trusted("pending.test"));
+}
+
+SD_TEST(mount_rejects_bad_params_and_names)
+{
+  harness h;
+  sd_mount_params p;
+  sd_mount_callbacks cb;
+  sd_mount *m = NULL;
+  h_init(&h);
+  memset(&p, 0, sizeof(p));
+  memset(&cb, 0, sizeof(cb));
+  cb.post = h_post;
+  cb.ctx = &h;
+  p.struct_size = sizeof(p);
+  p.host = L"x.test";
+  p.user = "u";
+  p.letter = L'1';
+  SD_CHECK(sd_mount_create(fake_backend(), &p, &cb, &m) == SD_E_INVALID_PARAM);
+  p.letter = L'Z';
+  p.user = NULL;
+  SD_CHECK(sd_mount_create(fake_backend(), &p, &cb, &m) == SD_E_INVALID_PARAM);
+  SD_CHECK_STR(sd_mount_state_name(SD_MOUNT_AUTH_REQUIRED), "auth_required");
+  SD_CHECK_STR(sd_mount_state_name(SD_MOUNT_UNMOUNTED), "unmounted");
+  SD_CHECK_STR(sd_mount_prompt_kind_name(SD_MP_HOSTKEY), "hostkey_unknown");
+  h_free(&h);
+}

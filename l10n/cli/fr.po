@@ -25,3 +25,375 @@ msgid_plural "{count} drives mounted."
 msgstr[0] "{count} lecteur monté."
 msgstr[1] "{count} de lecteurs montés."
 msgstr[2] "{count} lecteurs montés."
+
+msgctxt "cli.help.commands"
+msgid "Commands:"
+msgstr "Commandes :"
+
+msgctxt "cli.help.options"
+msgid "Options:"
+msgstr "Options :"
+
+msgctxt "cli.help.global_options"
+msgid "Global options:"
+msgstr "Options globales :"
+
+msgctxt "cli.help.mount"
+msgid "Mount a profile or a server as a drive."
+msgstr "Monte un profil ou un serveur comme lecteur."
+
+msgctxt "cli.help.unmount"
+msgid "Unmount a drive, or every drive with --all."
+msgstr "Démonte un lecteur, ou tous les lecteurs avec --all."
+
+msgctxt "cli.help.list"
+msgid "List the drives mounted in this session."
+msgstr "Affiche les lecteurs montés dans cette session."
+
+msgctxt "cli.help.agent_stop"
+msgid "Stop the ShellDrive agent of this session and unmount its drives."
+msgstr "Arrête l'agent ShellDrive de cette session et démonte ses lecteurs."
+
+msgctxt "cli.help.version"
+msgid "Show the version."
+msgstr "Affiche la version."
+
+msgctxt "cli.help.help"
+msgid "Show help for a command."
+msgstr "Affiche l'aide d'une commande."
+
+msgctxt "cli.help.more"
+msgid "Run \"shelldrive help <command>\" to see the options of a command."
+msgstr "Exécutez « shelldrive help <commande> » pour voir les options d'une commande."
+
+msgctxt "cli.help.opt_host"
+msgid "Server to connect to, with an optional user name and port."
+msgstr "Serveur auquel se connecter, avec un nom d'utilisateur et un port facultatifs."
+
+msgctxt "cli.help.opt_letter"
+msgid "Drive letter to use, for example Z:. By default the first free letter from Z: down."
+msgstr "Lettre de lecteur à utiliser, par exemple Z:. Par défaut, la première lettre libre en partant de Z:."
+
+msgctxt "cli.help.opt_identity"
+msgid "Private key file to sign in with."
+msgstr "Fichier de clé privée utilisé pour se connecter."
+
+msgctxt "cli.help.opt_remote_path"
+msgid "Folder on the server to show in the drive. By default your home folder."
+msgstr "Dossier du serveur à afficher dans le lecteur. Par défaut, votre dossier personnel."
+
+msgctxt "cli.help.opt_read_only"
+msgid "Mount the drive read-only."
+msgstr "Monte le lecteur en lecture seule."
+
+msgctxt "cli.help.opt_prompt"
+msgid "How to ask for passwords and confirmations: auto, console or none."
+msgstr "Comment demander les mots de passe et les confirmations : auto, console ou none."
+
+msgctxt "cli.help.opt_stdin"
+msgid "Read the answers to questions from standard input, one per line."
+msgstr "Lit les réponses aux questions sur l'entrée standard, une par ligne."
+
+msgctxt "cli.help.opt_no_wait"
+msgid "Return as soon as the mount has started."
+msgstr "Rend la main dès que le montage a commencé."
+
+msgctxt "cli.help.opt_all"
+msgid "Unmount every drive of this session."
+msgstr "Démonte tous les lecteurs de cette session."
+
+msgctxt "cli.help.opt_json"
+msgid "Print the result as JSON."
+msgstr "Affiche le résultat au format JSON."
+
+msgctxt "cli.help.opt_quiet"
+msgid "Print only errors."
+msgstr "N'affiche que les erreurs."
+
+msgctxt "cli.help.opt_lang"
+msgid "Language of the messages: en, es, fr, pt, it or de."
+msgstr "Langue des messages : en, es, fr, pt, it ou de."
+
+msgctxt "cli.err.unknown_option"
+msgid "Unknown option: {option}."
+msgstr "Option inconnue : {option}."
+
+msgctxt "cli.err.missing_value"
+msgid "The option {option} needs a value."
+msgstr "L'option {option} nécessite une valeur."
+
+msgctxt "cli.err.missing_argument"
+msgid "The command \"{command}\" needs more arguments."
+msgstr "Il manque des arguments à la commande « {command} »."
+
+msgctxt "cli.err.extra_argument"
+msgid "Unexpected argument: {argument}."
+msgstr "Argument inattendu : {argument}."
+
+msgctxt "cli.err.bad_value"
+msgid "Invalid value for {option}: {value}."
+msgstr "Valeur non valide pour {option} : {value}."
+
+msgctxt "cli.err.conflict"
+msgid "{option} cannot be used together with {other}."
+msgstr "{option} ne peut pas être utilisé avec {other}."
+
+msgctxt "cli.err.host_spec"
+msgid "Invalid server: {value}. Use [user@]host[:port]."
+msgstr "Serveur non valide : {value}. Utilisez [utilisateur@]hôte[:port]."
+
+msgctxt "cli.err.see_help"
+msgid "Run \"shelldrive help {command}\" for help."
+msgstr "Exécutez « shelldrive help {command} » pour obtenir de l'aide."
+
+msgctxt "cli.mount.connecting"
+msgid "Connecting to {host}..."
+msgstr "Connexion à {host}..."
+
+msgctxt "cli.mount.done"
+msgid "Mounted {name} on {target}."
+msgstr "{name} est monté sur {target}."
+
+msgctxt "cli.mount.started"
+msgid "Mounting {name} on {target}."
+msgstr "Montage de {name} sur {target}."
+
+msgctxt "cli.unmount.done"
+msgid "Unmounted {target}."
+msgstr "{target} a été démonté."
+
+msgctxt "cli.list.empty"
+msgid "No drives are mounted."
+msgstr "Aucun lecteur n'est monté."
+
+msgctxt "cli.list.col_drive"
+msgid "Drive"
+msgstr "Lecteur"
+
+msgctxt "cli.list.col_state"
+msgid "State"
+msgstr "État"
+
+msgctxt "cli.list.col_server"
+msgid "Server"
+msgstr "Serveur"
+
+msgctxt "cli.list.col_profile"
+msgid "Profile"
+msgstr "Profil"
+
+msgctxt "cli.state.connecting"
+msgid "connecting"
+msgstr "connexion"
+
+msgctxt "cli.state.authenticating"
+msgid "signing in"
+msgstr "authentification"
+
+msgctxt "cli.state.mounted"
+msgid "mounted"
+msgstr "monté"
+
+msgctxt "cli.state.offline"
+msgid "offline"
+msgstr "hors ligne"
+
+msgctxt "cli.state.auth_required"
+msgid "sign-in required"
+msgstr "connexion requise"
+
+msgctxt "cli.state.failed"
+msgid "failed"
+msgstr "échec"
+
+msgctxt "cli.state.unmounting"
+msgid "unmounting"
+msgstr "démontage"
+
+msgctxt "cli.state.unmounted"
+msgid "unmounted"
+msgstr "démonté"
+
+msgctxt "cli.agent.stopped"
+msgid "The ShellDrive agent stopped."
+msgstr "L'agent ShellDrive s'est arrêté."
+
+msgctxt "cli.agent.not_running"
+msgid "The ShellDrive agent is not running."
+msgstr "L'agent ShellDrive n'est pas en cours d'exécution."
+
+msgctxt "cli.hk.unknown"
+msgid "The authenticity of host '{host}' (port {port}) can't be established."
+msgstr "L'authenticité de l'hôte '{host}' (port {port}) ne peut pas être établie."
+
+msgctxt "cli.hk.fingerprint"
+msgid "{type} key fingerprint: {fingerprint}"
+msgstr "Empreinte de la clé {type} : {fingerprint}"
+
+msgctxt "cli.hk.check_hint"
+msgid "Compare the fingerprint with the one the server's administrator gave you."
+msgstr "Comparez l'empreinte avec celle que l'administrateur du serveur vous a donnée."
+
+msgctxt "cli.hostkey_default_no"
+msgid "Trust this key? [y]es, [o]nce, [N]o: "
+msgstr "Faire confiance à cette clé ? [o]ui, [u]ne fois, [N]on : "
+
+msgctxt "cli.hk.letter_yes"
+msgid "y"
+msgstr "o"
+
+msgctxt "cli.hk.letter_once"
+msgid "o"
+msgstr "u"
+
+msgctxt "cli.hk.word_yes"
+msgid "yes"
+msgstr "oui"
+
+msgctxt "cli.hk.word_once"
+msgid "once"
+msgstr "une fois"
+
+msgctxt "prompt.hostkey_just_accepted"
+msgid "You just accepted this server's identity. ShellDrive did not send your saved password automatically."
+msgstr "Vous venez d'accepter l'identité de ce serveur. ShellDrive n'a pas envoyé automatiquement votre mot de passe enregistré."
+
+msgctxt "cli.prompt.password"
+msgid "Password for {user}@{host}: "
+msgstr "Mot de passe pour {user}@{host} : "
+
+msgctxt "cli.prompt.passphrase"
+msgid "Passphrase for the key {key}: "
+msgstr "Phrase secrète de la clé {key} : "
+
+msgctxt "cli.prompt.retry"
+msgid "The server did not accept the answer. Try again."
+msgstr "Le serveur n'a pas accepté la réponse. Réessayez."
+
+msgctxt "cli.prompt.server_says"
+msgid "The server {host} asks:"
+msgstr "Le serveur {host} demande :"
+
+msgctxt "cli.hk.mismatch_stored"
+msgid "Stored key: {type} {fingerprint} ({file}, line {line})"
+msgstr "Clé enregistrée : {type} {fingerprint} ({file}, ligne {line})"
+
+msgctxt "cli.hk.mismatch_offered"
+msgid "Key offered now: {type} {fingerprint}"
+msgstr "Clé proposée maintenant : {type} {fingerprint}"
+
+msgctxt "cli.hk.mismatch_hint"
+msgid "If the server's key really changed, remove the old key from that file and connect again."
+msgstr "Si la clé du serveur a vraiment changé, supprimez l'ancienne clé de ce fichier et reconnectez-vous."
+
+msgctxt "cli.error.auth_failed"
+msgid "Signing in to {host} failed. Check the user name, the password or the key."
+msgstr "L'authentification auprès de {host} a échoué. Vérifiez le nom d'utilisateur, le mot de passe ou la clé."
+
+msgctxt "cli.error.prompt_required"
+msgid "{host} needs a password or another answer, but ShellDrive was not allowed to ask. Run the command in a console or use --stdin."
+msgstr "{host} demande un mot de passe ou une autre réponse, mais ShellDrive n'était pas autorisé à poser la question. Exécutez la commande dans une console ou utilisez --stdin."
+
+msgctxt "cli.error.host_key_unknown"
+msgid "The identity of {host} is not known yet, and ShellDrive was not allowed to ask you to confirm it. Run the command in a console to check the key."
+msgstr "L'identité de {host} n'est pas encore connue et ShellDrive n'était pas autorisé à vous demander de la confirmer. Exécutez la commande dans une console pour vérifier la clé."
+
+msgctxt "cli.error.host_key_rejected"
+msgid "You did not trust the key of {host}. ShellDrive did not connect."
+msgstr "Vous n'avez pas fait confiance à la clé de {host}. ShellDrive ne s'est pas connecté."
+
+msgctxt "cli.error.host_key_mismatch"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection."
+msgstr "L'identité de {host} a changé. ShellDrive a interrompu la connexion."
+
+msgctxt "cli.error.host_key_type_unavailable"
+msgid "{host} did not offer the type of key ShellDrive knows for it. ShellDrive stopped the connection."
+msgstr "{host} n'a pas proposé le type de clé que ShellDrive connaît pour ce serveur. ShellDrive a interrompu la connexion."
+
+msgctxt "cli.error.host_key_revoked"
+msgid "The key of {host} has been revoked. ShellDrive stopped the connection."
+msgstr "La clé de {host} a été révoquée. ShellDrive a interrompu la connexion."
+
+msgctxt "cli.error.dns_failed"
+msgid "The server name {host} could not be found."
+msgstr "Le nom de serveur {host} est introuvable."
+
+msgctxt "cli.error.conn_refused"
+msgid "{host} refused the connection."
+msgstr "{host} a refusé la connexion."
+
+msgctxt "cli.error.net_unreachable"
+msgid "{host} cannot be reached from this network."
+msgstr "{host} est inaccessible depuis ce réseau."
+
+msgctxt "cli.error.connect_failed"
+msgid "The connection to {host} failed."
+msgstr "La connexion à {host} a échoué."
+
+msgctxt "cli.error.kex_failed"
+msgid "ShellDrive and {host} could not agree on a secure connection."
+msgstr "ShellDrive et {host} n'ont pas pu établir de connexion sécurisée."
+
+msgctxt "cli.error.legacy_refused"
+msgid "{host} only offers outdated encryption, which is turned off."
+msgstr "{host} ne propose qu'un chiffrement obsolète, qui est désactivé."
+
+msgctxt "cli.error.bad_passphrase"
+msgid "The passphrase of the key is wrong."
+msgstr "La phrase secrète de la clé est incorrecte."
+
+msgctxt "cli.error.key_format"
+msgid "The key file could not be read."
+msgstr "Le fichier de clé n'a pas pu être lu."
+
+msgctxt "cli.error.timeout"
+msgid "The operation took too long and was stopped."
+msgstr "L'opération a pris trop de temps et a été arrêtée."
+
+msgctxt "cli.error.cancelled"
+msgid "Cancelled."
+msgstr "Annulé."
+
+msgctxt "cli.error.agent_unavailable"
+msgid "The ShellDrive agent is not running and could not be started."
+msgstr "L'agent ShellDrive n'est pas en cours d'exécution et n'a pas pu être démarré."
+
+msgctxt "cli.error.agent_untrusted"
+msgid "Another program is using the name of the ShellDrive agent. ShellDrive did not connect to it."
+msgstr "Un autre programme utilise le nom de l'agent ShellDrive. ShellDrive ne s'y est pas connecté."
+
+msgctxt "cli.error.access_denied"
+msgid "Access denied."
+msgstr "Accès refusé."
+
+msgctxt "cli.error.proto_unsupported"
+msgid "This shelldrive version does not match the running ShellDrive agent. Run \"shelldrive agent stop\" and try again."
+msgstr "Cette version de shelldrive ne correspond pas à l'agent ShellDrive en cours d'exécution. Exécutez « shelldrive agent stop » et réessayez."
+
+msgctxt "cli.error.profile_not_found"
+msgid "There is no profile named {name}."
+msgstr "Aucun profil ne s'appelle {name}."
+
+msgctxt "cli.error.mount_not_found"
+msgid "No ShellDrive drive matches {name}."
+msgstr "Aucun lecteur ShellDrive ne correspond à {name}."
+
+msgctxt "cli.error.target_in_use"
+msgid "The drive letter {target} is already in use."
+msgstr "La lettre de lecteur {target} est déjà utilisée."
+
+msgctxt "cli.error.invalid_target"
+msgid "Invalid drive letter: {value}. Use a letter from D: to Z:."
+msgstr "Lettre de lecteur non valide : {value}. Utilisez une lettre de D: à Z:."
+
+msgctxt "cli.error.already_mounted"
+msgid "This profile is already mounted."
+msgstr "Ce profil est déjà monté."
+
+msgctxt "cli.error.backend_unavailable"
+msgid "Dokany is not installed, so ShellDrive cannot create the drive. Install Dokany 2.1 or later."
+msgstr "Dokany n'est pas installé, ShellDrive ne peut donc pas créer le lecteur. Installez Dokany 2.1 ou une version ultérieure."
+
+msgctxt "cli.error.generic"
+msgid "The operation failed ({code})."
+msgstr "L'opération a échoué ({code})."

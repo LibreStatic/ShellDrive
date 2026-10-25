@@ -4,5 +4,6 @@ foreach(_m sd_base sd_platform sd_crypto sd_ssh sd_sftp sd_vfs sd_dokan sd_ipc s
   add_subdirectory(unit/${_m})
 endforeach()
 
+add_subdirectory(apps)
 add_subdirectory(l10n)
 add_subdirectory(importcheck)

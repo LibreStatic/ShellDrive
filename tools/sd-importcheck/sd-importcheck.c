@@ -5,7 +5,9 @@
  *   sd-importcheck --list <image>          print every import as dll!function (to build floor lists)
  *
  * Floor list lines: "dll!function", "dll!#ordinal" or "dll!*" (any function of that DLL); '#' starts a
- * comment. DLL names compare case-insensitively, function names exactly. Every image must also be
+ * comment. DLL names compare case-insensitively, function names exactly. Imports by ordinal from
+ * ws2_32.dll and wsock32.dll (the SDK 7.1A import libraries bind the WinSock 1.1 set by ordinal) are
+ * mapped to their names first, so the floor list judges them by name. Every image must also be
  * /DYNAMICBASE and /NXCOMPAT, and DLLs must not have a TLS directory (implicit TLS breaks on XP when
  * loaded with LoadLibrary). Exit code 0 = clean, 1 = violations, 2 = usage or I/O error.
  * Build-time tool, never shipped. */
@@ -98,6 +100,50 @@ static int floor_allows(const char *dll_lower, const char *fn)
   return 0;
 }
 
+/* Frozen ordinals of the WinSock DLLs, exactly as the SDK 7.1A import libraries bind them (cross-checked
+   against the export tables of ws2_32.dll and wsock32.dll). The two DLLs differ at 10-12. Any other
+   ordinal is reported as "#n" and must be on the floor list as such. */
+typedef struct ord_name { unsigned short ord; const char *name; } ord_name;
+
+#define SD_WINSOCK11_COMMON \
+  { 1, "accept" }, { 2, "bind" }, { 3, "closesocket" }, { 4, "connect" }, { 5, "getpeername" }, \
+  { 6, "getsockname" }, { 7, "getsockopt" }, { 8, "htonl" }, { 9, "htons" }, { 13, "listen" }, \
+  { 14, "ntohl" }, { 15, "ntohs" }, { 16, "recv" }, { 17, "recvfrom" }, { 18, "select" }, { 19, "send" }, \
+  { 20, "sendto" }, { 21, "setsockopt" }, { 22, "shutdown" }, { 23, "socket" }, { 51, "gethostbyaddr" }, \
+  { 52, "gethostbyname" }, { 53, "getprotobyname" }, { 54, "getprotobynumber" }, { 55, "getservbyname" }, \
+  { 56, "getservbyport" }, { 57, "gethostname" }, { 101, "WSAAsyncSelect" }, { 102, "WSAAsyncGetHostByAddr" }, \
+  { 103, "WSAAsyncGetHostByName" }, { 104, "WSAAsyncGetProtoByNumber" }, { 105, "WSAAsyncGetProtoByName" }, \
+  { 106, "WSAAsyncGetServByPort" }, { 107, "WSAAsyncGetServByName" }, { 108, "WSACancelAsyncRequest" }, \
+  { 109, "WSASetBlockingHook" }, { 110, "WSAUnhookBlockingHook" }, { 111, "WSAGetLastError" }, \
+  { 112, "WSASetLastError" }, { 113, "WSACancelBlockingCall" }, { 114, "WSAIsBlocking" }, { 115, "WSAStartup" }, \
+  { 116, "WSACleanup" }, { 151, "__WSAFDIsSet" }, { 500, "WEP" }
+
+static const ord_name k_ws2_32_ords[] = {
+  SD_WINSOCK11_COMMON, { 10, "ioctlsocket" }, { 11, "inet_addr" }, { 12, "inet_ntoa" }, { 0, NULL }
+};
+
+static const ord_name k_wsock32_ords[] = {
+  SD_WINSOCK11_COMMON, { 10, "inet_addr" }, { 11, "inet_ntoa" }, { 12, "ioctlsocket" },
+  { 1100, "inet_network" }, { 1101, "getnetbyname" }, { 1102, "rcmd" }, { 1103, "rexec" }, { 1104, "rresvport" },
+  { 1105, "sethostname" }, { 1106, "dn_expand" }, { 1107, "WSARecvEx" }, { 1108, "s_perror" },
+  { 1109, "GetAddressByNameA" }, { 1110, "GetAddressByNameW" }, { 1111, "EnumProtocolsA" },
+  { 1112, "EnumProtocolsW" }, { 1113, "GetTypeByNameA" }, { 1114, "GetTypeByNameW" }, { 1115, "GetNameByTypeA" },
+  { 1116, "GetNameByTypeW" }, { 1117, "SetServiceA" }, { 1118, "SetServiceW" }, { 1119, "GetServiceA" },
+  { 1120, "GetServiceW" }, { 1130, "NPLoadNameSpaces" }, { 1140, "TransmitFile" }, { 1141, "AcceptEx" },
+  { 1142, "GetAcceptExSockaddrs" }, { 0, NULL }
+};
+
+/* Name of an import by ordinal, or NULL when the DLL/ordinal is not in a known table. */
+static const char *ordinal_name(const char *dll_lower, unsigned ord)
+{
+  const ord_name *t = NULL;
+  if (strcmp(dll_lower, "ws2_32.dll") == 0) t = k_ws2_32_ords;
+  else if (strcmp(dll_lower, "wsock32.dll") == 0) t = k_wsock32_ords;
+  for (; t && t->name; t++)
+    if (t->ord == ord) return t->name;
+  return NULL;
+}
+
 static void *rva_ptr(const image *im, DWORD rva, size_t need)
 {
   unsigned i;
@@ -183,7 +229,7 @@ static void violation(const image *im, const char *fmt, const char *a, const cha
 /* Walks a thunk array (INT). Calls back with function name or "#ordinal". */
 static void walk_thunks(const image *im, const char *dll, DWORD thunk_rva, int list, int delay)
 {
-  char dll_lower[256], fn[600];
+  char dll_lower[256], fn[600], ord_note[32];
   size_t step = im->pe64 ? 8 : 4;
   snprintf(dll_lower, sizeof(dll_lower), "%s", dll);
   lower(dll_lower);
@@ -193,19 +239,27 @@ static void walk_thunks(const image *im, const char *dll, DWORD thunk_rva, int l
     if (!t) { violation(im, "bad thunk table for %s%s", dll, ""); return; }
     v = im->pe64 ? *(const ULONGLONG *)t : *(const DWORD *)t;
     if (v == 0) break;
+    ord_note[0] = 0;
     if (im->pe64 ? (v & IMAGE_ORDINAL_FLAG64) != 0 : (v & IMAGE_ORDINAL_FLAG32) != 0) {
-      snprintf(fn, sizeof(fn), "#%u", (unsigned)(v & 0xFFFF));
+      unsigned ord = (unsigned)(v & 0xFFFF);
+      const char *name = ordinal_name(dll_lower, ord);
+      if (name) {
+        snprintf(fn, sizeof(fn), "%s", name);
+        snprintf(ord_note, sizeof(ord_note), " (by ordinal #%u)", ord);
+      } else {
+        snprintf(fn, sizeof(fn), "#%u", ord);
+      }
     } else {
       const char *name = rva_str(im, (DWORD)(v + 2));
       if (!name) { violation(im, "bad import name in %s%s", dll, ""); return; }
       snprintf(fn, sizeof(fn), "%s", name);
     }
     if (list) {
-      printf("%s!%s%s\n", dll_lower, fn, delay ? "   (delay-load)" : "");
+      printf("%s!%s%s%s\n", dll_lower, fn, ord_note, delay ? "   (delay-load)" : "");
     } else if (!floor_allows(dll_lower, fn)) {
       g_violations++;
-      fprintf(stderr, "sd-importcheck: %s: %s!%s%s is not on the OS floor list\n", im->path, dll_lower, fn,
-              delay ? " (delay-load)" : "");
+      fprintf(stderr, "sd-importcheck: %s: %s!%s%s%s is not on the OS floor list\n", im->path, dll_lower, fn,
+              ord_note, delay ? " (delay-load)" : "");
     }
   }
 }

@@ -31,8 +31,8 @@ typedef struct sd_sftp_req     sd_sftp_req;     /* in-flight request token for c
 
 /* ---- types (01 §10.3) ---- */
 
-enum { SD_SFTP_ATTR_SIZE = 0x1, SD_SFTP_ATTR_UIDGID = 0x2, SD_SFTP_ATTR_PERM = 0x4, SD_SFTP_ATTR_TIMES = 0x8,
-       SD_SFTP_ATTR_EXTENDED = 0x80000000u };
+enum { SD_SFTP_ATTR_SIZE = 0x1, SD_SFTP_ATTR_UIDGID = 0x2, SD_SFTP_ATTR_PERM = 0x4, SD_SFTP_ATTR_TIMES = 0x8 };
+#define SD_SFTP_ATTR_EXTENDED 0x80000000u   /* a macro: as an enum constant it would be a negative int */
 typedef struct sd_sftp_extattr { const char *type; uint32_t type_len; const uint8_t *data; uint32_t data_len; }
         sd_sftp_extattr;
 typedef struct sd_sftp_attrs {
@@ -159,12 +159,16 @@ sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out);   /*
 
 typedef void (*sd_sftp_event_cb)(void *ctx, const sd_sftp_event *ev);
 
+/* Fills *o with the documented defaults (incl. SD_SFTP_OPT_REFINE_ERRORS and struct_size). Start
+   from this and override fields; a NULL opt in session_create means exactly these defaults. */
+void sd_sftp_options_init(sd_sftp_options *o);
+
 /* ssh/ssh_cb/opt are deep-copied. */
 sd_err sd_sftp_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks *ssh_cb,
                               const sd_sftp_options *opt, sd_sftp_event_cb ev, void *ev_ctx,
                               sd_sftp_session **out);
 sd_err sd_sftp_session_start(sd_sftp_session *s);           /* async; progress via events */
-sd_err sd_sftp_session_reconnect_now(sd_sftp_session *s);
+sd_err sd_sftp_session_reconnect_now(sd_sftp_session *s);   /* M0: SD_E_UNSUPPORTED (no reconnect loop) */
 sd_err sd_sftp_session_close(sd_sftp_session *s);           /* async; in-flight -> SD_E_SHUTDOWN, then CLOSED */
 void   sd_sftp_session_destroy(sd_sftp_session *s);         /* after CLOSED; never on the I/O thread */
 sd_sftp_state sd_sftp_session_state(const sd_sftp_session *s);
@@ -194,7 +198,16 @@ typedef struct sd_sftp_completion {
 } sd_sftp_completion;
 typedef void (*sd_sftp_cb)(void *ctx, const sd_sftp_completion *c);
 
-/* Optional per-request options (may be NULL). timeout_ms = 0 -> default_timeout_ms. */
+/* Completion details (M0 implementation notes):
+   - read: err = SD_E_EOF (eof = 1, bytes = 0) when nothing could be read at off; otherwise SD_OK with
+     the contiguous prefix in bytes and eof = 1 if end of file was reached inside the range.
+   - readdir: end of listing is err = SD_OK, eof = 1, count = 0. dropped counts malformed names
+     (empty, '/', NUL); the server's "." and ".." are removed silently.
+   - write: on error, bytes is the contiguous acknowledged prefix.
+   - reopen: u.open.file is the same object (no extra reference).
+   Tokens from token_out are valid until the request's callback has started; cancelling later is
+   harmless (SD_E_INVALID_PARAM) as tokens are never reused.
+   Optional per-request options (may be NULL). timeout_ms = 0 -> default_timeout_ms. */
 typedef struct sd_sftp_reqopt { uint32_t flags; uint32_t timeout_ms; sd_sftp_req **token_out; } sd_sftp_reqopt;
 enum { SD_SFTP_REQ_WAIT_READY = 1u << 0, SD_SFTP_REQ_NO_REFINE = 1u << 1, SD_SFTP_REQ_CLASS_META = 1u << 2 };
 
@@ -207,7 +220,8 @@ enum { SD_SFTP_O_READ = 0x1, SD_SFTP_O_WRITE = 0x2, SD_SFTP_O_APPEND = 0x4,
 sd_err sd_sftp_open(sd_sftp_session *s, const char *path, uint32_t oflags, const sd_sftp_attrs *create_attrs,
                     sd_sftp_file *same_channel_as, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx);
 sd_err sd_sftp_opendir(sd_sftp_session *s, const char *path, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx);
-sd_err sd_sftp_close(sd_sftp_file *f, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx); /* releases the caller's ref */
+sd_err sd_sftp_close(sd_sftp_file *f, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx); /* releases the caller's ref,
+                                                                                              also when it fails */
 void   sd_sftp_file_addref(sd_sftp_file *f);
 void   sd_sftp_file_release(sd_sftp_file *f);   /* last ref on an open handle sends CLOSE in background */
 

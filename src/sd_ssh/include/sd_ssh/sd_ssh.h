@@ -151,7 +151,12 @@ sd_err sd_ssh_conn_fetch_hostkeys(sd_ssh_conn *c, uint32_t hop_index, const char
 /* Runs fn(arg) on the chain's I/O thread (used by sd_sftp to hop from caller threads). */
 sd_err sd_ssh_conn_post(sd_ssh_conn *c, void (*fn)(void *), void *arg);
 
-/* ---- channels (consumer callbacks run on the I/O thread) ---- */
+/* ---- channels (consumer callbacks run on the I/O thread) ----
+ * Lifetime: the channel pointer stays valid until on_closed() returns, or until on_open() returns
+ * with an error (a failed open never gets on_closed). Every opened channel gets exactly one
+ * on_closed(), also when the connection dies (SD_E_DISCONNECTED / SD_E_TIMEOUT / SD_E_SHUTDOWN).
+ * Opens may be requested from any thread; called on the I/O thread, on_open(err) can run before
+ * the open call returns (and *out is then NULL). Opens time out after connect_timeout_ms. */
 
 typedef struct sd_ssh_channel_sink {
   void (*on_open)(void *ctx, sd_err err);

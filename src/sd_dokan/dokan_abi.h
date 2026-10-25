@@ -6,9 +6,17 @@
  * Dokany header was copied. Names carry an SD_ prefix so they can never clash with dokan.h.
  * dokan2.dll is loaded dynamically from System32 (no import library, no delay load).
  *
- * [lab-verify] Before M0 sign-off, check every layout and constant below against a live
- * dokan2.dll 2.3.1 (e.g. mount the mirror test and dump offsets): 2.1.0 reordered the DOKAN_OPTION_*
- * values, which is why 2.0.x is rejected by the version gate (DokanVersion() >= 210).
+ * Verified 2026-10-25 against the installed dokan2.dll 2.3.1 (System32, x64): the export list
+ * (dumpbin /exports, 32 names), DokanVersion() == 231 (0xE7), and the DOKAN_OPTIONS offsets read by
+ * DokanCreateFileSystem (Version@0 checked against 200, SingleThread@2, Options@4 with DEBUG=1 /
+ * STDERR=2 / NETWORK=0x10, MountPoint@0x10, UNCName@0x18, AllocationUnitSize@0x24, SectorSize@0x28);
+ * the rest of the layout is exercised by the Dokany mount test (tests/unit/sd_dokan, label dokany).
+ * DokanDriverVersion() reports 400 with the 2.3.1 driver (its own numbering, not the release number),
+ * so the driver half of the version gate only distinguishes "no driver" (0); the library gate is the
+ * real ABI check (the installed dokan2.dll always matches the installed driver, 02 §6.3).
+ * The x64 sizes and offsets are pinned by the static asserts at the end of this file. 2.1.0
+ * reordered the DOKAN_OPTION_* values, which is why 2.0.x is rejected by the version gate
+ * (DokanVersion() >= 210).
  *
  * Private to sd_dokan. Thread safety: data declarations only. */
 #ifndef SD_DOKAN_ABI_H
@@ -71,7 +79,7 @@ typedef struct SD_DOKAN_FILE_INFO {
   PVOID             ProcessingContext;   /* reserved (2.x) */
   ULONG             ProcessId;
   UCHAR             IsDirectory;
-  UCHAR             DeletePending;
+  UCHAR             DeletePending; /* named DeleteOnClose before 2.3.0; same byte */
   UCHAR             PagingIo;
   UCHAR             SynchronousIo;
   UCHAR             Nocache;
@@ -199,5 +207,47 @@ typedef BOOL   (WINAPI *SD_PFN_DokanNotifyRename)(SD_DOKAN_HANDLE instance, LPCW
 typedef SD_DOKAN_MOUNT_POINT_INFO *(WINAPI *SD_PFN_DokanGetMountPointList)(BOOL unc_only, PULONG count);
 typedef VOID   (WINAPI *SD_PFN_DokanReleaseMountPointList)(SD_DOKAN_MOUNT_POINT_INFO *list);
 typedef SD_DOKAN_NTSTATUS (WINAPI *SD_PFN_DokanNtStatusFromWin32)(DWORD error);
+typedef BOOL   (WINAPI *SD_PFN_DokanUnmount)(WCHAR drive_letter);
+typedef BOOL   (WINAPI *SD_PFN_DokanNotifyXAttrUpdate)(SD_DOKAN_HANDLE instance, LPCWSTR path);
+typedef VOID   (WINAPI *SD_PFN_DokanMapKernelToUserCreateFileFlags)(ACCESS_MASK desired_access, ULONG file_attributes,
+                                                                    ULONG create_options, ULONG create_disposition,
+                                                                    ACCESS_MASK *out_desired_access,
+                                                                    DWORD *out_attributes_and_flags,
+                                                                    DWORD *out_creation_disposition);
+
+/* x64 layout pins (see the verification note at the top). The 32-bit layouts follow from the same
+   declarations and are checked when an x86 flavour exists. */
+#if defined(_WIN64)
+#include <stddef.h>
+#define SD_DOKAN_ABI_ASSERT(e) typedef char SD_DOKAN_ABI_CAT(sd_dokan_abi_assert_, __LINE__)[(e) ? 1 : -1]
+#define SD_DOKAN_ABI_CAT(a, b) SD_DOKAN_ABI_CAT_(a, b)
+#define SD_DOKAN_ABI_CAT_(a, b) a##b
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, SingleThread) == 0x02);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, Options) == 0x04);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, GlobalContext) == 0x08);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, MountPoint) == 0x10);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, UNCName) == 0x18);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, Timeout) == 0x20);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, AllocationUnitSize) == 0x24);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, SectorSize) == 0x28);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, VolumeSecurityDescriptorLength) == 0x2C);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPTIONS, VolumeSecurityDescriptor) == 0x30);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_OPTIONS) == 0x4030);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_FILE_INFO, DokanOptions) == 0x10);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_FILE_INFO, ProcessId) == 0x20);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_FILE_INFO, IsDirectory) == 0x24);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_FILE_INFO, WriteToEndOfFile) == 0x29);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_FILE_INFO) == 0x30);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_OPERATIONS) == 25 * sizeof(void *));
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPERATIONS, FindFiles) == 7 * sizeof(void *));
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPERATIONS, Unmounted) == 21 * sizeof(void *));
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_OPERATIONS, FindStreams) == 24 * sizeof(void *));
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_UNICODE_STRING) == 16);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_ACCESS_STATE, SecurityDescriptor) == 0x18);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_ACCESS_STATE) == 0x40);
+SD_DOKAN_ABI_ASSERT(offsetof(SD_DOKAN_IO_SECURITY_CONTEXT, DesiredAccess) == 0x40);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_MOUNT_POINT_INFO) == 4 + 2 * (MAX_PATH + 64 + 64) + 8);
+SD_DOKAN_ABI_ASSERT(sizeof(SD_DOKAN_FIND_STREAM_DATA) == 8 + 2 * (MAX_PATH + 36));
+#endif
 
 #endif /* SD_DOKAN_ABI_H */

@@ -94,4 +94,73 @@ DWORD  sd_ipc_client_pid(sd_ipc_client *client);
 /* Sends an event to every client subscribed to `topic`; `event_json` is a complete JSON object. */
 void   sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len);
 
+/* ==== additive API (M0 implementation, docs/dev/m0-notes.md) ====
+ *
+ * Protocol as implemented: the hello message is {"type":"hello","id":0,"proto":..,"min_proto":..,
+ * "client":..,"client_version":..,"lang":..,"caps":["prompts.console",..]} and its reply a normal
+ * response {"type":"res","id":0,"result":{"proto":1,"server_pid":N,"server_version":".."}}.
+ * Events are complete messages {"type":"evt","event":"<name>","data":{...}} (sd_ipc_build_event).
+ * The built-in methods "hello" and "subscribe" {topics:[..]} never reach the handler. The handler's
+ * `result` writer already has the result object open: write members (sd_jw_key + value) only. */
+
+typedef struct sd_ipc_server_cfg {
+  uint32_t struct_size;                 /* sizeof(sd_ipc_server_cfg) */
+  sd_ipc_handler handler;
+  void *ctx;
+  /* Called on the pipe thread after a client that completed hello disconnected. */
+  void (*on_disconnect)(void *ctx, uint64_t client_id);
+  uint32_t max_instances;               /* 0 = 32 (03 §2.2) */
+  uint32_t max_message;                 /* 0 = SD_IPC_MAX_MESSAGE */
+  uint32_t idle_timeout_ms;             /* non-subscribed clients; 0 = 10 min */
+  uint32_t max_per_sid;                 /* 0 = unlimited (agent); service: 4 (TM-R25) */
+  uint32_t max_requests_per_sec;        /* 0 = unlimited (agent); service non-admins: 10 */
+} sd_ipc_server_cfg;
+
+sd_err   sd_ipc_server_start_ex(sd_ipc_endpoint ep, const sd_ipc_server_cfg *cfg, sd_ipc_server **out);
+/* Stable id of a connected client (never reused within a server's lifetime). */
+uint64_t sd_ipc_client_id(sd_ipc_client *client);
+uint32_t sd_ipc_client_caps(sd_ipc_client *client);          /* SD_IPC_CAP_* from hello */
+const char *sd_ipc_client_lang(sd_ipc_client *client);       /* from hello; "en" if absent */
+/* Thread-safe: queues a complete event message for one client. SD_E_NOT_FOUND once it is gone. */
+sd_err   sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_json, size_t len);
+/* Number of clients that completed hello (thread-safe). */
+uint32_t sd_ipc_server_client_count(sd_ipc_server *s);
+
+/* Builds {"type":"evt","event":<event>,"data":<data_json>} into `out` (an initialized sd_wr). */
+sd_err   sd_ipc_build_event(const char *event, const char *data_json, size_t data_len, sd_wr *out);
+
+/* Error table (1.11, C25, 03 §6.2). Every sd_err maps to a CLI exit code (unit-tested for every
+   value); IPC codes that have no sd_err (usage, profile_not_found, target_in_use, ...) map by name.
+   Unknown codes map to 1. */
+int      sd_ipc_exit_code_for_err(sd_err e);
+int      sd_ipc_exit_code_for_code(const char *code);
+/* Fills err: code = `code` if non-NULL else sd_err_name(e); exit_code from the table above. */
+void     sd_ipc_error_set(sd_ipc_error *err, sd_err e, const char *code, const char *detail);
+
+/* Named kernel objects of the agent (03 §1.2, §2.1; TM-R26). */
+typedef enum sd_ipc_object {
+  SD_IPC_OBJ_AGENT_MUTEX,     /* Local\com.librestatic.shelldrive.agent.<SID> */
+  SD_IPC_OBJ_AGENT_READY,     /* Local\com.librestatic.shelldrive.agent.ready.<SID> (manual reset) */
+  SD_IPC_OBJ_AGENT_STOP       /* Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session> */
+} sd_ipc_object;
+sd_err   sd_ipc_object_name(sd_ipc_object obj, wchar_t *out, size_t cch);
+/* Creates the object with the owner/DACL of 03 §2.2 (stop event: §1.2 DACL). *existed is set when
+   it already existed with our owner (second instance). A foreign owner is squatting: the handle is
+   closed and SD_E_ACCESS_DENIED returned. */
+sd_err   sd_ipc_object_create(sd_ipc_object obj, HANDLE *out, int *existed);
+/* Opens an existing object with SYNCHRONIZE (events) after the same owner check. */
+sd_err   sd_ipc_object_open(sd_ipc_object obj, HANDLE *out);
+
+/* Agent auto-start: path of shelldrive-host.exe (default: next to the calling executable). The
+   override is process-wide, set before the first sd_ipc_connect (tests and portable layouts). */
+void     sd_ipc_set_agent_path(const wchar_t *path);
+
+/* TEST HOOK: appends ".<suffix>" to every pipe and named-object name of this process so tests can
+   run next to a real agent. NULL/empty clears it. Never used by shipping code paths. */
+void     sd_ipc_set_instance_suffix(const wchar_t *suffix);
+/* TEST HOOK: the owner SID string the client requires from the server (NULL = default rules). */
+void     sd_ipc_test_set_expected_owner(const wchar_t *sid_string);
+/* TEST HOOK: how often sd_ipc_connect retried because an instance broke before hello completed. */
+uint32_t sd_ipc_test_connect_retries(void);
+
 #endif /* SD_IPC_H */

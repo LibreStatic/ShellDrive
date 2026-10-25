@@ -2,9 +2,13 @@
 # sd_add_l10n_catalog() (cmake/SdL10n.cmake) from l10n/<domain>/<lang>.po.
 
 sd_add_module(sd_l10n
+  SOURCES
+    l10n.c
   DEPS
     sd_base
     sd_platform
+  SYSTEM_LIBS
+    advapi32
   HEADERS
     include/sd_l10n/sd_l10n.h
     include/sd_l10n/sd_l10n_catalog.h)

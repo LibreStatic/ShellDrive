@@ -29,3 +29,432 @@ msgid "{count} drive mounted."
 msgid_plural "{count} drives mounted."
 msgstr[0] ""
 msgstr[1] ""
+
+#. Heading of the command list in --help.
+msgctxt "cli.help.commands"
+msgid "Commands:"
+msgstr ""
+
+#. Heading of the option list of one command.
+msgctxt "cli.help.options"
+msgid "Options:"
+msgstr ""
+
+#. Heading of the options that every command accepts.
+msgctxt "cli.help.global_options"
+msgid "Global options:"
+msgstr ""
+
+#. Summary of the mount command.
+msgctxt "cli.help.mount"
+msgid "Mount a profile or a server as a drive."
+msgstr ""
+
+#. Summary of the unmount command. --all is literal.
+msgctxt "cli.help.unmount"
+msgid "Unmount a drive, or every drive with --all."
+msgstr ""
+
+#. Summary of the list command.
+msgctxt "cli.help.list"
+msgid "List the drives mounted in this session."
+msgstr ""
+
+#. Summary of "agent stop".
+msgctxt "cli.help.agent_stop"
+msgid "Stop the ShellDrive agent of this session and unmount its drives."
+msgstr ""
+
+#. Summary of the version command.
+msgctxt "cli.help.version"
+msgid "Show the version."
+msgstr ""
+
+#. Summary of the help command.
+msgctxt "cli.help.help"
+msgid "Show help for a command."
+msgstr ""
+
+#. Last line of --help. <command> is literal syntax and may be translated.
+msgctxt "cli.help.more"
+msgid "Run \"shelldrive help <command>\" to see the options of a command."
+msgstr ""
+
+#. Help for --host [user@]host[:port].
+msgctxt "cli.help.opt_host"
+msgid "Server to connect to, with an optional user name and port."
+msgstr ""
+
+#. Help for --letter X:.
+msgctxt "cli.help.opt_letter"
+msgid "Drive letter to use, for example Z:. By default the first free letter from Z: down."
+msgstr ""
+
+#. Help for --identity FILE.
+msgctxt "cli.help.opt_identity"
+msgid "Private key file to sign in with."
+msgstr ""
+
+#. Help for --remote-path PATH.
+msgctxt "cli.help.opt_remote_path"
+msgid "Folder on the server to show in the drive. By default your home folder."
+msgstr ""
+
+#. Help for --read-only.
+msgctxt "cli.help.opt_read_only"
+msgid "Mount the drive read-only."
+msgstr ""
+
+#. Help for --prompt. auto, console and none are literal values.
+msgctxt "cli.help.opt_prompt"
+msgid "How to ask for passwords and confirmations: auto, console or none."
+msgstr ""
+
+#. Help for --stdin.
+msgctxt "cli.help.opt_stdin"
+msgid "Read the answers to questions from standard input, one per line."
+msgstr ""
+
+#. Help for --no-wait.
+msgctxt "cli.help.opt_no_wait"
+msgid "Return as soon as the mount has started."
+msgstr ""
+
+#. Help for --all.
+msgctxt "cli.help.opt_all"
+msgid "Unmount every drive of this session."
+msgstr ""
+
+#. Help for --json.
+msgctxt "cli.help.opt_json"
+msgid "Print the result as JSON."
+msgstr ""
+
+#. Help for --quiet.
+msgctxt "cli.help.opt_quiet"
+msgid "Print only errors."
+msgstr ""
+
+#. Help for --lang. The codes are literal.
+msgctxt "cli.help.opt_lang"
+msgid "Language of the messages: en, es, fr, pt, it or de."
+msgstr ""
+
+msgctxt "cli.err.unknown_option"
+msgid "Unknown option: {option}."
+msgstr ""
+
+msgctxt "cli.err.missing_value"
+msgid "The option {option} needs a value."
+msgstr ""
+
+msgctxt "cli.err.missing_argument"
+msgid "The command \"{command}\" needs more arguments."
+msgstr ""
+
+msgctxt "cli.err.extra_argument"
+msgid "Unexpected argument: {argument}."
+msgstr ""
+
+msgctxt "cli.err.bad_value"
+msgid "Invalid value for {option}: {value}."
+msgstr ""
+
+#. {option} and {other} are options or arguments as typed.
+msgctxt "cli.err.conflict"
+msgid "{option} cannot be used together with {other}."
+msgstr ""
+
+#. [user@]host[:port] is syntax; the words may be translated.
+msgctxt "cli.err.host_spec"
+msgid "Invalid server: {value}. Use [user@]host[:port]."
+msgstr ""
+
+msgctxt "cli.err.see_help"
+msgid "Run \"shelldrive help {command}\" for help."
+msgstr ""
+
+#. Progress line while a mount connects.
+msgctxt "cli.mount.connecting"
+msgid "Connecting to {host}..."
+msgstr ""
+
+#. {name}: profile or server; {target}: drive such as Z:.
+msgctxt "cli.mount.done"
+msgid "Mounted {name} on {target}."
+msgstr ""
+
+#. Printed by mount --no-wait.
+msgctxt "cli.mount.started"
+msgid "Mounting {name} on {target}."
+msgstr ""
+
+msgctxt "cli.unmount.done"
+msgid "Unmounted {target}."
+msgstr ""
+
+msgctxt "cli.list.empty"
+msgid "No drives are mounted."
+msgstr ""
+
+#. Column heading in shelldrive list (keep it short).
+msgctxt "cli.list.col_drive"
+msgid "Drive"
+msgstr ""
+
+#. Column heading in shelldrive list.
+msgctxt "cli.list.col_state"
+msgid "State"
+msgstr ""
+
+#. Column heading in shelldrive list.
+msgctxt "cli.list.col_server"
+msgid "Server"
+msgstr ""
+
+#. Column heading in shelldrive list.
+msgctxt "cli.list.col_profile"
+msgid "Profile"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.connecting"
+msgid "connecting"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.authenticating"
+msgid "signing in"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.mounted"
+msgid "mounted"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.offline"
+msgid "offline"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.auth_required"
+msgid "sign-in required"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.failed"
+msgid "failed"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.unmounting"
+msgid "unmounting"
+msgstr ""
+
+#. Mount state shown in shelldrive list.
+msgctxt "cli.state.unmounted"
+msgid "unmounted"
+msgstr ""
+
+msgctxt "cli.agent.stopped"
+msgid "The ShellDrive agent stopped."
+msgstr ""
+
+msgctxt "cli.agent.not_running"
+msgid "The ShellDrive agent is not running."
+msgstr ""
+
+#. First line of the host key question (03 5.3).
+msgctxt "cli.hk.unknown"
+msgid "The authenticity of host '{host}' (port {port}) can't be established."
+msgstr ""
+
+#. {type} is the key type, e.g. ssh-ed25519; {fingerprint} is SHA256:...
+msgctxt "cli.hk.fingerprint"
+msgid "{type} key fingerprint: {fingerprint}"
+msgstr ""
+
+msgctxt "cli.hk.check_hint"
+msgid "Compare the fingerprint with the one the server's administrator gave you."
+msgstr ""
+
+#. Host key question; the letters in brackets must match cli.hk.letter_yes and cli.hk.letter_once; the default (capital) is no.
+msgctxt "cli.hostkey_default_no"
+msgid "Trust this key? [y]es, [o]nce, [N]o: "
+msgstr ""
+
+#. One letter typed to trust and save the key; the bracketed letter of 'yes' in cli.hostkey_default_no.
+msgctxt "cli.hk.letter_yes"
+msgid "y"
+msgstr ""
+
+#. One letter typed to trust the key for this connection only; the bracketed letter of 'once' in cli.hostkey_default_no.
+msgctxt "cli.hk.letter_once"
+msgid "o"
+msgstr ""
+
+#. Full word accepted instead of cli.hk.letter_yes.
+msgctxt "cli.hk.word_yes"
+msgid "yes"
+msgstr ""
+
+#. Full word accepted instead of cli.hk.letter_once.
+msgctxt "cli.hk.word_once"
+msgid "once"
+msgstr ""
+
+#. 03 9.6 (ui, cli).
+msgctxt "prompt.hostkey_just_accepted"
+msgid "You just accepted this server's identity. ShellDrive did not send your saved password automatically."
+msgstr ""
+
+#. Password prompt; input is hidden.
+msgctxt "cli.prompt.password"
+msgid "Password for {user}@{host}: "
+msgstr ""
+
+#. {key} is the key file path; input is hidden.
+msgctxt "cli.prompt.passphrase"
+msgid "Passphrase for the key {key}: "
+msgstr ""
+
+msgctxt "cli.prompt.retry"
+msgid "The server did not accept the answer. Try again."
+msgstr ""
+
+#. Shown above questions that come from the server itself (keyboard-interactive).
+msgctxt "cli.prompt.server_says"
+msgid "The server {host} asks:"
+msgstr ""
+
+#. {file} is the known_hosts path, {line} its line number.
+msgctxt "cli.hk.mismatch_stored"
+msgid "Stored key: {type} {fingerprint} ({file}, line {line})"
+msgstr ""
+
+msgctxt "cli.hk.mismatch_offered"
+msgid "Key offered now: {type} {fingerprint}"
+msgstr ""
+
+msgctxt "cli.hk.mismatch_hint"
+msgid "If the server's key really changed, remove the old key from that file and connect again."
+msgstr ""
+
+msgctxt "cli.error.auth_failed"
+msgid "Signing in to {host} failed. Check the user name, the password or the key."
+msgstr ""
+
+#. --stdin is literal.
+msgctxt "cli.error.prompt_required"
+msgid "{host} needs a password or another answer, but ShellDrive was not allowed to ask. Run the command in a console or use --stdin."
+msgstr ""
+
+msgctxt "cli.error.host_key_unknown"
+msgid "The identity of {host} is not known yet, and ShellDrive was not allowed to ask you to confirm it. Run the command in a console to check the key."
+msgstr ""
+
+msgctxt "cli.error.host_key_rejected"
+msgid "You did not trust the key of {host}. ShellDrive did not connect."
+msgstr ""
+
+#. 03 5.4: a changed host key is a hard stop.
+msgctxt "cli.error.host_key_mismatch"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection."
+msgstr ""
+
+msgctxt "cli.error.host_key_type_unavailable"
+msgid "{host} did not offer the type of key ShellDrive knows for it. ShellDrive stopped the connection."
+msgstr ""
+
+msgctxt "cli.error.host_key_revoked"
+msgid "The key of {host} has been revoked. ShellDrive stopped the connection."
+msgstr ""
+
+msgctxt "cli.error.dns_failed"
+msgid "The server name {host} could not be found."
+msgstr ""
+
+msgctxt "cli.error.conn_refused"
+msgid "{host} refused the connection."
+msgstr ""
+
+msgctxt "cli.error.net_unreachable"
+msgid "{host} cannot be reached from this network."
+msgstr ""
+
+msgctxt "cli.error.connect_failed"
+msgid "The connection to {host} failed."
+msgstr ""
+
+msgctxt "cli.error.kex_failed"
+msgid "ShellDrive and {host} could not agree on a secure connection."
+msgstr ""
+
+msgctxt "cli.error.legacy_refused"
+msgid "{host} only offers outdated encryption, which is turned off."
+msgstr ""
+
+msgctxt "cli.error.bad_passphrase"
+msgid "The passphrase of the key is wrong."
+msgstr ""
+
+msgctxt "cli.error.key_format"
+msgid "The key file could not be read."
+msgstr ""
+
+msgctxt "cli.error.timeout"
+msgid "The operation took too long and was stopped."
+msgstr ""
+
+msgctxt "cli.error.cancelled"
+msgid "Cancelled."
+msgstr ""
+
+msgctxt "cli.error.agent_unavailable"
+msgid "The ShellDrive agent is not running and could not be started."
+msgstr ""
+
+#. Another user's or program's object took the agent's name (pipe squatting).
+msgctxt "cli.error.agent_untrusted"
+msgid "Another program is using the name of the ShellDrive agent. ShellDrive did not connect to it."
+msgstr ""
+
+msgctxt "cli.error.access_denied"
+msgid "Access denied."
+msgstr ""
+
+#. "shelldrive agent stop" is a literal command.
+msgctxt "cli.error.proto_unsupported"
+msgid "This shelldrive version does not match the running ShellDrive agent. Run \"shelldrive agent stop\" and try again."
+msgstr ""
+
+msgctxt "cli.error.profile_not_found"
+msgid "There is no profile named {name}."
+msgstr ""
+
+msgctxt "cli.error.mount_not_found"
+msgid "No ShellDrive drive matches {name}."
+msgstr ""
+
+msgctxt "cli.error.target_in_use"
+msgid "The drive letter {target} is already in use."
+msgstr ""
+
+msgctxt "cli.error.invalid_target"
+msgid "Invalid drive letter: {value}. Use a letter from D: to Z:."
+msgstr ""
+
+msgctxt "cli.error.already_mounted"
+msgid "This profile is already mounted."
+msgstr ""
+
+#. Dokany is a product name.
+msgctxt "cli.error.backend_unavailable"
+msgid "Dokany is not installed, so ShellDrive cannot create the drive. Install Dokany 2.1 or later."
+msgstr ""
+
+#. {code} is an English error identifier.
+msgctxt "cli.error.generic"
+msgid "The operation failed ({code})."
+msgstr ""

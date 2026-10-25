@@ -41,8 +41,11 @@ typedef struct sd_dokan_probe_info {
   const char *deny_reason;                /* SD_DOKAN_DENIED: points into the deny list */
 } sd_dokan_probe_info;
 
-/* deny may be NULL. Loads (and keeps loaded) System32\dokan2.dll on success. */
+/* deny may be NULL. Loads (and keeps loaded) System32\dokan2.dll on success and calls DokanInit once.
+   Never loads anything before Windows 7 SP1 (SD_DOKAN_OS_UNSUPPORTED, e.g. when run on XP). */
 sd_dokan_avail sd_dokan_probe(const sd_dokan_deny *deny, sd_dokan_probe_info *info);
+/* DokanShutdown at process exit (host control thread, after every mount_stop). */
+void sd_dokan_shutdown(void);
 
 typedef struct sd_dokan_mount_cfg {
   uint32_t struct_size;

@@ -7,7 +7,12 @@
  * Ownership: sd_json_parse returns a root that owns every node (one arena per document); free it
  * with sd_json_free. Pointers returned by accessors live as long as the root.
  * A writer emits UTF-8 into an sd_wr; it validates nesting and escapes strings.
- * Thread safety: none internally; one document or writer per thread at a time. */
+ * Thread safety: none internally; one document or writer per thread at a time.
+ *
+ * Implementation notes (src/sd_base/json.c): strings are decoded NUL-terminated copies; numbers keep
+ * their source text and sd_json_int64 succeeds only for integers without fraction/exponent that fit
+ * in int64. Object keys must not contain NUL. The writer nests at most 31 containers; misuse sets
+ * the sticky `err` flag that sd_jw_finish reports as SD_E_INVALID_PARAM. */
 #ifndef SD_JSON_H
 #define SD_JSON_H
 
@@ -33,6 +38,11 @@ const char   *sd_json_key_at(const sd_json *obj, size_t i);
 const char   *sd_json_str(const sd_json *v, size_t *len);             /* NULL if not a string */
 int           sd_json_int64(const sd_json *v, int64_t *out);          /* 1 if an integral number */
 int           sd_json_bool(const sd_json *v, int *out);               /* 1 if a boolean */
+/* Convenience lookups on an object (additive). get_str returns NULL if the member is absent, not a
+   string, or contains an embedded NUL. */
+const char   *sd_json_get_str(const sd_json *obj, const char *key);
+int           sd_json_get_int64(const sd_json *obj, const char *key, int64_t *out);
+int           sd_json_get_bool(const sd_json *obj, const char *key, int *out);
 
 typedef struct sd_json_writer { sd_wr *out; uint32_t depth; uint32_t state[32]; int err; } sd_json_writer;
 void sd_jw_init(sd_json_writer *jw, sd_wr *out);
@@ -45,6 +55,11 @@ void sd_jw_str(sd_json_writer *jw, const char *utf8, size_t len);
 void sd_jw_int(sd_json_writer *jw, int64_t v);
 void sd_jw_bool(sd_json_writer *jw, int v);
 void sd_jw_null(sd_json_writer *jw);
+/* Additive helpers: NUL-terminated string (NULL writes null); a deep copy of a parsed value; an
+   already-encoded JSON value (validated by parsing; invalid input sets the error flag). */
+void sd_jw_cstr(sd_json_writer *jw, const char *utf8);
+void sd_jw_value(sd_json_writer *jw, const sd_json *v);
+void sd_jw_raw(sd_json_writer *jw, const char *json, size_t len);
 sd_err sd_jw_finish(sd_json_writer *jw);                               /* SD_OK if complete and valid */
 
 #endif /* SD_JSON_H */

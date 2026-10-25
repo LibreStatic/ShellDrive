@@ -1,0 +1,84 @@
+#include "sd_test.h"
+
+SD_TEST_DECL(sha256_kat);
+SD_TEST_DECL(sha512_sha384_kat);
+SD_TEST_DECL(hash_incremental_matches_oneshot);
+SD_TEST_DECL(hmac_rfc4231);
+SD_TEST_DECL(pbkdf2_rfc7914);
+SD_TEST_DECL(wycheproof_hmac_sha256);
+SD_TEST_DECL(wycheproof_hmac_sha512);
+SD_TEST_DECL(x25519_rfc7748);
+SD_TEST_DECL(x25519_rfc7748_dh);
+SD_TEST_DECL(wycheproof_x25519);
+SD_TEST_DECL(x25519_independent_reference);
+SD_TEST_DECL(ed25519_rfc8032);
+SD_TEST_DECL(ed25519_sign_verify_random);
+SD_TEST_DECL(ed25519_rejects_noncanonical_s);
+SD_TEST_DECL(wycheproof_ed25519);
+SD_TEST_DECL(aes_sbox_circuit);
+SD_TEST_DECL(aes_fips197);
+SD_TEST_DECL(aes_ctr_sp800_38a);
+SD_TEST_DECL(aes_cbc_sp800_38a);
+SD_TEST_DECL(aes_gcm_spec_vectors);
+SD_TEST_DECL(wycheproof_aes_gcm_own);
+SD_TEST_DECL(wycheproof_aes_gcm_dispatch);
+SD_TEST_DECL(chacha20_rfc8439_block);
+SD_TEST_DECL(poly1305_rfc8439);
+SD_TEST_DECL(wycheproof_chacha20_poly1305);
+SD_TEST_DECL(pktcipher_chacha_openssh_construction);
+SD_TEST_DECL(pktcipher_aes_gcm);
+SD_TEST_DECL(pktcipher_aes_ctr_streams);
+SD_TEST_DECL(pktcipher_own_backend);
+SD_TEST_DECL(bcrypt_pbkdf_vectors);
+SD_TEST_DECL(openssh_keyfile_bcrypt_aes256ctr);
+SD_TEST_DECL(cng_diff_sha2_hmac);
+SD_TEST_DECL(cng_diff_aes_ctr);
+SD_TEST_DECL(cng_diff_aes_gcm);
+SD_TEST_DECL(crypto_init_and_random);
+SD_TEST_DECL(ct_helpers);
+SD_TEST_DECL(bench_throughput);
+
+static const sd_test_case k_tests[] = {
+  SD_TEST_ENTRY(crypto_init_and_random),
+  SD_TEST_ENTRY(ct_helpers),
+  SD_TEST_ENTRY(sha256_kat),
+  SD_TEST_ENTRY(sha512_sha384_kat),
+  SD_TEST_ENTRY(hash_incremental_matches_oneshot),
+  SD_TEST_ENTRY(hmac_rfc4231),
+  SD_TEST_ENTRY(pbkdf2_rfc7914),
+  SD_TEST_ENTRY(wycheproof_hmac_sha256),
+  SD_TEST_ENTRY(wycheproof_hmac_sha512),
+  SD_TEST_ENTRY(x25519_rfc7748),
+  SD_TEST_ENTRY(x25519_rfc7748_dh),
+  SD_TEST_ENTRY(wycheproof_x25519),
+  SD_TEST_ENTRY(x25519_independent_reference),
+  SD_TEST_ENTRY(ed25519_rfc8032),
+  SD_TEST_ENTRY(ed25519_sign_verify_random),
+  SD_TEST_ENTRY(ed25519_rejects_noncanonical_s),
+  SD_TEST_ENTRY(wycheproof_ed25519),
+  SD_TEST_ENTRY(aes_sbox_circuit),
+  SD_TEST_ENTRY(aes_fips197),
+  SD_TEST_ENTRY(aes_ctr_sp800_38a),
+  SD_TEST_ENTRY(aes_cbc_sp800_38a),
+  SD_TEST_ENTRY(aes_gcm_spec_vectors),
+  SD_TEST_ENTRY(wycheproof_aes_gcm_own),
+  SD_TEST_ENTRY(wycheproof_aes_gcm_dispatch),
+  SD_TEST_ENTRY(chacha20_rfc8439_block),
+  SD_TEST_ENTRY(poly1305_rfc8439),
+  SD_TEST_ENTRY(wycheproof_chacha20_poly1305),
+  SD_TEST_ENTRY(pktcipher_chacha_openssh_construction),
+  SD_TEST_ENTRY(pktcipher_aes_gcm),
+  SD_TEST_ENTRY(pktcipher_aes_ctr_streams),
+  SD_TEST_ENTRY(pktcipher_own_backend),
+  SD_TEST_ENTRY(bcrypt_pbkdf_vectors),
+  SD_TEST_ENTRY(openssh_keyfile_bcrypt_aes256ctr),
+  SD_TEST_ENTRY(cng_diff_sha2_hmac),
+  SD_TEST_ENTRY(cng_diff_aes_ctr),
+  SD_TEST_ENTRY(cng_diff_aes_gcm),
+  SD_TEST_ENTRY(bench_throughput),
+};
+
+int main(int argc, char **argv)
+{
+  return sd_test_main(k_tests, SD_COUNTOF(k_tests), argc, argv);
+}

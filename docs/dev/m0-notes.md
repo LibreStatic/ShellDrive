@@ -38,6 +38,12 @@ pattern; the harness is `tests/harness/sd_test.h`).
   `sd_utf.h`, `sd_crypto.h`, `sd_vfs.h`, `sd_ipc.h`, `sd_l10n.h`, ...).
 - The import audit tool is `tools/sd-importcheck` (04's name; the M0 task called it "import-audit").
   It runs post-build on every `sd_add_app` target and again under CTest.
+- The SDK 7.1A `ws2_32.lib` (x64-xp) imports the WinSock 1.1 set by ordinal (`closesocket` #3,
+  `connect` #4, `recv` #16, `send` #19, `setsockopt` #21, `WSAGetLastError` #111, `WSAStartup` #115).
+  `sd-importcheck` maps the frozen ws2_32/wsock32 ordinals (taken from the 7.1A import libraries,
+  cross-checked against the DLL export tables; the two DLLs differ at 10-12) to names, so the floor
+  list judges them by name; unknown ordinals stay `dll!#n` and need an explicit floor entry. CTest
+  `importcheck.maps_winsock_ordinals` / `importcheck.lists_winsock_names` cover it.
 - `tests/os-imports/*.txt` are **bootstrap** floor lists: `xp-sp2-x64.txt` is hand-curated from the
   documented minimum versions (conservative, per function); `win10-1507-x64.txt` allows whole system
   DLLs (still catches a dynamic CRT or foreign DLLs). Both must be replaced by the lab captures of

@@ -56,6 +56,11 @@ enum {
   SD_VFS_FILE_DELETE_ON_CLOSE = 0x00001000, SD_VFS_FILE_OPEN_REPARSE_POINT = 0x00200000
 };
 
+/* Numeric fields: 0 = the 02 default (TTLs 30 s / 30 s / 10 s, umask 022, request_timeout 25 s,
+   list caps of 02 §1.4). open_revalidate_ms: 0 = default 1 s, -1 = never, n > 0 = n ms. BOOLs are
+   taken literally (the host sets hide_dotfiles, map_readonly, allow_system, fsync_on_flush, which
+   default to on in the profile). M0 rejects with SD_VFS_E_UNSUPPORTED: write_mode = behind,
+   global_mount, disk_cache_mb, mark_of_the_web, remote_codepage. */
 typedef struct sd_vfs_options {
   UINT32 struct_size;                 /* sizeof(sd_vfs_options) */
   const char *remote_root;            /* bytes; NULL = home */
@@ -134,6 +139,8 @@ sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *c
                             UINT32 access, UINT32 share,
                             UINT32 disposition, UINT32 create_options, UINT32 win_attrs,
                             sd_vfs_handle **h, BOOL *existed, BOOL *is_dir);
+/* Last handle cleanup: releases share access, applies deferred times and performs a pending delete
+   (02 §2.4); returns the delete's status (Dokany ignores it, the vfs raises SD_VFS_EV_DELETE_FAILED). */
 sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending);
 void          sd_vfs_close(sd_vfs_handle *h);
 
@@ -167,6 +174,8 @@ sd_vfs_status sd_vfs_copy_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR *f
 typedef struct sd_vfs_statfs { UINT64 total, free, avail; BOOL known; } sd_vfs_statfs;
 sd_vfs_status sd_vfs_statfs_get(sd_vfs *v, sd_vfs_statfs *out);
 
+/* Self-relative SD (02 §3.3). Returns SD_VFS_OK with *needed > len when the buffer is too small
+   (the backend reports STATUS_BUFFER_OVERFLOW). */
 sd_vfs_status sd_vfs_get_sd(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd,
                             ULONG len, ULONG *needed);
 sd_vfs_status sd_vfs_set_sd(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd);
@@ -180,5 +189,15 @@ typedef struct sd_vfs_stats { UINT64 ops[32], rtts[32], cache_hits, cache_misses
                               UINT32 nconn; sd_vfs_conn_stats conn[SD_VFS_MAX_CONN]; } sd_vfs_stats;
 void sd_vfs_get_stats(sd_vfs *v, sd_vfs_stats *out);
 void sd_vfs_refresh(sd_vfs *v, const WCHAR *subtree);
+
+/* Static volume facts for the backend (GetVolumeInformation, requestor check). Pointers stay valid
+   until sd_vfs_unmount; `online` is a snapshot (append offline_suffix to the label when FALSE). */
+typedef struct sd_vfs_volume {
+  const WCHAR *label, *offline_suffix, *fs_name;   /* fs_name defaults to L"NTFS" (D23) */
+  BOOL read_only, case_sensitive_view, allow_system, online;
+  PSID owner_sid;                                  /* mount owner (copy; process user if not given) */
+  UINT32 serial;
+} sd_vfs_volume;
+void sd_vfs_get_volume(sd_vfs *v, sd_vfs_volume *out);
 
 #endif /* SD_VFS_H */
