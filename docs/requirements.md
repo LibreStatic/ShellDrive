@@ -152,7 +152,7 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
 - Code signing via SignPath Foundation, else Certum OSS, obtained before a public 1.0.
 
 ## Project
-- Private GitHub repository `github.com/LibreStatic/ShellDrive` for now (D45), GitHub Actions CI building every flavour listed under "Build flavours".
+- Public GitHub repository `github.com/LibreStatic/ShellDrive` (D45, D46), GitHub Actions CI building every flavour listed under "Build flavours"; `tools/ci-local.ps1` runs the same matrix plus the interop and Dokany tests locally.
 - Localization rules: see `AGENTS.md` (en/es/fr/pt/it/de). Plural messages support the full CLDR plural
   categories (zero/one/two/few/many/other) for every locale.
 
