@@ -48,7 +48,7 @@ Where this file differs from the review's recommendation, this file wins.
 | D41 | **Shell-active files (`.library-ms`, `.url`, `.scf`, `.lnk`, remote-icon `desktop.ini`, …) are gated by profile trust**: `security.trust = untrusted` (the default) blocks them for every process; `trusted` allows them. `shell_active_files` can override per profile. | |
 | D42 | **Stable releases use two offline signing sessions** (payload tables first, then the update manifest over the final EXEs). | |
 | D43 | **Keep 03's additions** (`service repair-data`, hidden `--watch-elevated-view`, service-pipe `attention` topic and `reserved_letters`, `security.trust`) **except `--include-secret-stacks`, which is removed**: crash dumps never include secret-bearing stacks. | |
-| D44 | **`mark_of_the_web` defaults to `off`, independent of `security.trust`** (pending user confirmation; set during the threat-model reconciliation). | Tying it to the `untrusted` default (D41) would tag every file on a Dokany drive with Mark-of-the-Web. |
+| D44 | **`mark_of_the_web` defaults to `off`, independent of `security.trust`** (confirmed by the user 2026-10-24). | Tying it to the `untrusted` default (D41) would tag every file on a Dokany drive with Mark-of-the-Web. |
 
 ## Resulting build flavours
 
