@@ -290,6 +290,8 @@ typedef struct mopts {
   uint32_t methods;
   int identities_only;
   sd_hostkey_decision hk_decision;
+  const char *key_override;    /* UTF-8 path: SD_IT_KEY replacement (auth tests) */
+  const char *cert_override;   /* UTF-8 path: SD_IT_CERT replacement */
 } mopts;
 
 static void fill_hop(sd_ssh_hop *h, const wchar_t *host, uint16_t port, const mopts *o)
@@ -348,7 +350,16 @@ static sd_err mx_connect(mrun *r, const mopts *o, sd_ssh_conn **out)
 
   id.kind = SD_ID_FILE;
   id.path = g.wkey;
-  if (g.cert[0]) id.cert_path = g.wcert;
+  if (o->key_override) {
+    static wchar_t wov[MAX_PATH];
+    to_wide(o->key_override, wov, MAX_PATH);
+    id.path = wov;
+  }
+  if (o->cert_override) {
+    static wchar_t wcov[MAX_PATH];
+    to_wide(o->cert_override, wcov, MAX_PATH);
+    id.cert_path = wcov;
+  } else if (g.cert[0]) id.cert_path = g.wcert;
   for (i = 0; i < nhops; i++) {
     hops[i].auth.identities = &id;
     hops[i].auth.identity_count = 1;
@@ -682,6 +693,98 @@ SD_TEST(matrix_hostkeys_update)
   run_fixture("rotate ab");   /* leave the fixture as this test found it */
 }
 
+/* Every private-key format the fixtures provide authenticates against the row's server: OpenSSH
+   v1 (plain and encrypted), PPK v3/v2 unencrypted, and the puttygen-written encrypted PPKs
+   (v3 Argon2id, v2 AES) with the fixture passphrase. */
+SD_TEST(matrix_auth_key_formats)
+{
+  static const struct { const char *env; int enc; } cases[] = {
+    { "SD_IT_KEY_ED25519", 0 },
+    { "SD_IT_KEY_ECDSA", 0 },
+    { "SD_IT_KEY_RSA", 0 },
+    { "SD_IT_KEY_ED25519_ENC", 1 },
+    { "SD_IT_KEY_ED25519_PPK3", 0 },
+    { "SD_IT_KEY_RSA_PPK3", 0 },
+    { "SD_IT_KEY_ECDSA_PPK3", 0 },
+    { "SD_IT_KEY_ED25519_PPK2", 0 },
+    { "SD_IT_KEY_ED25519_PPK3_ARGON2ID", 1 },
+    { "SD_IT_KEY_RSA_PPK2_AES", 1 },
+  };
+  size_t i;
+  for (i = 0; i < SD_COUNTOF(cases); i++) {
+    char path[MAX_PATH];
+    mrun r;
+    sd_ssh_conn *c = NULL;
+    mopts o;
+    if (!env_or_file(cases[i].env, path, sizeof(path))) {
+      printf("  [skip] %s not set (puttygen fixtures absent)\n", cases[i].env);
+      continue;
+    }
+    memset(&o, 0, sizeof(o));
+    o.hk_decision = SD_HK_ACCEPT_ONCE;
+    o.key_override = path;
+    if (mx_connect(&r, &o, &c) != SD_OK) {
+      printf("  %s: connect failed\n", cases[i].env);
+      SD_CHECK(!"key format connect failed");
+      continue;
+    }
+    if (cases[i].enc) SD_CHECK(r.pass_prompts >= 1);
+    else SD_CHECK_EQ_INT(r.pass_prompts, 0);
+    SD_CHECK_EQ_INT(r.kbd_prompts, 0);
+    exec_echo(sd_t_, c, &r);
+    mx_finish(&r, c);
+  }
+}
+
+/* User certificates on the cert instance (TrustedUserCAKeys, no authorized_keys): every valid
+   cert type authenticates; expired, wrong-principal and revoked (KRL) ones fail. */
+SD_TEST(matrix_auth_certs)
+{
+  static const struct { const char *key_env, *cert_env; int ok; } cases[] = {
+    { "SD_IT_KEY_ED25519", "SD_IT_CERT_ED25519", 1 },
+    { "SD_IT_KEY_RSA", "SD_IT_CERT_RSA", 1 },
+    { "SD_IT_KEY_ECDSA", "SD_IT_CERT_ECDSA", 1 },
+    { "SD_IT_CERT_EXPIRED_KEY", "SD_IT_CERT_EXPIRED", 0 },
+    { "SD_IT_CERT_WRONGPRINC_KEY", "SD_IT_CERT_WRONGPRINC", 0 },
+    { "SD_IT_CERT_REVOKED_KEY", "SD_IT_CERT_REVOKED", 0 },
+  };
+  size_t i;
+  for (i = 0; i < SD_COUNTOF(cases); i++) {
+    char key[MAX_PATH], cert[MAX_PATH];
+    mrun r;
+    sd_ssh_conn *c = NULL;
+    mopts o;
+    sd_err e;
+    if (!env_or_file(cases[i].key_env, key, sizeof(key)) ||
+        !env_or_file(cases[i].cert_env, cert, sizeof(cert))) {
+      printf("  [skip] %s not set\n", cases[i].cert_env);
+      continue;
+    }
+    memset(&o, 0, sizeof(o));
+    o.hk_decision = SD_HK_ACCEPT_ONCE;
+    o.key_override = key;
+    o.cert_override = cert;
+    e = mx_connect(&r, &o, &c);
+    if (cases[i].ok) {
+      if (e != SD_OK) {
+        printf("  %s: connect failed (%s)\n", cases[i].cert_env, sd_err_name(e));
+        SD_CHECK(!"valid certificate rejected");
+        continue;
+      }
+      exec_echo(sd_t_, c, &r);
+      SD_CHECK_EQ_INT(r.hk_prompts, 0);
+      mx_finish(&r, c);
+    } else {
+      if (e == SD_OK) {
+        SD_CHECK(!"invalid certificate accepted");
+        mx_finish(&r, c);
+        continue;
+      }
+      SD_CHECK_EQ_INT(e, SD_E_AUTH_FAILED);
+    }
+  }
+}
+
 /* ---- main ---- */
 
 static const sd_test_case k_tests[] = {
@@ -689,6 +792,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(matrix_kex_walk),
   SD_TEST_ENTRY(matrix_pq_required),
   SD_TEST_ENTRY(matrix_hostkeys_update),
+  SD_TEST_ENTRY(matrix_auth_key_formats),
+  SD_TEST_ENTRY(matrix_auth_certs),
 };
 
 int main(int argc, char **argv)

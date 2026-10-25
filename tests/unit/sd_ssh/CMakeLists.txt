@@ -36,6 +36,8 @@ add_test(NAME interop.ssh_matrix_connect COMMAND sd-test-ssh-interop-m2 --filter
 add_test(NAME interop.ssh_matrix_kex COMMAND sd-test-ssh-interop-m2 --filter matrix_kex_walk)
 add_test(NAME interop.ssh_matrix_pq COMMAND sd-test-ssh-interop-m2 --filter matrix_pq_required)
 add_test(NAME interop.ssh_matrix_update COMMAND sd-test-ssh-interop-m2 --filter matrix_hostkeys_update)
+add_test(NAME interop.ssh_matrix_auth_keys COMMAND sd-test-ssh-interop-m2 --filter matrix_auth_key_formats)
+add_test(NAME interop.ssh_matrix_auth_certs COMMAND sd-test-ssh-interop-m2 --filter matrix_auth_certs)
 set_tests_properties(interop.ssh_matrix_connect PROPERTIES LABELS "interop;srv_all" TIMEOUT 300
   SKIP_RETURN_CODE 77)
 set_tests_properties(interop.ssh_matrix_kex PROPERTIES
@@ -45,6 +47,10 @@ set_tests_properties(interop.ssh_matrix_pq PROPERTIES LABELS "interop;srv_ossh10
   SKIP_RETURN_CODE 77)
 set_tests_properties(interop.ssh_matrix_update PROPERTIES LABELS "interop;srv_rotate" TIMEOUT 300
   SKIP_RETURN_CODE 77 RESOURCE_LOCK wsl_rotate_fixture)
+set_tests_properties(interop.ssh_matrix_auth_keys PROPERTIES
+  LABELS "interop;srv_ossh10" TIMEOUT 600 SKIP_RETURN_CODE 77)
+set_tests_properties(interop.ssh_matrix_auth_certs PROPERTIES LABELS "interop;srv_cert" TIMEOUT 600
+  SKIP_RETURN_CODE 77)
 
 # M2 per-area test lists (each area owns tests_<area>.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/tests_auth.cmake OPTIONAL)

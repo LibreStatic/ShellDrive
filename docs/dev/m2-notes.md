@@ -150,5 +150,7 @@ Fix to the runner: the per-row ctest invocation now runs with `$ErrorActionPrefe
 (Windows PowerShell 5.1 turns native stderr into error records; with 'Stop' the script aborted at
 the first failing row instead of collecting the table).
 
+| `interop.ssh_matrix_auth_keys` | `srv_ossh10` | every private-key format of the fixtures authenticates: OpenSSH v1 plain/encrypted, PPK v3/v2 unencrypted, puttygen-written encrypted PPK v3 (Argon2id) and PPK v2 (AES) with the fixture passphrase (this is the PPK cross-check; the modern fixture only trusts the M1 keys, so the row is ossh10) |
+| `interop.ssh_matrix_auth_certs` | `srv_cert` | user certificates of every key type authenticate via `TrustedUserCAKeys`; expired, wrong-principal and revoked (KRL) certificates fail with `auth_failed` |
 Dev helper `build/run-row.sh` (untracked, build dir) runs one sub-test for one row by hand with the
 same variables the runner sets.
