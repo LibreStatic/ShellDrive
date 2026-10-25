@@ -436,6 +436,9 @@ sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, 
   c->rekey_bytes = cfg->rekey_bytes ? cfg->rekey_bytes : ((uint64_t)1 << 30);
   c->rekey_seconds = cfg->rekey_seconds ? cfg->rekey_seconds : 3600u;
   c->af = cfg->address_family;
+  c->cache_secrets = h->auth.cache_secrets_for_reconnect != 0;
+  ssh_seccache_init(&c->cache, c->id_count);
+  if (c->id_count && !c->cache.pass) { e = SD_E_NO_MEMORY; goto fail; }
   if (cb) c->cb = *cb;
   sd_free(host8);
   host8 = NULL;
@@ -450,6 +453,7 @@ sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, 
 
 fail:
   sd_free(host8);
+  ssh_seccache_free(&c->cache);
   free_config(c);
   if (c->cmd_ev) CloseHandle(c->cmd_ev);
   if (c->workers_idle) CloseHandle(c->workers_idle);
@@ -474,6 +478,7 @@ void sd_ssh_conn_destroy(sd_ssh_conn *c)
   while (q) { ssh_cmd *n = q->next; q->drop(q); q = n; }
   CloseHandle(c->cmd_ev);
   CloseHandle(c->workers_idle);
+  ssh_seccache_free(&c->cache);
   free_config(c);
   sd_wr_free(&c->out);
   if (c->in) sd_secure_free(c->in, c->in_cap);
@@ -705,6 +710,8 @@ static void connect_run(sd_ssh_conn *c, ssh_cmd *cmd)
   if (c->stopping) { if (done) done(ctx, SD_E_SHUTDOWN, 0); return; }
   if (c->st != SSH_ST_IDLE && c->st != SSH_ST_CLOSED) { if (done) done(ctx, SD_E_BUSY, 0); return; }
   c->gen++;
+  c->is_reconnect = c->ever_connected;
+  c->hk_once = 0;
   c->st = SSH_ST_RESOLVING;
   c->fail_err = SD_OK;
   c->failing = 0;
@@ -830,6 +837,8 @@ sd_err sd_ssh_conn_auth_info(const sd_ssh_conn *c, sd_ssh_auth_info *out)
   if (!c || !out) return SD_E_INVALID_PARAM;
   out->noninteractive = !c->interactive_used;
   out->methods_used = c->methods_used;
+  out->is_reconnect = c->is_reconnect;
+  out->hostkey_just_accepted = c->hostkey_just_accepted;
   return SD_OK;
 }
 
@@ -888,6 +897,53 @@ void sd_ssh_conn_probe(sd_ssh_conn *c)
   ssh_send_keepalive(c);
   if (c->kex.active) { c->probe_pending = 1; return; }   /* window starts when actually sent */
   c->probe_deadline = ssh_now() + (c->have_rtt ? SD_MIN(5000u, SD_MAX(1000u, 3u * c->srtt)) : 5000u);
+}
+
+typedef struct ka_cmd { ssh_cmd cmd; uint32_t interval_ms, max_missed; } ka_cmd;
+
+static void ka_run(sd_ssh_conn *c, ssh_cmd *cmd)
+{
+  ka_cmd *k = (ka_cmd *)cmd;
+  if (k->interval_ms) c->ka_interval_ms = k->interval_ms;
+  if (k->max_missed) c->ka_max_missed = k->max_missed;
+  if (c->st == SSH_ST_CONNECTED) c->next_ka_tick = SD_MIN(c->next_ka_tick, ssh_now() + c->ka_interval_ms);
+  sd_free(k);
+}
+
+sd_err sd_ssh_conn_set_keepalive(sd_ssh_conn *c, uint32_t interval_ms, uint32_t max_missed)
+{
+  ka_cmd *k;
+  sd_err e;
+  if (!c || (interval_ms && interval_ms < 1000u) || max_missed > 100u) return SD_E_INVALID_PARAM;
+  k = (ka_cmd *)sd_calloc(1, sizeof(*k));
+  if (!k) return SD_E_NO_MEMORY;
+  k->cmd.run = ka_run;
+  k->cmd.drop = free_cmd;
+  k->interval_ms = interval_ms;
+  k->max_missed = max_missed;
+  e = ssh_post_cmd(c, &k->cmd);
+  if (e != SD_OK) sd_free(k);
+  return e;
+}
+
+static void clear_secrets_run(sd_ssh_conn *c, ssh_cmd *cmd)
+{
+  sd_free(cmd);
+  ssh_seccache_clear(&c->cache);
+}
+
+sd_err sd_ssh_conn_clear_secrets(sd_ssh_conn *c)
+{
+  ssh_cmd *cmd;
+  sd_err e;
+  if (!c) return SD_E_INVALID_PARAM;
+  cmd = (ssh_cmd *)sd_calloc(1, sizeof(*cmd));
+  if (!cmd) return SD_E_NO_MEMORY;
+  cmd->run = clear_secrets_run;
+  cmd->drop = free_cmd;
+  e = ssh_post_cmd(c, cmd);
+  if (e != SD_OK) sd_free(cmd);
+  return e;
 }
 
 void sd_ssh_conn_rtt(const sd_ssh_conn *c, uint32_t *srtt_ms, uint32_t *rttvar_ms)
@@ -1199,6 +1255,13 @@ void ssh_on_authenticated(sd_ssh_conn *c)
   void *ctx = c->connect_ctx;
   c->st = SSH_ST_CONNECTED;
   c->connect_done = NULL;
+  /* 01 §8: the verified key of this connect is pinned for later reconnects of this object */
+  if (c->hostkey_len && c->hostkey_len <= sizeof(c->pinned_hostkey)) {
+    memcpy(c->pinned_hostkey, c->hostkey, c->hostkey_len);
+    c->pinned_len = c->hostkey_len;
+    c->pinned_unstored = c->hk_once;
+  }
+  c->ever_connected = 1;
   c->last_rx_tick = ssh_now();
   c->next_ka_tick = c->last_rx_tick + c->ka_interval_ms;
   ssh_auth_clear(c);

@@ -45,6 +45,37 @@
       }
     },
     {
+      "name": "x86-base",
+      "hidden": true,
+      "inherits": "base",
+      "architecture": {
+        "value": "Win32",
+        "strategy": "set"
+      },
+      "toolset": {
+        "value": "v141_xp",
+        "strategy": "set"
+      }
+    },
+    {
+      "name": "x86-ia32",
+      "displayName": "x86 IA32 (v141_xp, SDK 7.1A, /arch:IA32, no SSE; XP SP3)",
+      "inherits": "x86-base",
+      "cacheVariables": {
+        "SD_FLAVOUR": "x86-ia32",
+        "SD_X86_ARCH": "IA32"
+      }
+    },
+    {
+      "name": "x86-sse2",
+      "displayName": "x86 SSE2 (v141_xp, SDK 7.1A, /arch:SSE2; XP SP3)",
+      "inherits": "x86-base",
+      "cacheVariables": {
+        "SD_FLAVOUR": "x86-sse2",
+        "SD_X86_ARCH": "SSE2"
+      }
+    },
+    {
       "name": "x64-analysis",
       "displayName": "x64 analysis (v143, /analyze; -DSD_ENABLE_ASAN=ON for ASan)",
       "inherits": "base",
@@ -79,6 +110,26 @@
     {
       "name": "x64-xp-debug",
       "configurePreset": "x64-xp",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x86-ia32",
+      "configurePreset": "x86-ia32",
+      "configuration": "Release"
+    },
+    {
+      "name": "x86-ia32-debug",
+      "configurePreset": "x86-ia32",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x86-sse2",
+      "configurePreset": "x86-sse2",
+      "configuration": "Release"
+    },
+    {
+      "name": "x86-sse2-debug",
+      "configurePreset": "x86-sse2",
       "configuration": "Debug"
     },
     {
@@ -120,6 +171,30 @@
       "name": "x64-xp-debug",
       "inherits": "base",
       "configurePreset": "x64-xp",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x86-ia32",
+      "inherits": "base",
+      "configurePreset": "x86-ia32",
+      "configuration": "Release"
+    },
+    {
+      "name": "x86-ia32-debug",
+      "inherits": "base",
+      "configurePreset": "x86-ia32",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x86-sse2",
+      "inherits": "base",
+      "configurePreset": "x86-sse2",
+      "configuration": "Release"
+    },
+    {
+      "name": "x86-sse2-debug",
+      "inherits": "base",
+      "configurePreset": "x86-sse2",
       "configuration": "Debug"
     },
     {

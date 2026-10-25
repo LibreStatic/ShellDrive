@@ -8,9 +8,11 @@
 
 SD_TEST(dokan_abi_layout_x64)
 {
-  /* Also pinned by static asserts in dokan_abi.h; repeated here so a failure names the field. */
+  /* Also pinned by static asserts in dokan_abi.h; repeated here so a failure names the field.
+     The x86 values follow from the same declarations (PVOID64 GlobalContext keeps 8-byte alignment). */
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, Options), 0x04);
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, MountPoint), 0x10);
+#if defined(_WIN64)
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, UNCName), 0x18);
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, AllocationUnitSize), 0x24);
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, SectorSize), 0x28);
@@ -20,6 +22,17 @@ SD_TEST(dokan_abi_layout_x64)
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, DeletePending), 0x25);
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, PagingIo), 0x26);
   SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, WriteToEndOfFile), 0x29);
+#else
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, UNCName), 0x14);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, AllocationUnitSize), 0x1C);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_OPTIONS, SectorSize), 0x20);
+  SD_CHECK_EQ_INT(sizeof(SD_DOKAN_OPTIONS), 0x4028);
+  SD_CHECK_EQ_INT(sizeof(SD_DOKAN_FILE_INFO), 0x28);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, IsDirectory), 0x1C);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, DeletePending), 0x1D);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, PagingIo), 0x1E);
+  SD_CHECK_EQ_INT(offsetof(SD_DOKAN_FILE_INFO, WriteToEndOfFile), 0x21);
+#endif
   SD_CHECK_EQ_INT(sizeof(SD_DOKAN_OPERATIONS), 25 * sizeof(void *));
   SD_CHECK_EQ_INT(SD_DOKAN_OPTION_CURRENT_SESSION, 0x80);
   SD_CHECK_EQ_INT(SD_DOKAN_OPTION_NETWORK, 0x10);
@@ -57,7 +70,8 @@ SD_TEST(dokan_probe_and_deny_list)
   sd_dokan_avail a = sd_dokan_probe(NULL, &info);
   sd_dokan_deny_range r;
   sd_dokan_deny deny;
-  if (a == SD_DOKAN_NOT_INSTALLED || a == SD_DOKAN_OS_UNSUPPORTED || a == SD_DOKAN_DRIVER_MISSING) {
+  if (a == SD_DOKAN_NOT_INSTALLED || a == SD_DOKAN_OS_UNSUPPORTED || a == SD_DOKAN_DRIVER_MISSING ||
+      a == SD_DOKAN_WOW64) {
     SD_CHECK(sd_dokan_api_get() == NULL);
     return;                                 /* nothing more to check on this machine */
   }

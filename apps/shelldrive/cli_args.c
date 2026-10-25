@@ -92,7 +92,8 @@ typedef struct opt_def {
 
 enum {
   OPT_JSON, OPT_QUIET, OPT_LANG, OPT_HELP, OPT_VERSION, OPT_PROMPT, OPT_STDIN,
-  OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE
+  OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE,
+  OPT_BACKEND
 };
 
 static const opt_def k_opts[] = {
@@ -105,6 +106,7 @@ static const opt_def k_opts[] = {
   { L"--remote-path", O_VALUE, OPT_REMOTE_PATH }, { L"--path", O_VALUE, OPT_REMOTE_PATH },
   { L"--read-only", O_FLAG, OPT_READ_ONLY }, { L"--no-wait", O_FLAG, OPT_NO_WAIT },
   { L"--all", O_FLAG, OPT_ALL }, { L"--force", O_FLAG, OPT_FORCE },
+  { L"--backend", O_VALUE, OPT_BACKEND },
 };
 
 /* Which options each command accepts (globals are always accepted). */
@@ -114,7 +116,7 @@ static int allowed(cli_cmd cmd, int id)
   case OPT_JSON: case OPT_QUIET: case OPT_LANG: case OPT_HELP: case OPT_VERSION:
     return 1;
   case OPT_PROMPT: case OPT_STDIN: case OPT_HOST: case OPT_LETTER: case OPT_IDENTITY:
-  case OPT_REMOTE_PATH: case OPT_READ_ONLY: case OPT_NO_WAIT:
+  case OPT_REMOTE_PATH: case OPT_READ_ONLY: case OPT_NO_WAIT: case OPT_BACKEND:
     return cmd == CLI_CMD_MOUNT;
   case OPT_ALL: case OPT_FORCE:
     return cmd == CLI_CMD_UNMOUNT;
@@ -197,6 +199,12 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       case OPT_NO_WAIT: a->no_wait = 1; break;
       case OPT_ALL: a->all = 1; break;
       case OPT_FORCE: a->force = 1; break;
+      case OPT_BACKEND:
+        if (wcscmp(value, L"auto") == 0) a->backend = "auto";
+        else if (wcscmp(value, L"dokany") == 0) a->backend = "dokany";
+        else if (wcscmp(value, L"webdav") == 0) a->backend = "webdav";
+        else return set_err(a, CLI_E_BAD_VALUE, d->name, value);
+        break;
       }
       continue;
     }
@@ -224,8 +232,8 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   if (a->cmd == CLI_CMD_NONE && !a->help)
     return set_err(a, CLI_E_MISSING_ARGUMENT, NULL, NULL);
   if (a->cmd != CLI_CMD_MOUNT && (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only ||
-                                  a->no_wait || a->use_stdin || a->prompt != CLI_PROMPT_AUTO))
-    return set_err(a, CLI_E_UNKNOWN_OPTION, a->host_spec ? L"--host" : a->letter ? L"--letter" :
+                                  a->no_wait || a->use_stdin || a->prompt != CLI_PROMPT_AUTO || a->backend))
+    return set_err(a, CLI_E_UNKNOWN_OPTION, a->backend ? L"--backend" : a->host_spec ? L"--host" : a->letter ? L"--letter" :
                    a->identity ? L"--identity" : a->remote_path ? L"--remote-path" : a->read_only ? L"--read-only" :
                    a->no_wait ? L"--no-wait" : a->use_stdin ? L"--stdin" : L"--prompt", NULL);
   if (a->cmd != CLI_CMD_UNMOUNT && (a->all || a->force))

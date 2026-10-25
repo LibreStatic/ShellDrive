@@ -21,7 +21,23 @@
  *   the stream was never opened; it stops the I/O thread and frees the transport. Posted functions
  *   that have not run by then are dropped.
  * Thread safety: as listed above. Ownership: the transport struct is copied; ctx stays owned by the
- * transport and is released by destroy. */
+ * transport and is released by destroy.
+ *
+ * M1 additions (all optional; a zero-filled tail keeps the M0 single-stream, single-connection
+ * contract above, and the session then ends in FAILED when the stream is lost):
+ * - caps & SD_SFTP_TP_REOPEN: after close() was called and every stream that was opened has
+ *   delivered on_closed (or, for a stream still opening, on_open(err)), open() may be called again;
+ *   it builds a fresh connection on the same I/O thread (sd_ssh: same sd_ssh_conn, pinned host key,
+ *   reconnect secret cache). sd_sftp's reconnect loop needs this cap.
+ * - caps & SD_SFTP_TP_STREAMS: a second stream (idx 1, the "bulk" SFTP channel, D19) on the same
+ *   connection. open_stream(1) is called on the I/O thread only after stream 0 reported
+ *   on_open(SD_OK); its on_open is delivered asynchronously (never inside open_stream), with an error
+ *   when the server refuses another session channel (sd_sftp then degrades to one channel).
+ *   write_stream / consumed_stream address a stream by index (0 is the stream of open()); close()
+ *   closes every stream and the connection. When the connection dies, every open stream gets
+ *   on_closed and every opening stream gets on_open(err).
+ * - rtt (optional): the connection's smoothed RTT (sd_ssh keepalive samples, 01 §4.6) for
+ *   sd_sftp_session_stats(); any thread. */
 #ifndef SD_SFTP_TRANSPORT_H
 #define SD_SFTP_TRANSPORT_H
 
@@ -41,7 +57,15 @@ typedef struct sd_sftp_transport {
   void   (*probe)(void *ctx);                                  /* optional liveness check; may be NULL */
   const sd_ssh_negotiated *(*negotiated)(void *ctx);           /* optional; NULL or NULL result: no SSH */
   void   (*destroy)(void *ctx);                                /* control thread */
+  /* ---- M1 (zero when unused) ---- */
+  uint32_t caps;                                               /* SD_SFTP_TP_* */
+  sd_err (*open_stream)(void *ctx, uint32_t idx, const sd_ssh_channel_sink *sink, void *sink_ctx);
+  sd_err (*write_stream)(void *ctx, uint32_t idx, const uint8_t *p, size_t n, size_t *accepted);
+  void   (*consumed_stream)(void *ctx, uint32_t idx, size_t n);
+  void   (*rtt)(void *ctx, uint32_t *srtt_ms, uint32_t *rttvar_ms);
 } sd_sftp_transport;
+
+enum { SD_SFTP_TP_REOPEN = 1u << 0, SD_SFTP_TP_STREAMS = 1u << 1 };
 
 /* Like sd_sftp_session_create() but over an arbitrary transport. On failure the transport is not
    destroyed (the caller still owns it); on success the session owns it. */

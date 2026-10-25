@@ -1,7 +1,7 @@
 /* sd-importcheck: PE import / delay-import / TLS / subsystem / CFG / CET audit (04 §2.4).
  *
  *   sd-importcheck --floor <list.txt> [--floor ...] [--subsystem 5.02] [--require-cfg | --forbid-cfg]
- *                  [--require-cet] [--no-delayload] [--no-tls] <image>...
+ *                  [--require-cet] [--require-safeseh] [--no-delayload] [--no-tls] <image>...
  *   sd-importcheck --list <image>          print every import as dll!function (to build floor lists)
  *
  * Floor list lines: "dll!function", "dll!#ordinal" or "dll!*" (any function of that DLL); '#' starts a
@@ -9,7 +9,9 @@
  * ws2_32.dll and wsock32.dll (the SDK 7.1A import libraries bind the WinSock 1.1 set by ordinal) are
  * mapped to their names first, so the floor list judges them by name. Every image must also be
  * /DYNAMICBASE and /NXCOMPAT, and DLLs must not have a TLS directory (implicit TLS breaks on XP when
- * loaded with LoadLibrary). Exit code 0 = clean, 1 = violations, 2 = usage or I/O error.
+ * loaded with LoadLibrary). --require-safeseh (x86 flavours, 04 §3.2): a 32-bit image must carry a
+ * SafeSEH handler table in its load-config directory, or be marked IMAGE_DLLCHARACTERISTICS_NO_SEH.
+ * Exit code 0 = clean, 1 = violations, 2 = usage or I/O error.
  * Build-time tool, never shipped. */
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <windows.h>
@@ -314,9 +316,26 @@ static int has_cet(const image *im)
   return 0;
 }
 
+/* /SAFESEH: IMAGE_LOAD_CONFIG_DIRECTORY32.SEHandlerTable (offset 0x40) set, or NO_SEH. */
+static int has_safeseh(const image *im, WORD dllchar)
+{
+  IMAGE_DATA_DIRECTORY *d = data_dir(im, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
+  const unsigned char *lc;
+  DWORD size, table;
+  if (dllchar & IMAGE_DLLCHARACTERISTICS_NO_SEH) return 1;
+  if (!d || !d->VirtualAddress) return 0;
+  lc = (const unsigned char *)rva_ptr(im, d->VirtualAddress, 0x48);
+  if (!lc) return 0;
+  memcpy(&size, lc, 4);
+  if (size < 0x48) return 0;
+  memcpy(&table, lc + 0x40, 4);
+  return table != 0;
+}
+
 int main(int argc, char **argv)
 {
-  int i, list = 0, require_cfg = 0, forbid_cfg = 0, require_cet = 0, no_delay = 0, no_tls = 0, nimages = 0;
+  int i, list = 0, require_cfg = 0, forbid_cfg = 0, require_cet = 0, require_safeseh = 0, no_delay = 0, no_tls = 0;
+  int nimages = 0;
   int sub_major = -1, sub_minor = -1;
   for (i = 1; i < argc; i++) {
     const char *a = argv[i];
@@ -327,6 +346,7 @@ int main(int argc, char **argv)
     else if (strcmp(a, "--require-cfg") == 0) require_cfg = 1;
     else if (strcmp(a, "--forbid-cfg") == 0) forbid_cfg = 1;
     else if (strcmp(a, "--require-cet") == 0) require_cet = 1;
+    else if (strcmp(a, "--require-safeseh") == 0) require_safeseh = 1;
     else if (strcmp(a, "--no-delayload") == 0) no_delay = 1;
     else if (strcmp(a, "--no-tls") == 0) no_tls = 1;
     else if (strcmp(a, "--list") == 0) list = 1;
@@ -358,6 +378,8 @@ int main(int argc, char **argv)
       if (require_cfg && !(dllchar & SD_DLLCHAR_GUARD_CF)) violation(&im, "missing /guard:cf%s%s", "", "");
       if (forbid_cfg && (dllchar & SD_DLLCHAR_GUARD_CF)) violation(&im, "has /guard:cf (not allowed on this flavour)%s%s", "", "");
       if (require_cet && !has_cet(&im)) violation(&im, "missing /CETCOMPAT%s%s", "", "");
+      if (require_safeseh && (im.pe64 || !has_safeseh(&im, dllchar)))
+        violation(&im, "missing /SAFESEH handler table (32-bit images only)%s%s", "", "");
       tls = data_dir(&im, IMAGE_DIRECTORY_ENTRY_TLS);
       if ((no_tls || (im.fh->Characteristics & IMAGE_FILE_DLL)) && tls && tls->VirtualAddress)
         violation(&im, "has a TLS directory (no implicit TLS in DLLs, 04 §2.4)%s%s", "", "");

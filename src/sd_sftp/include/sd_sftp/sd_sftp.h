@@ -1,9 +1,43 @@
 /* sd_sftp: asynchronous SFTP v3 client, the contract with the filesystem layer (01 §10, reconciled
  * with 02 §9 R1-R19).
  *
- * M0 scope: 1 SFTP channel, 1 connection, core operations, pipelining, caller deadlines, error
- * refinement, TM-R12 dirent filtering. Meta/bulk channels, reconnect and the pool arrive in M1/M2;
- * their API is final already (options are accepted and clamped: channels=1, connections=1).
+ * M0 scope: core operations, pipelining, caller deadlines, error refinement, TM-R12 dirent filtering.
+ * M1: meta + bulk SFTP channels with auto-degrade to one (D19), the reconnect loop with generations
+ * and stale handles (01 §10.6), sd_sftp_file_reopen, statistics. The pool (connections > 1,
+ * SD_SFTP_O_STRIPED) is M2: connections is clamped to 1 and STRIPED is ignored.
+ *
+ * Reconnect contract (M1, 01 §10.4/§10.6; what sd_vfs relies on):
+ * - The sd_sftp_session object survives reconnects. generation starts at 1 with the first READY and
+ *   increments on every READY. sd_sftp_file objects survive too; on the loss of the connection all
+ *   of them become stale (sd_sftp_file_get_info().stale = 1).
+ * - Event order on loss: EV_STATE(DISCONNECTED, reason); completions of every request that was in
+ *   flight or queued with SD_E_DISCONNECTED (maybe_executed = 1 when it had been sent: for mutating
+ *   ops the effect is unknown, re-stat, never retry a rename blindly); every handle is marked stale;
+ *   then EV_STATE(RECONNECT_WAIT, retry_in_ms, attempt) per attempt, EV_STATE(CONNECTING), possibly
+ *   EV_STATE(AUTH_REQUIRED) while a reconnect prompt is outstanding, and finally EV_STATE(READY)
+ *   followed by EV_READY_INFO with the new generation (re-read server_info: limits, extensions,
+ *   home and identity may differ; names_by_id results are per generation).
+ * - Backoff: attempt n waits min(max_delay, initial_delay * 2^n) +/- 20% jitter; max_attempts 0 =
+ *   unlimited. sd_sftp_session_reconnect_now() skips the wait (or restarts the loop from FAILED /
+ *   AUTH_REQUIRED), sd_sftp_session_reconnect_stop() cancels it (FAILED, reason SD_E_CANCELLED),
+ *   sd_sftp_session_close() always ends it.
+ * - The loop stops in FAILED for permanent errors (host key mismatch/revoked/rejected/type
+ *   unavailable, legacy refused, KEX failure, unsupported) and when max_attempts is reached; in
+ *   AUTH_REQUIRED when the user is needed (auth failed, prompt cancelled). The very first connect
+ *   does not loop: its failure is FAILED (reconnect_now() retries it). Reconnect needs a transport
+ *   with SD_SFTP_TP_REOPEN (sd_sftp_session_create() always has it); otherwise a loss is FAILED.
+ * - Requests with SD_SFTP_REQ_WAIT_READY submitted in IDLE/CONNECTING/DISCONNECTED/RECONNECT_WAIT/
+ *   AUTH_REQUIRED (with an attempt running) wait for READY until their timeout_ms (required > 0).
+ *   Unsent WAIT_READY path operations queued at the moment of a loss keep waiting as well. Writes
+ *   are never replayed by sd_sftp.
+ * - Stale handles: every operation fails with SD_E_STALE_HANDLE except close/release (local
+ *   success); sd_sftp_file_reopen() re-opens the same object in the current generation.
+ *
+ * Channels (M1, D19, C17): ch 0 "meta" carries path operations, opendir/readdir, opens with
+ * SD_SFTP_REQ_CLASS_META and the handles they create; ch 1 "bulk" carries every other open and the
+ * requests on its handle. When opt.channels = 1, the transport has no second stream, or the server
+ * refuses another session channel (MaxSessions 1), the session runs on one channel and serves the
+ * meta queue first at every turn. server_info.channels tells which (1 or 2), per generation.
  *
  * Threading (01 §10.8):
  * 1. All functions are thread-safe and non-blocking, except *_sync and sd_sftp_session_destroy.
@@ -138,10 +172,23 @@ typedef enum sd_sftp_event_type { SD_SFTP_EV_STATE, SD_SFTP_EV_READY_INFO, SD_SF
 typedef struct sd_sftp_event {
   sd_sftp_event_type type;
   sd_sftp_state state; sd_err reason; uint32_t failed_hop;
-  uint32_t retry_in_ms;                 /* RECONNECT_WAIT */
+  uint32_t retry_in_ms;                 /* RECONNECT_WAIT: delay before the next attempt */
   const sd_sftp_server_info *info;      /* READY_INFO */
   uint32_t member, connections;         /* POOL */
+  /* M1 */
+  uint32_t attempt;                     /* RECONNECT_WAIT: 1-based number of the attempt that follows */
+  uint32_t generation;                  /* the session generation (READY / READY_INFO: the new one) */
 } sd_sftp_event;
+/* State events (M1):
+   - DISCONNECTED: reason = why the connection was lost (SD_E_DISCONNECTED, SD_E_TIMEOUT for a
+     failed keepalive or liveness probe, SD_E_PROTOCOL, ...).
+   - RECONNECT_WAIT: reason = the loss or the failed attempt's error; retry_in_ms; attempt.
+   - CONNECTING: an attempt starts (also the first connect).
+   - AUTH_REQUIRED: a reconnect raised an auth prompt (reason SD_E_AUTH_REQUIRED; the attempt goes
+     on when the prompt is answered), or the loop stopped because the user is needed (reason = the
+     error, e.g. SD_E_AUTH_FAILED or SD_E_CANCELLED).
+   - READY, then READY_INFO: connected; generation incremented.
+   - FAILED: reason = the permanent error. CLOSED after sd_sftp_session_close(). */
 
 typedef struct sd_sftp_conn_stats {
   uint32_t srtt_ms, rttvar_ms;
@@ -154,8 +201,16 @@ typedef struct sd_sftp_stats {
   sd_sftp_conn_stats total;
   sd_sftp_conn_stats conn[4];           /* [0] = primary */
   uint32_t conn_count;
+  /* M1 */
+  uint32_t generation;                  /* current generation (0 before the first READY) */
+  uint32_t channels;                    /* SFTP channels in use (1 or 2; 0 when not READY) */
+  uint32_t reconnect_attempts;          /* attempts of the running reconnect loop (0 when READY) */
 } sd_sftp_stats;
-sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out);   /* any thread */
+/* Statistics (02 R16), any thread, cheap: srtt_ms/rttvar_ms from the transport's keepalive and
+   probe samples (sd_ssh, 01 §4.6) or else from meta-channel round trips (RFC 6298 smoothing);
+   rx_bps/tx_bps payload rates (EWMA, about 2 s); rx_total/tx_total bytes of this generation;
+   inflight_reqs on the wire, queued_reqs submitted but not on the wire. */
+sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out);
 
 typedef void (*sd_sftp_event_cb)(void *ctx, const sd_sftp_event *ev);
 
@@ -168,7 +223,15 @@ sd_err sd_sftp_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks *
                               const sd_sftp_options *opt, sd_sftp_event_cb ev, void *ev_ctx,
                               sd_sftp_session **out);
 sd_err sd_sftp_session_start(sd_sftp_session *s);           /* async; progress via events */
-sd_err sd_sftp_session_reconnect_now(sd_sftp_session *s);   /* M0: SD_E_UNSUPPORTED (no reconnect loop) */
+/* Skips the backoff of RECONNECT_WAIT, or restarts the loop from FAILED / AUTH_REQUIRED (for example
+   after the user fixed the credentials or removed a stale host key; attempts count from 0 again).
+   No effect in READY or while an attempt runs. SD_E_UNSUPPORTED without SD_SFTP_TP_REOPEN,
+   SD_E_INVALID_PARAM before start, SD_E_SHUTDOWN after close. Any thread; async. */
+sd_err sd_sftp_session_reconnect_now(sd_sftp_session *s);
+/* M1: cancels the reconnect loop (a running attempt is aborted): the session goes FAILED with reason
+   SD_E_CANCELLED and waiting requests complete with SD_E_DISCONNECTED; reconnect_now() resumes.
+   Any thread; async. */
+sd_err sd_sftp_session_reconnect_stop(sd_sftp_session *s);
 sd_err sd_sftp_session_close(sd_sftp_session *s);           /* async; in-flight -> SD_E_SHUTDOWN, then CLOSED */
 void   sd_sftp_session_destroy(sd_sftp_session *s);         /* after CLOSED; never on the I/O thread */
 sd_sftp_state sd_sftp_session_state(const sd_sftp_session *s);
@@ -182,7 +245,10 @@ typedef struct sd_sftp_completion {
   sd_err   err;
   uint32_t sftp_status;          /* raw status if a STATUS reply was received, else UINT32_MAX */
   const char *server_message;    /* UTF-8 (sanitized), may be "" */
-  int      maybe_executed;       /* DISCONNECTED/TIMEOUT/CANCELLED after the request was sent */
+  int      maybe_executed;       /* DISCONNECTED/TIMEOUT/CANCELLED/SHUTDOWN after the request was sent (any
+                                    op; it matters for mutating ones: write, setstat, fsetstat, rename,
+                                    remove, mkdir, rmdir, symlink, hardlink, copy-data, fsync, and opens
+                                    with CREAT/TRUNC) */
   int      session_ready;        /* DISCONNECTED from a secondary pool member, session still READY */
   union {
     struct { sd_sftp_file *file; sd_sftp_attrs attrs; } open;   /* caller owns one reference */
@@ -272,6 +338,15 @@ typedef struct sd_sftp_file_info {
 sd_err sd_sftp_file_get_info(sd_sftp_file *f, sd_sftp_file_info *out); /* path valid while a ref is held */
 void  *sd_sftp_file_user(sd_sftp_file *f);
 void   sd_sftp_file_set_user(sd_sftp_file *f, void *p);                /* VFS cookie */
+/* Re-opens a stale handle in the current generation (01 §10.6), on the channel of its class:
+   - files: OPEN(path, oflags & ~(CREAT|TRUNC|EXCL)) + FSTAT; directories: OPENDIR (a listing
+     restarts at the beginning). The completion's u.open.file is the same object (no extra
+     reference) and u.open.attrs holds the fresh attributes (files) for the identity check of the
+     VFS; attrs_at_open and generation are updated and the handle is no longer stale.
+   - On failure (e.g. SD_E_NOT_FOUND: the file is gone) the handle stays stale.
+   - SD_E_INVALID_PARAM when the handle is not stale or its close was already submitted;
+     SD_E_DISCONNECTED when not READY (unless SD_SFTP_REQ_WAIT_READY with a timeout).
+   - Never re-sends data: replaying writes is the decision of the VFS (D9). */
 sd_err sd_sftp_file_reopen(sd_sftp_file *f, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx);
 
 /* ---- sync wrappers (CLI/tools; SD_E_WOULD_DEADLOCK on an I/O thread) ----

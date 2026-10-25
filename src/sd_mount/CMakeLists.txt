@@ -14,18 +14,18 @@ sd_add_module(sd_mount
   HEADERS
     include/sd_mount/sd_mount.h)
 # Header-only use of the other modules: include paths without linking their (maybe absent) code.
-foreach(_m sd_ssh sd_sftp sd_vfs sd_dokan sd_crypto)
+foreach(_m sd_ssh sd_sftp sd_vfs sd_dokan sd_webdav sd_crypto)
   target_include_directories(sd_mount PUBLIC $<TARGET_PROPERTY:${_m},INTERFACE_INCLUDE_DIRECTORIES>)
 endforeach()
 
 add_library(sd_mount_real STATIC mount_real.c)
-target_link_libraries(sd_mount_real PUBLIC sd_mount sd_dokan sd_vfs sd_sftp sd_ssh)
+target_link_libraries(sd_mount_real PUBLIC sd_mount sd_dokan sd_webdav sd_vfs sd_sftp sd_ssh)
 
 # AUTO: the real backend is linked into shelldrive-host when every module it needs is a library.
 set(SD_MOUNT_REAL_BACKEND "AUTO" CACHE STRING "Link the real SSH/SFTP/VFS/Dokany stack into the host (AUTO|ON|OFF)")
 set_property(CACHE SD_MOUNT_REAL_BACKEND PROPERTY STRINGS AUTO ON OFF)
 set(_sd_real_ok ON)
-foreach(_m sd_ssh sd_sftp sd_vfs sd_dokan sd_crypto)
+foreach(_m sd_ssh sd_sftp sd_vfs sd_dokan sd_webdav sd_crypto)
   get_target_property(_t ${_m} TYPE)
   if(NOT _t STREQUAL "STATIC_LIBRARY")
     set(_sd_real_ok OFF)

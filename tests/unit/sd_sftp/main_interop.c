@@ -35,8 +35,13 @@ static const sd_test_case k_tests[] = {
 static int wsl_path(wchar_t *out, size_t cap)
 {
   UINT n = GetSystemDirectoryW(out, (UINT)cap);
-  if (n == 0 || n + 10 >= cap) return 0;
+  if (n == 0 || n + 20 >= cap) return 0;
   wcscat_s(out, cap, L"\\wsl.exe");
+  if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES) return 1;
+  /* x86 flavours under WOW64: System32 is redirected to SysWOW64, which has no wsl.exe. */
+  n = GetSystemWindowsDirectoryW(out, (UINT)cap);
+  if (n == 0 || n + 20 >= cap) return 0;
+  wcscat_s(out, cap, L"\\Sysnative\\wsl.exe");
   return GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES;
 }
 

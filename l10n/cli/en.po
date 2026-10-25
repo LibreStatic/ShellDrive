@@ -458,3 +458,30 @@ msgstr ""
 msgctxt "cli.error.generic"
 msgid "The operation failed ({code})."
 msgstr ""
+
+#. Help for --backend. auto, dokany and webdav are literal values; Dokany and WebDAV are product/protocol names.
+msgctxt "cli.help.opt_backend"
+msgid "Drive backend: auto (Dokany when it is installed, otherwise WebDAV), dokany or webdav."
+msgstr ""
+
+#. WebClient is the Windows service name; the command after the colon is literal and must not be translated.
+msgctxt "cli.error.webclient_disabled"
+msgid "The WebClient service is disabled, so ShellDrive cannot create a WebDAV drive. An administrator can enable it with: sc config WebClient start= demand"
+msgstr ""
+
+#. WebClient is the Windows service name and WebDAV Redirector a Windows Server feature name; sc start WebClient is a literal command.
+msgctxt "cli.error.webdav_unavailable"
+msgid "The Windows WebDAV client (WebClient service) is not installed or could not be started. An administrator can start it with: sc start WebClient. On Windows Server, add the WebDAV Redirector feature first."
+msgstr ""
+
+#. Mount state shown in shelldrive list: the connection was lost and ShellDrive is trying again.
+msgctxt "cli.state.reconnecting"
+msgid "reconnecting"
+msgstr ""
+
+#. Printed by shelldrive list after the table. {target} is a drive such as X:, {path} a path on that drive.
+msgctxt "cli.list.write_failed"
+msgid "On {target}, {count} file could not be saved on the server (last: {path})."
+msgid_plural "On {target}, {count} files could not be saved on the server (last: {path})."
+msgstr[0] ""
+msgstr[1] ""

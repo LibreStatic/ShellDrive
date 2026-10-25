@@ -29,6 +29,8 @@ runs:
         $vsPath = & $vswhere -latest -version '[17.0,18.0)' -products * -property installationPath
         $packages = Get-ChildItem "${env:ProgramData}\Microsoft\VisualStudio\Packages" -Directory -Filter 'Microsoft.Windows.XPSupport.*' -ErrorAction SilentlyContinue
         if (-not $packages) { throw 'Microsoft.Windows.XPSupport.* packages not found' }
-        $toolset = Join-Path $vsPath 'MSBuild\Microsoft\VC\v150\Platforms\x64\PlatformToolsets\v141_xp'
-        if (-not (Test-Path $toolset)) { throw "v141_xp platform toolset not found at $toolset" }
-        Write-Host "v141_xp toolset: $toolset"
+        foreach ($platform in 'x64', 'Win32') {   # x64-xp and the two x86 flavours
+          $toolset = Join-Path $vsPath "MSBuild\Microsoft\VC\v150\Platforms\$platform\PlatformToolsets\v141_xp"
+          if (-not (Test-Path $toolset)) { throw "v141_xp platform toolset not found at $toolset" }
+          Write-Host "v141_xp toolset ($platform): $toolset"
+        }

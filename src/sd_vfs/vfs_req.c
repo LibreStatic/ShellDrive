@@ -22,6 +22,7 @@ struct vfs_batch {
   uint32_t n;
   sd_sftp_reqopt *opt;
   vfs_slot *s;
+  void *buf;                            /* data buffer the requests point into (vb_attach_buf) */
 };
 
 static void slot_clear(vfs_slot *s)
@@ -54,6 +55,7 @@ static void batch_release(vfs_batch *b)
     slot_clear(&b->s[i]);
   if (b->ev)
     CloseHandle(b->ev);
+  sd_free(b->buf);
   sd_free(b->opt);
   sd_free(b->s);
   sd_free(b);
@@ -86,6 +88,20 @@ vfs_batch *vb_new(uint32_t n)
 }
 
 vfs_slot *vb_slot(vfs_batch *b, uint32_t i) { return &b->s[i]; }
+
+void vb_attach_buf(vfs_batch *b, void *buf)
+{
+  sd_free(b->buf);
+  b->buf = buf;
+}
+
+BOOL vb_done(vfs_batch *b) { return InterlockedCompareExchange(&b->pending, 0, 0) == 0; }
+
+HANDLE vb_event(vfs_batch *b) { return b->ev; }
+
+void vb_ref(vfs_batch *b) { InterlockedIncrement(&b->refs); }
+
+const sd_sftp_reqopt *vb_optp(vfs_batch *b, uint32_t i) { return &b->opt[i]; }
 
 const sd_sftp_reqopt *vb_opt(vfs_batch *b, uint32_t i, uint64_t deadline)
 {
@@ -227,6 +243,7 @@ static void on_read(void *ctx, const sd_sftp_completion *c)
 {
   vfs_slot *s = (vfs_slot *)ctx;
   s->err = c->err;
+  s->session_ready = c->session_ready;
   if (c->err == SD_OK) {
     s->bytes = c->u.read.bytes;
     s->eof = c->u.read.eof;
@@ -241,8 +258,9 @@ static void on_write(void *ctx, const sd_sftp_completion *c)
 {
   vfs_slot *s = (vfs_slot *)ctx;
   s->err = c->err;
-  if (c->err == SD_OK)
-    s->bytes = c->u.write.bytes;
+  s->maybe_executed = c->maybe_executed;
+  s->session_ready = c->session_ready;
+  s->bytes = c->u.write.bytes;           /* on error: the contiguous acknowledged prefix */
   finish(s);
 }
 
@@ -375,4 +393,19 @@ sd_err vr_fsync(sd_sftp_file *f, uint64_t dl)
 sd_err vr_statvfs(sd_vfs *v, const char *path, uint64_t dl, sd_sftp_statvfs *out)
 {
   VR_ONE(v, dl, on_statvfs, sd_sftp_statvfs_path(v->s, path, o, cb, ctx), *out = s_->svfs);
+}
+
+/* Reopen of a stale handle (01 §10.6): the completion hands back the same object, no new ref. */
+static void on_reopen(void *ctx, const sd_sftp_completion *c)
+{
+  vfs_slot *s = (vfs_slot *)ctx;
+  s->err = c->err;
+  if (c->err == SD_OK)
+    copy_attrs(&s->attrs, &c->u.open.attrs);
+  finish(s);
+}
+
+sd_err vr_reopen(sd_sftp_file *f, uint64_t dl, sd_sftp_attrs *out)
+{
+  VR_ONE(NULL, dl, on_reopen, sd_sftp_file_reopen(f, o, cb, ctx), { if (out) *out = s_->attrs; });
 }

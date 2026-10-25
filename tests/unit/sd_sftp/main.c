@@ -1,4 +1,4 @@
-/* sd-test-sftp: codec fixtures and scripted-session tests (run everywhere). */
+/* sd-test-sftp: codec fixtures, scripted-session and M1 reconnect/channel tests (run everywhere). */
 #include "sd_platform/sd_log.h"
 #include "sd_test.h"
 
@@ -29,6 +29,21 @@ SD_TEST_DECL(session_protocol_error_fails_session);
 SD_TEST_DECL(session_hangup_marks_handles_stale);
 SD_TEST_DECL(session_close_completes_pending_with_shutdown);
 SD_TEST_DECL(session_wait_ready_queues_before_start);
+SD_TEST_DECL(reconnect_after_idle_drop);
+SD_TEST_DECL(reconnect_drop_during_pipelined_reads);
+SD_TEST_DECL(reconnect_drop_during_pipelined_writes);
+SD_TEST_DECL(reconnect_drop_during_open_and_readdir);
+SD_TEST_DECL(reconnect_mutating_ops_maybe_executed);
+SD_TEST_DECL(reconnect_wait_ready_survives_outage);
+SD_TEST_DECL(channels_meta_and_bulk_classes);
+SD_TEST_DECL(channels_degrade_to_one);
+SD_TEST_DECL(channels_one_by_option_or_transport);
+SD_TEST_DECL(reconnect_backoff_jitter_and_retries);
+SD_TEST_DECL(reconnect_permanent_failure_and_reconnect_now);
+SD_TEST_DECL(reconnect_auth_required_and_max_attempts);
+SD_TEST_DECL(reconnect_stop_and_disabled);
+SD_TEST_DECL(reconnect_ready_info_reread_and_reopen_gone);
+SD_TEST_DECL(reconnect_close_during_backoff);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(proto_status_mapping),
@@ -58,6 +73,21 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(session_hangup_marks_handles_stale),
   SD_TEST_ENTRY(session_close_completes_pending_with_shutdown),
   SD_TEST_ENTRY(session_wait_ready_queues_before_start),
+  SD_TEST_ENTRY(reconnect_after_idle_drop),
+  SD_TEST_ENTRY(reconnect_drop_during_pipelined_reads),
+  SD_TEST_ENTRY(reconnect_drop_during_pipelined_writes),
+  SD_TEST_ENTRY(reconnect_drop_during_open_and_readdir),
+  SD_TEST_ENTRY(reconnect_mutating_ops_maybe_executed),
+  SD_TEST_ENTRY(reconnect_wait_ready_survives_outage),
+  SD_TEST_ENTRY(channels_meta_and_bulk_classes),
+  SD_TEST_ENTRY(channels_degrade_to_one),
+  SD_TEST_ENTRY(channels_one_by_option_or_transport),
+  SD_TEST_ENTRY(reconnect_backoff_jitter_and_retries),
+  SD_TEST_ENTRY(reconnect_permanent_failure_and_reconnect_now),
+  SD_TEST_ENTRY(reconnect_auth_required_and_max_attempts),
+  SD_TEST_ENTRY(reconnect_stop_and_disabled),
+  SD_TEST_ENTRY(reconnect_ready_info_reread_and_reopen_gone),
+  SD_TEST_ENTRY(reconnect_close_during_backoff),
 };
 
 int main(int argc, char **argv)

@@ -18,7 +18,7 @@ typedef struct sftp_item {
   void    *ptr;
   uint64_t id;
 } sftp_item;
-enum { IT_SUBMIT = 1, IT_CANCEL, IT_RELEASE, IT_CLOSE, IT_TICK, IT_START };
+enum { IT_SUBMIT = 1, IT_CANCEL, IT_RELEASE, IT_CLOSE, IT_TICK, IT_START, IT_RECONNECT, IT_STOP };
 
 typedef struct sftp_range { struct sftp_range *next; uint64_t off; uint32_t len; } sftp_range;
 
@@ -26,6 +26,7 @@ typedef struct sftp_wire {
   struct sftp_wire *hnext;
   struct sftp_req *r;   /* NULL: orphan (background close) */
   uint32_t id;
+  uint32_t ch;             /* SFTP channel (stream) the request went out on */
   uint32_t phase;
   uint32_t expect;         /* EXP_* bits of acceptable reply types (STATUS always) */
   uint64_t off;            /* data chunk: absolute file offset */
@@ -45,6 +46,7 @@ struct sd_sftp_file {
   uint32_t oflags;
   int      is_dir;
   int      meta;                         /* request class of handle ops */
+  uint32_t ch;                           /* channel the handle lives on (I/O thread) */
   uint32_t generation;
   volatile LONG stale;
   volatile LONG closing;                 /* sd_sftp_close submitted */
@@ -74,6 +76,7 @@ typedef struct sftp_req {
   uint32_t *ids; uint32_t nu, ng;        /* names_by_id */
   /* progress (I/O thread) */
   int queued, qclass, done, sent, in_live, emit_pending, cancel_pending;
+  int waiting;                           /* on the WAIT_READY list */
   uint32_t wires;
   uint64_t emit_off;                     /* relative */
   sftp_range *reissue;
@@ -81,9 +84,13 @@ typedef struct sftp_req {
   sd_err   cerr;
   sd_sftp_file *newf;                    /* open result not yet handed out */
   uint8_t  ph[SFTP_MAX_HANDLE]; uint32_t phlen; int ph_open;   /* probe handle */
+  uint32_t ph_ch;
   int      probe_found;
   char    *msg;
   sd_sftp_completion c;
 } sftp_req;
+
+/* sftp_ssh.c -> session (I/O thread): an authentication prompt was raised during a reconnect. */
+void sftp_session_auth_prompt(sd_sftp_session *s);
 
 #endif /* SD_SFTP_INTERNAL_H */

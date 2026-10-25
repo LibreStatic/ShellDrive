@@ -4,7 +4,10 @@
 # (tests/unit/sd_vfs) without linking the real sd_sftp library.
 
 set(SD_VFS_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/vfs_cache.c
   ${CMAKE_CURRENT_SOURCE_DIR}/vfs_core.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/vfs_data.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/vfs_disk.c
   ${CMAKE_CURRENT_SOURCE_DIR}/vfs_name.c
   ${CMAKE_CURRENT_SOURCE_DIR}/vfs_ops.c
   ${CMAKE_CURRENT_SOURCE_DIR}/vfs_req.c
@@ -17,6 +20,7 @@ sd_add_module(sd_vfs
     ${SD_VFS_SOURCES}
   DEPS
     sd_sftp
+    sd_crypto
     sd_base
     sd_platform
   HEADERS

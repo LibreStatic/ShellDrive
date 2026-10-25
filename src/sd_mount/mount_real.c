@@ -1,4 +1,4 @@
-/* sd_mount_backend bound to the real modules (sd_ssh, sd_sftp, sd_vfs, sd_dokan). Built as its own
+/* sd_mount_backend bound to the real modules (sd_ssh, sd_sftp, sd_vfs, sd_dokan, sd_webdav). Built as its own
  * library (sd_mount_real) so binaries and tests that use fakes never pull these symbols in. */
 #include "sd_mount/sd_mount.h"
 
@@ -20,6 +20,14 @@ static const sd_mount_backend k_real = {
   sd_dokan_probe,
   sd_dokan_mount_start,
   sd_dokan_mount_stop,
+  sd_webdav_query_client,
+  sd_webdav_ensure_client,
+  sd_webdav_mount_start,
+  sd_webdav_mount_stop,
+  sd_webdav_cleanup_mappings,
+  sd_vfs_cache_set_budget,
+  sd_vfs_get_identity,
+  sd_webdav_emergency_unmap,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

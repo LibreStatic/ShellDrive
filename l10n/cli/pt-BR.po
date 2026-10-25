@@ -397,3 +397,26 @@ msgstr "O Dokany não está instalado, por isso o ShellDrive não pode criar a u
 msgctxt "cli.error.generic"
 msgid "The operation failed ({code})."
 msgstr "A operação falhou ({code})."
+
+msgctxt "cli.help.opt_backend"
+msgid "Drive backend: auto (Dokany when it is installed, otherwise WebDAV), dokany or webdav."
+msgstr "Back-end da unidade: auto (Dokany se estiver instalado; caso contrário, WebDAV), dokany ou webdav."
+
+msgctxt "cli.error.webclient_disabled"
+msgid "The WebClient service is disabled, so ShellDrive cannot create a WebDAV drive. An administrator can enable it with: sc config WebClient start= demand"
+msgstr "O serviço WebClient está desativado, então o ShellDrive não pode criar uma unidade WebDAV. Um administrador pode ativá-lo com: sc config WebClient start= demand"
+
+msgctxt "cli.error.webdav_unavailable"
+msgid "The Windows WebDAV client (WebClient service) is not installed or could not be started. An administrator can start it with: sc start WebClient. On Windows Server, add the WebDAV Redirector feature first."
+msgstr "O cliente WebDAV do Windows (serviço WebClient) não está instalado ou não pôde ser iniciado. Um administrador pode iniciá-lo com: sc start WebClient. No Windows Server, adicione primeiro o recurso WebDAV Redirector."
+
+msgctxt "cli.state.reconnecting"
+msgid "reconnecting"
+msgstr "reconectando"
+
+msgctxt "cli.list.write_failed"
+msgid "On {target}, {count} file could not be saved on the server (last: {path})."
+msgid_plural "On {target}, {count} files could not be saved on the server (last: {path})."
+msgstr[0] "Em {target}, não foi possível salvar {count} arquivo no servidor (último: {path})."
+msgstr[1] "Em {target}, não foi possível salvar {count} de arquivos no servidor (último: {path})."
+msgstr[2] "Em {target}, não foi possível salvar {count} arquivos no servidor (último: {path})."

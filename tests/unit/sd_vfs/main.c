@@ -24,6 +24,23 @@ SD_TEST_DECL(vfs_metadata_cache_and_negative_entries);
 SD_TEST_DECL(vfs_attributes_times_and_truncate);
 SD_TEST_DECL(vfs_security_descriptor_and_statfs);
 SD_TEST_DECL(vfs_concurrent_writers);
+SD_TEST_DECL(vfs_readahead_4k_sequential_throughput);
+SD_TEST_DECL(vfs_single_flight_concurrent_misses);
+SD_TEST_DECL(vfs_cache_coherency_by_validator);
+SD_TEST_DECL(vfs_cache_local_writes_update_blocks);
+SD_TEST_DECL(vfs_write_behind_queues_and_flushes);
+SD_TEST_DECL(vfs_write_behind_window_backpressure);
+SD_TEST_DECL(vfs_write_behind_sticky_error);
+SD_TEST_DECL(vfs_write_behind_grace_retransmit);
+SD_TEST_DECL(vfs_write_behind_grace_expiry);
+SD_TEST_DECL(vfs_write_behind_conflict_after_reconnect);
+SD_TEST_DECL(vfs_reconnect_serves_cache_and_reopens);
+SD_TEST_DECL(vfs_reconnect_detects_remote_change);
+SD_TEST_DECL(vfs_write_through_disconnect_fails_the_call);
+SD_TEST_DECL(vfs_identity_home_owner_then_first_create);
+SD_TEST_DECL(vfs_disk_cache_persists_across_mounts);
+SD_TEST_DECL(vfs_disk_cache_refused_unsafe_directories);
+SD_TEST_DECL(vfs_disk_cache_trim_to_limit);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_err_table_covers_every_value),
@@ -50,6 +67,23 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_attributes_times_and_truncate),
   SD_TEST_ENTRY(vfs_security_descriptor_and_statfs),
   SD_TEST_ENTRY(vfs_concurrent_writers),
+  SD_TEST_ENTRY(vfs_readahead_4k_sequential_throughput),
+  SD_TEST_ENTRY(vfs_single_flight_concurrent_misses),
+  SD_TEST_ENTRY(vfs_cache_coherency_by_validator),
+  SD_TEST_ENTRY(vfs_cache_local_writes_update_blocks),
+  SD_TEST_ENTRY(vfs_write_behind_queues_and_flushes),
+  SD_TEST_ENTRY(vfs_write_behind_window_backpressure),
+  SD_TEST_ENTRY(vfs_write_behind_sticky_error),
+  SD_TEST_ENTRY(vfs_write_behind_grace_retransmit),
+  SD_TEST_ENTRY(vfs_write_behind_grace_expiry),
+  SD_TEST_ENTRY(vfs_write_behind_conflict_after_reconnect),
+  SD_TEST_ENTRY(vfs_reconnect_serves_cache_and_reopens),
+  SD_TEST_ENTRY(vfs_reconnect_detects_remote_change),
+  SD_TEST_ENTRY(vfs_write_through_disconnect_fails_the_call),
+  SD_TEST_ENTRY(vfs_identity_home_owner_then_first_create),
+  SD_TEST_ENTRY(vfs_disk_cache_persists_across_mounts),
+  SD_TEST_ENTRY(vfs_disk_cache_refused_unsafe_directories),
+  SD_TEST_ENTRY(vfs_disk_cache_trim_to_limit),
 };
 
 int main(int argc, char **argv)

@@ -1,5 +1,7 @@
-# CI for M0 (04 §11.2): build + unit tests + import audit for x64-modern and x64-xp, plus the
-# x64-analysis (/analyze) build. TM-R39: first-party actions only, pinned by commit SHA; read-only token.
+# CI (04 §11.2): build + unit tests + import audit for x64-modern, x64-xp, x86-ia32 and x86-sse2, plus the
+# x64-analysis (/analyze) build. The x86 flavours also run the ISA audit and the constant-time helper-call
+# gate (sd-isacheck) as post-build steps and CTests; their test binaries run under WOW64 on the x64
+# runner (Dokany tests skip there). TM-R39: first-party actions only, pinned by commit SHA; read-only token.
 name: ci
 
 on:
@@ -22,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [x64-modern, x64-xp]
+        preset: [x64-modern, x64-xp, x86-ia32, x86-sse2]
     env:
       SD_BUILD_NUMBER: ${{ github.run_number }}
     steps:
@@ -32,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up v141_xp toolset
-        if: matrix.preset == 'x64-xp'
+        if: matrix.preset != 'x64-modern'
         uses: ./.github/actions/setup-xp-toolset
 
       - name: Configure

@@ -6,7 +6,8 @@
 .DESCRIPTION
   For each preset: configure (from a clean build dir with -Clean), build Release (and Debug where the preset
   has one), run ctest. Starts the WSL sshd fixture if it is not running. Fails when an interop or dokany test is
-  skipped, unless -AllowSkip is given. Writes a JUnit file per preset under build\ci-local\.
+  skipped, unless -AllowSkip is given (the x86 presets always skip dokany.* under WOW64; that is reported,
+  not failed). Writes a JUnit file per preset under build\ci-local\.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1
@@ -14,7 +15,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string[]]$Presets = @('x64-modern', 'x64-xp', 'x64-analysis'),
+  [string[]]$Presets = @('x64-modern', 'x64-xp', 'x86-ia32', 'x86-sse2', 'x64-analysis'),
   [switch]$Clean,
   [switch]$AllowSkip,
   [switch]$NoFixture
@@ -68,7 +69,7 @@ foreach ($preset in $Presets) {
 
     foreach ($cfg in $configs) {
       Write-Host "== [$cfg] build"
-      $log = & $cmake --build --preset $cfg 2>&1
+      $log = & { $ErrorActionPreference = 'Continue'; & $cmake --build --preset $cfg 2>&1 }
       $log | Out-Host
       if ($LASTEXITCODE) { throw "build $cfg failed" }
       $warn = @($log | Select-String -Pattern ' (warning|error) [A-Z]+[0-9]+').Count
@@ -76,10 +77,18 @@ foreach ($preset in $Presets) {
 
       Write-Host "== [$cfg] test"
       $junit = Join-Path $out "ctest-$cfg.xml"
-      $tlog = & $ctest --preset $cfg --output-on-failure --output-junit $junit 2>&1
+      # Windows PowerShell 5.1 turns native stderr into error records, which 'Stop' would throw on before the
+      # failing tests are printed; judge by the exit code instead.
+      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit 2>&1 }
       $tlog | Out-Host
       if ($LASTEXITCODE) { throw "tests $cfg failed" }
       $skipped = @($tlog | Select-String -Pattern '\*\*\*Skipped' | ForEach-Object { ($_ -split ':')[1].Trim().Split(' ')[0] })
+      if ($preset -like 'x86-*') {
+        # Expected: the x86 test binaries run under WOW64, where sd_dokan refuses to mount (02 section 6.1).
+        $wow = @($skipped | Where-Object { $_ -like 'dokany.*' })
+        if ($wow.Count) { $note += "skipped under WOW64 in ${cfg}: $($wow -join ', '); " }
+        $skipped = @($skipped | Where-Object { $_ -notlike 'dokany.*' })
+      }
       if ($skipped.Count -and -not $AllowSkip) { throw "tests $cfg skipped: $($skipped -join ', ')" }
       if ($skipped.Count) { $note += "skipped in ${cfg}: $($skipped -join ', '); " }
     }

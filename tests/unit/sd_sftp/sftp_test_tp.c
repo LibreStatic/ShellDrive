@@ -83,88 +83,152 @@ sd_err tl_post(tl_loop *l, void (*fn)(void *), void *arg)
 
 int tl_is_io(tl_loop *l) { return l && (DWORD)l->tid == GetCurrentThreadId(); }
 
-/* ---- fake server ---- */
+/* ---- fake server ----
+ * Up to two streams (SD_SFTP_TP_STREAMS) per fake "connection"; with SD_SFTP_TP_REOPEN every open()
+ * starts a new connection generation. Chunks queued for an older generation or a stream that is no
+ * longer open are dropped, like bytes of a dead TCP connection. */
+
+#define FK_STREAMS 2
+
+typedef struct fake_stream {
+  const sd_ssh_channel_sink *sink; void *sink_ctx;
+  int state;                   /* 0 none, 1 opening, 2 open (I/O thread) */
+  sd_wr in;                    /* client -> server reassembly */
+} fake_stream;
 
 struct fake_srv {
   tl_loop *loop;
   fake_handler h; void *hctx;
-  const sd_ssh_channel_sink *sink; void *sink_ctx;
-  sd_wr in;                    /* client -> server stream reassembly */
-  volatile LONG closed;
+  fake_stream st[FK_STREAMS];
+  volatile LONG gen;           /* connection generation, incremented by open() */
+  volatile LONG closed;        /* current connection hung up / closed */
   volatile LONG packets;
+  volatile LONG opens;
+  volatile LONG cur;           /* stream of the packet being handled */
+  volatile LONG fail_opens;    /* upcoming open() calls that fail */
+  sd_err fail_err;
+  sd_err refuse_bulk;          /* != SD_OK: open_stream(1) fails with it */
+  uint32_t caps;
   int open_called;
 };
 
-typedef struct fake_chunk { fake_srv *f; size_t n; int kind; uint8_t data[1]; } fake_chunk;
+typedef struct fake_chunk { fake_srv *f; size_t n; int kind; uint32_t idx; LONG gen; sd_err err; uint8_t data[1]; } fake_chunk;
 enum { FK_DATA, FK_OPEN, FK_CLOSED };
 
 static void fake_deliver(void *arg)
 {
   fake_chunk *c = (fake_chunk *)arg;
   fake_srv *f = c->f;
-  if (c->kind == FK_OPEN) f->sink->on_open(f->sink_ctx, SD_OK);
-  else if (c->kind == FK_CLOSED) f->sink->on_closed(f->sink_ctx, SD_E_DISCONNECTED);
-  else if (!f->closed) f->sink->on_data(f->sink_ctx, c->data, c->n);
+  fake_stream *st = &f->st[c->idx];
+  if (c->gen != f->gen) { sd_free(c); return; }
+  if (c->kind == FK_OPEN) {
+    if (st->state == 1) {
+      sd_err e = c->err != SD_OK ? c->err : (f->closed ? SD_E_SHUTDOWN : SD_OK);
+      st->state = e == SD_OK ? 2 : 0;
+      st->sink->on_open(st->sink_ctx, e);
+    }
+  } else if (c->kind == FK_CLOSED) {
+    if (st->state == 2) { st->state = 0; st->sink->on_closed(st->sink_ctx, c->err); }
+    else if (st->state == 1) { st->state = 0; st->sink->on_open(st->sink_ctx, c->err); }
+  } else if (st->state == 2 && !f->closed) {
+    st->sink->on_data(st->sink_ctx, c->data, c->n);
+  }
   sd_free(c);
 }
 
-static void fake_post_kind(fake_srv *f, int kind, const void *p, size_t n)
+static void fake_post_kind(fake_srv *f, int kind, uint32_t idx, sd_err err, const void *p, size_t n)
 {
   fake_chunk *c = (fake_chunk *)sd_alloc(sizeof(*c) + n);
   if (!c) return;
-  c->f = f; c->n = n; c->kind = kind;
+  c->f = f; c->n = n; c->kind = kind; c->idx = idx; c->err = err; c->gen = f->gen;
   if (n) memcpy(c->data, p, n);
   if (tl_post(f->loop, fake_deliver, c) != SD_OK) sd_free(c);
 }
 
 static sd_err ft_post(void *ctx, void (*fn)(void *), void *arg) { return tl_post(((fake_srv *)ctx)->loop, fn, arg); }
 static int ft_is_io(void *ctx) { return tl_is_io(((fake_srv *)ctx)->loop); }
+
 static sd_err ft_open(void *ctx, const sd_ssh_channel_sink *sink, void *sink_ctx)
 {
   fake_srv *f = (fake_srv *)ctx;
-  f->sink = sink; f->sink_ctx = sink_ctx; f->open_called = 1;
-  fake_post_kind(f, FK_OPEN, NULL, 0);
+  uint32_t i;
+  InterlockedIncrement(&f->gen);
+  InterlockedExchange(&f->closed, 0);
+  InterlockedIncrement(&f->opens);
+  for (i = 0; i < FK_STREAMS; i++) { f->st[i].state = 0; f->st[i].in.len = 0; }
+  f->st[0].sink = sink; f->st[0].sink_ctx = sink_ctx; f->st[0].state = 1;
+  f->open_called = 1;
+  if (f->fail_opens > 0) {
+    InterlockedDecrement(&f->fail_opens);
+    fake_post_kind(f, FK_OPEN, 0, f->fail_err != SD_OK ? f->fail_err : SD_E_CONN_REFUSED, NULL, 0);
+  } else {
+    fake_post_kind(f, FK_OPEN, 0, SD_OK, NULL, 0);
+  }
+  return SD_OK;
+}
+
+static sd_err ft_open_stream(void *ctx, uint32_t idx, const sd_ssh_channel_sink *sink, void *sink_ctx)
+{
+  fake_srv *f = (fake_srv *)ctx;
+  if (idx != 1) return SD_E_INVALID_PARAM;
+  f->st[1].sink = sink; f->st[1].sink_ctx = sink_ctx; f->st[1].state = 1; f->st[1].in.len = 0;
+  fake_post_kind(f, FK_OPEN, 1, f->refuse_bulk, NULL, 0);
+  return SD_OK;
+}
+
+static sd_err ft_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t n, size_t *accepted)
+{
+  fake_srv *f = (fake_srv *)ctx;
+  fake_stream *st = &f->st[idx];
+  size_t off = 0;
+  *accepted = n;
+  if (f->closed || st->state != 2) return SD_OK;
+  sd_wr_bytes(&st->in, p, n);
+  while (st->in.len - off >= 4) {
+    uint32_t len = sd_load_be32(st->in.p + off);
+    LONG g = f->gen;
+    if (st->in.len - off - 4 < len) break;
+    InterlockedIncrement(&f->packets);
+    InterlockedExchange(&f->cur, (LONG)idx);
+    f->h(f, f->hctx, st->in.p + off + 4, len);
+    if (g != f->gen || f->closed) { st->in.len = 0; return SD_OK; }   /* handler hung up */
+    off += 4 + (size_t)len;
+  }
+  if (off) { memmove(st->in.p, st->in.p + off, st->in.len - off); st->in.len -= off; }
   return SD_OK;
 }
 static sd_err ft_write(void *ctx, const uint8_t *p, size_t n, size_t *accepted)
-{
-  fake_srv *f = (fake_srv *)ctx;
-  size_t off = 0;
-  *accepted = n;
-  if (f->closed) return SD_OK;
-  sd_wr_bytes(&f->in, p, n);
-  while (f->in.len - off >= 4) {
-    uint32_t len = sd_load_be32(f->in.p + off);
-    if (f->in.len - off - 4 < len) break;
-    InterlockedIncrement(&f->packets);
-    f->h(f, f->hctx, f->in.p + off + 4, len);
-    off += 4 + (size_t)len;
-  }
-  if (off) { memmove(f->in.p, f->in.p + off, f->in.len - off); f->in.len -= off; }
-  return SD_OK;
-}
+{ return ft_write_stream(ctx, 0, p, n, accepted); }
 static void ft_consumed(void *ctx, size_t n) { SD_UNUSED(ctx); SD_UNUSED(n); }
-static void ft_close(void *ctx)
+static void ft_consumed_stream(void *ctx, uint32_t idx, size_t n) { SD_UNUSED(ctx); SD_UNUSED(idx); SD_UNUSED(n); }
+
+static void fake_close_all(fake_srv *f, sd_err why)
 {
-  fake_srv *f = (fake_srv *)ctx;
-  if (InterlockedExchange(&f->closed, 1) == 0) fake_post_kind(f, FK_CLOSED, NULL, 0);
+  uint32_t i;
+  InterlockedExchange(&f->closed, 1);
+  for (i = 0; i < FK_STREAMS; i++) fake_post_kind(f, FK_CLOSED, i, why, NULL, 0);
 }
+
+static void ft_close(void *ctx) { fake_close_all((fake_srv *)ctx, SD_E_SHUTDOWN); }
+
 static void ft_destroy(void *ctx)
 {
   fake_srv *f = (fake_srv *)ctx;
+  uint32_t i;
   tl_loop_free(f->loop);
-  sd_wr_free(&f->in);
+  for (i = 0; i < FK_STREAMS; i++) sd_wr_free(&f->st[i].in);
   sd_free(f);
 }
 
 fake_srv *fake_new(fake_handler h, void *ctx)
 {
   fake_srv *f = (fake_srv *)sd_calloc(1, sizeof(*f));
+  uint32_t i;
   if (!f) return NULL;
   f->loop = tl_loop_new();
   if (!f->loop) { sd_free(f); return NULL; }
   f->h = h; f->hctx = ctx;
-  sd_wr_init(&f->in, 64u * 1024u * 1024u);
+  for (i = 0; i < FK_STREAMS; i++) sd_wr_init(&f->st[i].in, 64u * 1024u * 1024u);
   return f;
 }
 
@@ -174,13 +238,30 @@ void fake_transport(fake_srv *f, sd_sftp_transport *t)
   t->ctx = f;
   t->post = ft_post; t->is_io_thread = ft_is_io; t->open = ft_open; t->write = ft_write;
   t->consumed = ft_consumed; t->close = ft_close; t->destroy = ft_destroy;
+  t->caps = f->caps;
+  if (f->caps & SD_SFTP_TP_STREAMS) {
+    t->open_stream = ft_open_stream; t->write_stream = ft_write_stream; t->consumed_stream = ft_consumed_stream;
+  }
 }
+
+void fake_set_caps(fake_srv *f, uint32_t caps) { f->caps = caps; }
+void fake_refuse_bulk(fake_srv *f, sd_err e) { f->refuse_bulk = e; }
+void fake_fail_opens(fake_srv *f, LONG n, sd_err e) { f->fail_err = e; InterlockedExchange(&f->fail_opens, n); }
+uint32_t fake_opens(fake_srv *f) { return (uint32_t)f->opens; }
+uint32_t fake_gen(fake_srv *f) { return (uint32_t)f->gen; }
+uint32_t fake_cur_stream(fake_srv *f) { return (uint32_t)f->cur; }
+int fake_stream_open(fake_srv *f, uint32_t idx) { return idx < FK_STREAMS && f->st[idx].state == 2; }
 
 void fake_free_if_unused(fake_srv *f) { if (f) ft_destroy(f); }
 
 void fake_run(fake_srv *f, void (*fn)(void *), void *arg) { (void)tl_post(f->loop, fn, arg); }
 
-void fake_reply(fake_srv *f, const void *bytes, size_t n) { fake_post_kind(f, FK_DATA, bytes, n); }
+void fake_reply_on(fake_srv *f, uint32_t idx, const void *bytes, size_t n)
+{
+  fake_post_kind(f, FK_DATA, idx < FK_STREAMS ? idx : 0, SD_OK, bytes, n);
+}
+
+void fake_reply(fake_srv *f, const void *bytes, size_t n) { fake_reply_on(f, (uint32_t)f->cur, bytes, n); }
 
 void fake_reply_wr(fake_srv *f, sd_wr *w)
 {
@@ -191,7 +272,7 @@ void fake_reply_wr(fake_srv *f, sd_wr *w)
 
 void fake_hangup(fake_srv *f)
 {
-  if (InterlockedExchange(&f->closed, 1) == 0) fake_post_kind(f, FK_CLOSED, NULL, 0);
+  if (InterlockedExchange(&f->closed, 1) == 0) fake_close_all(f, SD_E_DISCONNECTED);
 }
 
 uint32_t fake_packets(fake_srv *f) { return (uint32_t)f->packets; }

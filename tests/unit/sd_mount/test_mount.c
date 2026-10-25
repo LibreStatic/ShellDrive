@@ -25,6 +25,14 @@ typedef struct harness {
   sd_mount_answer_kind hk_answer;
   const char *password;      /* NULL = do not answer */
   int answer_inline;
+  /* M1 callbacks */
+  uint32_t nconn, nwrite_failed, nlookups, nstores;
+  wchar_t wf_path[260];
+  UINT64 wf_bytes;
+  char wf_status[32];
+  char lookup_fp[64];
+  int known_uid;             /* 0 = lookup returns nothing */
+  uint32_t stored_uid;
 } harness;
 
 static void h_post(void *ctx, void (*fn)(void *), void *arg)
@@ -71,6 +79,46 @@ static void h_on_closed(void *ctx, sd_mount *m, uint32_t id)
   SD_UNUSED(m);
   SD_UNUSED(id);
   h->nclosed++;
+}
+
+static void h_on_conn(void *ctx, sd_mount *m)
+{
+  SD_UNUSED(m);
+  ((harness *)ctx)->nconn++;
+}
+
+static void h_on_write_failed(void *ctx, sd_mount *m, const wchar_t *path, UINT64 bytes, const char *status)
+{
+  harness *h = (harness *)ctx;
+  SD_UNUSED(m);
+  h->nwrite_failed++;
+  wcsncpy_s(h->wf_path, SD_COUNTOF(h->wf_path), path, _TRUNCATE);
+  h->wf_bytes = bytes;
+  strncpy_s(h->wf_status, sizeof(h->wf_status), status, _TRUNCATE);
+}
+
+static int h_lookup_identity(void *ctx, sd_mount *m, const char *fp, sd_vfs_identity *out)
+{
+  harness *h = (harness *)ctx;
+  SD_UNUSED(m);
+  h->nlookups++;
+  strncpy_s(h->lookup_fp, sizeof(h->lookup_fp), fp, _TRUNCATE);
+  if (!h->known_uid)
+    return 0;
+  memset(out, 0, sizeof(*out));
+  out->uid_known = out->definitive = TRUE;
+  out->uid = (UINT32)h->known_uid;
+  out->gid = 100;
+  return 1;
+}
+
+static void h_store_identity(void *ctx, sd_mount *m, const char *fp, const sd_vfs_identity *id)
+{
+  harness *h = (harness *)ctx;
+  SD_UNUSED(m);
+  SD_UNUSED(fp);
+  h->nstores++;
+  h->stored_uid = id->uid;
 }
 
 static void pump(harness *h, uint32_t ms)
@@ -130,7 +178,7 @@ static void h_free(harness *h)
   sd_mutex_destroy(&h->lock);
 }
 
-static sd_err h_create(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter)
+static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter, int backend)
 {
   sd_mount_params p;
   sd_mount_callbacks cb;
@@ -141,13 +189,27 @@ static sd_err h_create(harness *h, const wchar_t *host, const wchar_t *identity,
   p.identity_path = identity;
   p.letter = letter;
   p.remote_path = "/srv/data";
+  p.backend = backend;
   memset(&cb, 0, sizeof(cb));
   cb.ctx = h;
   cb.post = h_post;
   cb.on_state = h_on_state;
   cb.on_prompt = h_on_prompt;
   cb.on_prompt_closed = h_on_closed;
+  cb.on_conn = h_on_conn;
+  cb.on_write_failed = h_on_write_failed;
+  cb.lookup_identity = h_lookup_identity;
+  cb.store_identity = h_store_identity;
+  p.disk_cache_dir = L"C:\\fake\\cache\\0123456789abcdef";
+  p.disk_cache_mb = 64;
+  p.offline_wait_ms = 1500;
+  p.reconnect_grace_ms = 30000;
   return sd_mount_create(fake_backend(), &p, &cb, &h->m);
+}
+
+static sd_err h_create(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter)
+{
+  return h_create_b(h, host, identity, letter, SD_MOUNT_BACKEND_AUTO);
 }
 
 SD_TEST(mount_tofu_password_mount_unmount)
@@ -356,4 +418,170 @@ SD_TEST(mount_rejects_bad_params_and_names)
   SD_CHECK_STR(sd_mount_state_name(SD_MOUNT_UNMOUNTED), "unmounted");
   SD_CHECK_STR(sd_mount_prompt_kind_name(SD_MP_HOSTKEY), "hostkey_unknown");
   h_free(&h);
+}
+
+/* 02 §10.1 backend selection with the WebDAV backend (M1). */
+static void run_backend_case(sd_test_ctx *sd_t_, const wchar_t *host, int backend, sd_mount_state want,
+                             const char *want_code, sd_mount_backend_kind want_used)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  SD_REQUIRE(h_create_b(&h, host, L"C:\\keys\\id_ed25519", L'V', backend) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  if (want == SD_MOUNT_MOUNTED) {
+    SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+    SD_CHECK_EQ_INT(sd_mount_backend_kind_used(h.m), want_used);
+    SD_CHECK(fake_backend_letter_mounted(L'V'));
+    SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+    SD_CHECK(pump_until_final(&h, 5000));
+    SD_CHECK(!fake_backend_letter_mounted(L'V'));
+  } else {
+    SD_CHECK(pump_until_final(&h, 5000));
+    SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+    sd_mount_get_failure(h.m, &f);
+    SD_CHECK(f.code != NULL && strcmp(f.code, want_code) == 0);
+  }
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+/* M1 regression: a lost connection used to stay OFFLINE for good (reconnect disabled, and a second
+   READY would have mounted the backend again). Now the drive stays, the mount goes OFFLINE and comes
+   back to MOUNTED on the next generation without a second vfs/Dokany mount. */
+SD_TEST(mount_reconnect_keeps_drive)
+{
+  harness h;
+  sd_mount_conn c;
+  uint32_t i, saw_offline = 0;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"flaky.test", L"C:\\keys\\id_ed25519", L'R') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  /* options handed down */
+  SD_CHECK_EQ_INT(fake_backend_budget_calls(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_reconnect_enabled(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_channels(), 2);
+  SD_CHECK_EQ_INT(fake_backend_last_secret_cache(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_offline_wait(), 1500);
+  SD_CHECK_EQ_INT(fake_backend_last_grace(), 30000);
+  SD_CHECK_EQ_INT(fake_backend_last_disk_mb(), 64);
+  SD_CHECK(wcscmp(fake_backend_last_disk_dir(), L"C:\\fake\\cache\\0123456789abcdef") == 0);
+  SD_CHECK_EQ_INT(h.nlookups, 1);
+  SD_CHECK_STR(h.lookup_fp, FAKE_FP);
+  sd_mount_get_conn(h.m, &c);
+  SD_CHECK_EQ_INT(c.session, SD_SFTP_ST_READY);
+  SD_CHECK_EQ_INT(c.generation, 1);
+  /* drop and reconnect */
+  h.nstates = 0;
+  fake_backend_drop(0);
+  pump(&h, 300);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  for (i = 0; i < h.nstates; i++)
+    if (h.states[i] == SD_MOUNT_OFFLINE) saw_offline = 1;
+  SD_CHECK(saw_offline);
+  SD_CHECK(h.nconn >= 2);
+  SD_CHECK(fake_backend_letter_mounted(L'R'));
+  SD_CHECK_EQ_INT(fake_backend_dokan_starts(), 1);
+  SD_CHECK_EQ_INT(fake_backend_vfs_mounts(), 1);
+  sd_mount_get_conn(h.m, &c);
+  SD_CHECK_EQ_INT(c.session, SD_SFTP_ST_READY);
+  SD_CHECK_EQ_INT(c.generation, 2);
+  SD_CHECK_EQ_INT(c.reconnects, 1);
+  SD_CHECK_EQ_INT(c.offline_since_ms, 0);
+  /* a permanent failure after READY keeps the drive offline until the user unmounts */
+  fake_backend_drop(1);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_OFFLINE, 5000));
+  pump(&h, 200);
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_OFFLINE);
+  SD_CHECK(fake_backend_letter_mounted(L'R'));
+  sd_mount_get_conn(h.m, &c);
+  SD_CHECK_EQ_INT(c.session, SD_SFTP_ST_FAILED);
+  SD_CHECK(c.offline_since_ms != 0);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_UNMOUNTED);
+  SD_CHECK(!fake_backend_letter_mounted(L'R'));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  SD_CHECK_EQ_INT(fake_backend_live_sessions(), 0);
+}
+
+/* M1: vfs WRITE_FAILED reaches the host on the control thread with the path; IDENTITY is stored and a
+   cached identity is handed to the vfs on the next mount. */
+SD_TEST(mount_write_failed_and_identity)
+{
+  harness h;
+  sd_mount_conn c;
+  uint32_t uid = 0;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"good-wf.test", L"C:\\keys\\id_ed25519", L'S') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(!fake_backend_last_known_uid(&uid));
+  fake_backend_vfs_write_failed(L"\\docs\\report.txt", 4096);
+  fake_backend_vfs_identity(1000, 1000);
+  pump(&h, 200);
+  SD_CHECK_EQ_INT(h.nwrite_failed, 1);
+  SD_CHECK(wcscmp(h.wf_path, L"\\docs\\report.txt") == 0);
+  SD_CHECK_EQ_INT((int)h.wf_bytes, 4096);
+  SD_CHECK_STR(h.wf_status, "disconnected");
+  sd_mount_get_conn(h.m, &c);
+  SD_CHECK_EQ_INT(c.write_failed, 1);
+  SD_CHECK(wcscmp(c.last_write_failed, L"\\docs\\report.txt") == 0);
+  SD_CHECK_EQ_INT(h.nstores, 1);
+  SD_CHECK_EQ_INT(h.stored_uid, 1000);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  /* next mount: the host returns the cached identity */
+  h_init(&h);
+  h.known_uid = 1000;
+  SD_REQUIRE(h_create(&h, L"good-wf.test", L"C:\\keys\\id_ed25519", L'S') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(fake_backend_last_known_uid(&uid));
+  SD_CHECK_EQ_INT(uid, 1000);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_backend_selection)
+{
+  sd_mount_backend_kind k;
+  fake_backend_reset();
+  /* auto with Dokany: Dokany, and WebClient is never started (TM-R21) */
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  run_backend_case(sd_t_, L"good-auto.test", SD_MOUNT_BACKEND_AUTO, SD_MOUNT_MOUNTED, NULL, SD_MOUNT_BACKEND_DOKANY);
+  SD_CHECK_EQ_INT(fake_backend_webclient_starts(), 0);
+  SD_CHECK_EQ_INT(fake_backend_last_request_timeout(), 25000);
+  /* auto without Dokany: WebDAV (started on demand), 50 s request deadline */
+  run_backend_case(sd_t_, L"nodokany-auto.test", SD_MOUNT_BACKEND_AUTO, SD_MOUNT_MOUNTED, NULL, SD_MOUNT_BACKEND_WEBDAV);
+  SD_CHECK_EQ_INT(fake_backend_webclient_starts(), 1);
+  SD_CHECK_EQ_INT(fake_backend_webdav_mounts(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_request_timeout(), 50000);
+  /* forced webdav even though Dokany is fine */
+  run_backend_case(sd_t_, L"good-webdav.test", SD_MOUNT_BACKEND_WEBDAV, SD_MOUNT_MOUNTED, NULL, SD_MOUNT_BACKEND_WEBDAV);
+  /* forced dokany without Dokany: no fallback */
+  run_backend_case(sd_t_, L"nodokany-forced.test", SD_MOUNT_BACKEND_DOKANY, SD_MOUNT_FAILED, "backend_unavailable",
+                   SD_MOUNT_BACKEND_DOKANY);
+  /* WebClient disabled / missing / not startable */
+  fake_backend_set_webclient(SD_WD_CLIENT_DISABLED, 1);
+  run_backend_case(sd_t_, L"nodokany-dis.test", SD_MOUNT_BACKEND_AUTO, SD_MOUNT_FAILED, "webclient_disabled",
+                   SD_MOUNT_BACKEND_AUTO);
+  fake_backend_set_webclient(SD_WD_CLIENT_MISSING, 1);
+  run_backend_case(sd_t_, L"good-missing.test", SD_MOUNT_BACKEND_WEBDAV, SD_MOUNT_FAILED, "backend_unavailable",
+                   SD_MOUNT_BACKEND_WEBDAV);
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 0);
+  run_backend_case(sd_t_, L"good-admin.test", SD_MOUNT_BACKEND_WEBDAV, SD_MOUNT_FAILED, "backend_unavailable",
+                   SD_MOUNT_BACKEND_WEBDAV);
+  /* names */
+  SD_CHECK_STR(sd_mount_backend_kind_name(SD_MOUNT_BACKEND_WEBDAV), "webdav");
+  SD_CHECK(sd_mount_backend_kind_parse("dokany", &k) && k == SD_MOUNT_BACKEND_DOKANY);
+  SD_CHECK(!sd_mount_backend_kind_parse("smb", &k));
 }

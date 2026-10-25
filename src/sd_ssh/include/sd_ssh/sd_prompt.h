@@ -32,7 +32,7 @@ typedef struct sd_auth_prompt_info {
   uint32_t round;            /* 0-based count of rounds of this kind */
   int may_autofill;          /* a stored secret is plausible; 0 if hostkey_just_accepted */
   int hostkey_just_accepted; /* TM-R05: stored secrets must not answer; SD_ANSWER_FROM_STORE is refused */
-  int is_reconnect;
+  int is_reconnect;          /* raised during an automatic reconnect (01 §8) */
   int is_pool_member;        /* answer from stored secrets or cancel, never show UI (01 §10.9) */
   const char *key_path; const char *key_fingerprint;            /* passphrase prompts */
   const char *proxy_host; uint16_t proxy_port;                  /* SD_PROMPT_PROXY_PASSWORD */
@@ -51,6 +51,8 @@ typedef struct sd_hostkey_prompt_info {
   const char *fp_sha256;     /* "SHA256:..." (primary) */
   const char *fp_md5;        /* "MD5:xx:..." (secondary; may be "" until MD5 exists, M2) */
   sd_hk_status status;       /* always SD_HK_NEW for a prompt; other results fail without one */
+  int is_reconnect;          /* M1: raised by an automatic reconnect (the key was removed from every
+                                store meanwhile and differs from the key of the previous connect) */
 } sd_hostkey_prompt_info;
 
 typedef enum sd_hostkey_decision {

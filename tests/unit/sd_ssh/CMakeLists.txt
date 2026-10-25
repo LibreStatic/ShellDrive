@@ -20,4 +20,6 @@ target_compile_definitions(sd-test-ssh-interop PRIVATE
   SD_SSH_WSL_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/wsl-sshd")
 set_target_properties(sd-test-ssh-interop PROPERTIES FOLDER "tests")
 add_test(NAME interop.ssh COMMAND sd-test-ssh-interop)
-set_tests_properties(interop.ssh PROPERTIES LABELS interop TIMEOUT 300 SKIP_RETURN_CODE 77)
+# interop.sftp_ssh kills and restarts the same fixture: never run both at once
+set_tests_properties(interop.ssh PROPERTIES LABELS interop TIMEOUT 300 SKIP_RETURN_CODE 77
+  RESOURCE_LOCK wsl_sshd_fixture)

@@ -23,9 +23,10 @@ include(SdL10n)      # sdl10n catalog generation (03 §9)
 
 enable_testing()
 
-# Build-time tools first: sdl10n and sd-importcheck run during the build.
+# Build-time tools first: sdl10n, sd-importcheck and sd-isacheck run during the build.
 add_subdirectory(tools/sdl10n)
 add_subdirectory(tools/sd-importcheck)
+add_subdirectory(tools/sd-isacheck)
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)
@@ -38,6 +39,7 @@ add_subdirectory(src/sd_ssh)
 add_subdirectory(src/sd_sftp)
 add_subdirectory(src/sd_vfs)
 add_subdirectory(src/sd_dokan)
+add_subdirectory(src/sd_webdav)
 add_subdirectory(src/sd_l10n)
 add_subdirectory(src/sd_config)
 add_subdirectory(src/sd_ipc)

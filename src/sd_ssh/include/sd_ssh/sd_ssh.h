@@ -46,7 +46,9 @@ typedef struct sd_ssh_auth_cfg {
   uint32_t methods;                     /* SD_AUTH_* */
   uint32_t agents;                      /* SD_AGENT_*; must be 0 in the service context (D17) */
   int identities_only;                  /* D37 */
-  int cache_secrets_for_reconnect;
+  int cache_secrets_for_reconnect;      /* M1: password and key passphrases are kept, encrypted in
+                                           memory (CryptProtectMemory / RtlEncryptMemory), for later
+                                           connects of the same sd_ssh_conn; see "reconnect" below */
 } sd_ssh_auth_cfg;
 
 typedef enum sd_proxy_kind { SD_PROXY_NONE, SD_PROXY_HTTP, SD_PROXY_SOCKS5, SD_PROXY_SYSTEM } sd_proxy_kind;
@@ -128,6 +130,20 @@ typedef struct sd_ssh_callbacks {
 
 /* ---- lifecycle ---- */
 
+/* Reconnect (01 §8, M1). After the done callback of a connect reported an error, or after the
+ * connection died or was disconnected (every channel got on_closed and, for a disconnect, its done
+ * callback ran), sd_ssh_conn_connect() may be called again on the same object. The I/O thread, the
+ * config and the following state survive; everything else (keys, channels, KEX/auth state) is new:
+ * - the host key verified by the last successful connect is pinned. A reconnect runs the full
+ *   known_hosts verification again: MATCH proceeds; MISMATCH / REVOKED / NEW_TYPE fail as usual
+ *   (no accept path); NEW proceeds silently only when the key equals the pinned one (it was
+ *   accepted once earlier), otherwise the host-key prompt carries is_reconnect = 1;
+ * - with cache_secrets_for_reconnect, the password and key-file passphrases that worked are kept
+ *   encrypted in memory and answered by sd_ssh itself on reconnect (no prompt, so the login counts
+ *   as non-interactive). The cache is neither read nor written on a connection whose host key was
+ *   just accepted by a prompt (TM-R05); a cached secret the server rejects is dropped and the
+ *   normal prompt follows. Keyboard-interactive answers are never cached;
+ * - every prompt raised by a reconnect carries is_reconnect = 1. */
 typedef void (*sd_ssh_done_cb)(void *ctx, sd_err err, uint32_t failed_hop);
 sd_err sd_ssh_global_init(void);                  /* WSAStartup etc.; idempotent, thread-safe */
 sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out);
@@ -136,8 +152,20 @@ sd_err sd_ssh_conn_disconnect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx);
 void   sd_ssh_conn_destroy(sd_ssh_conn *c);       /* waits for the I/O thread; never call on it */
 int    sd_ssh_conn_is_io_thread(const sd_ssh_conn *c);
 
-typedef struct sd_ssh_auth_info { int noninteractive; uint32_t methods_used; } sd_ssh_auth_info;
+typedef struct sd_ssh_auth_info {
+  int noninteractive; uint32_t methods_used;
+  int is_reconnect;                     /* M1: the last connect was a reconnect */
+  int hostkey_just_accepted;            /* M1: its host key was accepted by a prompt (TM-R05) */
+} sd_ssh_auth_info;
 sd_err sd_ssh_conn_auth_info(const sd_ssh_conn *c, sd_ssh_auth_info *out);
+
+/* M1: drops every cached reconnect secret (e.g. after the user changed the password). Any thread. */
+sd_err sd_ssh_conn_clear_secrets(sd_ssh_conn *c);
+
+/* M1 keepalive tuning (01 §4.6): changes keepalive_interval_ms / keepalive_max_missed at run time
+   (0 keeps a value; interval >= 1000 ms, max_missed <= 100). Applies to the current and later
+   connects; any thread. */
+sd_err sd_ssh_conn_set_keepalive(sd_ssh_conn *c, uint32_t interval_ms, uint32_t max_missed);
 
 /* Liveness probe and RTT (01 §4.6); I/O thread only. */
 void   sd_ssh_conn_probe(sd_ssh_conn *c);

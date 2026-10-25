@@ -11,6 +11,9 @@
 #
 #   sd_add_app(<target> OUTPUT_NAME <exe name> DESCRIPTION <text> SOURCES ... DEPS ... [WINDOWS])
 #       Shipping executable with version resource, manifest and the post-build import audit (04 §2.4).
+#       x86 flavours add the ISA audit (sd-isacheck); x86-sse2 executables also get the SSE2 entry thunk
+#       (src/sd_platform/entry/sd_cpucheck.c, /ENTRY:sd_cpucheck_entry, 04 §3.2). Apps use wmain /
+#       wWinMain (the thunk tail-calls wmainCRTStartup or wWinMainCRTStartup).
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
@@ -75,6 +78,43 @@ function(sd_add_unit_test short)
   set_tests_properties(unit.${short} PROPERTIES LABELS unit TIMEOUT 300)
 endfunction()
 
+# Object library with the x86-sse2 entry thunk, always compiled /arch:IA32 (SD_X86_ARCH_OVERRIDE).
+# out_var receives the target name; gui selects the wWinMain variant.
+function(sd_cpucheck_target out_var gui)
+  if(gui)
+    set(_n sd_cpucheck_gui)
+  else()
+    set(_n sd_cpucheck_console)
+  endif()
+  if(NOT TARGET ${_n})
+    add_library(${_n} OBJECT "${CMAKE_SOURCE_DIR}/src/sd_platform/entry/sd_cpucheck.c")
+    set_target_properties(${_n} PROPERTIES SD_X86_ARCH_OVERRIDE IA32 FOLDER "apps")
+    if(gui)
+      target_compile_definitions(${_n} PRIVATE SD_CPUCHECK_GUI=1)
+    endif()
+  endif()
+  set(${out_var} ${_n} PARENT_SCOPE)
+endfunction()
+
+# Post-build ISA audit of a 32-bit executable (04 §2.4) + CTest isacheck.<name>.
+function(sd_add_isa_check target name)
+  if(NOT SD_X86 OR SD_ENABLE_ASAN)
+    return()
+  endif()
+  if(SD_X86_IA32)
+    set(_args --floor ia32)
+  else()
+    set(_args --floor sse2)
+  endif()
+  list(APPEND _args --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/crt-allow.txt" ${ARGN})
+  add_dependencies(${target} sd-isacheck)
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND "$<TARGET_FILE:sd-isacheck>" ${_args} "$<TARGET_FILE:${target}>"
+    COMMENT "ISA audit of ${name} (${SD_FLAVOUR})" VERBATIM)
+  add_test(NAME isacheck.${name} COMMAND sd-isacheck ${_args} "$<TARGET_FILE:${target}>")
+  set_tests_properties(isacheck.${name} PROPERTIES LABELS isacheck)
+endfunction()
+
 function(sd_add_app target)
   cmake_parse_arguments(A "WINDOWS" "OUTPUT_NAME;DESCRIPTION" "SOURCES;DEPS" ${ARGN})
   if(NOT A_OUTPUT_NAME)
@@ -98,6 +138,13 @@ function(sd_add_app target)
     set(_subsystem CONSOLE)
   endif()
   set_target_properties(${target} PROPERTIES OUTPUT_NAME "${A_OUTPUT_NAME}" FOLDER "apps")
+  set(_isa_extra "")
+  if(SD_FLAVOUR STREQUAL "x86-sse2")
+    sd_cpucheck_target(_cpucheck "${A_WINDOWS}")
+    target_sources(${target} PRIVATE $<TARGET_OBJECTS:${_cpucheck}>)
+    target_link_options(${target} PRIVATE /ENTRY:sd_cpucheck_entry)
+    set(_isa_extra --entry sd_cpucheck_entry)
+  endif()
   target_link_libraries(${target} PRIVATE sd_headers ${A_DEPS})
   target_include_directories(${target} PRIVATE "${SD_GENERATED_DIR}")
   if(SD_SUBSYSTEM_VERSION)
@@ -115,6 +162,9 @@ function(sd_add_app target)
     else()
       list(APPEND _args --forbid-cfg)
     endif()
+    if(SD_X86)
+      list(APPEND _args --require-safeseh)
+    endif()
     add_dependencies(${target} sd-importcheck)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND "$<TARGET_FILE:sd-importcheck>" ${_args} "$<TARGET_FILE:${target}>"
@@ -123,4 +173,5 @@ function(sd_add_app target)
              COMMAND sd-importcheck ${_args} "$<TARGET_FILE:${target}>")
     set_tests_properties(importcheck.${A_OUTPUT_NAME} PROPERTIES LABELS importcheck)
   endif()
+  sd_add_isa_check(${target} ${A_OUTPUT_NAME} ${_isa_extra})
 endfunction()

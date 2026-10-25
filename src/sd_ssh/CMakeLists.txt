@@ -14,6 +14,7 @@ sd_add_module(sd_ssh
     negotiate.c
     packet.c
     prompt.c
+    seccache.c
   DEPS
     sd_crypto
     sd_base

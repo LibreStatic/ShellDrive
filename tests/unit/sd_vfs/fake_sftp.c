@@ -7,6 +7,7 @@
 
 #include "fake_sftp.h"
 #include "sd_base/sd_mem.h"
+#include "sd_platform/sd_time.h"
 
 /* Test fake: out of memory is fatal (no allocation-failure tests run against the fake). */
 static _Ret_notnull_ void *must(void *p)
@@ -43,6 +44,11 @@ struct sd_sftp_file {
   uint32_t oflags;
   LONG refs;
   sd_sftp_dirent *snap; uint32_t nsnap, pos, snapped;
+  char *path;                       /* as opened (for reopen) */
+  uint32_t gen;
+  volatile LONG stale;
+  sd_sftp_attrs attrs_at_open;
+  struct sd_sftp_file *fprev, *fnext;   /* every live file of the session */
 };
 
 typedef struct freq {
@@ -55,6 +61,7 @@ typedef struct freq {
   sd_sftp_attrs a; int has_a;
   sd_sftp_file *f;
   uint64_t off; void *buf; const void *cbuf; uint32_t len;
+  uint64_t due;                     /* tick at which the "server" executes it */
 } freq;
 
 struct sd_sftp_session {
@@ -70,6 +77,11 @@ struct sd_sftp_session {
   LONG open_handles;
   int fail_op; sd_err fail_err;
   inj *injected;
+  uint32_t gen;
+  int hold;
+  freq *held_head, *held_tail;
+  uint32_t nheld;
+  sd_sftp_file *files;
 };
 
 /* ---- tree ---- */
@@ -300,6 +312,11 @@ static sd_sftp_file *file_new(sd_sftp_session *s, fnode *n, int dir, uint32_t of
   f->is_dir = dir;
   f->oflags = oflags;
   f->refs = 1;
+  f->gen = s->gen;
+  f->fnext = s->files;
+  if (s->files) s->files->fprev = f;
+  s->files = f;
+  attrs_of(n, &f->attrs_at_open);
   n->opens++;
   InterlockedIncrement(&s->open_handles);
   return f;
@@ -327,16 +344,28 @@ void sd_sftp_file_release(sd_sftp_file *f)
   if (--f->n->opens == 0 && f->n->unlinked)
     node_free(f->n);
   s->counts[FOP_CLOSE]++;
+  if (f->fprev) f->fprev->fnext = f->fnext; else s->files = f->fnext;
+  if (f->fnext) f->fnext->fprev = f->fprev;
   LeaveCriticalSection(&s->lock);
   InterlockedDecrement(&s->open_handles);
   snap_free(f);
+  sd_free(f->path);
   sd_free(f);
 }
 
 /* ---- request queue ---- */
 
+static void req_free(freq *r);
+
 static sd_err submit(sd_sftp_session *s, freq *r, const sd_sftp_reqopt *o)
 {
+  if (r->f && r->f->stale && r->op != FOP_CLOSE && r->op != FOP_REOPEN) {
+    /* Like sd_sftp: operations on a stale handle fail at once (01 10.6). */
+    sd_sftp_file_release(r->f);
+    req_free(r);
+    return SD_E_STALE_HANDLE;
+  }
+  r->due = sd_tick_ms() + s->cfg.latency_ms;
   if (o && o->token_out)
     *o->token_out = (sd_sftp_req *)r;
   EnterCriticalSection(&s->lock);
@@ -390,6 +419,9 @@ static void execute(sd_sftp_session *s, freq *r)
     err = SD_E_CANCELLED;
   } else if (s->state != SD_SFTP_ST_READY) {
     err = SD_E_DISCONNECTED;
+    c.maybe_executed = r->op == FOP_WRITE;  /* "sent" before the loss: effect unknown */
+  } else if (r->f && r->f->stale && r->op != FOP_CLOSE && r->op != FOP_REOPEN) {
+    err = SD_E_STALE_HANDLE;
   } else if (s->fail_op == r->op && s->fail_err != SD_OK) {
     err = s->fail_err;
     s->fail_err = SD_OK;
@@ -407,6 +439,7 @@ static void execute(sd_sftp_session *s, freq *r)
           else {
             if (of & SD_SFTP_O_TRUNC) { set_size(rv.node, 0); rv.node->mtime = now_unix(); }
             c.u.open.file = file_new(s, rv.node, 0, of);
+            c.u.open.file->path = xstrndup(r->p1, strlen(r->p1));
             attrs_of(rv.node, &c.u.open.attrs);
           }
         } else if (err == SD_E_NOT_FOUND && (of & SD_SFTP_O_CREAT) && rv.parent) {
@@ -414,6 +447,7 @@ static void execute(sd_sftp_session *s, freq *r)
                               S_IFREG_ | ((r->has_a && (r->a.valid & SD_SFTP_ATTR_PERM)) ? (r->a.perm & 0777u) : 0644u));
           err = SD_OK;
           c.u.open.file = file_new(s, n, 0, of);
+          c.u.open.file->path = xstrndup(r->p1, strlen(r->p1));
           attrs_of(n, &c.u.open.attrs);
         }
         break;
@@ -421,13 +455,40 @@ static void execute(sd_sftp_session *s, freq *r)
       case FOP_OPENDIR:
         err = resolve(s, r->p1, 1, &rv);
         if (err == SD_OK && !is_dir(rv.node)) err = SD_E_NOT_A_DIRECTORY;
-        if (err == SD_OK) c.u.open.file = file_new(s, rv.node, 1, 0);
+        if (err == SD_OK) {
+          c.u.open.file = file_new(s, rv.node, 1, 0);
+          c.u.open.file->path = xstrndup(r->p1, strlen(r->p1));
+        }
         break;
       case FOP_CLOSE:
+        if (!r->f) { err = SD_E_INVALID_PARAM; break; }
         r->f->closed = 1;
         break;
+      case FOP_REOPEN: {
+        sd_sftp_file *f = r->f;
+        if (!f) { err = SD_E_INVALID_PARAM; break; }
+        err = resolve(s, f->path, 1, &rv);
+        if (err == SD_OK && f->is_dir != is_dir(rv.node)) err = SD_E_NOT_FOUND;
+        if (err == SD_OK && !f->is_dir && (rv.node->mode & S_IFMT_) != S_IFREG_) err = SD_E_ACCESS_DENIED;
+        if (err == SD_OK) {
+          if (rv.node != f->n) {
+            rv.node->opens++;
+            if (--f->n->opens == 0 && f->n->unlinked) node_free(f->n);
+            f->n = rv.node;
+          }
+          f->gen = s->gen;
+          f->pos = 0;
+          InterlockedExchange(&f->stale, 0);
+          attrs_of(f->n, &c.u.open.attrs);
+          f->attrs_at_open = c.u.open.attrs;
+          c.u.open.file = f;                /* same object, no extra reference */
+        }
+        break;
+      }
       case FOP_READ: {
-        fnode *n = r->f->n;
+        fnode *n;
+        if (!r->f) { err = SD_E_INVALID_PARAM; break; }
+        n = r->f->n;
         if (r->off >= n->size) {
           err = SD_E_EOF;
         } else {
@@ -439,7 +500,9 @@ static void execute(sd_sftp_session *s, freq *r)
         break;
       }
       case FOP_WRITE: {
-        fnode *n = r->f->n;
+        fnode *n;
+        if (!r->f) { err = SD_E_INVALID_PARAM; break; }
+        n = r->f->n;
         if (!(r->f->oflags & SD_SFTP_O_WRITE)) err = SD_E_ACCESS_DENIED;
         else if (r->off + r->len > n->size && !set_size(n, r->off + r->len)) err = SD_E_NO_SPACE;
         else {
@@ -452,6 +515,7 @@ static void execute(sd_sftp_session *s, freq *r)
       case FOP_READDIR: {
         sd_sftp_file *f = r->f;
         uint32_t k, take;
+        if (!f) { err = SD_E_INVALID_PARAM; break; }
         if (!f->snapped) {
           fnode *ch;
           inj *in;
@@ -494,9 +558,11 @@ static void execute(sd_sftp_session *s, freq *r)
         break;
       }
       case FOP_FSTAT:
+        if (!r->f) { err = SD_E_INVALID_PARAM; break; }
         attrs_of(r->f->n, &c.u.stat.attrs);
         break;
       case FOP_FSETSTAT:
+        if (!r->f) { err = SD_E_INVALID_PARAM; break; }
         apply_attrs(r->f->n, &r->a);
         break;
       case FOP_FSYNC:
@@ -601,6 +667,7 @@ static void execute(sd_sftp_session *s, freq *r)
   }
   LeaveCriticalSection(&s->lock);
   c.err = err;
+  if (err != SD_E_DISCONNECTED) c.maybe_executed = 0;
   r->cb(r->ctx, &c);
   sd_free(ents);
   if (r->f)
@@ -612,15 +679,28 @@ static unsigned __stdcall worker(void *arg)
   sd_sftp_session *s = (sd_sftp_session *)arg;
   while (!s->stop) {
     freq *r;
+    DWORD wait = 100;
+    uint64_t now = sd_tick_ms();
     EnterCriticalSection(&s->lock);
     r = s->head;
-    if (r) {
+    if (r && r->due > now) {
+      wait = (DWORD)(r->due - now);         /* FIFO with a constant latency: the head is the earliest */
+      r = NULL;
+    } else if (r) {
       s->head = r->next;
       if (!s->head) s->tail = NULL;
+      r->next = NULL;
+      if (r->op == FOP_WRITE && s->hold && s->state == SD_SFTP_ST_READY && !r->cancelled) {
+        if (s->held_tail) s->held_tail->next = r; else s->held_head = r;
+        s->held_tail = r;
+        s->nheld++;
+        r = NULL;
+        wait = 0;
+      }
     }
     LeaveCriticalSection(&s->lock);
     if (!r) {
-      WaitForSingleObject(s->ev, 100);
+      if (wait) WaitForSingleObject(s->ev, wait);
       continue;
     }
     execute(s, r);
@@ -667,6 +747,11 @@ sd_sftp_session *fake_session_create(const fake_config *cfg)
       }
     }
   }
+  if (s->cfg.home_uid_set) {
+    resolved hr;
+    if (resolve_at(s, s->root, s->home, 1, 0, &hr) == SD_OK) hr.node->uid = s->cfg.home_uid;
+  }
+  s->gen = 1;
   s->state = SD_SFTP_ST_READY;
   s->ev = CreateEventW(NULL, FALSE, FALSE, NULL);
   s->thread = (HANDLE)_beginthreadex(NULL, 0, worker, s, 0, NULL);
@@ -685,6 +770,11 @@ void fake_session_destroy(sd_sftp_session *s)
   while (s->head) {
     freq *r = s->head;
     s->head = r->next;
+    req_free(r);
+  }
+  while (s->held_head) {
+    freq *r = s->held_head;
+    s->held_head = r->next;
     req_free(r);
   }
   while ((in = s->injected) != NULL) {
@@ -885,7 +975,7 @@ sd_sftp_state sd_sftp_session_state(const sd_sftp_session *s) { return s->state;
 sd_err sd_sftp_session_info(sd_sftp_session *s, sd_sftp_server_info *copy_out, char *home_buf, size_t home_len)
 {
   memset(copy_out, 0, sizeof(*copy_out));
-  copy_out->generation = 1;
+  copy_out->generation = s->gen;
   copy_out->version = 3;
   copy_out->ext = s->cfg.ext;
   copy_out->limits.max_packet = 256 * 1024 + 1024;
@@ -899,9 +989,37 @@ sd_err sd_sftp_session_info(sd_sftp_session *s, sd_sftp_server_info *copy_out, c
     copy_out->home = home_buf;
   }
   copy_out->identity.source = SD_SFTP_ID_HOME_OWNER;
-  copy_out->identity.uid = s->cfg.uid;
+  copy_out->identity.uid = s->cfg.home_uid_set ? s->cfg.home_uid : s->cfg.uid;
   copy_out->identity.gid = s->cfg.gid;
   return SD_OK;
+}
+
+uint32_t sd_sftp_session_generation(const sd_sftp_session *s) { return s->gen; }
+
+sd_err sd_sftp_file_get_info(sd_sftp_file *f, sd_sftp_file_info *out)
+{
+  memset(out, 0, sizeof(*out));
+  out->path = f->path ? f->path : "";
+  out->oflags = f->oflags;
+  out->is_dir = f->is_dir;
+  out->generation = f->gen;
+  out->stale = (int)InterlockedCompareExchange(&f->stale, 0, 0);
+  out->attrs_at_open = f->attrs_at_open;
+  return SD_OK;
+}
+
+sd_err sd_sftp_file_reopen(sd_sftp_file *f, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx)
+{
+  freq *r;
+  if (!f || !cb || !f->stale)
+    return SD_E_INVALID_PARAM;
+  if (f->s->state != SD_SFTP_ST_READY)
+    return SD_E_DISCONNECTED;
+  r = req_new(FOP_REOPEN, cb, ctx);
+  REQ_OR_FAIL(r);
+  r->f = f;
+  sd_sftp_file_addref(f);
+  return submit(f->s, r, o);
 }
 
 /* ---- test hooks ---- */
@@ -1058,4 +1176,86 @@ void fake_fail_next(sd_sftp_session *s, int op, sd_err err)
   s->fail_op = op;
   s->fail_err = err;
   LeaveCriticalSection(&s->lock);
+}
+
+/* ---- connection loss simulation ---- */
+
+static void requeue_held_front(sd_sftp_session *s)
+{
+  /* s->lock held: held writes go back to the front of the queue, in order. */
+  if (!s->held_head)
+    return;
+  s->held_tail->next = s->head;
+  if (!s->head) s->tail = s->held_tail;
+  s->head = s->held_head;
+  s->held_head = s->held_tail = NULL;
+  s->nheld = 0;
+}
+
+void fake_disconnect(sd_sftp_session *s)
+{
+  sd_sftp_file *f;
+  EnterCriticalSection(&s->lock);
+  s->state = SD_SFTP_ST_DISCONNECTED;
+  for (f = s->files; f; f = f->fnext)
+    InterlockedExchange(&f->stale, 1);
+  requeue_held_front(s);                   /* they complete with SD_E_DISCONNECTED, maybe_executed */
+  LeaveCriticalSection(&s->lock);
+  SetEvent(s->ev);
+}
+
+void fake_reconnect(sd_sftp_session *s)
+{
+  EnterCriticalSection(&s->lock);
+  s->gen++;
+  s->state = SD_SFTP_ST_READY;
+  LeaveCriticalSection(&s->lock);
+  SetEvent(s->ev);
+}
+
+void fake_hold_writes(sd_sftp_session *s, int on)
+{
+  EnterCriticalSection(&s->lock);
+  s->hold = on;
+  if (!on)
+    requeue_held_front(s);
+  LeaveCriticalSection(&s->lock);
+  SetEvent(s->ev);
+}
+
+uint32_t fake_held_writes(sd_sftp_session *s)
+{
+  uint32_t n;
+  EnterCriticalSection(&s->lock);
+  n = s->nheld;
+  LeaveCriticalSection(&s->lock);
+  return n;
+}
+
+int fake_overwrite(sd_sftp_session *s, const char *path, const void *data, size_t len, int64_t mtime)
+{
+  resolved rv;
+  int r = -1;
+  EnterCriticalSection(&s->lock);
+  if (resolve(s, path, 1, &rv) == SD_OK && !is_dir(rv.node) && set_size(rv.node, len)) {
+    if (len) memcpy(rv.node->data, data, len);
+    rv.node->mtime = mtime ? mtime : now_unix();
+    r = 0;
+  }
+  LeaveCriticalSection(&s->lock);
+  return r;
+}
+
+int fake_set_mtime(sd_sftp_session *s, const char *path, int64_t mtime)
+{
+  resolved rv;
+  int r = -1;
+  EnterCriticalSection(&s->lock);
+  if (resolve(s, path, 0, &rv) == SD_OK) {
+    rv.node->mtime = mtime;
+    rv.node->atime = mtime;
+    r = 0;
+  }
+  LeaveCriticalSection(&s->lock);
+  return r;
 }

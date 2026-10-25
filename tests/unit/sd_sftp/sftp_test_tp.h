@@ -33,6 +33,15 @@ void      fake_hangup(fake_srv *f);                              /* server close
 uint32_t  fake_packets(fake_srv *f);                             /* client packets seen */
 void      fake_free_if_unused(fake_srv *f);                      /* when no session took it */
 void      fake_run(fake_srv *f, void (*fn)(void *), void *arg);  /* runs fn on the I/O thread */
+/* M1: multi-stream / reconnect fakes. Call before fake_transport(). */
+void      fake_set_caps(fake_srv *f, uint32_t caps);             /* SD_SFTP_TP_REOPEN | SD_SFTP_TP_STREAMS */
+void      fake_refuse_bulk(fake_srv *f, sd_err e);               /* open_stream(1) fails with e */
+void      fake_fail_opens(fake_srv *f, LONG n, sd_err e);        /* the next n open() calls fail with e */
+uint32_t  fake_opens(fake_srv *f);                               /* open() calls (connection attempts) */
+uint32_t  fake_gen(fake_srv *f);                                 /* current connection generation */
+uint32_t  fake_cur_stream(fake_srv *f);                          /* stream of the packet being handled */
+int       fake_stream_open(fake_srv *f, uint32_t idx);
+void      fake_reply_on(fake_srv *f, uint32_t idx, const void *bytes, size_t n);
 
 /* Packet builder: begins a reply of `type` with id (id_present). Finish with fake_reply_wr. */
 void pk_begin(sd_wr *w, uint8_t type, uint32_t id);

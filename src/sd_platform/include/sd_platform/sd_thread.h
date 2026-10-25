@@ -47,4 +47,28 @@ typedef struct sd_once { volatile LONG state; } sd_once;   /* zero-initialize: S
 /* Runs fn(arg) exactly once across threads; concurrent callers wait until it finished. */
 void sd_once_run(sd_once *o, void (*fn)(void *arg), void *arg);
 
+/* 64-bit atomics that work on every flavour. On x86 the SDK 7.1A has no InterlockedExchangeAdd64 /
+   InterlockedIncrement64 and the kernel32 InterlockedCompareExchange64 export is Vista+, so these use
+   the _InterlockedCompareExchange64 intrinsic (CMPXCHG8B, Pentium and later) in a loop. Returns the
+   new value (add, inc) or the current value (load). Plain reads of a LONG64 can tear on x86. */
+#include <intrin.h>
+static SD_FORCEINLINE LONG64 sd_atomic_load64(const volatile LONG64 *p)
+{
+  return _InterlockedCompareExchange64((volatile LONG64 *)p, 0, 0);   /* needs writable memory */
+}
+static SD_FORCEINLINE LONG64 sd_atomic_add64(volatile LONG64 *p, LONG64 v)
+{
+#if defined(_M_IX86)
+  LONG64 old, neu;
+  do {
+    old = _InterlockedCompareExchange64(p, 0, 0);
+    neu = old + v;
+  } while (_InterlockedCompareExchange64(p, neu, old) != old);
+  return neu;
+#else
+  return _InterlockedExchangeAdd64(p, v) + v;
+#endif
+}
+#define sd_atomic_inc64(p) sd_atomic_add64((p), 1)
+
 #endif /* SD_THREAD_H */

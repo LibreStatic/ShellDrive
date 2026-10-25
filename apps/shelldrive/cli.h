@@ -38,6 +38,7 @@ typedef struct cli_args {
   wchar_t letter;            /* --letter / --target, 0 = auto */
   const wchar_t *identity;   /* --identity FILE */
   const wchar_t *remote_path;/* --remote-path / --path */
+  const char *backend;       /* mount --backend: "auto" | "dokany" | "webdav"; NULL = profile/auto */
   cli_usage_err err;
   const wchar_t *bad;
   const wchar_t *bad_value;

@@ -1,10 +1,22 @@
 /* sd_mount: turns resolved mount parameters into a running mount (03 §1.11):
- *   sd_known_hosts (user store) -> sd_ssh_config -> sd_sftp_session -> sd_vfs -> sd_dokan.
+ *   sd_known_hosts (user store) -> sd_ssh_config -> sd_sftp_session -> sd_vfs -> sd_dokan | sd_webdav.
  *
- * M0 scope: one hop, direct TCP, Dokany backend, drive letters only, no reconnect (the session's
- * reconnect policy is disabled), no pool, prompts relayed to the host (hostkey TOFU, password,
- * key passphrase, keyboard-interactive). A changed host key is never a prompt: sd_ssh fails the
- * connection and sd_mount reports SD_E_HOSTKEY_MISMATCH with the stored and offered fingerprints.
+ * Backend selection (02 §10.1): params.backend = auto picks Dokany when sd_dokan_probe() is OK, else
+ * WebDAV when the WebClient service is present and not disabled (a read-only query; WebClient is only
+ * started after WebDAV was chosen, never for a Dokany mount, TM-R21). A forced backend never falls
+ * back. sd_mount_backend_kind_used() reports the resolved one.
+ *
+ * Scope: one hop, direct TCP, drive letters only, no pool, prompts relayed to the host (hostkey TOFU,
+ * password, key passphrase, keyboard-interactive). A changed host key is never a prompt: sd_ssh fails
+ * the connection and sd_mount reports SD_E_HOSTKEY_MISMATCH with the stored and offered fingerprints.
+ *
+ * M1 resilience (01 §10.6, 02 §5, 03 §1.11): the session reconnects by itself (policy from the params;
+ * the reconnect secret cache is on, TM-R05 is enforced by sd_ssh). A MOUNTED mount whose connection is
+ * lost goes OFFLINE (AUTH_REQUIRED while the loop needs the user) and keeps its drive; the next READY
+ * puts it back to MOUNTED without remounting the backend. FAILED after READY also stays OFFLINE until
+ * the user unmounts. sd_mount_get_conn() reports the session sub-state (reconnect attempt, backoff,
+ * generation) and the write_failed count; cb.on_conn fires when it changes. sd_mount_start sets the
+ * process-wide memory cache budget (sd_vfs_cache_set_budget).
  *
  * The other modules are reached through sd_mount_backend, a table with exactly their public
  * signatures: sd_mount_backend_real() binds the real modules (mount_real.c, its own library
@@ -30,6 +42,7 @@
 #include "sd_sftp/sd_sftp.h"
 #include "sd_vfs/sd_vfs.h"
 #include "sd_dokan/sd_dokan.h"
+#include "sd_webdav/sd_webdav.h"
 
 typedef struct sd_mount sd_mount;
 
@@ -60,7 +73,23 @@ typedef struct sd_mount_backend {
   sd_err (*dokan_mount_start)(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan_unmounted_cb cb, void *ctx,
                               sd_dokan_mount **out);
   sd_err (*dokan_mount_stop)(sd_dokan_mount *m);
+  /* M1: WebDAV backend (02 §7). NULL entries mean "WebDAV unavailable" (fakes, bring-up builds). */
+  sd_webdav_client_state (*webdav_query_client)(sd_webdav_client_info *out);
+  sd_err (*webdav_ensure_client)(uint32_t timeout_ms, sd_webdav_client_info *out);
+  sd_err (*webdav_mount_start)(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_webdav_mount **out);
+  sd_err (*webdav_mount_stop)(sd_webdav_mount *m);
+  sd_err (*webdav_cleanup_mappings)(uint16_t keep_port, uint16_t only_port, uint32_t *removed);
+  /* M1 (NULL in older fakes: skipped) */
+  void   (*vfs_cache_set_budget)(UINT64 bytes);
+  void   (*vfs_get_identity)(sd_vfs *v, sd_vfs_identity *out);
+  void   (*webdav_emergency_unmap)(void);                /* crash filter (TM-R17 b) */
 } sd_mount_backend;
+
+typedef enum sd_mount_backend_kind {
+  SD_MOUNT_BACKEND_AUTO = 0, SD_MOUNT_BACKEND_DOKANY = 1, SD_MOUNT_BACKEND_WEBDAV = 2
+} sd_mount_backend_kind;
+const char *sd_mount_backend_kind_name(sd_mount_backend_kind k);         /* "auto", "dokany", "webdav" */
+int sd_mount_backend_kind_parse(const char *s, sd_mount_backend_kind *out);   /* 1 on success */
 
 /* Real modules (library sd_mount_real; link it only when sd_ssh/sd_sftp/sd_vfs/sd_dokan are built). */
 const sd_mount_backend *sd_mount_backend_real(void);
@@ -79,6 +108,19 @@ typedef struct sd_mount_params {
   int write_mode;                       /* sd_vfs_write_mode */
   const wchar_t *volume_label;          /* NULL = host */
   const wchar_t *known_hosts_path;      /* user store file; NULL = sd_known_hosts default */
+  int backend;                          /* sd_mount_backend_kind; 0 = auto (M1) */
+  /* M1; 0 = default everywhere */
+  UINT64 cache_memory_bytes;            /* process-wide memory tier ([cache] memory); 0 = min(256 MB, RAM/16) */
+  uint32_t disk_cache_mb;               /* cache.disk; 0 = no disk tier */
+  const wchar_t *disk_cache_dir;        /* created by the host with the protected DACL (03 §3.2) */
+  uint32_t offline_wait_ms;             /* mount.offline_wait (3 s) */
+  uint32_t reconnect_grace_ms;          /* mount.reconnect_grace (60 s; 0xFFFFFFFF = none) */
+  uint32_t channels;                    /* connection.channels: 1 or 2 (2) */
+  int reconnect_disabled;               /* 1 = a loss is final (tests, diagnostics) */
+  uint32_t reconnect_initial_ms;        /* 1000 */
+  uint32_t reconnect_max_ms;            /* 60000 */
+  uint32_t reconnect_max_attempts;      /* 0 = unlimited */
+  int no_secret_cache;                  /* auth.cache_secrets_for_reconnect = no */
 } sd_mount_params;
 
 typedef enum sd_mount_prompt_kind {
@@ -129,6 +171,16 @@ typedef struct sd_mount_callbacks {
   void (*on_state)(void *ctx, sd_mount *m, sd_mount_state st, sd_err why);
   void (*on_prompt)(void *ctx, sd_mount *m, const sd_mount_prompt *p);
   void (*on_prompt_closed)(void *ctx, sd_mount *m, uint32_t prompt_id);
+  /* M1, all optional, control thread. */
+  void (*on_conn)(void *ctx, sd_mount *m);                         /* sd_mount_get_conn() changed */
+  /* Write-behind data lost (02 §4.4, C45): path is the mount-relative display path. */
+  void (*on_write_failed)(void *ctx, sd_mount *m, const wchar_t *path, UINT64 bytes, const char *status);
+  /* vfs NOTICE (e.g. code "disk_cache_refused") */
+  void (*on_notice)(void *ctx, sd_mount *m, const char *code, const char *detail);
+  /* Identity cache (02 §3.4 step 2, D10), keyed by the verified host key and the user: lookup before
+     the vfs mounts (return 1 and fill *out to pass a known identity), store once it is definitive. */
+  int  (*lookup_identity)(void *ctx, sd_mount *m, const char *hostkey_fp, sd_vfs_identity *out);
+  void (*store_identity)(void *ctx, sd_mount *m, const char *hostkey_fp, const sd_vfs_identity *id);
 } sd_mount_callbacks;
 
 sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *params, const sd_mount_callbacks *cb,
@@ -143,6 +195,23 @@ sd_mount_state sd_mount_get_state(const sd_mount *m);
 wchar_t        sd_mount_letter(const sd_mount *m);
 void           sd_mount_get_failure(const sd_mount *m, sd_mount_failure *out);
 int            sd_mount_is_final(const sd_mount *m);    /* UNMOUNTED or FAILED and fully torn down */
+/* Resolved backend once the mount started its backend (MOUNTED and later); the requested one before. */
+sd_mount_backend_kind sd_mount_backend_kind_used(const sd_mount *m);
+
+/* M1: connection sub-state (any thread). */
+typedef struct sd_mount_conn {
+  sd_sftp_state session;                /* last session state seen */
+  sd_err reason;                        /* why the last loss / failed attempt happened */
+  uint32_t attempt;                     /* RECONNECT_WAIT: attempt that follows (1-based) */
+  uint32_t retry_in_ms;                 /* RECONNECT_WAIT: backoff of that attempt */
+  uint32_t generation;                  /* session generation (0 before the first READY) */
+  uint32_t reconnects;                  /* READYs after the first */
+  UINT64 offline_since_ms;              /* sd_tick_ms() of the loss; 0 when connected */
+  uint32_t write_failed;                /* WRITE_FAILED events of this mount */
+  wchar_t last_write_failed[260];       /* display path of the last one */
+} sd_mount_conn;
+const char *sd_mount_session_state_name(sd_sftp_state st);   /* "ready", "reconnect_wait", ... */
+void sd_mount_get_conn(const sd_mount *m, sd_mount_conn *out);
 
 typedef enum sd_mount_answer_kind {
   SD_MA_RESPONSES,                      /* password / passphrase / kbd-int responses */

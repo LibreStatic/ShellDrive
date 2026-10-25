@@ -98,7 +98,13 @@ static void detect_cpu(void)
   wchar_t env[32];
   DWORD n;
 
-#if defined(_M_X64) || defined(_M_IX86)
+#if defined(_M_IX86) && defined(SD_X86_ARCH_IA32)
+  /* x86-ia32: no run-time detection and no vector code at all (01 §2.3); sd-isacheck rejects even the
+     guarded XGETBV below in this flavour. */
+  max_leaf = 0;
+  (void)r;
+  (void)max_leaf;
+#elif defined(_M_X64) || defined(_M_IX86)
   __cpuid(r, 0);
   max_leaf = (uint32_t)r[0];
   if (max_leaf >= 1) {

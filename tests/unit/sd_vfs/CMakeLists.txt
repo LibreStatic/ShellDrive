@@ -10,9 +10,9 @@ target_include_directories(sd_vfs_fake PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_SOURCE_DIR}/src/sd_sftp/include"
   "${CMAKE_SOURCE_DIR}/src/sd_ssh/include")
-target_link_libraries(sd_vfs_fake PUBLIC sd_headers sd_base sd_platform)
+target_link_libraries(sd_vfs_fake PUBLIC sd_headers sd_crypto sd_base sd_platform)
 set_target_properties(sd_vfs_fake PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(vfs
-  SOURCES main.c test_vfs_name.c test_vfs_ops.c
+  SOURCES main.c test_vfs_name.c test_vfs_ops.c test_vfs_m1.c
   DEPS sd_vfs_fake)

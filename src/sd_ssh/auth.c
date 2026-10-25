@@ -20,6 +20,10 @@ void ssh_auth_clear(sd_ssh_conn *c)
   a->key_file = NULL;
   sd_ssh_key_free(a->key);
   a->key = NULL;
+  sd_secbuf_free(a->pw_pending);
+  a->pw_pending = NULL;
+  sd_secbuf_free(a->pp_pending);
+  a->pp_pending = NULL;
 }
 
 static void write_req_head(sd_ssh_conn *c, sd_wr *w, const char *method)
@@ -53,11 +57,39 @@ static sd_prompt *new_auth_prompt(sd_ssh_conn *c, ssh_prompt_purpose pp, sd_prom
   return p;
 }
 
+static void send_password(sd_ssh_conn *c, const sd_secbuf *pw)
+{
+  sd_wr w;
+  sd_wr_init_secret(&w, 8192);
+  write_req_head(c, &w, "password");
+  sd_wr_bool(&w, 0);
+  sd_wr_string(&w, pw->p, pw->len);
+  c->auth.step = SSH_AU_PASSWORD;
+  ssh_send_wr(c, &w);
+}
+
+/* Reconnect cache (01 §7.4): answers the first password round itself. Returns 1 when sent. */
+static int password_from_cache(sd_ssh_conn *c)
+{
+  sd_secbuf *pw = NULL;
+  if (!ssh_cache_usable(c) || c->auth.pw_cache_tried || c->auth.password_rounds != 0 || !c->cache.password.blob)
+    return 0;
+  c->auth.pw_cache_tried = 1;
+  if (ssh_secret_load(&c->cache.password, &pw) != SD_OK) return 0;
+  ssh_log(c, SD_LOG_INFO, "password: using the reconnect cache");
+  c->auth.pw_from_cache = 1;
+  send_password(c, pw);
+  sd_secbuf_free(pw);
+  return 1;
+}
+
 static void prompt_password(sd_ssh_conn *c)
 {
-  sd_prompt *p = new_auth_prompt(c, SSH_PP_PASSWORD, SD_PROMPT_PASSWORD, c->auth.password_rounds);
+  sd_prompt *p;
   sd_prompt_item *it;
   sd_auth_prompt_info *ai;
+  if (password_from_cache(c)) return;
+  p = new_auth_prompt(c, SSH_PP_PASSWORD, SD_PROMPT_PASSWORD, c->auth.password_rounds);
   if (!p) return;
   ai = ssh_prompt_auth_info(p);
   it = ssh_prompt_items(p, 1);
@@ -70,12 +102,30 @@ static void prompt_password(sd_ssh_conn *c)
 
 static const ssh_ident *cur_ident(sd_ssh_conn *c) { return &c->ids[c->auth.id_next - 1]; }
 
+static void start_load(sd_ssh_conn *c, sd_secbuf *pass);
+
+/* Reconnect cache: the passphrase that decrypted this identity before. Returns 1 when used. */
+static int passphrase_from_cache(sd_ssh_conn *c)
+{
+  uint32_t idx = c->auth.id_next - 1;
+  sd_secbuf *pp = NULL;
+  if (!ssh_cache_usable(c) || c->auth.pp_cache_tried || idx >= c->cache.npass || !c->cache.pass[idx].blob) return 0;
+  c->auth.pp_cache_tried = 1;
+  if (ssh_secret_load(&c->cache.pass[idx], &pp) != SD_OK) return 0;
+  ssh_log(c, SD_LOG_INFO, "key passphrase: using the reconnect cache");
+  c->auth.pp_from_cache = 1;
+  start_load(c, pp);
+  return 1;
+}
+
 static void prompt_passphrase(sd_ssh_conn *c)
 {
   const ssh_ident *id = cur_ident(c);
-  sd_prompt *p = new_auth_prompt(c, SSH_PP_PASSPHRASE, SD_PROMPT_KEY_PASSPHRASE, c->auth.pass_tries);
+  sd_prompt *p;
   sd_prompt_item *it;
   sd_auth_prompt_info *ai;
+  if (passphrase_from_cache(c)) return;
+  p = new_auth_prompt(c, SSH_PP_PASSPHRASE, SD_PROMPT_KEY_PASSPHRASE, c->auth.pass_tries);
   if (!p) return;
   ai = ssh_prompt_auth_info(p);
   it = ssh_prompt_items(p, 1);
@@ -190,6 +240,24 @@ static void load_done(sd_ssh_conn *c, ssh_cmd *cmd)
 {
   key_work *k = (key_work *)cmd;
   if (k->w.gen != c->gen || c->failing || c->st != SSH_ST_AUTH || c->auth.step != SSH_AU_PK_LOAD) { key_free(k); return; }
+  if (c->auth.pp_from_cache) {
+    c->auth.pp_from_cache = 0;
+    if (k->err == SD_E_BAD_PASSPHRASE) {    /* stale cache entry: drop it, ask normally (not a try) */
+      uint32_t idx = c->auth.id_next - 1;
+      if (idx < c->cache.npass) ssh_secret_clear(&c->cache.pass[idx]);
+      key_free(k);
+      prompt_passphrase(c);
+      return;
+    }
+  }
+  if (k->err == SD_OK && c->auth.pp_pending) {
+    uint32_t idx = c->auth.id_next - 1;
+    if (ssh_cache_usable(c) && idx < c->cache.npass &&
+        ssh_secret_store(&c->cache.pass[idx], c->auth.pp_pending->p, c->auth.pp_pending->len) != SD_OK)
+      ssh_log(c, SD_LOG_WARN, "reconnect cache unavailable; the passphrase is not kept");
+  }
+  sd_secbuf_free(c->auth.pp_pending);
+  c->auth.pp_pending = NULL;
   if (k->err == SD_E_BAD_PASSPHRASE && ++c->auth.pass_tries < AUTH_MAX_PASS_TRIES) {
     key_free(k);
     prompt_passphrase(c);
@@ -242,6 +310,7 @@ static void probe_done(sd_ssh_conn *c, ssh_cmd *cmd)
   memcpy(c->auth.cand_fp, k->info.fp_sha256, sizeof(c->auth.cand_fp));
   c->auth.cand_encrypted = k->info.encrypted;
   c->auth.pass_tries = 0;
+  c->auth.pp_cache_tried = 0;
   key_free(k);
   c->auth.pk_attempts++;
   c->auth.step = SSH_AU_PK_QUERY;
@@ -306,6 +375,16 @@ static void auth_next(sd_ssh_conn *c)
   ssh_fail(c, SD_E_AUTH_FAILED, SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE, "no more authentication methods");
 }
 
+/* A user-answered password worked (fully or partially): keep it for reconnects (01 §7.4). */
+static void store_password(sd_ssh_conn *c)
+{
+  if (c->auth.pw_pending && ssh_cache_usable(c) &&
+      ssh_secret_store(&c->cache.password, c->auth.pw_pending->p, c->auth.pw_pending->len) != SD_OK)
+    ssh_log(c, SD_LOG_WARN, "reconnect cache unavailable; the password is not kept");
+  sd_secbuf_free(c->auth.pw_pending);
+  c->auth.pw_pending = NULL;
+}
+
 static void on_failure(sd_ssh_conn *c, const uint8_t *p, size_t n)
 {
   ssh_auth *a = &c->auth;
@@ -322,8 +401,14 @@ static void on_failure(sd_ssh_conn *c, const uint8_t *p, size_t n)
     if (partial) { a->partial_pk = 1; c->methods_used |= SD_AUTH_PUBLICKEY; }
     break;
   case SSH_AU_PASSWORD:
-    if (partial) { a->partial_pw = 1; c->methods_used |= SD_AUTH_PASSWORD; }
-    else a->password_rounds++;
+    if (partial) { a->partial_pw = 1; c->methods_used |= SD_AUTH_PASSWORD; store_password(c); }
+    else if (a->pw_from_cache) {   /* the cached password no longer works: drop it, prompt (not a round) */
+      ssh_log(c, SD_LOG_INFO, "cached password rejected; dropped from the reconnect cache");
+      ssh_secret_clear(&c->cache.password);
+    } else a->password_rounds++;
+    a->pw_from_cache = 0;
+    sd_secbuf_free(a->pw_pending);
+    a->pw_pending = NULL;
     break;
   case SSH_AU_KBDINT:
     if (partial) { a->partial_kbd = 1; c->methods_used |= SD_AUTH_KBDINT; }
@@ -389,7 +474,7 @@ void ssh_auth_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
   switch (m) {
   case SSH_MSG_USERAUTH_SUCCESS:
     if (c->auth.step == SSH_AU_PK_SIGN) c->methods_used |= SD_AUTH_PUBLICKEY;
-    else if (c->auth.step == SSH_AU_PASSWORD) c->methods_used |= SD_AUTH_PASSWORD;
+    else if (c->auth.step == SSH_AU_PASSWORD) { c->methods_used |= SD_AUTH_PASSWORD; store_password(c); }
     else if (c->auth.step == SSH_AU_KBDINT) c->methods_used |= SD_AUTH_KBDINT;
     ssh_on_authenticated(c);
     return;
@@ -440,6 +525,10 @@ void ssh_auth_on_answer(sd_ssh_conn *c, ssh_prompt_purpose pp, ssh_prompt_answer
     pass = a->resp[0];
     a->resp[0] = NULL;
     a->n = 0;
+    sd_secbuf_free(c->auth.pp_pending);
+    c->auth.pp_pending = NULL;
+    if (ssh_cache_usable(c) && sd_secbuf_from(pass->p, pass->len, &c->auth.pp_pending) != SD_OK)
+      c->auth.pp_pending = NULL;
     start_load(c, pass);
     return;
   }
@@ -448,14 +537,13 @@ void ssh_auth_on_answer(sd_ssh_conn *c, ssh_prompt_purpose pp, ssh_prompt_answer
     return;
   }
   if (pp == SSH_PP_PASSWORD) {
-    sd_wr w;
     if (a->n != 1) { ssh_fail(c, SD_E_CANCELLED, SSH_DISCONNECT_BY_APPLICATION, "no password"); return; }
-    sd_wr_init_secret(&w, 8192);
-    write_req_head(c, &w, "password");
-    sd_wr_bool(&w, 0);
-    sd_wr_string(&w, a->resp[0]->p, a->resp[0]->len);
-    c->auth.step = SSH_AU_PASSWORD;
-    ssh_send_wr(c, &w);
+    sd_secbuf_free(c->auth.pw_pending);
+    c->auth.pw_pending = NULL;
+    if (ssh_cache_usable(c) && sd_secbuf_from(a->resp[0]->p, a->resp[0]->len, &c->auth.pw_pending) != SD_OK)
+      c->auth.pw_pending = NULL;
+    c->auth.pw_from_cache = 0;
+    send_password(c, a->resp[0]);
     return;
   }
   if (pp == SSH_PP_KBDINT) {

@@ -100,6 +100,8 @@ void sd_profile_defaults(sd_profile *p)
   scpy(p->target, sizeof(p->target), "auto");
   p->symlinks = SD_PROFILE_SYMLINKS_FOLLOW_INSIDE;
   p->write_mode = SD_PROFILE_WRITE_THROUGH;
+  p->backend = SD_PROFILE_BACKEND_AUTO;
+  p->channels = 2;
 }
 
 static int valid_id(const char *id)
@@ -151,6 +153,10 @@ sd_err sd_profile_validate(const sd_profile *p, const char **bad_key)
   else if (!target_ok(p->target)) bad = "mount.target";
   else if (p->symlinks < 0 || p->symlinks > 2) bad = "mount.symlinks";
   else if (p->write_mode < 0 || p->write_mode > 1) bad = "mount.write_mode";
+  else if (p->backend < 0 || p->backend > 2) bad = "mount.backend";
+  else if (p->channels < 1 || p->channels > 2) bad = "connection.channels";
+  else if (p->offline_wait_ms > 600000u) bad = "mount.offline_wait";
+  else if (p->disk_cache_mb > 1024u * 1024u) bad = "cache.disk";
   else if (has_ctl(p->label)) bad = "mount.label";
   if (bad_key) *bad_key = bad;
   return bad ? SD_E_INVALID_PARAM : SD_OK;
@@ -223,10 +229,45 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
     else BAD("mount.write_mode");
   }
   if ((v = sd_ini_get(ini, "mount", "label")) != NULL && !scpy(p->label, sizeof(p->label), v)) BAD("mount.label");
+  if ((v = sd_ini_get(ini, "mount", "backend")) != NULL) {
+    if (strcmp(v, "auto") == 0) p->backend = SD_PROFILE_BACKEND_AUTO;
+    else if (strcmp(v, "dokany") == 0) p->backend = SD_PROFILE_BACKEND_DOKANY;
+    else if (strcmp(v, "webdav") == 0) p->backend = SD_PROFILE_BACKEND_WEBDAV;
+    else BAD("mount.backend");
+  }
+  if ((v = sd_ini_get(ini, "mount", "offline_wait")) != NULL && !sd_ini_parse_duration_ms(v, &p->offline_wait_ms))
+    BAD("mount.offline_wait");
+  if ((v = sd_ini_get(ini, "mount", "reconnect_grace")) != NULL &&
+      !sd_ini_parse_duration_ms(v, &p->reconnect_grace_ms))
+    BAD("mount.reconnect_grace");
+  if ((v = sd_ini_get(ini, "cache", "disk")) != NULL) {
+    uint64_t sz;
+    if (!sd_ini_parse_size(v, &sz) || sz > ((uint64_t)1 << 40)) BAD("cache.disk");
+    p->disk_cache_mb = (uint32_t)((sz + (1u << 20) - 1) >> 20);
+  }
+  if ((v = sd_ini_get(ini, "connection", "channels")) != NULL) {
+    if (!sd_ini_parse_u32(v, &u) || u < 1 || u > 2) BAD("connection.channels");
+    p->channels = u;
+  }
   if (p->name[0] == 0)
     scpy(p->name, sizeof(p->name), p->host);
 #undef BAD
   return sd_profile_validate(p, bad_key);
+}
+
+static void u32_dec(char out[16], uint32_t v)
+{
+  char tmp[16];
+  size_t n = 0, i = 0;
+  do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+  while (n) out[i++] = tmp[--n];
+  out[i] = 0;
+}
+
+static void u32_ms(char out[16], uint32_t ms)
+{
+  u32_dec(out, ms);
+  strcat_s(out, 16, "ms");
 }
 
 sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
@@ -271,6 +312,25 @@ sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
                          : p->symlinks == SD_PROFILE_SYMLINKS_HIDE ? "hide" : "follow_inside");
   SET("mount", "write_mode", p->write_mode == SD_PROFILE_WRITE_BEHIND ? "behind" : "through");
   if (p->label[0] || sd_ini_get(d, "mount", "label")) SET("mount", "label", p->label);
+  /* M1 keys: only when set or already present, so M0 files stay as they were */
+  if (p->backend != SD_PROFILE_BACKEND_AUTO || sd_ini_get(d, "mount", "backend"))
+    SET("mount", "backend", p->backend == SD_PROFILE_BACKEND_DOKANY ? "dokany"
+                          : p->backend == SD_PROFILE_BACKEND_WEBDAV ? "webdav" : "auto");
+  if (p->offline_wait_ms || sd_ini_get(d, "mount", "offline_wait")) {
+    u32_ms(num, p->offline_wait_ms);
+    SET("mount", "offline_wait", num);
+  }
+  if (p->reconnect_grace_ms || sd_ini_get(d, "mount", "reconnect_grace")) {
+    u32_ms(num, p->reconnect_grace_ms);
+    SET("mount", "reconnect_grace", num);
+  }
+  if (p->disk_cache_mb || sd_ini_get(d, "cache", "disk")) {
+    u32_dec(num, p->disk_cache_mb);
+    strcat_s(num, sizeof(num), "M");
+    SET("cache", "disk", num);
+  }
+  if (p->channels != 2 || sd_ini_get(d, "connection", "channels"))
+    SET("connection", "channels", p->channels == 1 ? "1" : "2");
 #undef SET
   return SD_OK;
 }
@@ -479,6 +539,129 @@ sd_err sd_config_ensure_dirs(void)
     /* protect <...>\ShellDrive and logs\ (LOCALAPPDATA tree may differ from the root) */
     e = make_tree(sub, (int)(n - 5));
   }
+  return e;
+}
+
+static sd_err load_ini(const wchar_t *path, sd_ini **ini);
+static sd_err write_atomic(const wchar_t *path, const void *data, size_t len);
+
+sd_err sd_config_cache_dir(const char *key, wchar_t *out, size_t cch)
+{
+  static const wchar_t hex[] = L"0123456789abcdef";
+  uint64_t hsh = 1469598103934665603ull;
+  wchar_t name[18];
+  size_t base, i;
+  sd_err e;
+  if (key == NULL || out == NULL)
+    return SD_E_INVALID_PARAM;
+  for (i = 0; key[i]; i++) {
+    hsh ^= (uint8_t)key[i];
+    hsh *= 1099511628211ull;
+  }
+  name[0] = L'\\';
+  for (i = 0; i < 16; i++)
+    name[1 + i] = hex[(hsh >> (60 - 4 * i)) & 15u];
+  name[17] = 0;
+  e = g_root_override[0] ? sd_config_root(out, cch) : folder(CSIDL_LOCAL_APPDATA, out, cch);
+  if (e != SD_OK)
+    return e;
+  base = wcslen(out);
+  if (!wcat(out, cch, L"\\cache") || !wcat(out, cch, name))
+    return SD_E_NAME_TOO_LONG;
+  /* protect <...>\ShellDrive and everything below it (the LOCALAPPDATA tree may differ from the root) */
+  return make_tree(out, (int)base);
+}
+
+static int identity_path(const wchar_t *dir, wchar_t *out, size_t cch)
+{
+  return dir && wcpy(out, cch, dir) && wcat(out, cch, L"\\identity.ini");
+}
+
+sd_err sd_config_identity_load(const wchar_t *dir, const char *hostkey_fp, uint32_t *uid, uint32_t *gid)
+{
+  wchar_t path[MAX_PATH];
+  sd_ini *ini = NULL;
+  const char *fp, *u, *g;
+  sd_err e;
+  if (hostkey_fp == NULL || hostkey_fp[0] == 0 || uid == NULL || gid == NULL ||
+      !identity_path(dir, path, SD_COUNTOF(path)))
+    return SD_E_INVALID_PARAM;
+  if ((e = load_ini(path, &ini)) != SD_OK)
+    return SD_E_NOT_FOUND;
+  fp = sd_ini_get(ini, "identity", "hostkey");
+  u = sd_ini_get(ini, "identity", "uid");
+  g = sd_ini_get(ini, "identity", "gid");
+  e = (fp && strcmp(fp, hostkey_fp) == 0 && u && g && sd_ini_parse_u32(u, uid) && sd_ini_parse_u32(g, gid))
+      ? SD_OK : SD_E_NOT_FOUND;
+  sd_ini_free(ini);
+  return e;
+}
+
+sd_err sd_config_identity_store(const wchar_t *dir, const char *hostkey_fp, uint32_t uid, uint32_t gid)
+{
+  wchar_t path[MAX_PATH];
+  sd_ini *ini = NULL;
+  char num[16];
+  sd_wr w;
+  sd_err e;
+  if (hostkey_fp == NULL || hostkey_fp[0] == 0 || has_ctl(hostkey_fp) || !identity_path(dir, path, SD_COUNTOF(path)))
+    return SD_E_INVALID_PARAM;
+  if ((e = sd_ini_new(&ini)) != SD_OK)
+    return e;
+  e = sd_ini_set(ini, "identity", "hostkey", hostkey_fp);
+  u32_dec(num, uid);
+  if (e == SD_OK) e = sd_ini_set(ini, "identity", "uid", num);
+  u32_dec(num, gid);
+  if (e == SD_OK) e = sd_ini_set(ini, "identity", "gid", num);
+  sd_wr_init(&w, SD_INI_MAX_BYTES);
+  if (e == SD_OK) e = sd_ini_serialize(ini, &w);
+  if (e == SD_OK) e = write_atomic(path, w.p, w.len);
+  sd_wr_free(&w);
+  sd_ini_free(ini);
+  return e;
+}
+
+void sd_settings_defaults(sd_settings *s)
+{
+  memset(s, 0, sizeof(*s));
+  s->log_level = 2;
+}
+
+sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
+{
+  static const char *const levels[] = { "error", "warn", "info", "debug", "trace" };
+  const char *v;
+  sd_err e = SD_OK;
+  int i;
+  sd_settings_defaults(s);
+  if ((v = sd_ini_get(ini, "log", "level")) != NULL) {
+    for (i = 0; i < 5; i++)
+      if (strcmp(v, levels[i]) == 0) break;
+    if (i < 5) s->log_level = i;
+    else { SD_LOGW("config", "settings.ini: invalid [log] level"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "cache", "memory")) != NULL) {
+    uint64_t sz;
+    if (sd_ini_parse_size(v, &sz)) s->cache_memory = sz;
+    else { SD_LOGW("config", "settings.ini: invalid [cache] memory"); e = SD_E_INVALID_PARAM; }
+  }
+  return e;
+}
+
+sd_err sd_settings_load(sd_settings *s)
+{
+  wchar_t path[MAX_PATH];
+  sd_ini *ini = NULL;
+  sd_err e;
+  sd_settings_defaults(s);
+  if ((e = sd_config_root(path, SD_COUNTOF(path))) != SD_OK)
+    return e;
+  if (!wcat(path, SD_COUNTOF(path), L"\\settings.ini"))
+    return SD_E_NAME_TOO_LONG;
+  if (load_ini(path, &ini) != SD_OK)
+    return SD_OK;                     /* no settings file: defaults */
+  e = sd_settings_from_ini(ini, s);
+  sd_ini_free(ini);
   return e;
 }
 

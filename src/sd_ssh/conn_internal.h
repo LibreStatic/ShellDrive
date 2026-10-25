@@ -74,6 +74,22 @@ ssh_prompt_answer *ssh_prompt_take_answer(sd_prompt *p);
 /* Called by the answer command on the I/O thread (conn.c dispatches to kex/auth). */
 void ssh_on_prompt_answered(sd_ssh_conn *c, sd_prompt *p);
 
+/* ---- reconnect secret cache (seccache.c; 01 §7.4, TM-R05) ---- */
+
+typedef struct ssh_secret { uint8_t *blob; size_t cap, len; } ssh_secret;   /* encrypted in memory */
+typedef struct ssh_seccache {
+  ssh_secret password;
+  ssh_secret *pass; uint32_t npass;   /* key-file passphrase per identity index */
+} ssh_seccache;
+
+int    ssh_secret_cache_available(void);       /* CryptProtectMemory / RtlEncryptMemory present */
+sd_err ssh_secret_store(ssh_secret *s, const uint8_t *p, size_t n);
+sd_err ssh_secret_load(const ssh_secret *s, sd_secbuf **out);   /* plain copy for one use */
+void   ssh_secret_clear(ssh_secret *s);
+void   ssh_seccache_init(ssh_seccache *sc, uint32_t identities);
+void   ssh_seccache_clear(ssh_seccache *sc);
+void   ssh_seccache_free(ssh_seccache *sc);
+
 /* ---- identities ---- */
 
 typedef struct ssh_ident {
@@ -156,6 +172,9 @@ typedef struct ssh_auth {
   uint32_t password_rounds, kbd_rounds;
   int partial_pk, partial_pw, partial_kbd;
   sd_ssh_key *key;
+  /* reconnect cache (01 §7.4) */
+  int pw_cache_tried, pw_from_cache, pp_cache_tried, pp_from_cache;
+  sd_secbuf *pw_pending, *pp_pending;   /* user answers, stored in the cache once they worked */
 } ssh_auth;
 
 void ssh_auth_start(sd_ssh_conn *c);
@@ -251,6 +270,15 @@ struct sd_ssh_conn {
   /* prompts */
   sd_prompt *cur_prompt;
 
+  /* reconnect (01 §8): survives across connects of this object */
+  int ever_connected;         /* a connect reached CONNECTED; later connects are reconnects */
+  int is_reconnect;           /* the current connect is a reconnect (prompts carry is_reconnect) */
+  uint8_t pinned_hostkey[512]; size_t pinned_len;   /* key verified by the last successful connect */
+  int pinned_unstored;        /* the pinned key was accepted once (not in any store) */
+  int hk_once;                /* this connect accepted the host key with ACCEPT_ONCE */
+  int cache_secrets;          /* cache_secrets_for_reconnect */
+  ssh_seccache cache;
+
   /* keepalive, probe, RTT */
   uint64_t last_rx_tick, next_ka_tick, probe_deadline;
   int probe_pending;
@@ -272,6 +300,7 @@ void ssh_flush_pending(sd_ssh_conn *c);                               /* after N
 void ssh_after_initial_kex(sd_ssh_conn *c);
 void ssh_on_authenticated(sd_ssh_conn *c);
 void ssh_send_keepalive(sd_ssh_conn *c);
+int  ssh_cache_usable(const sd_ssh_conn *c);   /* cache on and no fresh host-key acceptance (TM-R05) */
 uint64_t ssh_now(void);
 void ssh_sanitize(const uint8_t *p, size_t n, char *out, size_t cap);
 

@@ -7,6 +7,10 @@
  * Folders are created with the protected DACL D:P(A;OICI;FA;;;<UserSID>)(A;OICI;FA;;;SY) (TM-R07).
  * Writers serialize on config.lock (LockFileEx) and replace files atomically (tmp + MoveFileExW).
  *
+ * M1 keys: mount.backend, mount.offline_wait, mount.reconnect_grace, cache.disk, connection.channels
+ * (written only when set or already present). Per-mount cache folders under
+ * %LOCALAPPDATA%\LibreStatic\ShellDrive\cache (protected DACL) and the identity cache file in them.
+ *
  * Not yet: machine profiles/templates, overrides, settings.ini, policies, portable detection,
  * directory change notifications (M3/M5).
  *
@@ -26,6 +30,8 @@ enum { SD_PROFILE_AUTH_PUBLICKEY = 1u << 0, SD_PROFILE_AUTH_KBDINT = 1u << 1, SD
 /* Same numeric values as sd_vfs_symlinks / sd_vfs_write_mode (sd_config does not depend on sd_vfs). */
 enum { SD_PROFILE_SYMLINKS_FOLLOW_INSIDE = 0, SD_PROFILE_SYMLINKS_FOLLOW = 1, SD_PROFILE_SYMLINKS_HIDE = 2 };
 enum { SD_PROFILE_WRITE_THROUGH = 0, SD_PROFILE_WRITE_BEHIND = 1 };
+/* Same numeric values as sd_mount_backend_kind. */
+enum { SD_PROFILE_BACKEND_AUTO = 0, SD_PROFILE_BACKEND_DOKANY = 1, SD_PROFILE_BACKEND_WEBDAV = 2 };
 
 typedef struct sd_profile {
   int      format;
@@ -42,6 +48,12 @@ typedef struct sd_profile {
   int      symlinks;             /* SD_PROFILE_SYMLINKS_* (D40 default follow_inside) */
   int      write_mode;           /* SD_PROFILE_WRITE_* (D9 default through) */
   char     label[128];           /* "" = name */
+  /* M1 */
+  int      backend;              /* mount.backend: SD_PROFILE_BACKEND_* (auto) */
+  uint32_t offline_wait_ms;      /* mount.offline_wait; 0 = default (3 s) */
+  uint32_t reconnect_grace_ms;   /* mount.reconnect_grace; 0 = default (60 s) */
+  uint32_t disk_cache_mb;        /* cache.disk in MiB; 0 = no disk tier (default) */
+  uint32_t channels;             /* connection.channels: 1 or 2 (default 2) */
 } sd_profile;
 
 void   sd_profile_defaults(sd_profile *p);
@@ -67,6 +79,26 @@ sd_err sd_config_profiles_dir(wchar_t *out, size_t cch);
 sd_err sd_config_logs_dir(wchar_t *out, size_t cch);
 /* Creates root, profiles\ and logs\ with the protected per-user DACL when missing. */
 sd_err sd_config_ensure_dirs(void);
+/* M1: %LOCALAPPDATA%\LibreStatic\ShellDrive\cache\<16 hex digits of FNV-1a 64 of key> (or
+   <override>\cache\...), created with the protected per-user DACL. key identifies one mount source,
+   e.g. "user@host:port"; the disk tier and the identity cache of that source live there. */
+sd_err sd_config_cache_dir(const char *key, wchar_t *out, size_t cch);
+/* Identity cache (02 §3.4 step 2, D10): <dir>\identity.ini remembers the definitive uid/gid learned
+   for the server whose verified host key is hostkey_fp. load returns SD_E_NOT_FOUND when nothing is
+   cached for that key (a different host key never matches). */
+sd_err sd_config_identity_load(const wchar_t *dir, const char *hostkey_fp, uint32_t *uid, uint32_t *gid);
+sd_err sd_config_identity_store(const wchar_t *dir, const char *hostkey_fp, uint32_t uid, uint32_t gid);
+
+/* M1 subset of <root>\settings.ini (03 §3.4.2): [log] level = error|warn|info|debug|trace (info) and
+   [cache] memory = size (0 = sd_vfs default). A missing file gives the defaults; an invalid value
+   is logged and ignored (the setting keeps its default). */
+typedef struct sd_settings {
+  int    log_level;              /* sd_log_level values: 0 error .. 4 trace; default 2 (info) */
+  UINT64 cache_memory;           /* bytes; 0 = default */
+} sd_settings;
+void   sd_settings_defaults(sd_settings *s);
+sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s);   /* SD_E_INVALID_PARAM if a value was bad */
+sd_err sd_settings_load(sd_settings *s);
 /* Process-wide override of the per-user root (portable layouts, tests). NULL clears it. */
 void   sd_config_set_root_override(const wchar_t *dir);
 

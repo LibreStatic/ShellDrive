@@ -40,6 +40,8 @@ SD_TEST(platform_cpu_mask)
   uint32_t f = sd_cpu_features();
 #if defined(_M_X64)
   SD_CHECK(f & SD_CPU_SSE2);                          /* architectural on x64 */
+#elif defined(_M_IX86) && defined(SD_X86_ARCH_IA32)
+  SD_CHECK_EQ_U64(f, 0);                              /* x86-ia32 detects nothing (01 §2.3) */
 #endif
   sd_cpu_set_mask(0);
   SD_CHECK_EQ_U64(sd_cpu_features(), 0);

@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <string.h>
 
+#include <aclapi.h>
+
 #include "sd_test.h"
 #include "sd_config/sd_config.h"
 #include "sd_base/sd_mem.h"
@@ -398,4 +400,106 @@ SD_TEST(config_paths_and_expansion)
   SD_CHECK(wcsstr(out, L"\\.ssh\\id_ed25519") != NULL);
   SD_REQUIRE(sd_config_expand_path("%SystemRoot%\\x", out, SD_COUNTOF(out)) == SD_OK);
   SD_CHECK(out[0] != L'%');
+}
+
+SD_TEST(profile_m1_keys)
+{
+  static const char text[] =
+    "[profile]\r\nhost = h.test\r\n"
+    "[mount]\r\nbackend = webdav\r\noffline_wait = 5s\r\nreconnect_grace = 2m\r\n"
+    "[cache]\r\ndisk = 512M\r\n"
+    "[connection]\r\nchannels = 1\r\n";
+  sd_ini *ini = parse_s(text, NULL), *out = NULL;
+  sd_profile p, q;
+  const char *bad = NULL;
+  SD_REQUIRE(ini != NULL);
+  SD_REQUIRE(sd_profile_from_ini(ini, &p, &bad) == SD_OK);
+  SD_CHECK_EQ_INT(p.backend, SD_PROFILE_BACKEND_WEBDAV);
+  SD_CHECK_EQ_INT(p.offline_wait_ms, 5000);
+  SD_CHECK_EQ_INT(p.reconnect_grace_ms, 120000);
+  SD_CHECK_EQ_INT(p.disk_cache_mb, 512);
+  SD_CHECK_EQ_INT(p.channels, 1);
+  SD_REQUIRE(sd_profile_to_ini(&p, &out) == SD_OK);
+  SD_REQUIRE(sd_profile_from_ini(out, &q, &bad) == SD_OK);
+  SD_CHECK_EQ_INT(q.backend, SD_PROFILE_BACKEND_WEBDAV);
+  SD_CHECK_EQ_INT(q.offline_wait_ms, 5000);
+  SD_CHECK_EQ_INT(q.reconnect_grace_ms, 120000);
+  SD_CHECK_EQ_INT(q.disk_cache_mb, 512);
+  SD_CHECK_EQ_INT(q.channels, 1);
+  sd_ini_free(out);
+  sd_ini_free(ini);
+  /* defaults are not written into a new file; bad values name the key */
+  sd_profile_defaults(&p);
+  SD_CHECK_EQ_INT(p.backend, SD_PROFILE_BACKEND_AUTO);
+  SD_CHECK_EQ_INT(p.channels, 2);
+  {
+    sd_ini *d = NULL;
+    memcpy(p.host, "h.test", 7);
+    memcpy(p.name, "h.test", 7);
+    SD_REQUIRE(sd_profile_to_ini(&p, &d) == SD_OK);
+    SD_CHECK(sd_ini_get(d, "mount", "backend") == NULL);
+    SD_CHECK(sd_ini_get(d, "cache", "disk") == NULL);
+    SD_CHECK(sd_ini_get(d, "connection", "channels") == NULL);
+    sd_ini_free(d);
+  }
+  ini = parse_s("[profile]\r\nhost = h.test\r\n[mount]\r\nbackend = smb\r\n", NULL);
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_profile_from_ini(ini, &p, &bad) == SD_E_INVALID_PARAM);
+  SD_CHECK_STR(bad, "mount.backend");
+  sd_ini_free(ini);
+  ini = parse_s("[profile]\r\nhost = h.test\r\n[connection]\r\nchannels = 3\r\n", NULL);
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_profile_from_ini(ini, &p, &bad) == SD_E_INVALID_PARAM);
+  SD_CHECK_STR(bad, "connection.channels");
+  sd_ini_free(ini);
+}
+
+SD_TEST(settings_log_level_and_cache_memory)
+{
+  sd_settings s;
+  sd_ini *ini = parse_s("[log]\r\nlevel = debug\r\n[cache]\r\nmemory = 64M\r\n", NULL);
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_settings_from_ini(ini, &s) == SD_OK);
+  SD_CHECK_EQ_INT(s.log_level, 3);
+  SD_CHECK(s.cache_memory == (UINT64)64 << 20);
+  sd_ini_free(ini);
+  ini = parse_s("[log]\r\nlevel = loud\r\n", NULL);
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_settings_from_ini(ini, &s) == SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(s.log_level, 2);              /* invalid value keeps the default */
+  sd_ini_free(ini);
+}
+
+SD_TEST(cache_dir_and_identity_cache)
+{
+  wchar_t root[MAX_PATH], dir[MAX_PATH], dir2[MAX_PATH];
+  uint32_t uid = 0, gid = 0;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  PACL dacl = NULL;
+  SECURITY_DESCRIPTOR_CONTROL ctl = 0;
+  DWORD rev = 0;
+  temp_root(root, SD_COUNTOF(root));
+  SD_REQUIRE(root[0] != 0);
+  remove_tree(root);
+  sd_config_set_root_override(root);
+  SD_REQUIRE(sd_config_cache_dir("alice@h.test:22", dir, SD_COUNTOF(dir)) == SD_OK);
+  SD_CHECK(wcsstr(dir, L"\\cache\\") != NULL);
+  SD_CHECK_EQ_INT((int)wcslen(wcsrchr(dir, L'\\') + 1), 16);
+  SD_CHECK((GetFileAttributesW(dir) & FILE_ATTRIBUTE_DIRECTORY) != 0 && GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES);
+  /* the per-source folder carries the protected DACL (TM-R07, the disk tier refuses anything else) */
+  SD_CHECK(GetNamedSecurityInfoW(dir, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd) ==
+           ERROR_SUCCESS);
+  SD_CHECK(sd && GetSecurityDescriptorControl(sd, &ctl, &rev) && (ctl & SE_DACL_PROTECTED));
+  if (sd) LocalFree(sd);
+  SD_REQUIRE(sd_config_cache_dir("bob@h.test:22", dir2, SD_COUNTOF(dir2)) == SD_OK);
+  SD_CHECK(wcscmp(dir, dir2) != 0);
+  SD_CHECK(sd_config_identity_load(dir, "SHA256:abc", &uid, &gid) == SD_E_NOT_FOUND);
+  SD_REQUIRE(sd_config_identity_store(dir, "SHA256:abc", 1000, 1001) == SD_OK);
+  SD_CHECK(sd_config_identity_load(dir, "SHA256:abc", &uid, &gid) == SD_OK);
+  SD_CHECK_EQ_INT(uid, 1000);
+  SD_CHECK_EQ_INT(gid, 1001);
+  SD_CHECK(sd_config_identity_load(dir, "SHA256:other", &uid, &gid) == SD_E_NOT_FOUND);   /* new host key */
+  SD_CHECK(sd_config_identity_load(dir2, "SHA256:abc", &uid, &gid) == SD_E_NOT_FOUND);
+  sd_config_set_root_override(NULL);
+  remove_tree(root);
 }

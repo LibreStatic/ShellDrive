@@ -1,8 +1,10 @@
 /* sd_vfs: backend-neutral filesystem core between sd_sftp and the Dokany/WebDAV backends (02 §1-§5, §8).
  *
- * M0 scope: memory cache only (no disk tier), write-through (D9), symlinks follow_inside (D40),
- * Dokany backend. Option fields for later milestones are accepted; unsupported values fail the
- * mount with SD_VFS_E_UNSUPPORTED.
+ * M1 scope: memory and disk cache tiers with read-ahead and single-flight misses, write-through
+ * (default, D9) and opt-in write-behind (sticky errors, grace retransmit, write_failed), reconnect
+ * with lazy handle re-open and identity check, serving cached data while disconnected, identity
+ * without exec (D10), symlinks follow_inside (D40), Dokany backend. Option fields for later
+ * milestones are accepted; unsupported values fail the mount with SD_VFS_E_UNSUPPORTED.
  *
  * Threading (02 §5.4, review §4.1):
  * - Request functions (create .. set_sd) are called concurrently from backend threads (Dokany
@@ -57,10 +59,14 @@ enum {
 };
 
 /* Numeric fields: 0 = the 02 default (TTLs 30 s / 30 s / 10 s, umask 022, request_timeout 25 s,
-   list caps of 02 §1.4). open_revalidate_ms: 0 = default 1 s, -1 = never, n > 0 = n ms. BOOLs are
-   taken literally (the host sets hide_dotfiles, map_readonly, allow_system, fsync_on_flush, which
-   default to on in the profile). M0 rejects with SD_VFS_E_UNSUPPORTED: write_mode = behind,
-   global_mount, disk_cache_mb, mark_of_the_web, remote_codepage. */
+   list caps of 02 §1.4, max_readahead 8 MiB, wb_window 16 MiB, wb_window_mount 64 MiB,
+   offline_wait 3 s, reconnect_grace 60 s). open_revalidate_ms: 0 = default 1 s, -1 = never,
+   n > 0 = n ms. reconnect_grace_ms = 0xFFFFFFFF disables the grace retransmit. BOOLs are taken
+   literally (the host sets hide_dotfiles, map_readonly, allow_system, fsync_on_flush, which default
+   to on in the profile). disk_cache_mb > 0 with disk_cache_dir enables the disk tier after the
+   TM-R29 checks (02 §4.2); a refused directory leaves the memory tier alone and raises the notice
+   "disk_cache_refused". Rejected with SD_VFS_E_UNSUPPORTED: global_mount, mark_of_the_web,
+   remote_codepage (later milestones). */
 typedef struct sd_vfs_options {
   UINT32 struct_size;                 /* sizeof(sd_vfs_options) */
   const char *remote_root;            /* bytes; NULL = home */
@@ -88,6 +94,9 @@ typedef struct sd_vfs_options {
   BOOL  global_mount;                 /* scope = service (D35) */
   const PSID *access_sids;  UINT n_access;
   const PSID *write_sids;   UINT n_write;
+  /* M1 additions */
+  const struct sd_vfs_identity *known_identity;   /* definitive identity the host cached for this
+                                                     server identity (02 §3.4 step 2); NULL = learn */
 } sd_vfs_options;
 
 typedef struct sd_vfs_caller {
@@ -102,7 +111,7 @@ typedef struct sd_vfs_attr {
   INT64  atime, mtime;
 } sd_vfs_attr;
 
-typedef struct sd_vfs_identity {
+typedef struct sd_vfs_identity {   /* 02 §3.4 */
   BOOL uid_known, definitive; UINT32 uid, gid;
   const UINT32 *groups; UINT32 ngroups;
 } sd_vfs_identity;
@@ -119,10 +128,15 @@ typedef enum {
   SD_VFS_EV_AUDIT,            /* global mounts: requestor SID, operation, path (TM-R24) */
   SD_VFS_EV_NOTICE            /* English log text + code */
 } sd_vfs_event_kind;
+/* WRITE_FAILED: path (mount-relative Windows path), bytes lost, status (the sticky error). It is
+   raised at most once per error and node, from cleanup, flush, quiesce or the background timer
+   (grace expiry, failed identity check after reconnect), never in write-through mode.
+   STATE: change_kind = sd_sftp_state the vfs observed (READY after a reconnect it synced to). */
 typedef struct sd_vfs_event {
   sd_vfs_event_kind kind; int change_kind; const WCHAR *path, *new_path; BOOL is_dir;
   UINT64 bytes; sd_vfs_status status; UINT32 conn_index; const char *code;
   PSID caller_sid; const char *op;
+  const char *detail;                 /* NOTICE: English reason (e.g. why the disk tier was refused) */
 } sd_vfs_event;                       /* pointers valid during the callback only */
 typedef void (*sd_vfs_event_cb)(void *ctx, const sd_vfs_event *ev);
 
@@ -199,5 +213,19 @@ typedef struct sd_vfs_volume {
   UINT32 serial;
 } sd_vfs_volume;
 void sd_vfs_get_volume(sd_vfs *v, sd_vfs_volume *out);
+
+/* Learned identity (02 §3.4): definitive once confirmed by the first object this mount created.
+   groups is NULL (supplementary groups only with identity_probe = exec, not in M1). The host may
+   cache it per server identity and pass it back in sd_vfs_options.known_identity. */
+void sd_vfs_get_identity(sd_vfs *v, sd_vfs_identity *out);
+
+/* ---- process-wide memory tier (02 §4.2; any thread) ---- */
+
+/* settings.ini [cache] memory, set by the host at process start (before the first mount; later
+   calls shrink or grow the budget, evicting as needed). 0 = default min(256 MB, RAM/16); values
+   below 16 MB are raised to 16 MB. */
+void sd_vfs_cache_set_budget(UINT64 bytes);
+typedef struct sd_vfs_cache_stats { UINT64 budget, used, blocks, hits, misses, evictions; } sd_vfs_cache_stats;
+void sd_vfs_cache_get_stats(sd_vfs_cache_stats *out);
 
 #endif /* SD_VFS_H */

@@ -1,11 +1,14 @@
 /* sd_vfs internals (02 §1-§5). Private to src/sd_vfs.
  *
- * Locking (M0): one mutex per mount (v->lock) protects the node table, every node field, the
- * listings, the share counters and the handle list. It is the degenerate form of 02 §5.5's order
- * (tree_lock < node.lock < share_registry.lock): it is never held across an sd_sftp submission or a
- * wait (review §4.1 rules 1 and 2), and sd_sftp completions never take it; they only fill the
- * request slot and signal its event (vfs_req.c). Every operation re-validates node state after a
- * wait. */
+ * Locking: one mutex per mount (v->lock) protects the node table, every node field, the
+ * listings, the share counters, the handle list, block fetches and write-behind queues. It is the
+ * degenerate form of 02 §5.5's order (tree_lock < node.lock < share_registry.lock) and is taken
+ * before a memory-tier shard lock (vfs_cache.c) or a disk-tier lock (vfs_disk.c), never after. It
+ * is never held across an sd_sftp submission or a network wait (review §4.1 rules 1 and 2), and
+ * sd_sftp completions never take it (nor a shard lock): they only fill a batch slot and signal its
+ * event (vfs_req.c). Read-ahead blocks and write-behind acknowledgements have no waiter; they stay
+ * in their batch until a vfs thread (a reader, a writer, flush/cleanup or the per-mount background
+ * timer) reaps them under v->lock. Every operation re-validates node state after a wait. */
 #ifndef SD_VFS_INTERNAL_H
 #define SD_VFS_INTERNAL_H
 
@@ -44,6 +47,22 @@
 #define VFS_MAX_NODES         200000u
 #define VFS_WAIT_GRACE_MS     5000u     /* beyond the request deadline before cancelling (sd_sftp bug guard) */
 #define VFS_MAX_INFLIGHT      64u       /* chunks per data call */
+
+/* Data cache, read-ahead and write modes (02 §4.2-§4.4, §5.2, §5.3). */
+#define VFS_BLK_SHIFT         18u
+#define VFS_BLK               (1u << VFS_BLK_SHIFT)   /* 256 KiB cache block */
+#define VFS_RA_START          (256u * 1024u)
+#define VFS_RA_SEQSCAN        (2u << 20)  /* FILE_FLAG_SEQUENTIAL_SCAN start window */
+#define VFS_DEF_MAX_RA        (8u << 20)
+#define VFS_DEF_WB_WINDOW     (16u << 20)
+#define VFS_DEF_WB_MOUNT      (64u << 20)
+#define VFS_DEF_GRACE         60000u
+#define VFS_DEF_OFFLINE_WAIT  3000u
+#define VFS_WB_COALESCE_MS    500u
+#define VFS_WB_COALESCE_MAX   (1u << 20)
+#define VFS_HOT_WINDOW_S      2
+#define VFS_TIMER_MS          100u
+#define VFS_DISK_TRIM_MS      60000u
 
 /* Cached POSIX attributes (02 §1.5). */
 typedef struct vfs_attr {
@@ -84,7 +103,41 @@ enum {
   VFS_NF_ROOT           = 1u << 3
 };
 
+typedef struct vfs_batch vfs_batch;
 typedef struct vfs_extent { uint64_t off, end; } vfs_extent;
+
+/* A thread waiting for node state to change (condition emulation: XP has no CONDITION_VARIABLE). */
+typedef struct vfs_waiter { struct vfs_waiter *next; HANDLE ev; } vfs_waiter;
+
+/* One 256 KiB block being fetched (single-flight, 02 §4.1/§4.3). Listed in node->fetch until it is
+   processed into the cache; readers hold refs. v->lock protects every field. */
+typedef struct vfs_fetch {
+  struct vfs_fetch *next;
+  uint64_t  blk;
+  uint32_t  vgen;
+  LONG      refs;
+  vfs_batch *b;                         /* the chunk reads; owns buf */
+  uint8_t  *buf;
+  uint32_t  nch, chunk;
+  BOOL      poisoned;                   /* a write or a validator change overlapped it: not cached */
+  BOOL      processing, processed, listed;
+  uint32_t  len; BOOL eof; sd_err err;  /* results once processed */
+} vfs_fetch;
+
+/* Write-behind extent (02 §4.4). data is owned by the extent; when an extent is discarded while its
+   batch is in flight, data moves to the batch and is freed after the last completion. */
+typedef struct vfs_wb {
+  struct vfs_wb *next;
+  uint64_t  off; uint32_t len;
+  uint8_t  *data;
+  vfs_batch *b;                         /* NULL: not sent (coalescing, blocked or waiting for reconnect) */
+  uint32_t  nch, chunk;
+  uint64_t  queued;                     /* tick */
+  uint64_t  retry_until;                /* != 0: lost to a disconnect, retransmit before this tick */
+  BOOL      maybe;                      /* sent at least once without an acknowledgement */
+} vfs_wb;
+
+struct vfs_dc;
 
 typedef struct vfs_node {
   struct vfs_node *hnext;
@@ -106,7 +159,25 @@ typedef struct vfs_node {
   uint32_t  open_count;                 /* handles not yet closed */
   uint32_t  uncleaned;                  /* handles not yet cleaned up */
   sd_sftp_file *fh; int fh_write;       /* lazily opened remote handle (02 §2.1) */
-  vfs_extent *wext; uint32_t nwext, capwext;   /* writes in flight (no two overlap, 02 §4.4) */
+  BOOL      reopening;                  /* a reopen after reconnect is running (02 §5.3) */
+  vfs_extent *wext; uint32_t nwext, capwext;   /* write-through writes in flight (no two overlap) */
+  vfs_waiter *waiters;                  /* woken on wext release, fetch processed, reopen done */
+  struct vfs_node *lru_prev, *lru_next; /* idle (refs == 0) nodes in the table, oldest first */
+  BOOL      in_lru;
+  /* data cache validator (02 §4.2): blocks are keyed by (file_id, vgen) */
+  uint32_t  vgen;
+  BOOL      cv_valid; uint64_t cv_size; int64_t cv_mtime;   /* server (size, mtime) for vgen */
+  uint64_t  srv_size;                   /* size on the server as far as acknowledged writes go */
+  BOOL      mtime_pending;              /* local writes: the next server attrs give the mtime */
+  BOOL      maybe_valid; uint64_t maybe_end;   /* a write that may have executed (5.3 identity) */
+  vfs_fetch *fetch;                     /* blocks in flight */
+  struct vfs_dc *dc;                    /* disk-tier entry while handles are open */
+  /* write-behind queue (02 §4.4) */
+  vfs_wb   *wq_head, *wq_tail;
+  uint64_t  wq_bytes, wq_lost, wq_seq_end;
+  sd_vfs_status wq_error;               /* sticky until the last handle closes */
+  BOOL      wq_reported, wq_listed;
+  struct vfs_node *wb_next;             /* v->wb_nodes list (holds a node ref) */
 } vfs_node;
 
 struct sd_vfs_handle {
@@ -117,9 +188,15 @@ struct sd_vfs_handle {
   BOOL      is_dir, cleaned, wrote, delete_on_close, share_counted;
   BOOL      can_write;
   BOOL      times_pending; int64_t pend_atime, pend_mtime; BOOL pend_a, pend_m;
+  /* read-ahead (02 §4.3) */
+  uint64_t  ra_next, ra_end;            /* next sequential offset; end of what was issued */
+  uint32_t  ra_window;                  /* 0: read-ahead off (RANDOM_ACCESS) */
+  BOOL      write_through;              /* FILE_FLAG_WRITE_THROUGH on a write-behind mount */
 };
 
 typedef struct vfs_hash { vfs_node **b; uint32_t nb, count; } vfs_hash;
+
+struct vfs_disk;
 
 struct sd_vfs {
   sd_sftp_session *s;
@@ -134,7 +211,9 @@ struct sd_vfs {
   /* options (resolved defaults) */
   BOOL read_only, hide_dotfiles, map_readonly, case_view_sensitive, show_special, allow_system;
   BOOL block_shell_active, remote_insensitive, fsync_on_flush;
+  BOOL write_behind;
   int  symlinks;
+  uint32_t max_readahead, wb_window, wb_window_mount, grace, offline_wait;
   uint32_t umask, attr_ttl, dir_ttl, neg_ttl, req_timeout, list_entries, list_bytes, list_deadline,
            link_stats;
   int  revalidate;
@@ -143,15 +222,26 @@ struct sd_vfs {
   uint32_t serial;
   /* remote */
   char *root_path;  size_t root_len;    /* realpath of the mount root, no trailing '/' unless "/" */
-  uint32_t max_read, max_write;
+  volatile LONG max_read, max_write;    /* re-read on every generation */
+  volatile LONG gen;                    /* sd_sftp generation the mount state was last synced to */
+  int64_t skew;                         /* server clock - local clock (s), from created objects */
+  uint64_t mount_id;                    /* memory-tier key prefix */
   /* identity (02 §3.4) */
   BOOL uid_known, uid_definitive; uint32_t uid, gid;
+  /* idle-node LRU, write-behind nodes, background timer, disk tier */
+  vfs_node *lru_head, *lru_tail;
+  vfs_node *wb_nodes;
+  uint64_t wb_bytes;                    /* write-behind bytes queued on the mount */
+  HANDLE timer;
+  volatile LONG timer_busy;
+  uint64_t next_trim;
+  struct vfs_disk *disk;
   /* statvfs cache */
   sd_vfs_statfs fs; uint64_t fs_time;
   /* once-only notices */
   volatile LONG notice_shell, notice_rename_fallback;
   /* stats */
-  volatile LONG64 bytes_rd, bytes_wr, cache_hits, cache_misses;
+  volatile LONG64 bytes_rd, bytes_wr, cache_hits, cache_misses, write_failed, reconnects;
 };
 
 /* ---- vfs_name.c: stage-2 name mapping, folding, classification (02 §1.2, §1.3, §4.5) ---- */
@@ -177,13 +267,13 @@ uint32_t vfs_hash_w(const WCHAR *w);
 
 /* ---- vfs_req.c: waiting on sd_sftp completions ---- */
 
-typedef struct vfs_batch vfs_batch;
 typedef struct vfs_slot {
   vfs_batch *b;
   sd_sftp_req *token;
   volatile LONG done;
   sd_err err;
   int eof;
+  int maybe_executed, session_ready;
   uint32_t bytes;
   sd_sftp_attrs attrs;                  /* ext pointers cleared */
   sd_sftp_file *file;                   /* open result (claimed by the waiter) */
@@ -197,6 +287,12 @@ typedef struct vfs_rawent { char *name; uint32_t len; sd_sftp_attrs attrs; } vfs
 
 vfs_batch *vb_new(uint32_t n);
 vfs_slot  *vb_slot(vfs_batch *b, uint32_t i);
+void       vb_attach_buf(vfs_batch *b, void *buf);   /* freed with the batch (after the last completion) */
+BOOL       vb_done(vfs_batch *b);                     /* every submitted request completed */
+HANDLE     vb_event(vfs_batch *b);                    /* manual-reset, set when done */
+void       vb_ref(vfs_batch *b);                      /* extra reference, dropped with vb_free */
+/* The options vb_opt armed for slot i, for a submission made after the arming (outside v->lock). */
+const sd_sftp_reqopt *vb_optp(vfs_batch *b, uint32_t i);
 /* Request options for slot i with the time left until deadline (tick ms). */
 const sd_sftp_reqopt *vb_opt(vfs_batch *b, uint32_t i, uint64_t deadline);
 sd_sftp_cb vb_cb(void);          /* status only */
@@ -225,6 +321,7 @@ sd_err vr_setstat(sd_vfs *v, const char *path, const sd_sftp_attrs *a, uint64_t 
 sd_err vr_fsetstat(sd_sftp_file *f, const sd_sftp_attrs *a, uint64_t dl);
 sd_err vr_fsync(sd_sftp_file *f, uint64_t dl);
 sd_err vr_statvfs(sd_vfs *v, const char *path, uint64_t dl, sd_sftp_statvfs *out);
+sd_err vr_reopen(sd_sftp_file *f, uint64_t dl, sd_sftp_attrs *out);
 
 /* ---- vfs_core.c ---- */
 
@@ -237,7 +334,7 @@ sd_vfs_status vfs_map_err(sd_err e);
 /* Remote path builder with the wire invariant (TM-R11). Allocates *out. */
 sd_vfs_status vfs_join(sd_vfs *v, const char *parent, const char *raw, uint32_t raw_len, char **out);
 
-void      vfs_node_ref(vfs_node *n);
+void      vfs_node_ref(sd_vfs *v, vfs_node *n);            /* v->lock held */
 void      vfs_node_unref(sd_vfs *v, vfs_node *n);          /* v->lock held */
 vfs_node *vfs_table_find(sd_vfs *v, const WCHAR *key);      /* v->lock held, no ref */
 void      vfs_table_remove(sd_vfs *v, vfs_node *n);         /* v->lock held */
@@ -267,7 +364,73 @@ vfs_node *vfs_parent_of(sd_vfs *v, vfs_node *n);              /* v->lock held, n
 sd_vfs_status vfs_join_under(sd_vfs *v, vfs_node *n, const char *raw, uint32_t raw_len, char **out);
 WCHAR    *vfs_wname_copy(sd_vfs *v, vfs_node *n);
 void      vfs_make_negative(sd_vfs *v, vfs_node *n);          /* v->lock held */
+void      vfs_listing_sync(sd_vfs *v, vfs_node *n);           /* v->lock held: mirror attrs into the parent listing */
+WCHAR    *vfs_node_path(sd_vfs *v, vfs_node *n);              /* v->lock held: L"\Dir\File" display path (allocated) */
 void      vfs_learn_identity(sd_vfs *v, const vfs_attr *created, const vfs_attr *parent);
+/* v->lock held: fresh server attributes for n; applies the data-cache validator rule (02 §4.2). */
+void      vfs_node_set_attr(sd_vfs *v, vfs_node *n, const vfs_attr *a);
+/* v->lock held: drops every cached block of n (new validator generation). */
+void      vfs_node_invalidate(sd_vfs *v, vfs_node *n);
+/* Re-reads server_info after a reconnect (limits, identity; 02 §5.1). Any vfs thread, no lock. */
+void      vfs_sync_generation(sd_vfs *v);
+/* Waits up to offline_wait for the session to come back (02 §5.2). */
+BOOL      vfs_wait_online(sd_vfs *v);
+
+/* v->lock held: waits on n->waiters until woken or dl (FALSE on timeout), releasing the lock
+   meanwhile. */
+BOOL      vfs_cond_wait(sd_vfs *v, vfs_node *n, uint64_t dl);
+void      vfs_cond_broadcast(vfs_node *n);                    /* v->lock held */
+
+/* ---- vfs_data.c: data path (02 §4.2-§4.4, §5.3) ---- */
+void      vfs_data_node_free(vfs_node *n);                    /* node teardown (no lock needed) */
+struct vfs_dc *vfs_data_last_close(sd_vfs *v, vfs_node *n);  /* v->lock held; last local handle;
+                                                                 close the returned entry unlocked */
+sd_vfs_status vfs_data_cleanup(sd_vfs_handle *h, uint64_t dl);/* drain at cleanup (both modes) */
+sd_vfs_status vfs_ext_drain(sd_vfs *v, vfs_node *n, uint64_t dl);
+void      vfs_data_quiesce(sd_vfs *v, uint64_t end);
+void      vfs_data_unmount(sd_vfs *v);
+void      vfs_timer_start(sd_vfs *v);
+void      vfs_timer_stop(sd_vfs *v);
+void      vfs_handle_init_ra(sd_vfs_handle *h);
+/* Referenced remote handle, reopened after a reconnect with the identity check (02 §5.3). */
+sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out);
+
+/* ---- vfs_cache.c: process-wide memory tier (02 §4.2) ---- */
+typedef struct vc_key { uint64_t mount_id, file_id, blk; uint32_t vgen; } vc_key;
+/* Copies [rel, rel+want) of a cached block into dst. Returns 1 on a hit (*got < want only at end of
+   file, then *eof = 1), 0 on a miss. Hot blocks older than hot_ttl ms count as misses. */
+int      vc_read(const vc_key *k, uint32_t rel, void *dst, uint32_t want, uint32_t *got, int *eof,
+                 uint32_t hot_ttl);
+int      vc_contains(const vc_key *k, uint32_t hot_ttl);
+void     vc_put(const vc_key *k, const void *data, uint32_t len, int eof, int hot);
+/* Updates a cached block in place with a local write of [rel, rel+n) (both write modes). A write
+   that leaves a gap or passes a cached end of file drops the block instead. */
+void     vc_write(const vc_key *k, uint32_t rel, const void *data, uint32_t n);
+void     vc_drop(const vc_key *k);
+void     vc_drop_file(uint64_t mount_id, uint64_t file_id);
+void     vc_drop_mount(uint64_t mount_id);
+uint64_t vc_new_mount_id(void);
+
+/* ---- vfs_disk.c: per-mount disk tier (02 §4.2, TM-R29) ---- */
+/* Validates the directory (reparse point, owner, DACL, persistent ACLs) and enables the tier; any
+   failed check raises the disk_cache_refused notice and leaves the tier off. */
+void     vfs_disk_open(sd_vfs *v, const sd_vfs_options *o, const char *host_fp);
+void     vfs_disk_close(sd_vfs *v);
+void     vfs_disk_trim(sd_vfs *v);
+BOOL     vfs_disk_enabled(sd_vfs *v);
+/* Per-node entry: opened on the first data access, closed at the last handle close. NULL when the
+   tier is off or the entry cannot be opened. */
+struct vfs_dc *vfs_dc_open(sd_vfs *v, const char *rpath, uint64_t size, int64_t mtime, uint32_t vgen);
+void     vfs_dc_close(sd_vfs *v, struct vfs_dc *dc);
+/* 1 with the block's bytes when it is present for vgen. */
+int      vfs_dc_read(sd_vfs *v, struct vfs_dc *dc, uint32_t vgen, uint64_t blk, uint8_t *buf, uint32_t *len,
+                     int *eof);
+void     vfs_dc_write(sd_vfs *v, struct vfs_dc *dc, uint32_t vgen, uint64_t blk, const uint8_t *buf,
+                      uint32_t len);
+void     vfs_dc_drop_range(sd_vfs *v, struct vfs_dc *dc, uint64_t off, uint64_t end);
+int      vfs_dc_has(struct vfs_dc *dc, uint32_t vgen, uint64_t blk);
+/* New validator: the same vgen keeps the blocks (our own writes), a new vgen truncates the file. */
+void     vfs_dc_set_validator(sd_vfs *v, struct vfs_dc *dc, uint32_t vgen, uint64_t size, int64_t mtime);
 
 /* Windows view of a node (02 §3.1, §3.2). v->lock held. */
 void vfs_info_from(sd_vfs *v, const vfs_node *n, const WCHAR *name, const vfs_attr *a, uint32_t eflags,

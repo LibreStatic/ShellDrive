@@ -10,6 +10,9 @@ SD_TEST_DECL(mount_passphrase_and_identity);
 SD_TEST_DECL(mount_unreachable_and_no_dokany);
 SD_TEST_DECL(mount_stop_while_prompting);
 SD_TEST_DECL(mount_rejects_bad_params_and_names);
+SD_TEST_DECL(mount_backend_selection);
+SD_TEST_DECL(mount_reconnect_keeps_drive);
+SD_TEST_DECL(mount_write_failed_and_identity);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(mount_tofu_password_mount_unmount),
@@ -22,6 +25,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(mount_unreachable_and_no_dokany),
   SD_TEST_ENTRY(mount_stop_while_prompting),
   SD_TEST_ENTRY(mount_rejects_bad_params_and_names),
+  SD_TEST_ENTRY(mount_backend_selection),
+  SD_TEST_ENTRY(mount_reconnect_keeps_drive),
+  SD_TEST_ENTRY(mount_write_failed_and_identity),
 };
 
 int main(int argc, char **argv)

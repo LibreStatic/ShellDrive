@@ -73,131 +73,6 @@ static BOOL node_readonly_attr(sd_vfs *v, const vfs_node *n)
          !vfs_writable_by_us(v, &n->attr);
 }
 
-/* v->lock held: mirrors a node's attributes into its parent's cached listing. */
-static void listing_sync(sd_vfs *v, vfs_node *n)
-{
-  vfs_node *p = vfs_parent_of(v, n);
-  uint32_t i;
-  if (!p || !p->list)
-    return;
-  for (i = 0; i < p->list->n; i++) {
-    if (wcscmp(p->list->e[i].wname, n->wname) == 0) {
-      p->list->e[i].attr = n->attr;
-      return;
-    }
-  }
-}
-
-static BOOL ext_overlaps(const vfs_node *n, uint64_t off, uint64_t end)
-{
-  uint32_t i;
-  for (i = 0; i < n->nwext; i++) {
-    if (off < n->wext[i].end && n->wext[i].off < end)
-      return TRUE;
-  }
-  return FALSE;
-}
-
-/* Registers [off, end) as in flight once no overlapping write is (02 §4.4). The overlap wait polls:
-   overlapping concurrent writes to one node are rare (paging vs. cached I/O). */
-static sd_vfs_status ext_acquire(sd_vfs *v, vfs_node *n, uint64_t off, uint64_t end, uint64_t dl)
-{
-  for (;;) {
-    sd_mutex_lock(&v->lock);
-    if (!ext_overlaps(n, off, end)) {
-      if (n->nwext == n->capwext) {
-        uint32_t cap = n->capwext ? n->capwext * 2 : 4;
-        vfs_extent *ne = (vfs_extent *)sd_realloc(n->wext, (size_t)cap * sizeof(*ne));
-        if (!ne) {
-          sd_mutex_unlock(&v->lock);
-          return SD_VFS_E_NO_MEMORY;
-        }
-        n->wext = ne;
-        n->capwext = cap;
-      }
-      n->wext[n->nwext].off = off;
-      n->wext[n->nwext].end = end;
-      n->nwext++;
-      sd_mutex_unlock(&v->lock);
-      return SD_VFS_OK;
-    }
-    sd_mutex_unlock(&v->lock);
-    if (sd_tick_ms() >= dl)
-      return SD_VFS_E_TIMEOUT;
-    Sleep(1);
-  }
-}
-
-static void ext_release(vfs_node *n, uint64_t off, uint64_t end)
-{
-  uint32_t i;
-  for (i = 0; i < n->nwext; i++) {
-    if (n->wext[i].off == off && n->wext[i].end == end) {
-      n->wext[i] = n->wext[--n->nwext];
-      return;
-    }
-  }
-}
-
-/* Waits until no write is in flight on the node (flush, truncate, cleanup). */
-static sd_vfs_status ext_drain(sd_vfs *v, vfs_node *n, uint64_t dl)
-{
-  for (;;) {
-    uint32_t k;
-    sd_mutex_lock(&v->lock);
-    k = n->nwext;
-    sd_mutex_unlock(&v->lock);
-    if (k == 0)
-      return SD_VFS_OK;
-    if (sd_tick_ms() >= dl)
-      return SD_VFS_E_TIMEOUT;
-    Sleep(1);
-  }
-}
-
-/* Returns a referenced remote handle suitable for reading (and writing if need_write). */
-static sd_vfs_status get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out)
-{
-  sd_sftp_file *f = NULL, *old = NULL;
-  char *path;
-  sd_err e;
-  *out = NULL;
-  sd_mutex_lock(&v->lock);
-  if (n->fh && (n->fh_write || !need_write)) {
-    sd_sftp_file_addref(n->fh);
-    *out = n->fh;
-    sd_mutex_unlock(&v->lock);
-    return SD_VFS_OK;
-  }
-  path = vfs_strndup(n->epath, strlen(n->epath));
-  sd_mutex_unlock(&v->lock);
-  if (!path)
-    return SD_VFS_E_NO_MEMORY;
-  if (!vfs_online(v)) {
-    sd_free(path);
-    return SD_VFS_E_DISCONNECTED;
-  }
-  e = vr_open(v, path, SD_SFTP_O_READ | (need_write ? SD_SFTP_O_WRITE : 0), NULL, dl, &f, NULL);
-  sd_free(path);
-  if (e != SD_OK)
-    return vfs_map_err(e);
-  sd_mutex_lock(&v->lock);
-  if (n->fh && (n->fh_write || !need_write)) {
-    old = f;                                /* another thread won the lazy open */
-    f = n->fh;
-  } else {
-    old = n->fh;
-    n->fh = f;
-    n->fh_write = need_write;
-  }
-  sd_sftp_file_addref(f);
-  sd_mutex_unlock(&v->lock);
-  if (old)
-    sd_sftp_file_release(old);
-  *out = f;
-  return SD_VFS_OK;
-}
-
 static sd_vfs_status new_handle(sd_vfs *v, vfs_node *n, uint32_t access, uint32_t share, uint32_t opts,
                                 BOOL can_write, sd_vfs_handle **out)
 {
@@ -211,7 +86,7 @@ static sd_vfs_status new_handle(sd_vfs *v, vfs_node *n, uint32_t access, uint32_
   }
   h->v = v;
   h->node = n;
-  vfs_node_ref(n);
+  vfs_node_ref(v, n);
   h->access = access;
   h->share = share;
   h->opts = opts;
@@ -219,6 +94,7 @@ static sd_vfs_status new_handle(sd_vfs *v, vfs_node *n, uint32_t access, uint32_
   h->share_counted = TRUE;
   h->can_write = can_write;
   h->delete_on_close = (opts & SD_VFS_FILE_DELETE_ON_CLOSE) != 0;
+  vfs_handle_init_ra(h);
   n->open_count++;
   n->uncleaned++;
   h->next = v->handles;
@@ -256,6 +132,8 @@ static sd_vfs_status open_existing(sd_vfs *v, vfs_node *n, uint32_t access, uint
     st = SD_VFS_E_ACCESS_DENIED;            /* TM-R14 (02 §4.5) */
     block_notice = InterlockedCompareExchange(&v->notice_shell, 1, 0) == 0;
   } else st = share_check(n, access, share, FALSE);
+  if (st == SD_VFS_OK && !dir && (access & ACC_DATA_WRITE) && !vfs_online(v))
+    st = SD_VFS_E_DISCONNECTED;             /* open with write access while offline (02 §5.2) */
   sd_mutex_unlock(&v->lock);
   if (block_notice) {
     WCHAR *nm = vfs_wname_copy(v, n);
@@ -285,10 +163,18 @@ static sd_vfs_status open_existing(sd_vfs *v, vfs_node *n, uint32_t access, uint
     old = n->fh;
     n->fh = f;
     n->fh_write = TRUE;
+    vfs_node_invalidate(v, n);              /* the content is gone: so are its cached blocks */
     n->attr.size = 0;                       /* TRUNC keeps the mode (02 §2.2) */
     n->attr.mtime = sd_unix_time_now();
     n->attr_time = sd_tick_ms();
-    listing_sync(v, n);
+    n->srv_size = n->cv_size = 0;
+    n->cv_valid = TRUE;
+    n->mtime_pending = TRUE;
+    if (a.valid & SD_SFTP_ATTR_TIMES) {
+      n->cv_mtime = a.mtime;                /* the open's FSTAT is the new validator */
+      n->mtime_pending = FALSE;
+    }
+    vfs_listing_sync(v, n);
     sd_mutex_unlock(&v->lock);
     if (old)
       sd_sftp_file_release(old);
@@ -479,7 +365,7 @@ static void apply_times(sd_vfs *v, vfs_node *n, BOOL pa, int64_t at, BOOL pm, in
   if (e == SD_OK) {
     n->attr.atime = a.atime;
     n->attr.mtime = a.mtime;
-    listing_sync(v, n);
+    vfs_listing_sync(v, n);
   } else {
     SD_LOGW(VFS_LOG, "deferred time update failed: %s", sd_err_name(e));
   }
@@ -522,14 +408,16 @@ sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending)
   dir = vfs_node_is_dir(n);
   sd_mutex_unlock(&v->lock);
 
+  /* Write-behind: synchronous drain; a failure raises write_failed (02 §4.4). */
+  vfs_data_cleanup(h, dl);
   if (times && !do_delete && vfs_online(v)) {
-    ext_drain(v, n, dl);                    /* other threads' writes first (02 §3.2, §4.4) */
+    vfs_ext_drain(v, n, dl);                /* other threads' writes first (02 §3.2, §4.4) */
     apply_times(v, n, pa, at, pm, mt, dl);
   }
   if (do_delete) {
     char *path;
     sd_err e = SD_E_DISCONNECTED;
-    ext_drain(v, n, dl);
+    vfs_ext_drain(v, n, dl);
     sd_mutex_lock(&v->lock);
     path = vfs_strndup(n->lpath, strlen(n->lpath));   /* delete acts on the link itself */
     sd_mutex_unlock(&v->lock);
@@ -568,6 +456,7 @@ void sd_vfs_close(sd_vfs_handle *h)
   sd_vfs *v;
   vfs_node *n;
   sd_sftp_file *f = NULL;
+  struct vfs_dc *dc = NULL;
   if (!h)
     return;
   v = h->v;
@@ -577,271 +466,21 @@ void sd_vfs_close(sd_vfs_handle *h)
   sd_mutex_lock(&v->lock);
   if (h->prev) h->prev->next = h->next; else v->handles = h->next;
   if (h->next) h->next->prev = h->prev;
-  if (--n->open_count == 0 && n->fh) {
-    f = n->fh;                              /* closed when the last local handle goes (02 §2.1) */
-    n->fh = NULL;
-    n->fh_write = FALSE;
+  if (--n->open_count == 0) {
+    dc = vfs_data_last_close(v, n);
+    if (n->fh && !n->wq_head) {
+      f = n->fh;                            /* closed when the last local handle goes (02 §2.1); */
+      n->fh = NULL;                         /* kept while write-behind data waits for a retransmit */
+      n->fh_write = FALSE;
+    }
   }
   vfs_node_unref(v, n);
   sd_mutex_unlock(&v->lock);
   if (f)
     sd_sftp_file_release(f);                /* CLOSE in the background */
+  if (dc)
+    vfs_dc_close(v, dc);
   sd_free(h);
-}
-
-/* ---- data I/O (02 §4.3, §4.4; M0: no data cache, no read-ahead) ---- */
-
-sd_vfs_status sd_vfs_read(sd_vfs_handle *h, UINT64 off, void *buf, UINT32 len, UINT32 *got)
-{
-  sd_vfs *v;
-  vfs_node *n;
-  sd_sftp_file *f = NULL;
-  sd_vfs_status st;
-  uint64_t dl;
-  uint32_t pos = 0;
-  BOOL eof = FALSE;
-  if (got) *got = 0;
-  if (!h || (!buf && len))
-    return SD_VFS_E_INVALID_NAME;
-  v = h->v;
-  n = h->node;
-  if (h->is_dir)
-    return SD_VFS_E_IS_DIR;
-  if (n->eflags & VFS_EF_LINK_BAD)
-    return SD_VFS_E_NOT_FOUND;
-  if (n->eflags & VFS_EF_SPECIAL)
-    return SD_VFS_E_ACCESS_DENIED;
-  if (len == 0)
-    return SD_VFS_OK;
-  enter(v);
-  dl = vfs_deadline(v);
-  st = get_fh(v, n, FALSE, dl, &f);
-  while (st == SD_VFS_OK && pos < len && !eof) {
-    uint32_t chunk = v->max_read, left = len - pos, nch = SD_MIN((left + chunk - 1) / chunk, VFS_MAX_INFLIGHT), i;
-    vfs_batch *b = vb_new(nch);
-    BOOL stop = FALSE;
-    if (!b) {
-      st = SD_VFS_E_NO_MEMORY;
-      break;
-    }
-    for (i = 0; i < nch; i++) {
-      uint32_t o = pos + i * chunk, l = SD_MIN(chunk, len - o);
-      vfs_slot *s = vb_slot(b, i);
-      vb_submitted(b, i, sd_sftp_read(f, off + o, (uint8_t *)buf + o, l, vb_opt(b, i, dl), vb_cb_read(), s));
-    }
-    vb_wait(b, dl);
-    for (i = 0; i < nch && !stop; i++) {
-      uint32_t o = pos, l = SD_MIN(chunk, len - o);
-      vfs_slot *s = vb_slot(b, i);
-      if (s->err != SD_OK && s->err != SD_E_EOF) {
-        if (pos == 0) st = vfs_map_err(s->err);
-        stop = TRUE;
-        eof = TRUE;                         /* stop the outer loop; partial data is returned */
-        break;
-      }
-      pos += s->bytes;
-      if (s->bytes < l) {
-        if (s->eof || s->err == SD_E_EOF) eof = TRUE;
-        stop = TRUE;                        /* short read: re-issue from the new position */
-      }
-    }
-    vb_free(b);
-    if (!eof && sd_tick_ms() >= dl) {
-      if (pos == 0) st = SD_VFS_E_TIMEOUT;
-      break;
-    }
-  }
-  if (f)
-    sd_sftp_file_release(f);
-  if (st == SD_VFS_OK && pos == 0 && eof)
-    st = SD_VFS_E_END_OF_FILE;
-  if (got) *got = pos;
-  InterlockedExchangeAdd64(&v->bytes_rd, pos);
-  leave(v);
-  return st;
-}
-
-sd_vfs_status sd_vfs_write(sd_vfs_handle *h, UINT64 off, const void *buf, UINT32 len, UINT32 *done,
-                           BOOL paging_io)
-{
-  sd_vfs *v;
-  vfs_node *n;
-  sd_sftp_file *f = NULL;
-  sd_vfs_status st;
-  uint64_t dl, end;
-  uint32_t pos = 0;
-  if (done) *done = 0;
-  if (!h || (!buf && len))
-    return SD_VFS_E_INVALID_NAME;
-  v = h->v;
-  n = h->node;
-  if (h->is_dir)
-    return SD_VFS_E_IS_DIR;
-  if (v->read_only || !h->can_write)
-    return SD_VFS_E_READ_ONLY;
-  if (!paging_io && !(h->access & ACC_DATA_WRITE))
-    return SD_VFS_E_ACCESS_DENIED;
-  if (!vfs_online(v))
-    return SD_VFS_E_DISCONNECTED;           /* fail fast, never queued (02 §5.2) */
-  if (len == 0)
-    return SD_VFS_OK;
-  enter(v);
-  dl = vfs_deadline(v);
-  sd_mutex_lock(&v->lock);
-  if (off == SD_VFS_EOF || (!paging_io && (h->access & ACC_DATA_WRITE) == FILE_APPEND_DATA))
-    off = n->attr.size;                     /* append: cached EOF (02 §2.2) */
-  if (paging_io) {
-    /* Paging writes never extend the file (NT rule, 02 §6.5). */
-    if (off >= n->attr.size) {
-      sd_mutex_unlock(&v->lock);
-      leave(v);
-      return SD_VFS_OK;
-    }
-    if (n->attr.size - off < len)
-      len = (uint32_t)(n->attr.size - off);
-  }
-  sd_mutex_unlock(&v->lock);
-  if (sd_add_ovf_u64(off, len, &end)) {
-    leave(v);
-    return SD_VFS_E_TOO_LARGE;
-  }
-  st = ext_acquire(v, n, off, end, dl);
-  if (st != SD_VFS_OK) {
-    leave(v);
-    return st;
-  }
-  st = get_fh(v, n, TRUE, dl, &f);
-  while (st == SD_VFS_OK && pos < len) {
-    uint32_t chunk = v->max_write, left = len - pos, nch = SD_MIN((left + chunk - 1) / chunk, VFS_MAX_INFLIGHT), i;
-    vfs_batch *b = vb_new(nch);
-    BOOL fail = FALSE;
-    if (!b) {
-      st = SD_VFS_E_NO_MEMORY;
-      break;
-    }
-    for (i = 0; i < nch; i++) {
-      uint32_t o = pos + i * chunk, l = SD_MIN(chunk, len - o);
-      vb_submitted(b, i, sd_sftp_write(f, off + o, (const uint8_t *)buf + o, l, vb_opt(b, i, dl), vb_cb_write(),
-                                       vb_slot(b, i)));
-    }
-    vb_wait(b, dl);
-    /* done = the contiguous acknowledged prefix; the first failed ack is this call's status. */
-    for (i = 0; i < nch; i++) {
-      uint32_t l = SD_MIN(chunk, len - pos);
-      vfs_slot *s = vb_slot(b, i);
-      if (s->err != SD_OK) {
-        st = vfs_map_err(s->err);
-        fail = TRUE;
-        break;
-      }
-      pos += SD_MIN(s->bytes, l);
-      if (s->bytes < l)
-        break;                              /* short ack: re-issue the rest */
-    }
-    vb_free(b);
-    if (fail)
-      break;
-    if (pos < len && sd_tick_ms() >= dl) {
-      st = SD_VFS_E_TIMEOUT;
-      break;
-    }
-  }
-  if (f)
-    sd_sftp_file_release(f);
-  sd_mutex_lock(&v->lock);
-  ext_release(n, off, end);
-  if (pos > 0) {
-    if (off + pos > n->attr.size)
-      n->attr.size = off + pos;
-    n->attr.mtime = sd_unix_time_now();
-    n->attr.valid |= SD_SFTP_ATTR_SIZE | SD_SFTP_ATTR_TIMES;
-    n->attr_time = sd_tick_ms();
-    h->wrote = TRUE;
-    listing_sync(v, n);
-  }
-  sd_mutex_unlock(&v->lock);
-  if (done) *done = pos;
-  InterlockedExchangeAdd64(&v->bytes_wr, pos);
-  leave(v);
-  return st;
-}
-
-sd_vfs_status sd_vfs_flush(sd_vfs_handle *h)
-{
-  sd_vfs *v;
-  sd_vfs_status st;
-  sd_sftp_file *f = NULL;
-  uint64_t dl;
-  if (!h)
-    return SD_VFS_OK;
-  v = h->v;
-  if (h->is_dir)
-    return SD_VFS_OK;
-  enter(v);
-  dl = vfs_deadline(v);
-  st = ext_drain(v, h->node, dl);
-  if (st == SD_VFS_OK && v->fsync_on_flush && sd_sftp_has_ext(v->s, SD_SFTP_EXT_FSYNC)) {
-    sd_mutex_lock(&v->lock);
-    if (h->node->fh && h->node->fh_write) {
-      f = h->node->fh;
-      sd_sftp_file_addref(f);
-    }
-    sd_mutex_unlock(&v->lock);
-    if (f) {
-      sd_err e = vr_fsync(f, dl);
-      sd_sftp_file_release(f);
-      if (e != SD_OK)
-        st = vfs_map_err(e);
-    }
-  }
-  leave(v);
-  return st;
-}
-
-sd_vfs_status sd_vfs_truncate(sd_vfs_handle *h, UINT64 size)
-{
-  sd_vfs *v;
-  vfs_node *n;
-  sd_vfs_status st;
-  sd_sftp_file *f = NULL;
-  sd_sftp_attrs a;
-  uint64_t dl;
-  sd_err e;
-  if (!h)
-    return SD_VFS_E_INVALID_NAME;
-  v = h->v;
-  n = h->node;
-  if (h->is_dir)
-    return SD_VFS_E_IS_DIR;
-  if (v->read_only || !h->can_write)
-    return SD_VFS_E_READ_ONLY;
-  if (!vfs_online(v))
-    return SD_VFS_E_DISCONNECTED;
-  enter(v);
-  dl = vfs_deadline(v);
-  st = ext_drain(v, n, dl);
-  if (st == SD_VFS_OK)
-    st = get_fh(v, n, TRUE, dl, &f);
-  if (st == SD_VFS_OK) {
-    memset(&a, 0, sizeof(a));
-    a.valid = SD_SFTP_ATTR_SIZE;
-    a.size = size;
-    e = vr_fsetstat(f, &a, dl);
-    sd_sftp_file_release(f);
-    st = vfs_map_err(e);
-  }
-  if (st == SD_VFS_OK) {
-    sd_mutex_lock(&v->lock);
-    n->attr.size = size;
-    n->attr.valid |= SD_SFTP_ATTR_SIZE;
-    n->attr.mtime = sd_unix_time_now();
-    n->attr_time = sd_tick_ms();
-    h->wrote = TRUE;
-    listing_sync(v, n);
-    sd_mutex_unlock(&v->lock);
-  }
-  leave(v);
-  return st;
 }
 
 /* ---- attributes ---- */
@@ -854,7 +493,7 @@ static void refresh_node(sd_vfs *v, vfs_node *n, uint64_t dl)
   sd_err e;
   sd_mutex_lock(&v->lock);
   root = (n->flags & VFS_NF_ROOT) != 0;
-  stale = (n->flags & VFS_NF_IN_TABLE) && n->nwext == 0 && sd_tick_ms() - n->attr_time > v->attr_ttl &&
+  stale = (n->flags & VFS_NF_IN_TABLE) && n->nwext == 0 && !n->wq_head && sd_tick_ms() - n->attr_time > v->attr_ttl &&
           !(n->eflags & VFS_EF_LINK_BAD);
   path = stale ? vfs_strndup(n->epath, strlen(n->epath)) : NULL;
   sd_mutex_unlock(&v->lock);
@@ -865,14 +504,16 @@ static void refresh_node(sd_vfs *v, vfs_node *n, uint64_t dl)
     e = (root || n->epath != n->lpath) ? vr_stat(v, path, dl, &sa) : vr_lstat(v, path, dl, &sa);
     if (e == SD_OK && !SD_SFTP_IS_LNK(&sa)) {
       sd_mutex_lock(&v->lock);
-      if (n->nwext == 0) {
-        vfs_attr_from_sftp(&n->attr, &sa);
-        if (!(n->attr.valid & SD_SFTP_ATTR_PERM)) {
-          n->attr.mode = VFS_S_IFREG | 0644u;
-          n->attr.valid |= SD_SFTP_ATTR_PERM;
+      if (n->nwext == 0 && !n->wq_head) {
+        vfs_attr na;
+        vfs_attr_from_sftp(&na, &sa);
+        if (!(na.valid & SD_SFTP_ATTR_PERM)) {
+          na.mode = VFS_S_IFREG | 0644u;
+          na.valid |= SD_SFTP_ATTR_PERM;
         }
+        vfs_node_set_attr(v, n, &na);       /* a changed validator drops the cached blocks */
         n->attr_time = sd_tick_ms();
-        listing_sync(v, n);
+        vfs_listing_sync(v, n);
       }
       sd_mutex_unlock(&v->lock);
     }
@@ -955,7 +596,7 @@ sd_vfs_status sd_vfs_set_winattrs(sd_vfs_handle *h, UINT32 attrs)
   if (e == SD_OK) {
     sd_mutex_lock(&v->lock);
     n->attr.mode = (n->attr.mode & ~07777u) | a.perm;
-    listing_sync(v, n);
+    vfs_listing_sync(v, n);
     sd_mutex_unlock(&v->lock);
   }
   leave(v);
@@ -1002,7 +643,7 @@ sd_vfs_status sd_vfs_set_times(sd_vfs_handle *h, const FILETIME *c, const FILETI
     if (pa) { h->pend_a = TRUE; h->pend_atime = at; n->attr.atime = at; }
     if (pm) { h->pend_m = TRUE; h->pend_mtime = mt; n->attr.mtime = mt; }
     h->times_pending = TRUE;
-    listing_sync(v, n);
+    vfs_listing_sync(v, n);
   }
   sd_mutex_unlock(&v->lock);
   if (defer)
@@ -1236,7 +877,7 @@ static void move_subtree(sd_vfs *v, vfs_node *src, const WCHAR *new_key, const c
     }
     memcpy(nk, new_key, nkl * sizeof(WCHAR));
     memcpy(nk + nkl, n->key + okl, (rest + 1) * sizeof(WCHAR));
-    vfs_node_ref(n);
+    vfs_node_ref(v, n);
     vfs_table_remove(v, n);
     sd_free(n->key);
     n->key = nk;
@@ -1550,10 +1191,12 @@ void sd_vfs_get_stats(sd_vfs *v, sd_vfs_stats *out)
   memset(out, 0, sizeof(*out));
   if (!v)
     return;
-  out->bytes_rd = (UINT64)InterlockedCompareExchange64(&v->bytes_rd, 0, 0);
-  out->bytes_wr = (UINT64)InterlockedCompareExchange64(&v->bytes_wr, 0, 0);
-  out->cache_hits = (UINT64)InterlockedCompareExchange64(&v->cache_hits, 0, 0);
-  out->cache_misses = (UINT64)InterlockedCompareExchange64(&v->cache_misses, 0, 0);
+  out->bytes_rd = (UINT64)sd_atomic_load64(&v->bytes_rd);
+  out->bytes_wr = (UINT64)sd_atomic_load64(&v->bytes_wr);
+  out->cache_hits = (UINT64)sd_atomic_load64(&v->cache_hits);
+  out->cache_misses = (UINT64)sd_atomic_load64(&v->cache_misses);
+  out->write_failed = (UINT64)sd_atomic_load64(&v->write_failed);
+  out->reconnects = (UINT64)sd_atomic_load64(&v->reconnects);
   out->nconn = 1;
 }
 

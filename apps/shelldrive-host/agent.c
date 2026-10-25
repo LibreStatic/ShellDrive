@@ -9,6 +9,11 @@
  * Named objects (TM-R26): the session mutex gives single instance per user + session; the pipe's
  * FILE_FLAG_FIRST_PIPE_INSTANCE stays authoritative. Squatted mutex/events are logged and skipped.
  *
+ * M1: reconnect state (mount.state events and `list` carry a "connection" object), write_failed and
+ * vfs notices as `warning` events (03 §2.4, C45), per-source cache folder (disk tier + identity
+ * cache, 03 §3.2), WebDAV mapping cleanup at start and stop (TM-R17 d) and in the crash filter
+ * (TM-R17 b).
+ *
  * M0 gaps (documented in docs/dev/m0-notes.md by the lead): no hidden window (WM_ENDSESSION, WTS
  * and power notifications), no prompt queue while locked, no UI launch for prompts, no autostart. */
 #include <windows.h>
@@ -38,12 +43,14 @@ typedef struct host_mount {
   uint16_t port;
   wchar_t letter;
   int read_only;
+  int backend_req;              /* sd_mount_backend_kind requested (02 §10.1) */
   sd_mount_state state;
   uint64_t initiator;           /* IPC client that asked for the mount */
   int prompt_none;              /* prompt_mode = none */
   char fail_code[64];           /* overrides the code of the final error */
   sd_mount_params params;       /* strings below stay valid until sd_mount_create copied them */
   wchar_t whost[256], identity[MAX_PATH], label[128], kh[MAX_PATH];
+  wchar_t cache_dir[MAX_PATH];  /* per-source cache folder ("" when it could not be created) */
   char remote[1024];
   int started, stop_requested;
 } host_mount;
@@ -59,6 +66,7 @@ static struct {
   HANDLE qev;
   volatile LONG stop;
   uint64_t last_busy;
+  sd_settings settings;         /* settings.ini, read at start */
 } g;
 
 /* ---- control queue ---- */
@@ -158,6 +166,35 @@ static const char *final_code(host_mount *h, const sd_mount_failure *f)
   return sd_err_name(f->err);
 }
 
+/* M1 connection sub-state: "connection" object plus the write_failed counters (03 §2.4). */
+static void write_conn_json(sd_json_writer *jw, host_mount *h)
+{
+  sd_mount_conn c;
+  if (h->m == NULL)
+    return;
+  sd_mount_get_conn(h->m, &c);
+  sd_jw_key(jw, "connection");
+  sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "session"); sd_jw_cstr(jw, sd_mount_session_state_name(c.session));
+  sd_jw_key(jw, "generation"); sd_jw_int(jw, c.generation);
+  sd_jw_key(jw, "reconnects"); sd_jw_int(jw, c.reconnects);
+  if (c.offline_since_ms) {
+    sd_jw_key(jw, "offline_ms"); sd_jw_int(jw, (int64_t)(sd_tick_ms() - c.offline_since_ms));
+  }
+  if (c.session == SD_SFTP_ST_RECONNECT_WAIT) {
+    sd_jw_key(jw, "attempt"); sd_jw_int(jw, c.attempt);
+    sd_jw_key(jw, "retry_in_ms"); sd_jw_int(jw, c.retry_in_ms);
+  }
+  if (c.reason != SD_OK) {
+    sd_jw_key(jw, "reason"); sd_jw_cstr(jw, sd_err_name(c.reason));
+  }
+  sd_jw_obj_end(jw);
+  sd_jw_key(jw, "write_failed"); sd_jw_int(jw, c.write_failed);
+  if (c.write_failed) {
+    sd_jw_key(jw, "last_write_failed"); jw_wstr(jw, c.last_write_failed);
+  }
+}
+
 static void write_mount_json(sd_json_writer *jw, host_mount *h)
 {
   sd_jw_obj_begin(jw);
@@ -165,12 +202,14 @@ static void write_mount_json(sd_json_writer *jw, host_mount *h)
   sd_jw_key(jw, "profile"); sd_jw_cstr(jw, h->profile_name);
   if (h->profile_id[0]) { sd_jw_key(jw, "profile_id"); sd_jw_cstr(jw, h->profile_id); }
   sd_jw_key(jw, "target"); jw_letter(jw, h->letter);
-  sd_jw_key(jw, "backend"); sd_jw_cstr(jw, "dokany");
+  sd_jw_key(jw, "backend");
+  sd_jw_cstr(jw, sd_mount_backend_kind_name(h->m ? sd_mount_backend_kind_used(h->m) : (sd_mount_backend_kind)h->backend_req));
   sd_jw_key(jw, "state"); sd_jw_cstr(jw, sd_mount_state_name(h->state));
   sd_jw_key(jw, "host"); sd_jw_cstr(jw, h->host);
   sd_jw_key(jw, "port"); sd_jw_int(jw, h->port);
   sd_jw_key(jw, "user"); sd_jw_cstr(jw, h->user);
   sd_jw_key(jw, "read_only"); sd_jw_bool(jw, h->read_only);
+  write_conn_json(jw, h);
   sd_jw_obj_end(jw);
 }
 
@@ -206,9 +245,37 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
     }
     sd_jw_obj_end(&jw);
   }
+  write_conn_json(&jw, h);
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) == SD_OK)
     broadcast_data("mount", "mount.state", &d);
+  sd_wr_free(&d);
+}
+
+/* `warning {code, mount_id, data}` (03 §2.4); write_failed is always delivered (C45). */
+static void send_warning(host_mount *h, const char *code, const wchar_t *path, UINT64 bytes, const char *status,
+                         const char *detail)
+{
+  sd_wr d;
+  sd_json_writer jw;
+  sd_wr_init(&d, 64 * 1024);
+  sd_jw_init(&jw, &d);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, code);
+  sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, h->id);
+  sd_jw_key(&jw, "data");
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "target"); jw_letter(&jw, h->letter);
+  if (path) { sd_jw_key(&jw, "path"); jw_wstr(&jw, path); }
+  if (path) { sd_jw_key(&jw, "bytes"); sd_jw_int(&jw, (int64_t)bytes); }
+  if (status) { sd_jw_key(&jw, "status"); sd_jw_cstr(&jw, status); }
+  if (detail) { sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, detail); }
+  sd_jw_obj_end(&jw);
+  sd_jw_obj_end(&jw);
+  if (sd_jw_finish(&jw) == SD_OK) {
+    broadcast_data("mount", "warning", &d);
+    broadcast_data("warning", "warning", &d);
+  }
   sd_wr_free(&d);
 }
 
@@ -249,6 +316,81 @@ static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   }
   g.last_busy = sd_tick_ms();
   sd_mutex_unlock(&g.lock);
+}
+
+static void on_conn(void *ctx, sd_mount *m)
+{
+  host_mount *h;
+  SD_UNUSED(ctx);
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h)
+    send_state_event(h, h->state, SD_OK);   /* same state, new "connection" details */
+  sd_mutex_unlock(&g.lock);
+}
+
+static void on_write_failed(void *ctx, sd_mount *m, const wchar_t *path, UINT64 bytes, const char *status)
+{
+  host_mount *h;
+  SD_UNUSED(ctx);
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h) {
+    SD_LOGW("agent", "%s: write_failed (%s, %llu bytes)", h->id, status, (unsigned long long)bytes);
+    send_warning(h, "write_failed", path ? path : L"", bytes, status, NULL);
+  }
+  sd_mutex_unlock(&g.lock);
+}
+
+static void on_notice(void *ctx, sd_mount *m, const char *code, const char *detail)
+{
+  host_mount *h;
+  SD_UNUSED(ctx);
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h && code && code[0])
+    send_warning(h, code, NULL, 0, NULL, detail);
+  sd_mutex_unlock(&g.lock);
+}
+
+static int lookup_identity(void *ctx, sd_mount *m, const char *fp, sd_vfs_identity *out)
+{
+  host_mount *h;
+  wchar_t dir[MAX_PATH];
+  uint32_t uid = 0, gid = 0;
+  SD_UNUSED(ctx);
+  dir[0] = 0;
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h) memcpy(dir, h->cache_dir, sizeof(dir));
+  sd_mutex_unlock(&g.lock);
+  if (dir[0] == 0 || sd_config_identity_load(dir, fp, &uid, &gid) != SD_OK)
+    return 0;
+  memset(out, 0, sizeof(*out));
+  out->uid_known = out->definitive = TRUE;
+  out->uid = uid;
+  out->gid = gid;
+  SD_LOGI("agent", "using the cached remote identity %u:%u", (unsigned)uid, (unsigned)gid);
+  return 1;
+}
+
+static void store_identity(void *ctx, sd_mount *m, const char *fp, const sd_vfs_identity *id)
+{
+  host_mount *h;
+  wchar_t dir[MAX_PATH];
+  uint32_t uid = 0, gid = 0;
+  SD_UNUSED(ctx);
+  dir[0] = 0;
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h) memcpy(dir, h->cache_dir, sizeof(dir));
+  sd_mutex_unlock(&g.lock);
+  if (dir[0] == 0)
+    return;
+  if (sd_config_identity_load(dir, fp, &uid, &gid) == SD_OK && uid == id->uid && gid == id->gid)
+    return;
+  if (sd_config_identity_store(dir, fp, id->uid, id->gid) != SD_OK)
+    SD_LOGW("agent", "cannot store the remote identity");
 }
 
 static void prompt_id_str(host_mount *h, uint32_t pid, char out[32])
@@ -412,6 +554,11 @@ static void work_start(void *arg)
   cb.on_state = on_state;
   cb.on_prompt = on_prompt;
   cb.on_prompt_closed = on_prompt_closed;
+  cb.on_conn = on_conn;
+  cb.on_write_failed = on_write_failed;
+  cb.on_notice = on_notice;
+  cb.lookup_identity = lookup_identity;
+  cb.store_identity = store_identity;
   sd_mutex_lock(&g.lock);
   if (h->stop_requested) {
     /* unmounted before it started */
@@ -519,6 +666,8 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   const char *pname = sd_json_get_str(params, "profile");
   const char *target = sd_json_get_str(params, "target");
   const char *pmode = sd_json_get_str(params, "prompt_mode");
+  const char *pbackend = sd_json_get_str(params, "backend");
+  sd_mount_backend_kind backend = SD_MOUNT_BACKEND_AUTO;
   const char *bad = NULL;
   host_mount *h, *o;
   wchar_t wt[8], letter = 0;
@@ -553,6 +702,10 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   }
   if (sd_json_get_bool(params, "read_only", &ro) && ro)
     prof.read_only = 1;
+  if (pbackend && !sd_mount_backend_kind_parse(pbackend, &backend))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "backend must be auto, dokany or webdav");
+  if (pbackend == NULL)
+    backend = (sd_mount_backend_kind)prof.backend;    /* mount.backend (same values) */
   if (target == NULL || strcmp(target, "auto") == 0)
     target = prof.target;
   if (strcmp(target, "auto") != 0) {
@@ -582,6 +735,7 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   scopy(h->remote, sizeof(h->remote), prof.remote_path);
   h->port = prof.port;
   h->read_only = prof.read_only;
+  h->backend_req = (int)backend;
   h->initiator = sd_ipc_client_id(client);
   h->prompt_none = (pmode && strcmp(pmode, "none") == 0) ||
                    !(sd_ipc_client_caps(client) & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI));
@@ -598,6 +752,29 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   if (sd_config_root(root, SD_COUNTOF(root)) == SD_OK && wcslen(root) + 13 < SD_COUNTOF(h->kh)) {
     memcpy(h->kh, root, (wcslen(root) + 1) * sizeof(wchar_t));
     wcscat_s(h->kh, SD_COUNTOF(h->kh), L"\\known_hosts");
+  }
+  {
+    /* per-source cache folder (disk tier, identity cache): key "user@host:port" */
+    char key[512], pnum[8];
+    size_t kn = strlen(prof.user) + strlen(prof.host) + 8;
+    uint32_t v = prof.port, pi = 0;
+    char tmp[8];
+    size_t tn = 0;
+    do { tmp[tn++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+    while (tn) pnum[pi++] = tmp[--tn];
+    pnum[pi] = 0;
+    if (kn < sizeof(key)) {
+      key[0] = 0;
+      strcat_s(key, sizeof(key), prof.user);
+      strcat_s(key, sizeof(key), "@");
+      strcat_s(key, sizeof(key), prof.host);
+      strcat_s(key, sizeof(key), ":");
+      strcat_s(key, sizeof(key), pnum);
+      if (sd_config_cache_dir(key, h->cache_dir, SD_COUNTOF(h->cache_dir)) != SD_OK) {
+        SD_LOGW("agent", "cache folder unavailable; no disk tier or identity cache");
+        h->cache_dir[0] = 0;
+      }
+    }
   }
 
   sd_mutex_lock(&g.lock);
@@ -654,6 +831,13 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   h->params.write_mode = prof.write_mode;
   h->params.volume_label = h->label;
   h->params.known_hosts_path = h->kh[0] ? h->kh : NULL;
+  h->params.backend = h->backend_req;
+  h->params.disk_cache_mb = prof.disk_cache_mb;
+  h->params.disk_cache_dir = h->cache_dir[0] ? h->cache_dir : NULL;
+  h->params.offline_wait_ms = prof.offline_wait_ms;
+  h->params.reconnect_grace_ms = prof.reconnect_grace_ms;
+  h->params.channels = prof.channels;
+  h->params.cache_memory_bytes = g.settings.cache_memory;
   h->next = g.mounts;
   g.mounts = h;
   g.last_busy = sd_tick_ms();
@@ -792,6 +976,29 @@ static void ipc_on_disconnect(void *ctx, uint64_t client_id)
   post(NULL, work_cancel_client, p);
 }
 
+/* ---- crash filter (TM-R17 b) ---- */
+
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter;
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
+{
+  /* No allocation, no locks: drop this process's WebDAV mappings so that the drive letter does not
+     keep pointing at a port another local user could bind. Crash dumps (03 §10.4) come later. */
+  if (host_backend()->webdav_emergency_unmap)
+    host_backend()->webdav_emergency_unmap();
+  return g_prev_filter ? g_prev_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void cleanup_webdav_mappings(const char *when)
+{
+  if (host_backend()->webdav_cleanup_mappings) {
+    uint32_t removed = 0;
+    host_backend()->webdav_cleanup_mappings(0, 0, &removed);
+    if (removed)
+      SD_LOGW("agent", "removed %u stale WebDAV mapping(s) at %s", (unsigned)removed, when);
+  }
+}
+
 /* ---- main loop ---- */
 
 static int mounts_empty(void)
@@ -812,6 +1019,8 @@ int host_agent_run(const host_agent_opts *opts)
   uint64_t deadline;
 
   memset(&g, 0, sizeof(g));
+  (void)sd_settings_load(&g.settings);
+  sd_log_set_level((sd_log_level)g.settings.log_level);
   sd_mutex_init(&g.lock);
   sd_mutex_init(&g.qlock);
   g.qev = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -849,6 +1058,10 @@ int host_agent_run(const host_agent_opts *opts)
   else
     SD_LOGE("agent", "ready event unavailable: named_object_squatted");
   SD_LOGI("agent", "agent %s ready (backend %s)", SD_VERSION_STRING, host_backend()->name);
+  /* TM-R17 d: WebDAV mappings left by a crashed agent of this logon session point at a free port that
+     another user could bind; remove them before anything else */
+  cleanup_webdav_mappings("start");
+  g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
   g.last_busy = sd_tick_ms();
 
   while (!g.stop) {
@@ -894,6 +1107,9 @@ int host_agent_run(const host_agent_opts *opts)
   sd_ipc_server_stop(g.srv);
   g.srv = NULL;
   drain();
+  /* mounts that did not finish their teardown in time must not leave a mapping behind (TM-R17) */
+  cleanup_webdav_mappings("stop");
+  SetUnhandledExceptionFilter(g_prev_filter);
   if (ready) CloseHandle(ready);
   if (stop_ev) CloseHandle(stop_ev);
   if (mutex) CloseHandle(mutex);

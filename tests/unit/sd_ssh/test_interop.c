@@ -4,7 +4,9 @@
  * Covers: TCP connect, version exchange, curve25519 KEX with strict KEX and ext-info, cipher
  * selection (chacha20-poly1305, AES-GCM, AES-CTR + EtM / non-EtM HMAC), TOFU prompt then MATCH,
  * MISMATCH hard block, TM-R04 type restriction, Ed25519 key files (plain and encrypted), exec and
- * sftp subsystem channels, volume rekeying with flow control. */
+ * sftp subsystem channels, volume rekeying with flow control; M1: reconnect on the same
+ * sd_ssh_conn (pinned host key, is_reconnect prompts, reconnect secret cache with the TM-R05 rule,
+ * host key mismatch on reconnect), run-time keepalive tuning. */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -23,6 +25,10 @@
 static char g_dir[MAX_PATH];
 static char g_user[64], g_key[MAX_PATH], g_key_enc[MAX_PATH], g_pass[128];
 static uint16_t g_port = 2222;
+/* The fixture's direct address in WSL NAT mode ("direct_host" in state/env) bypasses the localhost relay,
+   which can wedge when sshd is killed during heavy traffic; SD_SSHD_VIA_RELAY=1 forces 127.0.0.1. */
+static char g_host[64] = "127.0.0.1";
+static wchar_t g_whost[64] = L"127.0.0.1";
 static wchar_t g_kh_path[MAX_PATH];
 
 /* ---- fixture discovery ---- */
@@ -48,12 +54,31 @@ static int load_env(void)
     *eq = 0;
     if (strcmp(line, "user") == 0) _snprintf_s(g_user, sizeof(g_user), _TRUNCATE, "%s", eq + 1);
     else if (strcmp(line, "port") == 0) g_port = (uint16_t)atoi(eq + 1);
+    else if (strcmp(line, "direct_host") == 0 && !GetEnvironmentVariableA("SD_SSHD_VIA_RELAY", NULL, 0) &&
+             strlen(eq + 1) < sizeof(g_host)) {
+      _snprintf_s(g_host, sizeof(g_host), _TRUNCATE, "%s", eq + 1);
+      MultiByteToWideChar(CP_UTF8, 0, g_host, -1, g_whost, (int)SD_COUNTOF(g_whost));
+    }
     else if (strcmp(line, "key") == 0) _snprintf_s(g_key, sizeof(g_key), _TRUNCATE, "%s/state/%s", g_dir, eq + 1);
     else if (strcmp(line, "key_enc") == 0) _snprintf_s(g_key_enc, sizeof(g_key_enc), _TRUNCATE, "%s/state/%s", g_dir, eq + 1);
     else if (strcmp(line, "pass") == 0) _snprintf_s(g_pass, sizeof(g_pass), _TRUNCATE, "%s", eq + 1);
   }
   fclose(f);
   return g_user[0] && g_key[0];
+}
+
+/* Dotted-quad parser (inet_pton is Vista+, inet_addr is deprecated); host byte order. */
+static uint32_t ipv4_or_loopback(const char *h)
+{
+  uint32_t v = 0, part = 0;
+  int dots = 0, digits = 0;
+  for (; *h; h++) {
+    if (*h >= '0' && *h <= '9') { part = part * 10u + (uint32_t)(*h - '0'); if (++digits > 3 || part > 255) return 0x7F000001u; }
+    else if (*h == '.' && digits && dots < 3) { v = (v << 8) | part; part = 0; digits = 0; dots++; }
+    else return 0x7F000001u;
+  }
+  if (dots != 3 || !digits) return 0x7F000001u;
+  return (v << 8) | part;
 }
 
 static int port_open(void)
@@ -68,7 +93,7 @@ static int port_open(void)
   memset(&a, 0, sizeof(a));
   a.sin_family = AF_INET;
   a.sin_port = htons(g_port);
-  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  a.sin_addr.s_addr = htonl(ipv4_or_loopback(g_host));
   ok = connect(s, (struct sockaddr *)&a, sizeof(a)) == 0;
   closesocket(s);
   return ok;
@@ -80,6 +105,7 @@ typedef struct run {
   sd_event done_ev, ch_ev;
   sd_err done_err;
   int hostkey_prompts, pass_prompts, other_prompts, mismatch_events;
+  int reconnect_prompts, just_accepted_prompts;
   sd_hostkey_decision decision;
   char hk_lookup[128], hk_fp[64], neg_cipher[64], neg_mac[64], neg_kex[64];
   int strict, kex_count;
@@ -95,6 +121,8 @@ typedef struct run {
 static void on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *a, const sd_hostkey_prompt_info *h)
 {
   run *r = (run *)ctx;
+  if ((a && a->is_reconnect) || (h && h->is_reconnect)) r->reconnect_prompts++;
+  if (a && a->hostkey_just_accepted) r->just_accepted_prompts++;
   if (h) {
     r->hostkey_prompts++;
     _snprintf_s(r->hk_lookup, sizeof(r->hk_lookup), _TRUNCATE, "%s", h->lookup_name);
@@ -160,6 +188,7 @@ typedef struct conn_opts {
   uint32_t methods;
   uint32_t keepalive_ms;
   sd_hostkey_decision decision;
+  int cache_secrets;
 } conn_opts;
 
 static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_opts *o, run *r, sd_ssh_conn **out)
@@ -177,13 +206,14 @@ static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_op
   MultiByteToWideChar(CP_UTF8, 0, o->key, -1, wkey, MAX_PATH);
   id.kind = SD_ID_FILE;
   id.path = wkey;
-  hop.host = L"127.0.0.1";
+  hop.host = g_whost;
   hop.port = g_port;
   hop.auth.user = g_user;
   hop.auth.identities = &id;
   hop.auth.identity_count = 1;
   hop.auth.methods = o->methods ? o->methods : SD_AUTH_PUBLICKEY;
   hop.auth.identities_only = 1;
+  hop.auth.cache_secrets_for_reconnect = o->cache_secrets;
   cfg.struct_size = sizeof(cfg);
   cfg.hops = &hop;
   cfg.hop_count = 1;
@@ -317,7 +347,7 @@ SD_TEST(interop_tofu_then_match)
   memset(&r, 0, sizeof(r));
   SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
   SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
-  _snprintf_s(expect_lookup, sizeof(expect_lookup), _TRUNCATE, "[127.0.0.1]:%u", (unsigned)g_port);
+  _snprintf_s(expect_lookup, sizeof(expect_lookup), _TRUNCATE, "[%s]:%u", g_host, (unsigned)g_port);
   SD_CHECK_STR(r.hk_lookup, expect_lookup);
   SD_CHECK(strncmp(r.hk_fp, "SHA256:", 7) == 0);
   SD_CHECK_STR(r.neg_kex, "curve25519-sha256");
@@ -440,7 +470,7 @@ SD_TEST(interop_mismatch_blocks)
     char *sp = strchr((char *)f, ' ');
     char *sp2 = sp ? strchr(sp + 1, ' ') : NULL;
     if (sp2) *sp2 = 0;
-    _snprintf_s(text, sizeof(text), _TRUNCATE, "[127.0.0.1]:%u %s\n", (unsigned)g_port, (char *)f);
+    _snprintf_s(text, sizeof(text), _TRUNCATE, "[%s]:%u %s\n", g_host, (unsigned)g_port, (char *)f);
   }
   sd_free(f);
   kh = open_kh(text);
@@ -464,8 +494,8 @@ SD_TEST(interop_stored_type_restriction)
   sd_ssh_conn *c = NULL;
   conn_opts o;
   /* only an RSA key known for the name: no prompt, host_key_type_unavailable (TM-R04) */
-  _snprintf_s(text, sizeof(text), _TRUNCATE, "[127.0.0.1]:%u ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC7\n",
-              (unsigned)g_port);
+  _snprintf_s(text, sizeof(text), _TRUNCATE, "[%s]:%u ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC7\n",
+              g_host, (unsigned)g_port);
   kh = open_kh(text);
   SD_REQUIRE(kh != NULL);
   memset(&o, 0, sizeof(o));
@@ -516,10 +546,19 @@ SD_TEST(interop_rekey_bulk)
   o.rekey_bytes = 256 * 1024;   /* many client-initiated rekeys during the transfer */
   SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
   if (r.done_err == SD_OK) {
-    exec_check(sd_t_, c, &r, "head -c 12000000 /dev/zero", NULL, 12000000);
+    /* The bound is in bytes, not in round numbers: once rx crosses rekey_bytes we send KEXINIT, but
+       the server may still deliver up to one channel window (SSH_CH_WINDOW) of data under the old
+       keys before it sees it. So every key epoch carries at most rekey_bytes + one window (+ slack
+       for framing), whatever the speed of the build (a slow unoptimized x86 KEX lets more of the
+       window arrive per epoch: 8-9 rekeys for 12 MB on x86-ia32-debug, 16 on x64). 32 MB keeps the
+       guaranteed count above 10. */
+    const uint64_t total = 32000000;
+    const uint64_t per_epoch = 256 * 1024 + SSH_CH_WINDOW + 64 * 1024;
+    exec_check(sd_t_, c, &r, "head -c 32000000 /dev/zero", NULL, total);
     exec_check(sd_t_, c, &r, "echo after-rekey", "after-rekey\n", 0);
-    printf("  %d key exchanges\n", r.kex_count);
-    SD_CHECK(r.kex_count > 10);   /* initial + volume rekeys (12 MB / 256 KiB) */
+    printf("  %d key exchanges (at least %d required)\n", r.kex_count, 1 + (int)(total / per_epoch));
+    SD_CHECK((uint64_t)(r.kex_count - 1) >= total / per_epoch);   /* volume rekeys honour the limit */
+    SD_CHECK(r.kex_count > 10);
   }
   finish(&r, c);
   c = NULL;
@@ -575,7 +614,179 @@ SD_TEST(interop_keepalive_and_probe)
   sd_known_hosts_close(kh);
 }
 
+/* ---- M1: reconnect on the same connection object (01 §8) ---- */
+
+static sd_err reconnect(run *r, sd_ssh_conn *c)
+{
+  sd_event_reset(&r->done_ev);
+  if (sd_ssh_conn_disconnect(c, on_done, r) != SD_OK) return SD_E_INTERNAL;
+  if (sd_event_wait(&r->done_ev, 10000) != SD_OK) return SD_E_TIMEOUT;
+  sd_event_reset(&r->done_ev);
+  r->done_err = SD_E_INTERNAL;
+  if (sd_ssh_conn_connect(c, on_done, r) != SD_OK) return SD_E_INTERNAL;
+  if (sd_event_wait(&r->done_ev, 30000) != SD_OK) return SD_E_TIMEOUT;
+  return r->done_err;
+}
+
+SD_TEST(interop_reconnect_pinned_host_key)
+{
+  sd_known_hosts *kh = open_kh(NULL);
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  sd_ssh_auth_info ai;
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_ONCE;            /* nothing is stored */
+  SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_CHECK(sd_ssh_conn_auth_info(c, &ai) == SD_OK && !ai.is_reconnect && ai.hostkey_just_accepted);
+  /* reconnect: the key is still in no store, but equals the one accepted for this object */
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_CHECK(sd_ssh_conn_auth_info(c, &ai) == SD_OK && ai.is_reconnect && ai.hostkey_just_accepted);
+  exec_check(sd_t_, c, &r, "echo again", "again\n", 0);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
+SD_TEST(interop_reconnect_secret_cache)
+{
+  sd_known_hosts *kh = open_kh(NULL);
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  sd_ssh_auth_info ai;
+  SD_REQUIRE(kh != NULL);
+  if (!g_key_enc[0]) { printf("  [skip] no encrypted fixture key\n"); sd_known_hosts_close(kh); return; }
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key_enc;
+  o.decision = SD_HK_ACCEPT_AND_STORE;
+  o.cache_secrets = 1;
+  /* 1: TOFU. TM-R05: secrets used right after a fresh host-key acceptance are not cached */
+  SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_CHECK_EQ_INT(r.pass_prompts, 2);
+  SD_CHECK_EQ_INT(r.reconnect_prompts, 0);
+  /* 2: MATCH now; the cache is empty, so the passphrase prompt comes back with is_reconnect */
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_CHECK_EQ_INT(r.pass_prompts, 3);
+  SD_CHECK_EQ_INT(r.reconnect_prompts, 1);
+  SD_CHECK(sd_ssh_conn_auth_info(c, &ai) == SD_OK && ai.is_reconnect && !ai.hostkey_just_accepted && !ai.noninteractive);
+  /* 3: answered from the reconnect cache: no prompt, non-interactive */
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_OK);
+  SD_CHECK_EQ_INT(r.pass_prompts, 3);
+  SD_CHECK(sd_ssh_conn_auth_info(c, &ai) == SD_OK && ai.is_reconnect && ai.noninteractive);
+  exec_check(sd_t_, c, &r, "echo cached", "cached\n", 0);
+  /* 4: clearing the cache brings the prompt back */
+  SD_CHECK_EQ_INT(sd_ssh_conn_clear_secrets(c), SD_OK);
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_OK);
+  SD_CHECK_EQ_INT(r.pass_prompts, 4);
+  finish(&r, c);
+
+  /* without cache_secrets_for_reconnect every reconnect asks */
+  memset(&r, 0, sizeof(r));
+  o.cache_secrets = 0;
+  c = NULL;
+  SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);   /* MATCH: no host-key prompt */
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 0);
+  SD_CHECK_EQ_INT(r.pass_prompts, 2);
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_OK);
+  SD_CHECK_EQ_INT(r.pass_prompts, 3);
+  SD_CHECK_EQ_INT(r.reconnect_prompts, 1);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
+static int write_kh(const char *text)
+{
+  HANDLE h = CreateFileW(g_kh_path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, 0, NULL);
+  DWORD w = 0;
+  BOOL ok;
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  ok = WriteFile(h, text, (DWORD)strlen(text), &w, NULL);
+  CloseHandle(h);
+  return ok && w == strlen(text);
+}
+
+SD_TEST(interop_reconnect_host_key_mismatch)
+{
+  char text[512];
+  uint8_t *f;
+  size_t n;
+  sd_known_hosts *kh = open_kh(NULL);
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_AND_STORE;
+  SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  /* the stored key changes underneath (what a MITM after a drop would look like to us) */
+  SD_REQUIRE(tu_read_fixture("other_host.pub", &f, &n));
+  {
+    char *sp = strchr((char *)f, ' ');
+    char *sp2 = sp ? strchr(sp + 1, ' ') : NULL;
+    if (sp2) *sp2 = 0;
+    _snprintf_s(text, sizeof(text), _TRUNCATE, "[%s]:%u %s\n", g_host, (unsigned)g_port, (char *)f);
+  }
+  sd_free(f);
+  SD_REQUIRE(write_kh(text));
+  SD_CHECK_EQ_INT(reconnect(&r, c), SD_E_HOSTKEY_MISMATCH);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);          /* never a prompt */
+  SD_CHECK_EQ_INT(r.mismatch_events, 1);
+  /* known_hosts emptied (key removed from every store): the pinned key reconnects silently */
+  SD_REQUIRE(write_kh(""));
+  r.done_err = SD_E_INTERNAL;
+  sd_event_reset(&r.done_ev);
+  SD_REQUIRE(sd_ssh_conn_connect(c, on_done, &r) == SD_OK);
+  SD_REQUIRE(sd_event_wait(&r.done_ev, 30000) == SD_OK);
+  SD_CHECK_EQ_INT(r.done_err, SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
+SD_TEST(interop_keepalive_tuning)
+{
+  sd_known_hosts *kh = open_kh(NULL);
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  rtt_q q;
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_ONCE;
+  o.keepalive_ms = 60000;                         /* effectively off ... */
+  SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
+  SD_CHECK_EQ_INT(sd_ssh_conn_set_keepalive(c, 1000, 0), SD_OK);
+  SD_CHECK_EQ_INT(sd_ssh_conn_set_keepalive(c, 10, 0), SD_E_INVALID_PARAM);
+  Sleep(1800);                                    /* ... until tuned down to 1 s at run time */
+  memset(&q, 0, sizeof(q));
+  q.c = c;
+  SD_REQUIRE(sd_event_init(&q.ev, 0, 0) == SD_OK);
+  SD_REQUIRE(sd_ssh_conn_post(c, post_rtt, &q) == SD_OK);
+  SD_REQUIRE(sd_event_wait(&q.ev, 5000) == SD_OK);
+  SD_CHECK(q.have);
+  sd_event_destroy(&q.ev);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
 static const sd_test_case k_tests[] = {
+  SD_TEST_ENTRY(interop_reconnect_pinned_host_key),
+  SD_TEST_ENTRY(interop_reconnect_secret_cache),
+  SD_TEST_ENTRY(interop_reconnect_host_key_mismatch),
+  SD_TEST_ENTRY(interop_keepalive_tuning),
   SD_TEST_ENTRY(interop_keepalive_and_probe),
   SD_TEST_ENTRY(interop_tofu_then_match),
   SD_TEST_ENTRY(interop_cipher_variants),
@@ -595,7 +806,7 @@ int main(int argc, char **argv)
     return 77;
   }
   if (!port_open()) {
-    printf("interop.ssh skipped: nothing listens on 127.0.0.1:%u; run tests/fixtures/wsl-sshd/start.ps1\n", (unsigned)g_port);
+    printf("interop.ssh skipped: nothing listens on %s:%u; run tests/fixtures/wsl-sshd/start.ps1\n", g_host, (unsigned)g_port);
     return 77;
   }
   if (!ssh_crypto_ready()) {

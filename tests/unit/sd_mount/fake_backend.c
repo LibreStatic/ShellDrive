@@ -32,6 +32,7 @@ struct sd_sftp_session {
 
 struct sd_vfs { int unused; };
 struct sd_dokan_mount { wchar_t letter; };
+struct sd_webdav_mount { wchar_t letter; };
 struct sd_known_hosts { int unused; };
 
 static sd_mutex g_lock;
@@ -42,6 +43,21 @@ static wchar_t g_letters[26];
 static volatile LONG g_live;
 static int g_last_ro;
 static char g_last_root[256];
+static sd_webdav_client_state g_webclient = SD_WD_CLIENT_MISSING;
+static int g_webclient_startable = 1;
+static volatile LONG g_ensure_calls, g_webdav_mounts;
+static uint32_t g_last_timeout;
+/* M1 */
+static volatile LONG g_drop_req = -1;     /* -1 none, 0 reconnect, 1 fail */
+static volatile LONG g_dokan_starts, g_vfs_mounts, g_budget_calls;
+static int g_last_rc_enabled, g_last_secret_cache;
+static uint32_t g_last_channels, g_last_offline_wait, g_last_grace, g_last_disk_mb;
+static wchar_t g_last_disk_dir[MAX_PATH];
+static int g_last_known;
+static uint32_t g_last_known_uid;
+static sd_vfs_event_cb g_vfs_cb;
+static void *g_vfs_ctx;
+static sd_vfs_identity g_vfs_ident;
 
 static void init_once(void *arg) { SD_UNUSED(arg); sd_mutex_init(&g_lock); }
 static void ensure(void) { sd_once_run(&g_once, init_once, NULL); }
@@ -52,8 +68,86 @@ void fake_backend_reset(void)
   sd_mutex_lock(&g_lock);
   g_ntrusted = 0;
   memset(g_letters, 0, sizeof(g_letters));
+  g_webclient = SD_WD_CLIENT_MISSING;
+  g_webclient_startable = 1;
+  g_ensure_calls = g_webdav_mounts = 0;
+  g_drop_req = -1;
+  g_dokan_starts = g_vfs_mounts = g_budget_calls = 0;
+  g_vfs_cb = NULL;
+  memset(&g_vfs_ident, 0, sizeof(g_vfs_ident));
   sd_mutex_unlock(&g_lock);
 }
+
+void fake_backend_drop(int fail) { InterlockedExchange(&g_drop_req, fail ? 1 : 0); }
+uint32_t fake_backend_dokan_starts(void) { return (uint32_t)g_dokan_starts; }
+uint32_t fake_backend_vfs_mounts(void) { return (uint32_t)g_vfs_mounts; }
+uint32_t fake_backend_budget_calls(void) { return (uint32_t)g_budget_calls; }
+int fake_backend_last_reconnect_enabled(void) { return g_last_rc_enabled; }
+uint32_t fake_backend_last_channels(void) { return g_last_channels; }
+int fake_backend_last_secret_cache(void) { return g_last_secret_cache; }
+uint32_t fake_backend_last_offline_wait(void) { return g_last_offline_wait; }
+uint32_t fake_backend_last_grace(void) { return g_last_grace; }
+uint32_t fake_backend_last_disk_mb(void) { return g_last_disk_mb; }
+const wchar_t *fake_backend_last_disk_dir(void) { return g_last_disk_dir; }
+int fake_backend_last_known_uid(uint32_t *uid) { *uid = g_last_known_uid; return g_last_known; }
+
+typedef struct fake_vev { int kind; wchar_t path[260]; UINT64 bytes; } fake_vev;
+
+static unsigned __stdcall vfs_event_thread(void *arg)
+{
+  fake_vev *e = (fake_vev *)arg;
+  sd_vfs_event ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.kind = (sd_vfs_event_kind)e->kind;
+  ev.path = e->path;
+  ev.bytes = e->bytes;
+  ev.status = SD_VFS_E_DISCONNECTED;
+  ev.code = "write_failed";
+  if (g_vfs_cb)
+    g_vfs_cb(g_vfs_ctx, &ev);
+  sd_free(e);
+  return 0;
+}
+
+static void raise_vfs_event(int kind, const wchar_t *path, UINT64 bytes)
+{
+  sd_thread t;
+  fake_vev *e = (fake_vev *)sd_calloc(1, sizeof(*e));
+  if (e == NULL)
+    return;
+  e->kind = kind;
+  if (path && wcslen(path) < SD_COUNTOF(e->path))
+    memcpy(e->path, path, (wcslen(path) + 1) * sizeof(wchar_t));
+  e->bytes = bytes;
+  if (sd_thread_create(&t, vfs_event_thread, e, 0, L"fake-vfs") == SD_OK)
+    sd_thread_join(&t, SD_WAIT_INFINITE, NULL);
+}
+
+void fake_backend_vfs_write_failed(const wchar_t *path, UINT64 bytes)
+{
+  raise_vfs_event(SD_VFS_EV_WRITE_FAILED, path, bytes);
+}
+
+void fake_backend_vfs_identity(uint32_t uid, uint32_t gid)
+{
+  g_vfs_ident.uid_known = g_vfs_ident.definitive = TRUE;
+  g_vfs_ident.uid = uid;
+  g_vfs_ident.gid = gid;
+  raise_vfs_event(SD_VFS_EV_IDENTITY, NULL, 0);
+}
+
+void fake_backend_set_webclient(sd_webdav_client_state st, int startable)
+{
+  ensure();
+  sd_mutex_lock(&g_lock);
+  g_webclient = st;
+  g_webclient_startable = startable;
+  sd_mutex_unlock(&g_lock);
+}
+
+uint32_t fake_backend_webclient_starts(void) { return (uint32_t)g_ensure_calls; }
+uint32_t fake_backend_webdav_mounts(void) { return (uint32_t)g_webdav_mounts; }
+uint32_t fake_backend_last_request_timeout(void) { return g_last_timeout; }
 
 int fake_backend_is_trusted(const char *host)
 {
@@ -94,14 +188,24 @@ const char *fake_backend_last_remote_root(void) { return g_last_root; }
 
 static int starts_with(const char *s, const char *p) { return strncmp(s, p, strlen(p)) == 0; }
 
-static void emit_state(struct sd_sftp_session *s, sd_sftp_state st, sd_err reason)
+static void emit_state_gen(struct sd_sftp_session *s, sd_sftp_state st, sd_err reason, uint32_t gen)
 {
   sd_sftp_event ev;
   memset(&ev, 0, sizeof(ev));
   ev.type = SD_SFTP_EV_STATE;
   ev.state = st;
   ev.reason = reason;
+  ev.generation = gen;
+  if (st == SD_SFTP_ST_RECONNECT_WAIT) {
+    ev.attempt = 1;
+    ev.retry_in_ms = 1000;
+  }
   s->ev(s->ev_ctx, &ev);
+}
+
+static void emit_state(struct sd_sftp_session *s, sd_sftp_state st, sd_err reason)
+{
+  emit_state_gen(s, st, reason, st == SD_SFTP_ST_READY ? 1 : 0);
 }
 
 /* Raises a prompt and waits for its answer; returns 0 if the session is closing. */
@@ -226,12 +330,35 @@ static unsigned __stdcall session_thread(void *arg)
         password_flow(s, SD_PROMPT_PASSWORD, FAKE_PASSWORD, &fail);
     }
   }
-  if (fail == SD_OK && !s->close_req)
+  if (fail == SD_OK && !s->close_req) {
+    sd_ssh_negotiated n;
+    memset(&n, 0, sizeof(n));
+    n.kex = n.hostkey = n.cipher_c2s = "fake";
+    n.hostkey_fp_sha256 = FAKE_FP;
+    if (s->cb.on_negotiated)
+      s->cb.on_negotiated(s->cb.ctx, &n);
     emit_state(s, SD_SFTP_ST_READY, SD_OK);
-  else if (fail != SD_OK && fail != SD_E_SHUTDOWN)
+  } else if (fail != SD_OK && fail != SD_E_SHUTDOWN) {
     emit_state(s, SD_SFTP_ST_FAILED, fail);
-  while (!s->close_req)
-    WaitForSingleObject(s->wake, 100);
+  }
+  {
+    uint32_t gen = 1;
+    while (!s->close_req) {
+      LONG d = starts_with(s->host, "flaky") && fail == SD_OK ? InterlockedExchange(&g_drop_req, -1) : -1;
+      if (d >= 0) {
+        emit_state_gen(s, SD_SFTP_ST_DISCONNECTED, SD_E_DISCONNECTED, gen);
+        if (d == 1) {
+          emit_state_gen(s, SD_SFTP_ST_FAILED, SD_E_HOSTKEY_MISMATCH, gen);
+          fail = SD_E_HOSTKEY_MISMATCH;
+        } else {
+          emit_state_gen(s, SD_SFTP_ST_RECONNECT_WAIT, SD_E_CONN_REFUSED, gen);
+          emit_state_gen(s, SD_SFTP_ST_CONNECTING, SD_OK, gen);
+          emit_state_gen(s, SD_SFTP_ST_READY, SD_OK, ++gen);
+        }
+      }
+      WaitForSingleObject(s->wake, 20);
+    }
+  }
   emit_state(s, SD_SFTP_ST_CLOSED, SD_E_SHUTDOWN);
   return 0;
 }
@@ -263,9 +390,13 @@ static sd_err f_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks 
                                sd_sftp_event_cb ev, void *ev_ctx, sd_sftp_session **out)
 {
   struct sd_sftp_session *s;
-  SD_UNUSED(opt);
   if (ssh == NULL || ssh->hop_count != 1 || ssh->struct_size != sizeof(sd_ssh_config))
     return SD_E_INVALID_PARAM;
+  if (opt) {
+    g_last_rc_enabled = opt->reconnect.enabled;
+    g_last_channels = opt->channels;
+  }
+  g_last_secret_cache = ssh->hops[0].auth.cache_secrets_for_reconnect;
   s = (struct sd_sftp_session *)sd_calloc(1, sizeof(*s));
   if (s == NULL)
     return SD_E_NO_MEMORY;
@@ -360,11 +491,21 @@ static sd_vfs_status f_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd
                                  sd_vfs **out)
 {
   SD_UNUSED(s);
-  SD_UNUSED(cb);
-  SD_UNUSED(ctx);
   if (o == NULL || o->struct_size != sizeof(sd_vfs_options))
     return SD_VFS_E_UNSUPPORTED;
+  g_vfs_cb = cb;
+  g_vfs_ctx = ctx;
+  InterlockedIncrement(&g_vfs_mounts);
+  g_last_offline_wait = o->offline_wait_ms;
+  g_last_grace = o->reconnect_grace_ms;
+  g_last_disk_mb = o->disk_cache_mb;
+  g_last_disk_dir[0] = 0;
+  if (o->disk_cache_dir && wcslen(o->disk_cache_dir) < MAX_PATH)
+    memcpy(g_last_disk_dir, o->disk_cache_dir, (wcslen(o->disk_cache_dir) + 1) * sizeof(wchar_t));
+  g_last_known = o->known_identity != NULL;
+  g_last_known_uid = o->known_identity ? o->known_identity->uid : 0;
   g_last_ro = o->read_only ? 1 : 0;
+  g_last_timeout = o->request_timeout_ms;
   g_last_root[0] = 0;
   if (o->remote_root && strlen(o->remote_root) < sizeof(g_last_root))
     memcpy(g_last_root, o->remote_root, strlen(o->remote_root) + 1);
@@ -413,6 +554,7 @@ static sd_err f_dokan_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
   }
   g_letters[l - L'A'] = l;
   sd_mutex_unlock(&g_lock);
+  InterlockedIncrement(&g_dokan_starts);
   *out = (sd_dokan_mount *)sd_calloc(1, sizeof(sd_dokan_mount));
   if (*out == NULL)
     return SD_E_NO_MEMORY;
@@ -429,6 +571,91 @@ static sd_err f_dokan_stop(sd_dokan_mount *m)
   sd_free(m);
   return SD_OK;
 }
+
+static sd_webdav_client_state f_wd_query(sd_webdav_client_info *out)
+{
+  sd_webdav_client_state st;
+  ensure();
+  sd_mutex_lock(&g_lock);
+  st = g_webclient;
+  sd_mutex_unlock(&g_lock);
+  if (out) {
+    memset(out, 0, sizeof(*out));
+    out->state = st;
+  }
+  return st;
+}
+
+static sd_err f_wd_ensure(uint32_t timeout_ms, sd_webdav_client_info *out)
+{
+  sd_webdav_client_state st = f_wd_query(out);
+  SD_UNUSED(timeout_ms);
+  InterlockedIncrement(&g_ensure_calls);
+  if (st == SD_WD_CLIENT_RUNNING)
+    return SD_OK;
+  if (st == SD_WD_CLIENT_MISSING || st == SD_WD_CLIENT_DISABLED)
+    return SD_E_UNSUPPORTED;
+  if (!g_webclient_startable) {
+    if (out) out->needs_admin = TRUE;
+    return SD_E_ACCESS_DENIED;
+  }
+  sd_mutex_lock(&g_lock);
+  g_webclient = SD_WD_CLIENT_RUNNING;
+  sd_mutex_unlock(&g_lock);
+  if (out) { out->state = SD_WD_CLIENT_RUNNING; out->started_by_us = TRUE; }
+  return SD_OK;
+}
+
+static sd_err f_wd_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_webdav_mount **out)
+{
+  wchar_t l;
+  SD_UNUSED(vfs);
+  if (cfg == NULL || cfg->letter < L'A' || cfg->letter > L'Z')
+    return SD_E_INVALID_PARAM;
+  l = cfg->letter;
+  ensure();
+  sd_mutex_lock(&g_lock);
+  if (g_letters[l - L'A']) {
+    sd_mutex_unlock(&g_lock);
+    return SD_E_EXISTS;
+  }
+  g_letters[l - L'A'] = l;
+  sd_mutex_unlock(&g_lock);
+  *out = (sd_webdav_mount *)sd_calloc(1, sizeof(sd_webdav_mount));
+  if (*out == NULL)
+    return SD_E_NO_MEMORY;
+  (*out)->letter = l;
+  InterlockedIncrement(&g_webdav_mounts);
+  return SD_OK;
+}
+
+static sd_err f_wd_stop(sd_webdav_mount *m)
+{
+  ensure();
+  sd_mutex_lock(&g_lock);
+  g_letters[m->letter - L'A'] = 0;
+  sd_mutex_unlock(&g_lock);
+  sd_free(m);
+  return SD_OK;
+}
+
+static sd_err f_wd_cleanup(uint16_t keep, uint16_t only, uint32_t *removed)
+{
+  SD_UNUSED(keep);
+  SD_UNUSED(only);
+  if (removed) *removed = 0;
+  return SD_OK;
+}
+
+static void f_cache_budget(UINT64 bytes) { SD_UNUSED(bytes); InterlockedIncrement(&g_budget_calls); }
+
+static void f_vfs_get_identity(sd_vfs *v, sd_vfs_identity *out)
+{
+  SD_UNUSED(v);
+  *out = g_vfs_ident;
+}
+
+static void f_wd_emergency(void) {}
 
 /* "nodokany*" hosts make the next probe fail: wrap session_create to detect them. */
 static sd_err f_session_create_wrap(const sd_ssh_config *ssh, const sd_ssh_callbacks *cb, const sd_sftp_options *opt,
@@ -458,6 +685,14 @@ static const sd_mount_backend k_fake = {
   f_dokan_probe,
   f_dokan_start,
   f_dokan_stop,
+  f_wd_query,
+  f_wd_ensure,
+  f_wd_start,
+  f_wd_stop,
+  f_wd_cleanup,
+  f_cache_budget,
+  f_vfs_get_identity,
+  f_wd_emergency,
 };
 
 const sd_mount_backend *fake_backend(void)

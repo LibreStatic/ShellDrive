@@ -110,7 +110,10 @@ SD_TEST(vfs_mount_rejects_later_milestones)
   sd_vfs_options o;
   sd_vfs *v = NULL;
   default_opts(&o);
-  o.write_mode = SD_VFS_WRITE_BEHIND;
+  o.mark_of_the_web = TRUE;                 /* M2 */
+  SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
+  default_opts(&o);
+  o.write_mode = (sd_vfs_write_mode)7;
   SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
   default_opts(&o);
   o.global_mount = TRUE;

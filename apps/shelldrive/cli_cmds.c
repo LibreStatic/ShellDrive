@@ -186,6 +186,9 @@ static void print_error(const cli_args *a, const char *code, const char *detail,
   }
   else if (is(code, "invalid_target")) say1w(SD_MSG_CLI_ERROR_INVALID_TARGET, "value", ec ? ec->target : NULL, 1);
   else if (is(code, "already_mounted")) say(SD_MSG_CLI_ERROR_ALREADY_MOUNTED, NULL, 0, 1);
+  else if (is(code, "webclient_disabled")) say(SD_MSG_CLI_ERROR_WEBCLIENT_DISABLED, NULL, 0, 1);
+  else if (is(code, "backend_unavailable") && detail && strstr(detail, "WebClient"))
+    say(SD_MSG_CLI_ERROR_WEBDAV_UNAVAILABLE, NULL, 0, 1);
   else if (is(code, "backend_unavailable")) say(SD_MSG_CLI_ERROR_BACKEND_UNAVAILABLE, NULL, 0, 1);
   else say1(SD_MSG_CLI_ERROR_GENERIC, "code", code, 1);
 }
@@ -489,6 +492,7 @@ static int cmd_mount(const cli_args *a)
     sd_jw_key(&jw, "target"); sd_jw_cstr(&jw, t);
   }
   if (a->read_only) { sd_jw_key(&jw, "read_only"); sd_jw_bool(&jw, 1); }
+  if (a->backend) { sd_jw_key(&jw, "backend"); sd_jw_cstr(&jw, a->backend); }
   sd_jw_key(&jw, "prompt_mode"); sd_jw_cstr(&jw, can_prompt(a) ? "console" : "none");
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) != SD_OK) {
@@ -737,6 +741,18 @@ static void pad_print(wchar_t *line, size_t cap, size_t *len, const wchar_t *s, 
   line[*len] = 0;
 }
 
+static sd_msg_id state_msg(const char *st);
+
+/* M1: an offline mount whose session is still trying shows "reconnecting". */
+static sd_msg_id mount_state_msg(const sd_json *m)
+{
+  const char *st = sd_json_get_str(m, "state");
+  const char *sess = sd_json_get_str(sd_json_get(m, "connection"), "session");
+  if (is(st, "offline") && (is(sess, "disconnected") || is(sess, "reconnect_wait") || is(sess, "connecting")))
+    return SD_MSG_CLI_STATE_RECONNECTING;
+  return state_msg(st);
+}
+
 static sd_msg_id state_msg(const char *st)
 {
   if (is(st, "connecting")) return SD_MSG_CLI_STATE_CONNECTING;
@@ -817,7 +833,7 @@ static int cmd_list(const cli_args *a)
       len = 0;
       line[0] = 0;
       pad_print(line, SD_COUNTOF(line), &len, t ? t : L"", 8);
-      pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(state_msg(sd_json_get_str(m, "state"))), 22);
+      pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(mount_state_msg(m)), 22);
       pad_print(line, SD_COUNTOF(line), &len, ws ? ws : L"", 30);
       pad_print(line, SD_COUNTOF(line), &len, p ? p : L"", 0);
       cli_print(line);
@@ -829,6 +845,21 @@ static int cmd_list(const cli_args *a)
       arg.type = SD_ARG_INT;
       arg.v.i = (long long)n;
       say(SD_MSG_CLI_MOUNTED_COUNT, &arg, 1, 0);
+    }
+    /* write-behind data that could not be written (C45): always shown */
+    for (i = 0; i < n; i++) {
+      const sd_json *m = sd_json_at(arr, i);
+      int64_t wf = 0;
+      if (sd_json_get_int64(m, "write_failed", &wf) && wf > 0) {
+        wchar_t *t = wide(sd_json_get_str(m, "target")), *wp = wide(sd_json_get_str(m, "last_write_failed"));
+        sd_arg args[3];
+        args[0].name = "target"; args[0].type = SD_ARG_STR; args[0].v.s = t ? t : L"";
+        args[1].name = "count"; args[1].type = SD_ARG_INT; args[1].v.i = (long long)wf;
+        args[2].name = "path"; args[2].type = SD_ARG_STR; args[2].v.s = wp ? wp : L"";
+        say(SD_MSG_CLI_LIST_WRITE_FAILED, args, 3, 0);
+        sd_free(t);
+        sd_free(wp);
+      }
     }
   }
   sd_json_free(res);
@@ -885,7 +916,7 @@ void cli_print_help(const wchar_t *topic)
   cli_print(sd_l10n_get(SD_MSG_CLI_USAGE));
   cli_print(L"");
   if (topic && wcscmp(topic, L"mount") == 0) {
-    help_line(L"mount <profile> [--letter X:] [--read-only] [--prompt auto|console|none] [--stdin] [--no-wait]",
+    help_line(L"mount <profile> [--letter X:] [--backend auto|dokany|webdav] [--read-only] [--prompt auto|console|none] [--stdin] [--no-wait]",
               SD_MSG_CLI_HELP_MOUNT);
     help_line(L"mount --host [user@]host[:port] [--letter X:] [--identity FILE] [--remote-path PATH] ...",
               SD_MSG_CLI_HELP_MOUNT);
@@ -895,6 +926,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--letter X:  (--target X:)", SD_MSG_CLI_HELP_OPT_LETTER);
     help_line(L"--identity FILE  (-i FILE)", SD_MSG_CLI_HELP_OPT_IDENTITY);
     help_line(L"--remote-path PATH  (--path PATH)", SD_MSG_CLI_HELP_OPT_REMOTE_PATH);
+    help_line(L"--backend auto|dokany|webdav", SD_MSG_CLI_HELP_OPT_BACKEND);
     help_line(L"--read-only", SD_MSG_CLI_HELP_OPT_READ_ONLY);
     help_line(L"--prompt auto|console|none", SD_MSG_CLI_HELP_OPT_PROMPT);
     help_line(L"--stdin", SD_MSG_CLI_HELP_OPT_STDIN);

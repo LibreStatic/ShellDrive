@@ -1,0 +1,55 @@
+# sd-isacheck allow list: functions whose SSE/SSE2 (or newer) instructions are reached only after a
+# run-time CPU check, so they are safe on the flavour's floor CPU. Entries are undecorated function or
+# public-symbol names from the PDB; a trailing '*' matches a prefix, a leading one a suffix. '#' starts
+# a comment.
+#
+# Only static CRT routines belong here (04 §2.4); our own code never does, because the x86-ia32 build
+# compiles no SIMD translation unit at all (01 §2.3). Every entry needs a reason.
+#
+# Reviewed against `dumpbin /disasm` of the v141_xp (14.16) static CRT, 2026-10-25. Re-review on every
+# toolset update (01 §2.7.5: toolset changes rerun the checks).
+
+# CPU detection: XGETBV runs only after CPUID reports OSXSAVE.
+__isa_available_init
+
+# String/memory routines: the SSE2 loop is entered only when __isa_available >= 1 (SSE2) or
+# __favor/__sse2_available says so (strstr: its SSE4.2 PCMPISTRI loop needs __isa_available >= 2);
+# otherwise the x86 integer loop runs.
+memcpy
+memmove
+memset
+strchr
+strrchr
+strstr
+strnlen
+wcschr
+wcsrchr
+wcsnlen
+
+# x87/SSE2 math dispatchers: test __use_sse2_mathfcns (0 without SSE2) before STMXCSR and before
+# jumping to the *_pentium4 SSE2 implementation, which nothing else calls.
+ceil
+floor
+log10
+_CIlog10
+*_pentium4
+
+# Floating-point control/status: MXCSR is read/written only when __sse2_available is set (the *_sse2
+# helpers are called only from these routines under that test).
+_control87
+_clearfp
+_statusfp
+_getfpcontrolword
+_setfpcontrolword
+_getfpstatusword
+_setfpstatusword
+__set_fpsr_sse2
+_set_controlfp
+*_sse2
+
+# UCRT strnlen/wcsnlen internals (the Debug CRT keeps them out of line): common_strnlen dispatches on
+# __isa_available to the <0> (SSE2) or <1> (AVX2) instantiation; nothing else calls these.
+common_strnlen_simd*
+__crt_simd_traits*
+__crt_simd_pack_traits*
+__crt_simd_cleanup_guard*

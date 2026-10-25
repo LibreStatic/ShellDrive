@@ -4,6 +4,10 @@ A private OpenSSH server inside WSL (Ubuntu 24.04) for the `interop` CTest label
 only (decisions.md D21); nothing here ships.
 
 - Runs as the calling WSL user, never as root, on `127.0.0.1:2222` (`SD_SSHD_PORT` overrides it).
+  In WSL's NAT networking mode it also listens on the VM's `eth0` address (reachable from the Windows
+  host only) and writes it to `state/env` as `direct_host`; the interop tests prefer it, because the
+  localhost relay (`wslrelay`) can wedge for a port when sshd is killed during heavy traffic.
+  `SD_SSHD_DIRECT=0` (start) turns it off; `SD_SSHD_VIA_RELAY=1` (tests) forces `127.0.0.1`.
 - Own `sshd_config`, host key, client keys and `authorized_keys` under
   `~/.local/state/shelldrive-wsl-sshd/` inside WSL. The system sshd, `/etc/ssh` and the user's
   `~/.ssh` are not touched, and no `sudo` is needed (only `openssh-server` must be installed; its
@@ -39,3 +43,11 @@ sudo /usr/sbin/sshd -D -p 2223 -o ListenAddress=127.0.0.1 -o UsePAM=yes \
 
 (`/run/sshd` must exist: `sudo mkdir -p /run/sshd`.) Connect to `127.0.0.1:2223` with the WSL
 account password and stop the instance with Ctrl+C.
+
+## Fault injection (M1 resilience tests)
+
+`ctl.sh` (or `ctl.ps1 <command>` from Windows) breaks the running fixture on purpose:
+`kill` (listener and every session process, like a crash; keys stay), `start`, `restart`, `drop` (session
+processes only: established connections drop, new ones are accepted), `freeze` / `thaw` / `reap`
+(SIGSTOP / SIGCONT / kill the session processes: a silent link), `status`. Only the fixture's own
+processes are touched. `interop.sftp_ssh` uses it and starts the fixture again at the end.

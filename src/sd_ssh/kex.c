@@ -457,6 +457,24 @@ static void hostkey_ok(sd_ssh_conn *c)
   send_newkeys(c);
 }
 
+/* 01 §8: the key the previous connect of this object verified. */
+static int hostkey_is_pinned(const sd_ssh_conn *c)
+{
+  return c->pinned_len && c->pinned_len == c->hostkey_len && memcmp(c->pinned_hostkey, c->hostkey, c->hostkey_len) == 0;
+}
+
+/* Reconnect to a key that is in no store but was accepted (once) for this connection object before:
+   no new prompt. It stays a fresh acceptance for TM-R05 (no cached or stored secrets). */
+static int accept_pinned(sd_ssh_conn *c)
+{
+  if (!c->is_reconnect || !hostkey_is_pinned(c)) return 0;
+  ssh_log(c, SD_LOG_INFO, "reconnect: host key of %s equals the key accepted for this session", c->lookup_name);
+  c->hostkey_just_accepted = 1;
+  c->hk_once = 1;
+  hostkey_ok(c);
+  return 1;
+}
+
 static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
 {
   hk_work *h = (hk_work *)cmd;
@@ -476,12 +494,16 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
   switch (h->res.status) {
   case SD_HK_MATCH:
   case SD_HK_MATCH_CA:
+    if (c->is_reconnect && c->pinned_len && !hostkey_is_pinned(c))
+      ssh_log(c, SD_LOG_WARN, "host key of %s changed since the previous connection; it matches a trusted entry",
+              c->lookup_name);
     ssh_log(c, SD_LOG_INFO, "host key verified for %s", c->lookup_name);
     sd_free(h);
     hostkey_ok(c);
     return;
   case SD_HK_NEW:
     sd_free(h);
+    if (accept_pinned(c)) return;
     raise_hostkey_prompt(c);
     return;
   case SD_HK_NEW_TYPE:
@@ -539,7 +561,7 @@ static sd_err queue_hk_work(sd_ssh_conn *c, int add)
 static void start_hostkey_check(sd_ssh_conn *c)
 {
   c->kex.hk_check_started = 1;
-  if (!c->kh) { raise_hostkey_prompt(c); return; }
+  if (!c->kh) { if (!accept_pinned(c)) raise_hostkey_prompt(c); return; }
   if (queue_hk_work(c, 0) != SD_OK) ssh_fail(c, SD_E_INTERNAL, SSH_DISCONNECT_BY_APPLICATION, "worker");
 }
 
@@ -551,6 +573,7 @@ void ssh_kex_on_hostkey_answer(sd_ssh_conn *c, ssh_prompt_answer *a)
     return;
   }
   c->hostkey_just_accepted = 1;   /* TM-R05 */
+  c->hk_once = a->decision != SD_HK_ACCEPT_AND_STORE || !c->kh;
   if (a->decision == SD_HK_ACCEPT_AND_STORE) {
     if (c->kh) { if (queue_hk_work(c, 1) != SD_OK) ssh_log(c, SD_LOG_WARN, "could not queue host key store"); }
     else ssh_log(c, SD_LOG_WARN, "no known_hosts store configured; host key accepted once");

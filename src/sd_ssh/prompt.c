@@ -56,6 +56,8 @@ sd_prompt *ssh_prompt_new(sd_ssh_conn *c, ssh_prompt_purpose purpose, sd_prompt_
   p->ainfo.user = c->user;
   p->ainfo.hostkey_just_accepted = c->hostkey_just_accepted;
   p->ainfo.is_pool_member = c->pool_member;
+  p->ainfo.is_reconnect = c->is_reconnect;
+  p->hinfo.is_reconnect = c->is_reconnect;
   return p;
 }
 

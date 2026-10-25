@@ -1,6 +1,7 @@
 /* Connection object: configuration validation, lifecycle without a server, prompt objects. */
 #include <winsock2.h>
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_platform/sd_thread.h"
@@ -141,4 +142,66 @@ SD_TEST(ssh_prompt_lifecycle)
   SD_CHECK_EQ_INT(sd_prompt_answer(pc.raised, 1, resp), SD_OK);
   sd_ssh_conn_destroy(pc.c);
   sd_event_destroy(&pc.ev);
+}
+
+/* ---- M1: reconnect secret cache (01 §7.4, TM-R05) and repeated connects ---- */
+
+SD_TEST(ssh_secret_cache_roundtrip)
+{
+  static const char pw[] = "correct horse battery staple";
+  ssh_secret sec;
+  sd_secbuf *out = NULL;
+  sd_ssh_conn fake;
+  memset(&sec, 0, sizeof(sec));
+  if (!ssh_secret_cache_available()) { printf("  [skip] no CryptProtectMemory / RtlEncryptMemory\n"); return; }
+  SD_REQUIRE(ssh_secret_store(&sec, (const uint8_t *)pw, sizeof(pw) - 1) == SD_OK);
+  SD_CHECK(sec.cap % 16 == 0 && sec.len == sizeof(pw) - 1);
+  {
+    size_t i;
+    int plain = 0;           /* the protected blob never holds the secret in clear */
+    for (i = 0; i + 8 <= sec.cap; i++) if (memcmp(sec.blob + i, pw, 8) == 0) plain = 1;
+    SD_CHECK(!plain);
+  }
+  SD_REQUIRE(ssh_secret_load(&sec, &out) == SD_OK);
+  SD_CHECK(out->len == sizeof(pw) - 1 && memcmp(out->p, pw, out->len) == 0);
+  sd_secbuf_free(out);
+  ssh_secret_clear(&sec);
+  SD_CHECK(sec.blob == NULL);
+  SD_CHECK_EQ_INT(ssh_secret_load(&sec, &out), SD_E_NOT_FOUND);
+  SD_CHECK_EQ_INT(ssh_secret_store(&sec, (const uint8_t *)pw, 0), SD_E_INVALID_PARAM);
+  memset(&fake, 0, sizeof(fake));
+  fake.cache_secrets = 1;
+  SD_CHECK(ssh_cache_usable(&fake));
+  fake.hostkey_just_accepted = 1;     /* TM-R05: never right after a fresh host-key acceptance */
+  SD_CHECK(!ssh_cache_usable(&fake));
+  fake.hostkey_just_accepted = 0;
+  fake.cache_secrets = 0;
+  SD_CHECK(!ssh_cache_usable(&fake));
+}
+
+SD_TEST(ssh_conn_connect_again_after_failure)
+{
+  sd_ssh_config cfg;
+  sd_ssh_hop hop;
+  sd_ssh_conn *c = NULL;
+  done_ctx d;
+  sd_ssh_auth_info ai;
+  int i;
+  if (!tu_crypto_or_skip("ssh_conn_connect_again_after_failure")) return;
+  base_cfg(&cfg, &hop, L"127.0.0.1", 1);      /* nothing listens on port 1 */
+  SD_REQUIRE(sd_ssh_conn_create(&cfg, NULL, &c) == SD_OK);
+  SD_REQUIRE(sd_event_init(&d.ev, 0, 0) == SD_OK);
+  for (i = 0; i < 3; i++) {                   /* the same object connects again (reconnect loop) */
+    d.err = SD_OK;
+    SD_REQUIRE(sd_ssh_conn_connect(c, on_done, &d) == SD_OK);
+    SD_REQUIRE(sd_event_wait(&d.ev, 10000) == SD_OK);
+    SD_CHECK(d.err == SD_E_CONN_REFUSED || d.err == SD_E_TIMEOUT || d.err == SD_E_DISCONNECTED);
+  }
+  SD_CHECK(sd_ssh_conn_auth_info(c, &ai) == SD_OK && !ai.is_reconnect);   /* never connected */
+  SD_CHECK_EQ_INT(sd_ssh_conn_set_keepalive(c, 999, 0), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(sd_ssh_conn_set_keepalive(c, 0, 101), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(sd_ssh_conn_set_keepalive(c, 5000, 2), SD_OK);
+  SD_CHECK_EQ_INT(sd_ssh_conn_clear_secrets(c), SD_OK);
+  sd_ssh_conn_destroy(c);
+  sd_event_destroy(&d.ev);
 }

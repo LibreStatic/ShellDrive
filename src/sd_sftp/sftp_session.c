@@ -1,5 +1,13 @@
-/* sd_sftp session core (01 §10.4-§10.8, §11): one SFTP channel per session in M0, request
- * pipelining, chunking, caller deadlines, cancellation, error refinement.
+/* sd_sftp session core (01 §10.4-§10.8, §11): request pipelining, chunking, caller deadlines,
+ * cancellation, error refinement; M1: meta + bulk SFTP channels with request classes and
+ * auto-degrade to one channel (D19, C17), and the reconnect loop (01 §10.6): exponential backoff
+ * with jitter, generations, stale handles, sd_sftp_file_reopen.
+ *
+ * Channels: ch[0] ("meta") carries path operations, opendir/readdir and CLASS_META handles, plus the
+ * startup sequence; ch[1] ("bulk") carries every other handle. With one channel (option, transport
+ * without streams, or the server refused a second session channel) ch[0] serves the meta queue
+ * before the bulk queue at every turn. Request ids are unique across both channels; each wire
+ * records the channel it went out on, and a handle is valid only on the channel that opened it.
  *
  * Threading model: every piece of protocol state is owned by the transport's I/O thread. Callers
  * hand requests over through a mutex-protected inbox and one posted "drain" per batch. Completions
@@ -33,6 +41,19 @@ enum { Q_META = 0, Q_BULK = 1 };
 #define TICK_MS        50u
 #define NO_OFF         UINT64_MAX
 
+#define NCH 2u
+enum { SS_NONE = 0, SS_OPENING, SS_OPEN };
+
+typedef struct sftp_chan {
+  sd_sftp_session *s;
+  uint32_t idx;
+  int ss;                              /* stream state SS_* (I/O thread) */
+  int got_version;
+  sd_wr obuf; size_t osent;
+  uint8_t *ibuf; size_t ilen, icap;
+  uint32_t inflight; uint64_t inflight_bytes;
+} sftp_chan;
+
 struct sd_sftp_session {
   sd_sftp_transport tp;
   sd_sftp_options   opt;
@@ -51,17 +72,23 @@ struct sd_sftp_session {
   sd_thread timer; sd_event timer_stop; int timer_started;
 
   /* ---- I/O thread ---- */
-  int tp_open, tp_close_called, got_version, finalized;
-  sd_err lost_err; int lost_pending, lost_done;
-  sd_wr obuf; size_t osent;
-  uint8_t *ibuf; size_t ilen, icap;
+  sftp_chan ch[NCH];
+  uint32_t nchan;                      /* channels in use this generation (1 or 2) */
+  int bulk_settled, startup_done, in_attempt;
+  int tp_opened, tp_close_called, finalized;   /* per connection attempt */
+  sd_err lost_err; int lost_pending, lost_done;   /* lost_done: the current connection is dead */
   sftp_wire *wires[WIRE_BUCKETS];
-  uint32_t next_id, inflight; uint64_t inflight_bytes;
+  uint32_t next_id;
   sftp_req *qh[2], *qt[2];
   sftp_req *wait_head;                 /* WAIT_READY requests before READY (singly linked by qnext) */
   sftp_req *live_head;
   sftp_req *startup;
   uint64_t startup_deadline, last_probe_ms;
+  /* reconnect loop */
+  int ever_ready, user_retry, retry_stopped;
+  uint32_t attempts;
+  uint64_t retry_at;
+  uint32_t rng;
   int symlink_openssh;
   sd_sftp_extattr scratch_ext[SFTP_MAX_EXT_PAIRS];
 
@@ -71,7 +98,8 @@ struct sd_sftp_session {
   uint64_t raw_limits[4];
 
   /* statistics */
-  volatile LONG64 rx_total, tx_total;
+  volatile LONG64 rx_total, tx_total;  /* since session start; stats report them per generation */
+  volatile LONG64 gen_rx0, gen_tx0;
   uint32_t srtt_ms, rttvar_ms; int rtt_init;
   uint64_t rate_t0, rate_rx0, rate_tx0, rx_bps, tx_bps;
 };
@@ -182,7 +210,7 @@ static int inbox_put(sd_sftp_session *s, sftp_item *it)
 
 /* ---- events ---- */
 
-static void set_state(sd_sftp_session *s, sd_sftp_state st, sd_err reason)
+static void set_state_ex(sd_sftp_session *s, sd_sftp_state st, sd_err reason, uint32_t retry_in, uint32_t attempt)
 {
   sd_sftp_event e;
   InterlockedExchange(&s->state, (LONG)st);
@@ -191,8 +219,13 @@ static void set_state(sd_sftp_session *s, sd_sftp_state st, sd_err reason)
   e.type = SD_SFTP_EV_STATE;
   e.state = st;
   e.reason = reason;
+  e.retry_in_ms = retry_in;
+  e.attempt = attempt;
+  e.generation = s->generation;
   s->ev(s->ev_ctx, &e);
 }
+
+static void set_state(sd_sftp_session *s, sd_sftp_state st, sd_err reason) { set_state_ex(s, st, reason, 0, 0); }
 
 /* ---- files ---- */
 
@@ -207,7 +240,7 @@ static void file_unlink_free(sd_sftp_session *s, sd_sftp_file *f)
 }
 
 static sd_sftp_file *file_new(sd_sftp_session *s, const char *path, uint32_t oflags, int is_dir, int meta,
-                              const uint8_t *h, uint32_t hlen)
+                              uint32_t ch, const uint8_t *h, uint32_t hlen)
 {
   sd_sftp_file *f = (sd_sftp_file *)sd_calloc(1, sizeof(*f));
   if (!f) return NULL;
@@ -219,6 +252,7 @@ static sd_sftp_file *file_new(sd_sftp_session *s, const char *path, uint32_t ofl
   f->is_dir = is_dir;
   f->meta = meta;
   f->generation = s->generation;
+  f->ch = ch;
   memcpy(f->handle, h, hlen);
   f->hlen = hlen;
   sd_mutex_lock(&s->lock);
@@ -279,27 +313,29 @@ static sftp_wire *wire_take(sd_sftp_session *s, uint32_t id)
   for (pp = &s->wires[id % WIRE_BUCKETS]; *pp; pp = &(*pp)->hnext)
     if ((*pp)->id == id) {
       sftp_wire *w = *pp;
+      sftp_chan *ch = &s->ch[w->ch];
       *pp = w->hnext;
-      s->inflight--;
-      s->inflight_bytes -= w->bytes;
+      ch->inflight--;
+      ch->inflight_bytes -= w->bytes;
       return w;
     }
   return NULL;
 }
 
-static sftp_wire *wire_new(sd_sftp_session *s, sftp_req *r, uint32_t phase, uint32_t expect)
+static sftp_wire *wire_new(sd_sftp_session *s, sftp_chan *ch, sftp_req *r, uint32_t phase, uint32_t expect)
 {
   sftp_wire *w = (sftp_wire *)sd_calloc(1, sizeof(*w));
   if (!w) { if (!s->lost_pending) { s->lost_pending = 1; s->lost_err = SD_E_NO_MEMORY; } return NULL; }
   do { s->next_id++; } while (wire_find(s, s->next_id) != NULL);
   w->id = s->next_id;
+  w->ch = ch->idx;
   w->r = r;
   w->phase = phase;
   w->expect = expect;
   w->sent_ms = sd_tick_ms();
   w->hnext = s->wires[w->id % WIRE_BUCKETS];
   s->wires[w->id % WIRE_BUCKETS] = w;
-  s->inflight++;
+  ch->inflight++;
   if (r) { r->wires++; r->sent = 1; }
   return w;
 }
@@ -328,7 +364,7 @@ static void live_add(sd_sftp_session *s, sftp_req *r)
   r->in_live = 1;
 }
 
-static void send_orphan_close(sd_sftp_session *s, const uint8_t *h, uint32_t hlen);
+static void send_orphan_close(sd_sftp_session *s, uint32_t ch, const uint8_t *h, uint32_t hlen);
 
 static void req_free(sftp_req *r)
 {
@@ -347,7 +383,7 @@ static void req_free(sftp_req *r)
 static void req_maybe_free(sd_sftp_session *s, sftp_req *r)
 {
   if (!r->done || r->wires || r->queued) return;
-  if (r->ph_open && s->tp_open && !s->lost_done) send_orphan_close(s, r->ph, r->phlen);
+  if (r->ph_open && !s->lost_done) send_orphan_close(s, r->ph_ch, r->ph, r->phlen);
   r->ph_open = 0;
   req_free(r);
 }
@@ -382,8 +418,12 @@ static int req_class(const sftp_req *r)
   case OP_CLOSE: case OP_READ: case OP_WRITE: case OP_READDIR: case OP_FSTAT: case OP_FSETSTAT:
   case OP_FSYNC: case OP_FSTATVFS: case OP_COPY:
     return r->f && !r->f->meta ? Q_BULK : Q_META;
-  case OP_OPEN: case OP_REOPEN:
-    return Q_META;   /* the OPEN itself; the handle's class is decided by the flags */
+  case OP_OPEN:      /* the OPEN goes out on the channel its handle will live on */
+    if (r->flags & SD_SFTP_REQ_CLASS_META) return Q_META;
+    if (r->f2) return r->f2->meta ? Q_META : Q_BULK;    /* same_channel_as */
+    return Q_BULK;
+  case OP_REOPEN:
+    return r->f && !r->f->meta ? Q_BULK : Q_META;
   default:
     return Q_META;
   }
@@ -460,20 +500,28 @@ static uint32_t next_chunk_bytes(const sd_sftp_session *s, const sftp_req *r)
 
 static void put_handle(sd_wr *w, const sd_sftp_file *f) { sd_wr_string(w, f->handle, f->hlen); }
 
-static void send_orphan_close(sd_sftp_session *s, const uint8_t *h, uint32_t hlen)
+static int chan_live(const sd_sftp_session *s, const sftp_chan *ch)
 {
-  sftp_wire *w = wire_new(s, NULL, PH_ORPHAN, 0);
-  size_t st;
-  if (!w) return;
-  st = sftp_pkt_begin(&s->obuf, SFTP_CLOSE, 1, w->id);
-  sd_wr_string(&s->obuf, h, hlen);
-  sftp_pkt_end(&s->obuf, st);
+  return ch->ss == SS_OPEN && ch->got_version && !s->lost_done && !s->lost_pending;
 }
 
-static size_t begin_ext(sd_sftp_session *s, sftp_wire *w, const char *name)
+static void send_orphan_close(sd_sftp_session *s, uint32_t chi, const uint8_t *h, uint32_t hlen)
 {
-  size_t st = sftp_pkt_begin(&s->obuf, SFTP_EXTENDED, 1, w->id);
-  sd_wr_cstring(&s->obuf, name);
+  sftp_chan *ch = &s->ch[chi < NCH ? chi : 0];
+  sftp_wire *w;
+  size_t st;
+  if (!chan_live(s, ch)) return;
+  w = wire_new(s, ch, NULL, PH_ORPHAN, 0);
+  if (!w) return;
+  st = sftp_pkt_begin(&ch->obuf, SFTP_CLOSE, 1, w->id);
+  sd_wr_string(&ch->obuf, h, hlen);
+  sftp_pkt_end(&ch->obuf, st);
+}
+
+static size_t begin_ext(sftp_chan *ch, sftp_wire *w, const char *name)
+{
+  size_t st = sftp_pkt_begin(&ch->obuf, SFTP_EXTENDED, 1, w->id);
+  sd_wr_cstring(&ch->obuf, name);
   return st;
 }
 
@@ -485,10 +533,10 @@ static const char *probe_path(const sftp_req *r)
   }
 }
 
-/* Emits the next wire of r. May complete r (unsupported extension, local failures). */
-static void emit(sd_sftp_session *s, sftp_req *r)
+/* Emits the next wire of r on ch. May complete r (unsupported extension, local failures). */
+static void emit(sd_sftp_session *s, sftp_chan *ch, sftp_req *r)
 {
-  sd_wr *o = &s->obuf;
+  sd_wr *o = &ch->obuf;
   sftp_wire *w;
   sd_sftp_file *f;
   size_t st;
@@ -507,10 +555,10 @@ static void emit(sd_sftp_session *s, sftp_req *r)
       off = r->off + r->emit_off;
       r->emit_off += len;
     }
-    w = wire_new(s, r, PH_MAIN, r->op == OP_READ ? EXP_DATA : 0);
+    w = wire_new(s, ch, r, PH_MAIN, r->op == OP_READ ? EXP_DATA : 0);
     if (!w) return;
     w->off = off; w->len = len; w->bytes = len;
-    s->inflight_bytes += len;
+    ch->inflight_bytes += len;
     st = sftp_pkt_begin(o, r->op == OP_READ ? SFTP_READ : SFTP_WRITE, 1, w->id);
     put_handle(o, r->f);
     sd_wr_u64(o, off);
@@ -523,55 +571,55 @@ static void emit(sd_sftp_session *s, sftp_req *r)
   r->emit_pending = 0;
   switch (r->phase) {
   case PH_FSTAT:
-    w = wire_new(s, r, PH_FSTAT, EXP_ATTRS); if (!w) return;
+    w = wire_new(s, ch, r, PH_FSTAT, EXP_ATTRS); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_FSTAT, 1, w->id);
     sd_wr_string(o, r->newf ? r->newf->handle : r->f->handle, r->newf ? r->newf->hlen : r->f->hlen);
     sftp_pkt_end(o, st);
     return;
   case PH_PR_LSTAT:
-    w = wire_new(s, r, PH_PR_LSTAT, EXP_ATTRS); if (!w) return;
+    w = wire_new(s, ch, r, PH_PR_LSTAT, EXP_ATTRS); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_LSTAT, 1, w->id);
     sd_wr_cstring(o, probe_path(r));
     sftp_pkt_end(o, st);
     return;
   case PH_PR_OPENDIR:
-    w = wire_new(s, r, PH_PR_OPENDIR, EXP_HANDLE); if (!w) return;
+    w = wire_new(s, ch, r, PH_PR_OPENDIR, EXP_HANDLE); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_OPENDIR, 1, w->id);
     sd_wr_cstring(o, r->p1);
     sftp_pkt_end(o, st);
     return;
   case PH_PR_READDIR:
-    w = wire_new(s, r, PH_PR_READDIR, EXP_NAME); if (!w) return;
+    w = wire_new(s, ch, r, PH_PR_READDIR, EXP_NAME); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_READDIR, 1, w->id);
     sd_wr_string(o, r->ph, r->phlen);
     sftp_pkt_end(o, st);
     return;
   case PH_PR_CLOSE:
-    w = wire_new(s, r, PH_PR_CLOSE, 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_PR_CLOSE, 0); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_CLOSE, 1, w->id);
     sd_wr_string(o, r->ph, r->phlen);
     sftp_pkt_end(o, st);
     r->ph_open = 0;
     return;
   case PH_PR_STATVFS:
-    w = wire_new(s, r, PH_PR_STATVFS, EXP_EXT); if (!w) return;
-    st = begin_ext(s, w, "statvfs@openssh.com");
+    w = wire_new(s, ch, r, PH_PR_STATVFS, EXP_EXT); if (!w) return;
+    st = begin_ext(ch, w, "statvfs@openssh.com");
     sd_wr_cstring(o, r->f->path);
     sftp_pkt_end(o, st);
     return;
   case PH_ST_LIMITS:
-    w = wire_new(s, r, PH_ST_LIMITS, EXP_EXT); if (!w) return;
-    st = begin_ext(s, w, "limits@openssh.com");
+    w = wire_new(s, ch, r, PH_ST_LIMITS, EXP_EXT); if (!w) return;
+    st = begin_ext(ch, w, "limits@openssh.com");
     sftp_pkt_end(o, st);
     return;
   case PH_ST_REALPATH:
-    w = wire_new(s, r, PH_ST_REALPATH, EXP_NAME); if (!w) return;
+    w = wire_new(s, ch, r, PH_ST_REALPATH, EXP_NAME); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_REALPATH, 1, w->id);
     sd_wr_cstring(o, ".");
     sftp_pkt_end(o, st);
     return;
   case PH_ST_STAT:
-    w = wire_new(s, r, PH_ST_STAT, EXP_ATTRS); if (!w) return;
+    w = wire_new(s, ch, r, PH_ST_STAT, EXP_ATTRS); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_STAT, 1, w->id);
     sd_wr_cstring(o, s->home ? s->home : ".");
     sftp_pkt_end(o, st);
@@ -581,7 +629,11 @@ static void emit(sd_sftp_session *s, sftp_req *r)
   }
 
   /* PH_MAIN, single-wire operations. Local checks first. */
-  if (r->f && r->op != OP_REOPEN && (r->f->stale || (r->f->wire_closed && r->op != OP_CLOSE))) {
+  if (r->f && r->op != OP_REOPEN && r->op != OP_OPEN && (r->f->stale || (r->f->wire_closed && r->op != OP_CLOSE))) {
+    finish(s, r, r->op == OP_CLOSE ? SD_OK : SD_E_STALE_HANDLE);
+    return;
+  }
+  if (r->f && r->op != OP_REOPEN && r->op != OP_OPEN && r->f->ch != ch->idx) {   /* handle of another channel */
     finish(s, r, r->op == OP_CLOSE ? SD_OK : SD_E_STALE_HANDLE);
     return;
   }
@@ -605,13 +657,17 @@ static void emit(sd_sftp_session *s, sftp_req *r)
     break;
   default: break;
   }
-  if (r->op == OP_COPY && (!r->f2 || r->f2->stale || r->f2->wire_closed)) { finish(s, r, SD_E_STALE_HANDLE); return; }
+  if (r->op == OP_COPY) {
+    sd_sftp_file *src = r->f2;
+    if (!src || src->stale || src->wire_closed) { finish(s, r, SD_E_STALE_HANDLE); return; }
+    if (!r->f || src->ch != r->f->ch) { finish(s, r, SD_E_INVALID_PARAM); return; }   /* same channel required */
+  }
 
   f = r->f;
   switch (r->op) {
   case OP_OPEN: case OP_REOPEN: case OP_OPENDIR:
     if (r->op == OP_REOPEN && !f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, EXP_HANDLE); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, EXP_HANDLE); if (!w) return;
     if (r->op == OP_OPENDIR || (f && r->op == OP_REOPEN && f->is_dir)) {
       st = sftp_pkt_begin(o, SFTP_OPENDIR, 1, w->id);
       sd_wr_cstring(o, f && r->op == OP_REOPEN ? f->path : r->p1);
@@ -626,95 +682,95 @@ static void emit(sd_sftp_session *s, sftp_req *r)
     break;
   case OP_CLOSE:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_CLOSE, 1, w->id); put_handle(o, f);
     f->wire_closed = 1;
     break;
   case OP_READDIR:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, EXP_NAME); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, EXP_NAME); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_READDIR, 1, w->id); put_handle(o, f);
     break;
   case OP_FSTAT:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, EXP_ATTRS); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, EXP_ATTRS); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_FSTAT, 1, w->id); put_handle(o, f);
     break;
   case OP_FSETSTAT:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_FSETSTAT, 1, w->id); put_handle(o, f); sftp_enc_attrs(o, &r->a);
     break;
   case OP_FSYNC:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
-    st = begin_ext(s, w, "fsync@openssh.com"); put_handle(o, f);
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
+    st = begin_ext(ch, w, "fsync@openssh.com"); put_handle(o, f);
     break;
   case OP_FSTATVFS:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, EXP_EXT); if (!w) return;
-    st = begin_ext(s, w, "fstatvfs@openssh.com"); put_handle(o, f);
+    w = wire_new(s, ch, r, PH_MAIN, EXP_EXT); if (!w) return;
+    st = begin_ext(ch, w, "fstatvfs@openssh.com"); put_handle(o, f);
     break;
   case OP_COPY:
     if (!f) { finish(s, r, SD_E_INTERNAL); return; }
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
-    st = begin_ext(s, w, "copy-data");
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
+    st = begin_ext(ch, w, "copy-data");
     put_handle(o, f); sd_wr_u64(o, r->off); sd_wr_u64(o, r->len64);
     put_handle(o, r->f2); sd_wr_u64(o, r->off2);
     break;
   case OP_STAT: case OP_LSTAT:
-    w = wire_new(s, r, PH_MAIN, EXP_ATTRS); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, EXP_ATTRS); if (!w) return;
     st = sftp_pkt_begin(o, r->op == OP_STAT ? SFTP_STAT : SFTP_LSTAT, 1, w->id); sd_wr_cstring(o, r->p1);
     break;
   case OP_SETSTAT:
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
-    if (r->u1) { st = begin_ext(s, w, "lsetstat@openssh.com"); }
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
+    if (r->u1) { st = begin_ext(ch, w, "lsetstat@openssh.com"); }
     else st = sftp_pkt_begin(o, SFTP_SETSTAT, 1, w->id);
     sd_wr_cstring(o, r->p1); sftp_enc_attrs(o, &r->a);
     break;
   case OP_MKDIR:
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_MKDIR, 1, w->id); sd_wr_cstring(o, r->p1);
     sftp_enc_attrs(o, r->has_attrs ? &r->a : NULL);
     break;
   case OP_RMDIR: case OP_REMOVE: case OP_READLINK: case OP_REALPATH:
-    w = wire_new(s, r, PH_MAIN, (r->op == OP_READLINK || r->op == OP_REALPATH) ? EXP_NAME : 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, (r->op == OP_READLINK || r->op == OP_REALPATH) ? EXP_NAME : 0); if (!w) return;
     st = sftp_pkt_begin(o, r->op == OP_RMDIR ? SFTP_RMDIR : r->op == OP_REMOVE ? SFTP_REMOVE :
                            r->op == OP_READLINK ? SFTP_READLINK : SFTP_REALPATH, 1, w->id);
     sd_wr_cstring(o, r->p1);
     break;
   case OP_RENAME:
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
-    if (r->u1 & SD_SFTP_RENAME_OVERWRITE) st = begin_ext(s, w, "posix-rename@openssh.com");
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
+    if (r->u1 & SD_SFTP_RENAME_OVERWRITE) st = begin_ext(ch, w, "posix-rename@openssh.com");
     else st = sftp_pkt_begin(o, SFTP_RENAME, 1, w->id);
     sd_wr_cstring(o, r->p1); sd_wr_cstring(o, r->p2);
     break;
   case OP_SYMLINK:   /* p1 = link path, p2 = target */
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
     st = sftp_pkt_begin(o, SFTP_SYMLINK, 1, w->id);
     if (s->symlink_openssh) { sd_wr_cstring(o, r->p2); sd_wr_cstring(o, r->p1); }
     else { sd_wr_cstring(o, r->p1); sd_wr_cstring(o, r->p2); }
     break;
   case OP_HARDLINK:
-    w = wire_new(s, r, PH_MAIN, 0); if (!w) return;
-    st = begin_ext(s, w, "hardlink@openssh.com"); sd_wr_cstring(o, r->p1); sd_wr_cstring(o, r->p2);
+    w = wire_new(s, ch, r, PH_MAIN, 0); if (!w) return;
+    st = begin_ext(ch, w, "hardlink@openssh.com"); sd_wr_cstring(o, r->p1); sd_wr_cstring(o, r->p2);
     break;
   case OP_EXPAND:
-    w = wire_new(s, r, PH_MAIN, EXP_NAME); if (!w) return;
-    st = begin_ext(s, w, "expand-path@openssh.com"); sd_wr_cstring(o, r->p1);
+    w = wire_new(s, ch, r, PH_MAIN, EXP_NAME); if (!w) return;
+    st = begin_ext(ch, w, "expand-path@openssh.com"); sd_wr_cstring(o, r->p1);
     break;
   case OP_HOME:
-    w = wire_new(s, r, PH_MAIN, EXP_NAME); if (!w) return;
-    st = begin_ext(s, w, "home-directory"); sd_wr_cstring(o, r->p1);
+    w = wire_new(s, ch, r, PH_MAIN, EXP_NAME); if (!w) return;
+    st = begin_ext(ch, w, "home-directory"); sd_wr_cstring(o, r->p1);
     break;
   case OP_STATVFS:
-    w = wire_new(s, r, PH_MAIN, EXP_EXT); if (!w) return;
-    st = begin_ext(s, w, "statvfs@openssh.com"); sd_wr_cstring(o, r->p1);
+    w = wire_new(s, ch, r, PH_MAIN, EXP_EXT); if (!w) return;
+    st = begin_ext(ch, w, "statvfs@openssh.com"); sd_wr_cstring(o, r->p1);
     break;
   case OP_NAMES: {
     uint32_t i;
-    w = wire_new(s, r, PH_MAIN, EXP_EXT); if (!w) return;
-    st = begin_ext(s, w, "users-groups-by-id@openssh.com");
+    w = wire_new(s, ch, r, PH_MAIN, EXP_EXT); if (!w) return;
+    st = begin_ext(ch, w, "users-groups-by-id@openssh.com");
     sd_wr_u32(o, r->nu * 4);
     for (i = 0; i < r->nu; i++) sd_wr_u32(o, r->ids[i]);
     sd_wr_u32(o, r->ng * 4);
@@ -730,34 +786,48 @@ static void emit(sd_sftp_session *s, sftp_req *r)
 
 /* ---- output ---- */
 
-static void flush(sd_sftp_session *s)
+static sd_err tp_write(sd_sftp_session *s, uint32_t idx, const uint8_t *p, size_t n, size_t *acc)
 {
-  if (!sd_wr_ok(&s->obuf)) { lose(s, SD_E_NO_MEMORY); return; }
-  while (s->tp_open && !s->lost_pending && s->osent < s->obuf.len) {
+  if (idx == 0 || !s->tp.write_stream) return s->tp.write(s->tp.ctx, p, n, acc);
+  return s->tp.write_stream(s->tp.ctx, idx, p, n, acc);
+}
+
+static void tp_consumed(sd_sftp_session *s, uint32_t idx, size_t n)
+{
+  if (idx == 0 || !s->tp.consumed_stream) s->tp.consumed(s->tp.ctx, n);
+  else s->tp.consumed_stream(s->tp.ctx, idx, n);
+}
+
+static void flush(sd_sftp_session *s, sftp_chan *ch)
+{
+  if (!sd_wr_ok(&ch->obuf)) { lose(s, SD_E_NO_MEMORY); return; }
+  while (ch->ss == SS_OPEN && !s->lost_pending && !s->lost_done && ch->osent < ch->obuf.len) {
     size_t acc = 0;
-    sd_err e = s->tp.write(s->tp.ctx, s->obuf.p + s->osent, s->obuf.len - s->osent, &acc);
+    sd_err e = tp_write(s, ch->idx, ch->obuf.p + ch->osent, ch->obuf.len - ch->osent, &acc);
     if (e != SD_OK) { lose(s, e); return; }
-    if (acc > s->obuf.len - s->osent) acc = s->obuf.len - s->osent;
-    s->osent += acc;
-    InterlockedExchangeAdd64(&s->tx_total, (LONG64)acc);
+    if (acc > ch->obuf.len - ch->osent) acc = ch->obuf.len - ch->osent;
+    ch->osent += acc;
+    sd_atomic_add64(&s->tx_total, (LONG64)acc);
     if (acc == 0) break;
   }
-  if (s->osent == s->obuf.len) { sd_wr_reset(&s->obuf); s->osent = 0; }
-  else if (s->osent >= OBUF_HIGH) {
-    memmove(s->obuf.p, s->obuf.p + s->osent, s->obuf.len - s->osent);
-    s->obuf.len -= s->osent;
-    s->osent = 0;
+  if (ch->osent == ch->obuf.len) { sd_wr_reset(&ch->obuf); ch->osent = 0; }
+  else if (ch->osent >= OBUF_HIGH) {
+    memmove(ch->obuf.p, ch->obuf.p + ch->osent, ch->obuf.len - ch->osent);
+    ch->obuf.len -= ch->osent;
+    ch->osent = 0;
   }
 }
 
-static void schedule(sd_sftp_session *s)
+/* Serves the class queues `cls[0..ncls)` on ch, the first class first at every turn (C17). */
+static void schedule_chan(sd_sftp_session *s, sftp_chan *ch, const int *cls, int ncls)
 {
   for (;;) {
-    int c, emitted = 0;
-    if (!s->tp_open || !s->got_version || s->lost_pending || s->lost_done) break;
-    if (s->obuf.len - s->osent >= OBUF_HIGH) break;
-    if (s->inflight >= s->opt.max_inflight_reqs) break;
-    for (c = 0; c < 2 && !emitted; c++) {
+    int i, emitted = 0;
+    if (!chan_live(s, ch)) break;
+    if (ch->obuf.len - ch->osent >= OBUF_HIGH) break;
+    if (ch->inflight >= s->opt.max_inflight_reqs) break;
+    for (i = 0; i < ncls && !emitted; i++) {
+      int c = cls[i];
       sftp_req *r;
       for (;;) {     /* drop finished heads */
         r = s->qh[c];
@@ -769,22 +839,31 @@ static void schedule(sd_sftp_session *s)
       if (!r) continue;
       {
         uint32_t b = next_chunk_bytes(s, r);
-        if (b && s->inflight_bytes > 0 && s->inflight_bytes + b > s->opt.max_inflight_bytes) continue;
+        if (b && ch->inflight_bytes > 0 && ch->inflight_bytes + b > s->opt.max_inflight_bytes) continue;
       }
-      emit(s, r);
+      emit(s, ch, r);
       emitted = 1;
       if (s->qh[c] == r && !req_has_more(r)) { q_pop(s, c); req_maybe_free(s, r); }
     }
     if (!emitted) break;
   }
-  flush(s);
+  flush(s, ch);
 }
 
-/* ---- connection loss, close ---- */
+static void schedule(sd_sftp_session *s)
+{
+  static const int k_meta_bulk[2] = { Q_META, Q_BULK }, k_bulk[1] = { Q_BULK };
+  if (s->lost_pending || s->lost_done) return;
+  /* ch[0] serves the bulk queue too unless a second channel is in use */
+  schedule_chan(s, &s->ch[0], k_meta_bulk, s->nchan == 2 ? 1 : 2);
+  if (s->nchan == 2) schedule_chan(s, &s->ch[1], k_bulk, 1);
+}
+
+/* ---- connection loss, close, reconnect ---- */
 
 static void detach_all(sd_sftp_session *s)
 {
-  uint32_t b;
+  uint32_t b, i;
   int c;
   for (b = 0; b < WIRE_BUCKETS; b++) {
     sftp_wire *w = s->wires[b];
@@ -797,8 +876,15 @@ static void detach_all(sd_sftp_session *s)
       w = n;
     }
   }
-  s->inflight = 0;
-  s->inflight_bytes = 0;
+  for (i = 0; i < NCH; i++) {
+    sftp_chan *ch = &s->ch[i];
+    ch->inflight = 0;
+    ch->inflight_bytes = 0;
+    ch->got_version = 0;
+    ch->ilen = 0;
+    sd_wr_reset(&ch->obuf);
+    ch->osent = 0;
+  }
   for (c = 0; c < 2; c++) {
     sftp_req *r;
     while ((r = q_pop(s, c)) != NULL) {
@@ -807,11 +893,46 @@ static void detach_all(sd_sftp_session *s)
   }
 }
 
+static void wait_push(sd_sftp_session *s, sftp_req *r)
+{
+  r->qnext = s->wait_head;
+  s->wait_head = r;
+  r->waiting = 1;
+}
+
+static void remove_waiting(sd_sftp_session *s, sftp_req *r)
+{
+  sftp_req **pp;
+  if (!r->waiting) return;
+  for (pp = &s->wait_head; *pp; pp = &(*pp)->qnext)
+    if (*pp == r) { *pp = r->qnext; r->qnext = NULL; break; }
+  r->waiting = 0;
+}
+
+/* Every live request (WAIT_READY ones included) completes with e. */
 static void fail_live(sd_sftp_session *s, sd_err e)
 {
   sftp_req *r;
-  while ((r = s->wait_head) != NULL) { s->wait_head = r->qnext; r->qnext = NULL; }
+  while ((r = s->wait_head) != NULL) { s->wait_head = r->qnext; r->qnext = NULL; r->waiting = 0; }
   while ((r = s->live_head) != NULL) finish(s, r, e);
+}
+
+/* Connection loss while READY (01 §10.4 step 2): everything in flight or queued completes with
+   SD_E_DISCONNECTED (maybe_executed when it was sent). Path operations submitted with WAIT_READY
+   that never went out keep waiting for the next READY within their deadline. */
+static void fail_on_loss(sd_sftp_session *s)
+{
+  sftp_req *r = s->live_head, *n;
+  for (; r; r = n) {
+    n = r->lnext;
+    if (r->waiting) continue;
+    if (!r->sent && (r->flags & SD_SFTP_REQ_WAIT_READY) && !r->f && !r->done && r->op != OP_STARTUP) {
+      r->emit_pending = 0;
+      wait_push(s, r);
+      continue;
+    }
+    finish(s, r, SD_E_DISCONNECTED);
+  }
 }
 
 static void mark_files_stale(sd_sftp_session *s)
@@ -822,26 +943,122 @@ static void mark_files_stale(sd_sftp_session *s)
   sd_mutex_unlock(&s->lock);
 }
 
+static int streams_quiet(const sd_sftp_session *s)
+{
+  uint32_t i;
+  for (i = 0; i < NCH; i++) if (s->ch[i].ss != SS_NONE) return 0;
+  return 1;
+}
+
+static int any_stream_open(const sd_sftp_session *s)
+{
+  uint32_t i;
+  for (i = 0; i < NCH; i++) if (s->ch[i].ss == SS_OPEN) return 1;
+  return 0;
+}
+
+/* Once per attempt, also when no stream is open any more: the transport may still hold the
+   connection (e.g. sd_ssh connected but the subsystem channel was refused). */
+static void close_transport(sd_sftp_session *s)
+{
+  if (s->tp_close_called || !s->tp_opened) return;
+  s->tp_close_called = 1;
+  s->tp.close(s->tp.ctx);
+}
+
+/* Errors that no retry can fix (01 §8, §10.6): host key problems, refused legacy algorithms, ... */
+static int err_permanent(sd_err e)
+{
+  switch (e) {
+  case SD_E_HOSTKEY_REJECTED: case SD_E_HOSTKEY_MISMATCH: case SD_E_HOSTKEY_REVOKED:
+  case SD_E_HOSTKEY_TYPE_UNAVAILABLE: case SD_E_LEGACY_REJECTED: case SD_E_KEX_FAILED:
+  case SD_E_UNSUPPORTED: case SD_E_INVALID_PARAM: case SD_E_KEY_FORMAT: case SD_E_KEY_UNSUPPORTED:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Errors that need the user (a prompt was cancelled, the credentials no longer work). */
+static int err_needs_user(sd_err e)
+{
+  return e == SD_E_AUTH_FAILED || e == SD_E_AUTH_REQUIRED || e == SD_E_CANCELLED || e == SD_E_BAD_PASSPHRASE ||
+         e == SD_E_KEY_PASSPHRASE_REQUIRED;
+}
+
+static uint32_t rng_next(sd_sftp_session *s)
+{
+  uint32_t x = s->rng ? s->rng : (uint32_t)(sd_tick_ms() ^ (uintptr_t)s ^ 0x9E3779B9u);
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  s->rng = x ? x : 1;
+  return s->rng;
+}
+
+/* Backoff before attempt n (0-based): initial * 2^n, capped at max, +/-20% jitter (01 §10.4). */
+static uint32_t backoff_ms(sd_sftp_session *s, uint32_t n)
+{
+  uint64_t d = s->opt.reconnect.initial_delay_ms, cap = s->opt.reconnect.max_delay_ms;
+  uint32_t i;
+  if (cap < d) cap = d;
+  for (i = 0; i < n && d < cap; i++) d *= 2;
+  if (d > cap) d = cap;
+  if (d) d = d * (80u + rng_next(s) % 41u) / 100u;
+  return (uint32_t)d;
+}
+
+static void schedule_retry(sd_sftp_session *s, sd_err why, uint32_t delay)
+{
+  s->retry_at = sd_tick_ms() + delay;
+  s->attempts++;
+  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "reconnect attempt %u in %u ms (%s)", s->attempts, delay, sd_err_name(why));
+  set_state_ex(s, SD_SFTP_ST_RECONNECT_WAIT, why, delay, s->attempts);
+}
+
+/* The reconnect loop stopped: waiting requests fail, the state is final until reconnect_now(). */
+static void stop_loop(sd_sftp_session *s, sd_sftp_state st, sd_err why)
+{
+  fail_live(s, SD_E_DISCONNECTED);
+  mark_files_stale(s);
+  s->in_attempt = 0;
+  set_state(s, st, why);
+}
+
+/* After a connection (or a connection attempt) is gone: retry with backoff, or stop. */
+static void after_loss(sd_sftp_session *s, sd_err why)
+{
+  const sd_sftp_reconnect_policy *rp = &s->opt.reconnect;
+  int loop = rp->enabled && (s->tp.caps & SD_SFTP_TP_REOPEN) && (s->ever_ready || s->user_retry) && !s->retry_stopped;
+  s->in_attempt = 0;
+  if (s->close_requested) return;
+  if (!loop || err_permanent(why)) { stop_loop(s, SD_SFTP_ST_FAILED, why); return; }
+  if (err_needs_user(why)) { stop_loop(s, SD_SFTP_ST_AUTH_REQUIRED, why); return; }
+  if (rp->max_attempts && s->attempts >= rp->max_attempts) {
+    sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "reconnect: giving up after %u attempts", s->attempts);
+    stop_loop(s, SD_SFTP_ST_FAILED, why);
+    return;
+  }
+  schedule_retry(s, why, backoff_ms(s, s->attempts));
+}
+
 static void do_lost(sd_sftp_session *s, sd_err why)
 {
   sd_sftp_state prev = (sd_sftp_state)s->state;
   sftp_req *st = s->startup;
   s->lost_done = 1;
   s->lost_pending = 0;
-  if (s->tp_open && !s->tp_close_called) { s->tp_close_called = 1; s->tp.close(s->tp.ctx); }
+  close_transport(s);
   s->startup = NULL;
+  s->startup_done = 0;
   detach_all(s);
   if (st) req_free(st);
-  sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "session lost: %s", sd_err_name(why));
+  sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "session lost: %s (generation %u)", sd_err_name(why), s->generation);
   if (prev == SD_SFTP_ST_READY) {
+    /* 01 §10.4 ordering: DISCONNECTED, in-flight completions, stale handles, then RECONNECT_WAIT */
     set_state(s, SD_SFTP_ST_DISCONNECTED, why);
-    fail_live(s, SD_E_DISCONNECTED);
+    fail_on_loss(s);
     mark_files_stale(s);
   }
-  /* M0: no reconnect loop yet; the session ends in FAILED. */
-  fail_live(s, SD_E_DISCONNECTED);
-  mark_files_stale(s);
-  set_state(s, SD_SFTP_ST_FAILED, why);
+  after_loss(s, why);
 }
 
 static void finalize(sd_sftp_session *s)
@@ -860,7 +1077,7 @@ static void finalize(sd_sftp_session *s)
       sftp_req *r = (sftp_req *)it->ptr;
       live_add(s, r);
       finish(s, r, SD_E_SHUTDOWN);
-    } else if (it->type == IT_CANCEL) {
+    } else if (it->type == IT_CANCEL || it->type == IT_RECONNECT || it->type == IT_STOP) {
       sd_free(it);
     } else if (it->type == IT_RELEASE) {
       file_unlink_free(s, (sd_sftp_file *)it->ptr);
@@ -877,23 +1094,24 @@ static void do_close(sd_sftp_session *s)
   s->startup = NULL;
   s->lost_done = 1;
   s->lost_pending = 0;
+  s->in_attempt = 0;
   detach_all(s);
   if (st) req_free(st);
   fail_live(s, SD_E_SHUTDOWN);
   mark_files_stale(s);
-  if (s->tp_open) {
-    if (!s->tp_close_called) { s->tp_close_called = 1; s->tp.close(s->tp.ctx); }
-    /* finalize on on_closed */
-  } else {
-    finalize(s);
-  }
+  close_transport(s);
+  if (!any_stream_open(s)) finalize(s);   /* else: once every open stream reported on_closed */
 }
+
+static void maybe_ready(sd_sftp_session *s);
 
 static void io_epilogue(sd_sftp_session *s)
 {
   int guard;
+  if (s->finalized) return;
   for (guard = 0; guard < 4; guard++) {
     if (s->lost_pending) do_lost(s, s->lost_err);
+    maybe_ready(s);
     schedule(s);
     if (!s->lost_pending) break;
   }
@@ -917,19 +1135,28 @@ static void go_ready(sd_sftp_session *s)
       (s->home && sftp_is_win_drive_path(s->home, strlen(s->home))))
     quirks |= SD_SFTP_QUIRK_WIN_DRIVE_PATHS;
 
+  s->nchan = s->ch[1].got_version && s->ch[1].ss == SS_OPEN ? 2u : 1u;
+  s->in_attempt = 0;
+  s->ever_ready = 1;
+  s->user_retry = 0;
+  s->retry_stopped = 0;
+  s->attempts = 0;
+  /* only this thread writes gen_*0: adding the difference is an atomic store that works on x86 */
+  sd_atomic_add64(&s->gen_rx0, sd_atomic_load64(&s->rx_total) - sd_atomic_load64(&s->gen_rx0));
+  sd_atomic_add64(&s->gen_tx0, sd_atomic_load64(&s->tx_total) - sd_atomic_load64(&s->gen_tx0));
   sd_mutex_lock(&s->lock);
   s->generation++;
   s->info.generation = s->generation;
   s->info.version = 3;
-  s->info.channels = 1;
+  s->info.channels = s->nchan;
   s->info.connections = 1;
   s->info.quirks = quirks;
   s->info.home = s->home ? s->home : "";
   s->info.ssh = neg;
   sd_mutex_unlock(&s->lock);
 
-  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "ready: ext=0x%x max_read=%llu max_write=%llu quirks=0x%x",
-         s->info.ext, (unsigned long long)s->info.limits.max_read,
+  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "ready: generation %u channels=%u ext=0x%x max_read=%llu max_write=%llu quirks=0x%x",
+         s->generation, s->nchan, s->info.ext, (unsigned long long)s->info.limits.max_read,
          (unsigned long long)s->info.limits.max_write, quirks);
   SD_LOGD(SFTP_COMP, "home=%s", s->info.home);     /* paths at debug level only (TM-R31) */
   set_state(s, SD_SFTP_ST_READY, SD_OK);
@@ -938,6 +1165,7 @@ static void go_ready(sd_sftp_session *s)
     e.type = SD_SFTP_EV_READY_INFO;
     e.state = SD_SFTP_ST_READY;
     e.info = &s->info;
+    e.generation = s->generation;
     s->ev(s->ev_ctx, &e);
   }
   /* WAIT_READY requests in submission order (the list is LIFO). */
@@ -947,10 +1175,26 @@ static void go_ready(sd_sftp_session *s)
     while ((r = rev) != NULL) {
       rev = r->qnext;
       r->qnext = NULL;
+      r->waiting = 0;
       if (r->done) { req_maybe_free(s, r); continue; }
       queue_phase(s, r, PH_MAIN, 0);
     }
   }
+}
+
+/* READY once the meta channel finished its startup and the bulk channel is up or settled as
+   unavailable (01 §11 step 6). */
+static void maybe_ready(sd_sftp_session *s)
+{
+  if (!s->in_attempt || s->lost_done || s->lost_pending || s->close_requested) return;
+  if (s->startup_done && s->bulk_settled) go_ready(s);
+}
+
+static void degrade_bulk(sd_sftp_session *s, sd_err why)
+{
+  if (s->bulk_settled) return;
+  s->bulk_settled = 1;
+  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "bulk channel unavailable (%s): using one SFTP channel", sd_err_name(why));
 }
 
 static void startup_fail(sd_sftp_session *s, sd_err e)
@@ -964,6 +1208,8 @@ static int handle_version(sd_sftp_session *s, const uint8_t *p, size_t n)
   size_t total = 0, i;
   char *str;
   sftp_req *st;
+  sd_sftp_ext_entry *old_list, *new_list;
+  char *old_strings, *new_strings;
   if (!vi) { lose(s, SD_E_NO_MEMORY); return -1; }
   if (sftp_parse_version(p, n, vi) != 0) { sd_free(vi); lose(s, SD_E_PROTOCOL); return -1; }
   if (vi->version != 3) {
@@ -973,24 +1219,31 @@ static int handle_version(sd_sftp_session *s, const uint8_t *p, size_t n)
     return -1;
   }
   for (i = 0; i < vi->ext_count; i++) total += vi->names[i].n + vi->versions[i].n + 2;
-  s->ext_list = (sd_sftp_ext_entry *)sd_calloc(vi->ext_count ? vi->ext_count : 1, sizeof(sd_sftp_ext_entry));
-  s->ext_strings = (char *)sd_alloc(total + 1);
-  if (!s->ext_list || !s->ext_strings) { sd_free(vi); lose(s, SD_E_NO_MEMORY); return -1; }
-  str = s->ext_strings;
+  new_list = (sd_sftp_ext_entry *)sd_calloc(vi->ext_count ? vi->ext_count : 1, sizeof(sd_sftp_ext_entry));
+  new_strings = (char *)sd_alloc(total + 1);
+  if (!new_list || !new_strings) { sd_free(new_list); sd_free(new_strings); sd_free(vi); lose(s, SD_E_NO_MEMORY); return -1; }
+  str = new_strings;
   for (i = 0; i < vi->ext_count; i++) {
-    s->ext_list[i].name = str;
+    new_list[i].name = str;
     memcpy(str, vi->names[i].p, vi->names[i].n); str += vi->names[i].n; *str++ = 0;
-    s->ext_list[i].version = str;
+    new_list[i].version = str;
     memcpy(str, vi->versions[i].p, vi->versions[i].n); str += vi->versions[i].n; *str++ = 0;
   }
+  /* the server may differ after a reconnect (01 §10.4): every generation re-reads everything */
   sd_mutex_lock(&s->lock);
+  old_list = s->ext_list; old_strings = s->ext_strings;
+  s->ext_list = new_list; s->ext_strings = new_strings;
   s->info.ext = vi->ext;
   s->info.ext_list = s->ext_list;
   s->info.ext_count = vi->ext_count;
+  memset(s->raw_limits, 0, sizeof(s->raw_limits));
   sftp_effective_limits(s->raw_limits, &s->info.limits);
+  memset(&s->info.identity, 0, sizeof(s->info.identity));
   sd_mutex_unlock(&s->lock);
+  sd_free(old_list);
+  sd_free(old_strings);
   s->symlink_openssh = vi->any_openssh;
-  s->got_version = 1;
+  s->ch[0].got_version = 1;
   sd_free(vi);
 
   st = (sftp_req *)sd_calloc(1, sizeof(*st));
@@ -1043,7 +1296,7 @@ static void startup_reply(sd_sftp_session *s, sftp_req *st, sftp_wire *w, uint8_
     s->startup = NULL;
     st->done = 1;
     req_maybe_free(s, st);
-    go_ready(s);
+    s->startup_done = 1;          /* READY in maybe_ready(), once the bulk channel settled */
   }
 }
 
@@ -1106,15 +1359,17 @@ static void status_result(sd_sftp_session *s, sftp_req *r, const sftp_status *st
   finish(s, r, e);
 }
 
-static void open_handle_reply(sd_sftp_session *s, sftp_req *r, sd_rd *rd)
+static void open_handle_reply(sd_sftp_session *s, sftp_req *r, const sftp_wire *w, sd_rd *rd)
 {
   sd_span h = sd_rd_string(rd, SFTP_MAX_HANDLE);
   if (!sd_rd_done(rd) || h.n == 0) { lose(s, SD_E_PROTOCOL); return; }
-  if (r->done) { send_orphan_close(s, h.p, (uint32_t)h.n); return; }
+  if (r->done) { send_orphan_close(s, w->ch, h.p, (uint32_t)h.n); return; }
   if (r->op == OP_REOPEN) {
     memcpy(r->f->handle, h.p, h.n);
     r->f->hlen = (uint32_t)h.n;
     r->f->wire_closed = 0;
+    r->f->written = 0;
+    r->f->ch = w->ch;
     r->f->generation = s->generation;
     InterlockedExchange(&r->f->stale, 0);
     if (r->f->is_dir) { r->c.u.open.file = r->f; finish(s, r, SD_OK); return; }
@@ -1122,8 +1377,9 @@ static void open_handle_reply(sd_sftp_session *s, sftp_req *r, sd_rd *rd)
     return;
   }
   r->newf = file_new(s, r->p1, r->op == OP_OPENDIR ? 0 : r->u1, r->op == OP_OPENDIR,
-                     r->op == OP_OPENDIR || (r->flags & SD_SFTP_REQ_CLASS_META), h.p, (uint32_t)h.n);
-  if (!r->newf) { send_orphan_close(s, h.p, (uint32_t)h.n); finish(s, r, SD_E_NO_MEMORY); return; }
+                     r->op == OP_OPENDIR || (r->flags & SD_SFTP_REQ_CLASS_META) || (r->f2 && r->f2->meta),
+                     w->ch, h.p, (uint32_t)h.n);
+  if (!r->newf) { send_orphan_close(s, w->ch, h.p, (uint32_t)h.n); finish(s, r, SD_E_NO_MEMORY); return; }
   if (r->op == OP_OPENDIR) {
     r->c.u.open.file = r->newf;
     r->newf = NULL;
@@ -1341,7 +1597,7 @@ static void probe_reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t t
   if (r->done) {
     if (type == SFTP_HANDLE && w->phase == PH_PR_OPENDIR) {
       sd_span h = sd_rd_string(rd, SFTP_MAX_HANDLE);
-      if (sd_rd_ok(rd) && h.n) send_orphan_close(s, h.p, (uint32_t)h.n);
+      if (sd_rd_ok(rd) && h.n) send_orphan_close(s, w->ch, h.p, (uint32_t)h.n);
     }
     return;
   }
@@ -1376,6 +1632,7 @@ static void probe_reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t t
       memcpy(r->ph, h.p, h.n);
       r->phlen = (uint32_t)h.n;
       r->ph_open = 1;
+      r->ph_ch = w->ch;
       queue_phase(s, r, PH_PR_READDIR, 1);
       return;
     }
@@ -1455,7 +1712,7 @@ static void reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, s
 
   switch (type) {
   case SFTP_HANDLE:
-    open_handle_reply(s, r, rd);
+    open_handle_reply(s, r, w, rd);
     return;
   case SFTP_ATTRS:
     if (r->done) return;
@@ -1499,7 +1756,19 @@ static void rtt_sample(sd_sftp_session *s, uint64_t sent)
   }
 }
 
-static void dispatch(sd_sftp_session *s, const uint8_t *p, size_t n)
+/* VERSION on the bulk channel: only the protocol version matters (extensions and limits come from
+   the meta channel; both channels reach the same server). */
+static void bulk_version(sd_sftp_session *s, sftp_chan *ch, const uint8_t *p, size_t n)
+{
+  sftp_version_info *vi = (sftp_version_info *)sd_alloc(sizeof(*vi));
+  if (!vi) { lose(s, SD_E_NO_MEMORY); return; }
+  if (sftp_parse_version(p, n, vi) != 0 || vi->version != 3) { sd_free(vi); lose(s, SD_E_PROTOCOL); return; }
+  sd_free(vi);
+  ch->got_version = 1;
+  s->bulk_settled = 1;
+}
+
+static void dispatch(sd_sftp_session *s, sftp_chan *ch, const uint8_t *p, size_t n)
 {
   uint8_t type = p[0];
   uint32_t id;
@@ -1507,15 +1776,22 @@ static void dispatch(sd_sftp_session *s, const uint8_t *p, size_t n)
   sftp_req *r;
   sd_rd rd;
 
-  if (!s->got_version) {
+  if (!ch->got_version) {
     if (type != SFTP_VERSION) { lose(s, SD_E_PROTOCOL); return; }
-    handle_version(s, p + 1, n - 1);
+    if (ch->idx == 0) handle_version(s, p + 1, n - 1);
+    else bulk_version(s, ch, p + 1, n - 1);
     return;
   }
   sd_rd_init(&rd, p + 1, n - 1);
   id = sd_rd_u32(&rd);
   if (!sd_rd_ok(&rd)) { lose(s, SD_E_PROTOCOL); return; }
   w = wire_take(s, id);
+  if (w && w->ch != ch->idx) {
+    sd_log(SD_LOG_ERROR, SFTP_COMP, NULL, "reply id %u on channel %u, sent on %u", id, ch->idx, w->ch);
+    sd_free(w);
+    lose(s, SD_E_PROTOCOL);
+    return;
+  }
   if (!w) {
     sd_log(SD_LOG_ERROR, SFTP_COMP, NULL, "reply with unknown id %u (type %u)", id, (unsigned)type);
     lose(s, SD_E_PROTOCOL);
@@ -1533,50 +1809,74 @@ static void dispatch(sd_sftp_session *s, const uint8_t *p, size_t n)
   if (r->done) {                     /* late reply (cancelled / timed out): discard, close stray handles */
     if (type == SFTP_HANDLE && (w->phase == PH_MAIN || w->phase == PH_PR_OPENDIR)) {
       sd_span h = sd_rd_string(&rd, SFTP_MAX_HANDLE);
-      if (sd_rd_ok(&rd) && h.n) send_orphan_close(s, h.p, (uint32_t)h.n);
+      if (sd_rd_ok(&rd) && h.n) send_orphan_close(s, w->ch, h.p, (uint32_t)h.n);
     }
     sd_free(w);
     req_maybe_free(s, r);
     return;
   }
-  if (w->phase != PH_MAIN || (r->op != OP_READ && r->op != OP_WRITE)) rtt_sample(s, w->sent_ms);
+  if (w->ch == 0 && (w->phase != PH_MAIN || (r->op != OP_READ && r->op != OP_WRITE))) rtt_sample(s, w->sent_ms);
   reply(s, r, w, type, &rd);         /* may complete and free r */
   sd_free(w);
 }
 
-/* ---- transport sink (I/O thread) ---- */
+/* ---- transport sink (I/O thread; ctx is the sftp_chan) ---- */
 
-static void sink_on_open(void *ctx, sd_err err)
+static void open_bulk(sd_sftp_session *s);
+
+static void stream_gone(sd_sftp_session *s)
 {
-  sd_sftp_session *s = (sd_sftp_session *)ctx;
-  size_t st;
-  if (s->lost_done) return;
-  if (err != SD_OK) { s->tp_open = 0; lose(s, err); io_epilogue(s); return; }
-  s->tp_open = 1;
-  st = sftp_pkt_begin(&s->obuf, SFTP_INIT, 0, 0);
-  sd_wr_u32(&s->obuf, 3);
-  sftp_pkt_end(&s->obuf, st);
-  flush(s);
+  if (s->close_requested && !any_stream_open(s)) { do_close(s); return; }   /* finalizes */
   io_epilogue(s);
 }
 
-static int ibuf_reserve(sd_sftp_session *s, size_t need)
+static void sink_on_open(void *ctx, sd_err err)
 {
-  if (need <= s->icap) return 1;
+  sftp_chan *ch = (sftp_chan *)ctx;
+  sd_sftp_session *s = ch->s;
+  size_t st;
+  if (s->finalized || ch->ss != SS_OPENING) return;
+  if (err != SD_OK) {
+    ch->ss = SS_NONE;
+    if (ch->idx == 1) degrade_bulk(s, err);     /* e.g. MaxSessions 1: continue with one channel */
+    else if (!s->lost_done) lose(s, err);
+    stream_gone(s);
+    return;
+  }
+  ch->ss = SS_OPEN;
+  if (s->lost_done || s->close_requested) {   /* the connection is already being torn down */
+    s->tp_close_called = 0;
+    close_transport(s);
+    return;
+  }
+  st = sftp_pkt_begin(&ch->obuf, SFTP_INIT, 0, 0);
+  sd_wr_u32(&ch->obuf, 3);
+  sftp_pkt_end(&ch->obuf, st);
+  flush(s, ch);
+  if (ch->idx == 0) {
+    s->startup_deadline = sd_tick_ms() + s->opt.default_timeout_ms;
+    open_bulk(s);
+  }
+  io_epilogue(s);
+}
+
+static int ibuf_reserve(sftp_chan *ch, size_t need)
+{
+  if (need <= ch->icap) return 1;
   {
-    size_t cap = s->icap ? s->icap : 65536;
+    size_t cap = ch->icap ? ch->icap : 65536;
     uint8_t *p;
     while (cap < need) cap *= 2;
-    p = (uint8_t *)sd_realloc(s->ibuf, cap);
+    p = (uint8_t *)sd_realloc(ch->ibuf, cap);
     if (!p) return 0;
-    s->ibuf = p;
-    s->icap = cap;
+    ch->ibuf = p;
+    ch->icap = cap;
   }
   return 1;
 }
 
 /* Parses complete packets from p[0..n); returns bytes consumed or SIZE_MAX on a framing error. */
-static size_t parse_packets(sd_sftp_session *s, const uint8_t *p, size_t n)
+static size_t parse_packets(sd_sftp_session *s, sftp_chan *ch, const uint8_t *p, size_t n)
 {
   size_t off = 0;
   while (n - off >= 4 && !s->lost_pending && !s->lost_done) {
@@ -1586,7 +1886,7 @@ static size_t parse_packets(sd_sftp_session *s, const uint8_t *p, size_t n)
       return SIZE_MAX;
     }
     if (n - off - 4 < len) break;
-    dispatch(s, p + off + 4, len);
+    dispatch(s, ch, p + off + 4, len);
     off += 4 + (size_t)len;
   }
   return off;
@@ -1594,60 +1894,108 @@ static size_t parse_packets(sd_sftp_session *s, const uint8_t *p, size_t n)
 
 static void sink_on_data(void *ctx, const uint8_t *p, size_t n)
 {
-  sd_sftp_session *s = (sd_sftp_session *)ctx;
-  InterlockedExchangeAdd64(&s->rx_total, (LONG64)n);
-  if (!s->lost_done && !s->lost_pending) {
-    if (s->ilen == 0) {
-      size_t used = parse_packets(s, p, n);
+  sftp_chan *ch = (sftp_chan *)ctx;
+  sd_sftp_session *s = ch->s;
+  if (s->finalized) return;
+  sd_atomic_add64(&s->rx_total, (LONG64)n);
+  if (!s->lost_done && !s->lost_pending && ch->ss == SS_OPEN) {
+    if (ch->ilen == 0) {
+      size_t used = parse_packets(s, ch, p, n);
       if (used == SIZE_MAX) lose(s, SD_E_PROTOCOL);
-      else if (used < n && !s->lost_pending) {
-        if (!ibuf_reserve(s, n - used)) lose(s, SD_E_NO_MEMORY);
-        else { memcpy(s->ibuf, p + used, n - used); s->ilen = n - used; }
+      else if (used < n && !s->lost_pending && !s->lost_done) {
+        if (!ibuf_reserve(ch, n - used)) lose(s, SD_E_NO_MEMORY);
+        else { memcpy(ch->ibuf, p + used, n - used); ch->ilen = n - used; }
       }
     } else {
-      if (!ibuf_reserve(s, s->ilen + n)) lose(s, SD_E_NO_MEMORY);
+      if (!ibuf_reserve(ch, ch->ilen + n)) lose(s, SD_E_NO_MEMORY);
       else {
         size_t used;
-        memcpy(s->ibuf + s->ilen, p, n);
-        s->ilen += n;
-        used = parse_packets(s, s->ibuf, s->ilen);
+        memcpy(ch->ibuf + ch->ilen, p, n);
+        ch->ilen += n;
+        used = parse_packets(s, ch, ch->ibuf, ch->ilen);
         if (used == SIZE_MAX) lose(s, SD_E_PROTOCOL);
-        else if (used) { memmove(s->ibuf, s->ibuf + used, s->ilen - used); s->ilen -= used; }
+        else if (used && !s->lost_done) { memmove(ch->ibuf, ch->ibuf + used, ch->ilen - used); ch->ilen -= used; }
       }
     }
   }
-  s->tp.consumed(s->tp.ctx, n);
+  if (ch->ss == SS_OPEN) tp_consumed(s, ch->idx, n);
   io_epilogue(s);
 }
 
 static void sink_on_writable(void *ctx)
 {
-  sd_sftp_session *s = (sd_sftp_session *)ctx;
-  flush(s);
+  sftp_chan *ch = (sftp_chan *)ctx;
+  sd_sftp_session *s = ch->s;
+  if (s->finalized) return;
+  flush(s, ch);
   io_epilogue(s);
+}
+
+/* A stream ended. The bulk channel ending before its VERSION only degrades to one channel. */
+static void stream_lost(sd_sftp_session *s, sftp_chan *ch, sd_err why)
+{
+  if (s->lost_done) return;
+  if (ch->idx == 1 && !ch->got_version && s->in_attempt && !s->bulk_settled) { degrade_bulk(s, why); return; }
+  lose(s, why);
 }
 
 static void sink_on_eof(void *ctx)
 {
-  sd_sftp_session *s = (sd_sftp_session *)ctx;
-  lose(s, SD_E_DISCONNECTED);
+  sftp_chan *ch = (sftp_chan *)ctx;
+  sd_sftp_session *s = ch->s;
+  if (s->finalized) return;
+  stream_lost(s, ch, SD_E_DISCONNECTED);
   io_epilogue(s);
 }
 
 static void sink_on_closed(void *ctx, sd_err why)
 {
-  sd_sftp_session *s = (sd_sftp_session *)ctx;
-  s->tp_open = 0;
-  if (s->close_requested) { do_close(s); finalize(s); return; }
-  lose(s, why != SD_OK ? why : SD_E_DISCONNECTED);
-  io_epilogue(s);
+  sftp_chan *ch = (sftp_chan *)ctx;
+  sd_sftp_session *s = ch->s;
+  ch->ss = SS_NONE;
+  if (s->finalized) return;
+  if (!s->close_requested) stream_lost(s, ch, why != SD_OK && why != SD_E_SHUTDOWN ? why : SD_E_DISCONNECTED);
+  stream_gone(s);
 }
 
 static const sd_ssh_channel_sink k_sink = {
   sink_on_open, sink_on_data, sink_on_writable, sink_on_eof, sink_on_closed
 };
 
+static void open_bulk(sd_sftp_session *s)
+{
+  sd_err e;
+  if (s->opt.channels < 2 || !(s->tp.caps & SD_SFTP_TP_STREAMS) || !s->tp.open_stream) {
+    s->bulk_settled = 1;
+    return;
+  }
+  s->ch[1].ss = SS_OPENING;
+  e = s->tp.open_stream(s->tp.ctx, 1, &k_sink, &s->ch[1]);
+  if (e != SD_OK) { s->ch[1].ss = SS_NONE; degrade_bulk(s, e); }
+}
+
+void sftp_session_auth_prompt(sd_sftp_session *s)
+{
+  /* 01 §10.4: a reconnect that needs user interaction shows as AUTH_REQUIRED while the prompt is out */
+  if (s && s->in_attempt && s->ever_ready && (sd_sftp_state)s->state == SD_SFTP_ST_CONNECTING)
+    set_state(s, SD_SFTP_ST_AUTH_REQUIRED, SD_E_AUTH_REQUIRED);
+}
+
 /* ---- inbox processing (I/O thread) ---- */
+
+/* WAIT_READY may wait in every state that can still lead to READY (02 §5.2 offline_wait). */
+static int can_wait(const sd_sftp_session *s, sd_sftp_state st)
+{
+  if (s->close_requested) return 0;
+  switch (st) {
+  case SD_SFTP_ST_IDLE: case SD_SFTP_ST_CONNECTING: case SD_SFTP_ST_DISCONNECTED: case SD_SFTP_ST_RECONNECT_WAIT:
+    return 1;
+  case SD_SFTP_ST_AUTH_REQUIRED:
+    return s->in_attempt;
+  default:
+    return 0;
+  }
+}
 
 static void route_submitted(sd_sftp_session *s, sftp_req *r)
 {
@@ -1656,20 +2004,35 @@ static void route_submitted(sd_sftp_session *s, sftp_req *r)
   if (r->cancel_pending) { finish(s, r, SD_E_CANCELLED); return; }
   if (r->op == OP_CLOSE && (r->f->stale || r->f->wire_closed)) { finish(s, r, SD_OK); return; }
   if (st == SD_SFTP_ST_READY && !s->lost_done) { queue_phase(s, r, PH_MAIN, 0); return; }
-  if ((r->flags & SD_SFTP_REQ_WAIT_READY) && (st == SD_SFTP_ST_IDLE || st == SD_SFTP_ST_CONNECTING) &&
-      !s->lost_done && !s->close_requested) {
-    r->qnext = s->wait_head;
-    s->wait_head = r;
+  if ((r->flags & SD_SFTP_REQ_WAIT_READY) && can_wait(s, st) && !(r->f && r->f->stale)) {
+    wait_push(s, r);
     return;
   }
-  finish(s, r, st == SD_SFTP_ST_CLOSED || s->close_requested ? SD_E_SHUTDOWN : SD_E_DISCONNECTED);
+  finish(s, r, st == SD_SFTP_ST_CLOSED || s->close_requested ? SD_E_SHUTDOWN :
+               (r->f && r->f->stale ? SD_E_STALE_HANDLE : SD_E_DISCONNECTED));
 }
 
-static void remove_waiting(sd_sftp_session *s, sftp_req *r)
+static void start_attempt(sd_sftp_session *s)
 {
-  sftp_req **pp;
-  for (pp = &s->wait_head; *pp; pp = &(*pp)->qnext)
-    if (*pp == r) { *pp = r->qnext; r->qnext = NULL; return; }
+  sd_err e;
+  uint32_t i;
+  s->lost_done = 0;
+  s->lost_pending = 0;
+  s->lost_err = SD_OK;
+  s->tp_close_called = 0;
+  s->tp_opened = 1;
+  s->startup_done = 0;
+  s->bulk_settled = 0;
+  s->nchan = 1;
+  s->in_attempt = 1;
+  s->retry_at = 0;
+  for (i = 0; i < NCH; i++) { s->ch[i].got_version = 0; s->ch[i].ilen = 0; }
+  /* until VERSION arrives the transport's own timeouts apply (sd_ssh: connect_timeout_ms) */
+  s->startup_deadline = UINT64_MAX;
+  set_state(s, SD_SFTP_ST_CONNECTING, SD_OK);
+  s->ch[0].ss = SS_OPENING;
+  e = s->tp.open(s->tp.ctx, &k_sink, &s->ch[0]);
+  if (e != SD_OK) { s->ch[0].ss = SS_NONE; s->tp_opened = 0; lose(s, e); }
 }
 
 static void on_tick(sd_sftp_session *s)
@@ -1677,7 +2040,7 @@ static void on_tick(sd_sftp_session *s)
   uint64_t now = sd_tick_ms();
   int any_sent = 0;
   sftp_req *r, *n;
-  if (s->startup && (sd_sftp_state)s->state == SD_SFTP_ST_CONNECTING && now >= s->startup_deadline) {
+  if (s->in_attempt && !s->startup_done && !s->lost_done && now >= s->startup_deadline) {
     lose(s, SD_E_TIMEOUT);
     return;
   }
@@ -1691,17 +2054,21 @@ static void on_tick(sd_sftp_session *s)
     }
   }
   if (now - s->rate_t0 >= 1000) {
-    uint64_t rx = (uint64_t)s->rx_total, tx = (uint64_t)s->tx_total, dt = now - s->rate_t0;
+    uint64_t rx = (uint64_t)sd_atomic_load64(&s->rx_total), tx = (uint64_t)sd_atomic_load64(&s->tx_total);
+    uint64_t dt = now - s->rate_t0;
     if (s->rate_t0) {
       s->rx_bps = (s->rx_bps + (rx - s->rate_rx0) * 1000 / dt) / 2;
       s->tx_bps = (s->tx_bps + (tx - s->rate_tx0) * 1000 / dt) / 2;
     }
     s->rate_t0 = now; s->rate_rx0 = rx; s->rate_tx0 = tx;
   }
-  if (any_sent && s->tp.probe && s->tp_open && now - s->last_probe_ms >= 1000) {
+  if (any_sent && s->tp.probe && s->ch[0].ss == SS_OPEN && !s->lost_done && now - s->last_probe_ms >= 1000) {
     s->last_probe_ms = now;
-    s->tp.probe(s->tp.ctx);
+    s->tp.probe(s->tp.ctx);    /* liveness probe on request timeout (01 §4.6, C16) */
   }
+  if ((sd_sftp_state)s->state == SD_SFTP_ST_RECONNECT_WAIT && !s->close_requested && now >= s->retry_at &&
+      streams_quiet(s))
+    start_attempt(s);
 }
 
 static void do_cancel(sd_sftp_session *s, uint64_t id)
@@ -1718,19 +2085,36 @@ static void do_cancel(sd_sftp_session *s, uint64_t id)
 
 static void do_release(sd_sftp_session *s, sd_sftp_file *f)
 {
-  if (!f->stale && !f->wire_closed && f->hlen && s->tp_open && !s->lost_done &&
-      (sd_sftp_state)s->state == SD_SFTP_ST_READY)
-    send_orphan_close(s, f->handle, f->hlen);
+  if (!f->stale && !f->wire_closed && f->hlen && !s->lost_done && (sd_sftp_state)s->state == SD_SFTP_ST_READY)
+    send_orphan_close(s, f->ch, f->handle, f->hlen);
   file_unlink_free(s, f);
 }
 
 static void do_start(sd_sftp_session *s)
 {
-  sd_err e;
-  s->startup_deadline = sd_tick_ms() + s->opt.default_timeout_ms;
-  set_state(s, SD_SFTP_ST_CONNECTING, SD_OK);
-  e = s->tp.open(s->tp.ctx, &k_sink, s);
-  if (e != SD_OK) lose(s, e);
+  start_attempt(s);
+}
+
+static void do_reconnect_now(sd_sftp_session *s)
+{
+  sd_sftp_state st = (sd_sftp_state)s->state;
+  if (s->close_requested || !(s->tp.caps & SD_SFTP_TP_REOPEN)) return;
+  if (st == SD_SFTP_ST_RECONNECT_WAIT) { s->retry_at = 0; return; }      /* skip the backoff */
+  if (st == SD_SFTP_ST_FAILED || (st == SD_SFTP_ST_AUTH_REQUIRED && !s->in_attempt)) {
+    s->user_retry = 1;
+    s->retry_stopped = 0;
+    s->attempts = 0;
+    schedule_retry(s, SD_OK, 0);
+  }
+}
+
+static void do_reconnect_stop(sd_sftp_session *s)
+{
+  sd_sftp_state st = (sd_sftp_state)s->state;
+  if (s->close_requested || st == SD_SFTP_ST_READY || st == SD_SFTP_ST_FAILED || st == SD_SFTP_ST_CLOSED) return;
+  s->retry_stopped = 1;
+  if (s->in_attempt) { lose(s, SD_E_CANCELLED); return; }   /* after_loss() ends in FAILED */
+  stop_loop(s, SD_SFTP_ST_FAILED, SD_E_CANCELLED);
 }
 
 static void io_drain(void *arg)
@@ -1744,13 +2128,22 @@ static void io_drain(void *arg)
   sd_mutex_unlock(&s->lock);
   while (it) {
     sftp_item *n = it->next;
+    if (s->finalized) {   /* only after a close: drop what is left (finalize() handled the inbox) */
+      if (it->type == IT_SUBMIT) { sftp_req *r = (sftp_req *)it->ptr; live_add(s, r); finish(s, r, SD_E_SHUTDOWN); }
+      else if (it->type == IT_CANCEL || it->type == IT_RECONNECT || it->type == IT_STOP) sd_free(it);
+      else if (it->type == IT_RELEASE) file_unlink_free(s, (sd_sftp_file *)it->ptr);
+      it = n;
+      continue;
+    }
     switch (it->type) {
-    case IT_SUBMIT:  route_submitted(s, (sftp_req *)it->ptr); break;
-    case IT_CANCEL:  do_cancel(s, it->id); sd_free(it); break;
-    case IT_RELEASE: do_release(s, (sd_sftp_file *)it->ptr); break;
-    case IT_TICK:    InterlockedExchange(&s->tick_pending, 0); on_tick(s); break;
-    case IT_START:   do_start(s); break;
-    case IT_CLOSE:   do_close(s); break;
+    case IT_SUBMIT:    route_submitted(s, (sftp_req *)it->ptr); break;
+    case IT_CANCEL:    do_cancel(s, it->id); sd_free(it); break;
+    case IT_RELEASE:   do_release(s, (sd_sftp_file *)it->ptr); break;
+    case IT_TICK:      InterlockedExchange(&s->tick_pending, 0); on_tick(s); break;
+    case IT_START:     do_start(s); break;
+    case IT_CLOSE:     do_close(s); break;
+    case IT_RECONNECT: sd_free(it); do_reconnect_now(s); break;
+    case IT_STOP:      sd_free(it); do_reconnect_stop(s); break;
     default: break;
     }
     it = n;
@@ -1765,7 +2158,8 @@ static unsigned __stdcall timer_main(void *arg)
   sd_sftp_session *s = (sd_sftp_session *)arg;
   while (sd_event_wait(&s->timer_stop, TICK_MS) == SD_E_TIMEOUT) {
     sd_sftp_state st = (sd_sftp_state)s->state;
-    if ((s->live > 0 || st == SD_SFTP_ST_CONNECTING || st == SD_SFTP_ST_READY) &&
+    if ((s->live > 0 || st == SD_SFTP_ST_CONNECTING || st == SD_SFTP_ST_READY || st == SD_SFTP_ST_RECONNECT_WAIT ||
+         st == SD_SFTP_ST_AUTH_REQUIRED) &&
         InterlockedCompareExchange(&s->tick_pending, 1, 0) == 0) {
       s->tick_item.type = IT_TICK;
       if (!inbox_put(s, &s->tick_item)) break;
@@ -1793,14 +2187,24 @@ void sd_sftp_options_init(sd_sftp_options *o)
   o->default_timeout_ms = 30000;
 }
 
+static void chan_free(sftp_chan *ch)
+{
+  sd_wr_free(&ch->obuf);
+  sd_free(ch->ibuf);
+  ch->ibuf = NULL;
+}
+
 sd_err sd_sftp_session_create_transport(const sd_sftp_transport *t, const sd_sftp_options *opt,
                                         sd_sftp_event_cb ev, void *ev_ctx, sd_sftp_session **out)
 {
   sd_sftp_session *s;
   sd_err e;
+  uint32_t i;
   if (!out) return SD_E_INVALID_PARAM;
   *out = NULL;
   if (!t || !t->post || !t->open || !t->write || !t->consumed || !t->close || !t->destroy || !t->is_io_thread)
+    return SD_E_INVALID_PARAM;
+  if ((t->caps & SD_SFTP_TP_STREAMS) && (!t->open_stream || !t->write_stream || !t->consumed_stream))
     return SD_E_INVALID_PARAM;
   s = (sd_sftp_session *)sd_calloc(1, sizeof(*s));
   if (!s) return SD_E_NO_MEMORY;
@@ -1816,13 +2220,20 @@ sd_err sd_sftp_session_create_transport(const sd_sftp_transport *t, const sd_sft
   if (s->opt.max_inflight_bytes == 0) s->opt.max_inflight_bytes = 8u * 1024u * 1024u;
   if (s->opt.max_queued_reqs == 0) s->opt.max_queued_reqs = 4096;
   if (s->opt.default_timeout_ms == 0) s->opt.default_timeout_ms = 30000;
-  s->opt.channels = 1;          /* M0: one SFTP channel */
-  s->opt.connections = 1;
+  if (s->opt.channels != 1) s->opt.channels = 2;      /* 0 or out of range: the default */
+  s->opt.connections = 1;                             /* pool: M2 */
+  if (s->opt.reconnect.max_delay_ms < s->opt.reconnect.initial_delay_ms)
+    s->opt.reconnect.max_delay_ms = s->opt.reconnect.initial_delay_ms;
   s->ev = ev;
   s->ev_ctx = ev_ctx;
   s->state = SD_SFTP_ST_IDLE;
+  s->nchan = 1;
   sd_mutex_init(&s->lock);
-  sd_wr_init(&s->obuf, 64u * 1024u * 1024u);
+  for (i = 0; i < NCH; i++) {
+    s->ch[i].s = s;
+    s->ch[i].idx = i;
+    sd_wr_init(&s->ch[i].obuf, 64u * 1024u * 1024u);
+  }
   {
     uint64_t z[4] = { 0, 0, 0, 0 };
     sftp_effective_limits(z, &s->info.limits);
@@ -1833,7 +2244,7 @@ sd_err sd_sftp_session_create_transport(const sd_sftp_transport *t, const sd_sft
   if (e != SD_OK) {
     if (s->timer_stop.h) sd_event_destroy(&s->timer_stop);
     sd_mutex_destroy(&s->lock);
-    sd_wr_free(&s->obuf);
+    for (i = 0; i < NCH; i++) chan_free(&s->ch[i]);
     sd_free(s);
     return e;
   }
@@ -1852,10 +2263,31 @@ sd_err sd_sftp_session_start(sd_sftp_session *s)
   return SD_OK;
 }
 
+static sd_err post_control(sd_sftp_session *s, uint32_t type)
+{
+  sftp_item *it = (sftp_item *)sd_calloc(1, sizeof(*it));
+  if (!it) return SD_E_NO_MEMORY;
+  it->type = type;
+  if (!inbox_put(s, it)) { sd_free(it); return SD_E_SHUTDOWN; }
+  return SD_OK;
+}
+
 sd_err sd_sftp_session_reconnect_now(sd_sftp_session *s)
 {
-  SD_UNUSED(s);
-  return SD_E_UNSUPPORTED;     /* M1: reconnect loop */
+  sd_sftp_state st;
+  if (!s) return SD_E_INVALID_PARAM;
+  st = (sd_sftp_state)s->state;
+  if (st == SD_SFTP_ST_CLOSED || s->close_requested) return SD_E_SHUTDOWN;
+  if (st == SD_SFTP_ST_IDLE) return SD_E_INVALID_PARAM;
+  if (!(s->tp.caps & SD_SFTP_TP_REOPEN)) return SD_E_UNSUPPORTED;
+  return post_control(s, IT_RECONNECT);
+}
+
+sd_err sd_sftp_session_reconnect_stop(sd_sftp_session *s)
+{
+  if (!s) return SD_E_INVALID_PARAM;
+  if ((sd_sftp_state)s->state == SD_SFTP_ST_CLOSED || s->close_requested) return SD_E_SHUTDOWN;
+  return post_control(s, IT_STOP);
 }
 
 sd_err sd_sftp_session_close(sd_sftp_session *s)
@@ -1869,9 +2301,10 @@ sd_err sd_sftp_session_close(sd_sftp_session *s)
 
 void sd_sftp_session_destroy(sd_sftp_session *s)
 {
-  uint32_t b;
+  uint32_t b, i;
   sd_sftp_file *f;
   sftp_item *it;
+  sftp_req *r;
   if (!s) return;
   if (s->tp.is_io_thread(s->tp.ctx)) {
     sd_log(SD_LOG_ERROR, SFTP_COMP, NULL, "sd_sftp_session_destroy called on the I/O thread");
@@ -1881,6 +2314,7 @@ void sd_sftp_session_destroy(sd_sftp_session *s)
     sd_event_set(&s->timer_stop);
     (void)sd_thread_join(&s->timer, SD_WAIT_INFINITE, NULL);
   }
+  s->finalized = 1;          /* late transport callbacks during its shutdown are ignored */
   s->tp.destroy(s->tp.ctx);
   /* Everything below is unreachable from other threads now. */
   sd_mutex_lock(&s->lock);
@@ -1891,7 +2325,7 @@ void sd_sftp_session_destroy(sd_sftp_session *s)
   while (it) {
     sftp_item *n = it->next;
     if (it->type == IT_SUBMIT) req_free((sftp_req *)it->ptr);
-    else if (it->type == IT_CANCEL) sd_free(it);
+    else if (it->type == IT_CANCEL || it->type == IT_RECONNECT || it->type == IT_STOP) sd_free(it);
     else if (it->type == IT_RELEASE) file_unlink_free(s, (sd_sftp_file *)it->ptr);
     it = n;
   }
@@ -1899,8 +2333,9 @@ void sd_sftp_session_destroy(sd_sftp_session *s)
     sftp_wire *w = s->wires[b];
     while (w) { sftp_wire *n = w->hnext; sd_free(w); w = n; }
   }
+  while ((r = s->wait_head) != NULL) { s->wait_head = r->qnext; r->qnext = NULL; }
   while (s->live_head) {
-    sftp_req *r = s->live_head;
+    r = s->live_head;
     live_remove(s, r);
     tok_unregister(r);
     r->f = r->f2 = r->newf = NULL;
@@ -1914,8 +2349,7 @@ void sd_sftp_session_destroy(sd_sftp_session *s)
   }
   sd_event_destroy(&s->timer_stop);
   sd_mutex_destroy(&s->lock);
-  sd_wr_free(&s->obuf);
-  sd_free(s->ibuf);
+  for (i = 0; i < NCH; i++) chan_free(&s->ch[i]);
   sd_free(s->ext_list);
   sd_free(s->ext_strings);
   sd_free(s->home);
@@ -1958,19 +2392,31 @@ sd_err sd_sftp_session_info(sd_sftp_session *s, sd_sftp_server_info *copy_out, c
 
 sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out)
 {
+  uint32_t inflight;
+  LONG live;
   if (!s || !out) return SD_E_INVALID_PARAM;
   memset(out, 0, sizeof(*out));
   out->conn[0].srtt_ms = s->srtt_ms;
   out->conn[0].rttvar_ms = s->rttvar_ms;
+  if (s->tp.rtt) {     /* the transport's keepalive/probe samples (01 §4.6) win when it has them */
+    uint32_t a = 0, b = 0;
+    s->tp.rtt(s->tp.ctx, &a, &b);
+    if (a) { out->conn[0].srtt_ms = a; out->conn[0].rttvar_ms = b; }
+  }
   out->conn[0].rx_bps = s->rx_bps;
   out->conn[0].tx_bps = s->tx_bps;
-  out->conn[0].rx_total = (uint64_t)s->rx_total;
-  out->conn[0].tx_total = (uint64_t)s->tx_total;
-  out->conn[0].inflight_reqs = s->inflight;
-  out->conn[0].queued_reqs = (uint32_t)s->live;
+  out->conn[0].rx_total = (uint64_t)(sd_atomic_load64(&s->rx_total) - sd_atomic_load64(&s->gen_rx0));
+  out->conn[0].tx_total = (uint64_t)(sd_atomic_load64(&s->tx_total) - sd_atomic_load64(&s->gen_tx0));
+  inflight = s->ch[0].inflight + s->ch[1].inflight;     /* racy snapshot; statistics only */
+  live = s->live;
+  out->conn[0].inflight_reqs = inflight;
+  out->conn[0].queued_reqs = live > 0 && (uint32_t)live > inflight ? (uint32_t)live - inflight : 0;
   out->conn[0].ready = (sd_sftp_state)s->state == SD_SFTP_ST_READY;
   out->conn_count = 1;
   out->total = out->conn[0];
+  out->generation = s->generation;
+  out->channels = (sd_sftp_state)s->state == SD_SFTP_ST_READY ? s->nchan : 0;
+  out->reconnect_attempts = s->attempts;
   return SD_OK;
 }
 
@@ -1999,7 +2445,8 @@ static sd_err req_submit(sd_sftp_session *s, sftp_req *r, const sd_sftp_reqopt *
   if (st == SD_SFTP_ST_CLOSED || s->close_requested) { req_free(r); return SD_E_SHUTDOWN; }
   if (st != SD_SFTP_ST_READY && !local_close) {
     int waitable = (r->flags & SD_SFTP_REQ_WAIT_READY) && o && o->timeout_ms > 0 &&
-                   (st == SD_SFTP_ST_IDLE || st == SD_SFTP_ST_CONNECTING);
+                   (st == SD_SFTP_ST_IDLE || st == SD_SFTP_ST_CONNECTING || st == SD_SFTP_ST_DISCONNECTED ||
+                    st == SD_SFTP_ST_RECONNECT_WAIT || st == SD_SFTP_ST_AUTH_REQUIRED);
     if (!waitable) { req_free(r); return SD_E_DISCONNECTED; }
   }
   if ((uint32_t)InterlockedIncrement(&s->live) > s->opt.max_queued_reqs) {
@@ -2064,8 +2511,24 @@ static sd_err submit_file(sd_sftp_file *f, uint32_t op, const sd_sftp_reqopt *o,
 sd_err sd_sftp_open(sd_sftp_session *s, const char *path, uint32_t oflags, const sd_sftp_attrs *create_attrs,
                     sd_sftp_file *same_channel_as, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx)
 {
-  SD_UNUSED(same_channel_as);   /* one channel in M0 */
-  return submit_path(s, OP_OPEN, path, NULL, create_attrs, oflags & ~(uint32_t)SD_SFTP_O_STRIPED, o, cb, ctx);
+  sftp_req *r;
+  sd_err e;
+  if (!same_channel_as)
+    return submit_path(s, OP_OPEN, path, NULL, create_attrs, oflags & ~(uint32_t)SD_SFTP_O_STRIPED, o, cb, ctx);
+  /* copy-data affinity: the new handle lives on the channel of same_channel_as */
+  if (!s || !cb || same_channel_as->s != s) return SD_E_INVALID_PARAM;
+  if (same_channel_as->stale) return SD_E_STALE_HANDLE;
+  if ((e = check_path(path)) != SD_OK) return e;
+  r = req_alloc(s, OP_OPEN, o, cb, ctx);
+  if (!r) return SD_E_NO_MEMORY;
+  r->flags &= ~(uint32_t)SD_SFTP_REQ_CLASS_META;     /* the class follows same_channel_as */
+  r->p1 = dup_str(path);
+  if (!r->p1) { req_free(r); return SD_E_NO_MEMORY; }
+  if (create_attrs) { r->a = *create_attrs; r->a.ext = NULL; r->a.ext_count = 0; r->has_attrs = 1; }
+  r->u1 = oflags & ~(uint32_t)SD_SFTP_O_STRIPED;
+  sd_sftp_file_addref(same_channel_as);
+  r->f2 = same_channel_as;
+  return req_submit(s, r, o);
 }
 
 sd_err sd_sftp_opendir(sd_sftp_session *s, const char *path, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx)

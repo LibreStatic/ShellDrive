@@ -33,7 +33,7 @@ sd_vfs_status sd_vfs_status_from_err(sd_err e)
     case SD_E_DISCONNECTED:
     case SD_E_SHUTDOWN:
     case SD_E_AUTH_REQUIRED:   return SD_VFS_E_DISCONNECTED;
-    case SD_E_STALE_HANDLE:    return SD_VFS_E_STALE;   /* M0 has no reconnect, so no re-open (02 §5.3) */
+    case SD_E_STALE_HANDLE:    return SD_VFS_E_STALE;   /* re-opened internally first (vfs_get_fh, 02 §5.3) */
     case SD_E_TIMEOUT:         return SD_VFS_E_TIMEOUT;
     case SD_E_CANCELLED:       return SD_VFS_E_CANCELLED;
     case SD_E_BUSY:            return SD_VFS_E_IO;      /* never surfaced by the vfs: retried as backpressure */
@@ -211,6 +211,7 @@ static vfs_dirent *listing_find(vfs_listing *l, const WCHAR *wname, const WCHAR 
 
 static void node_free(vfs_node *n)
 {
+  vfs_data_node_free(n);
   if (n->fh)
     sd_sftp_file_release(n->fh);
   listing_free(n->list);
@@ -224,12 +225,42 @@ static void node_free(vfs_node *n)
   sd_free(n);
 }
 
-void vfs_node_ref(vfs_node *n) { n->refs++; }
+/* Idle-node LRU: nodes in the table with no reference, oldest first. Eviction pops from the head
+   instead of sweeping the whole table. v->lock held. */
+static void lru_remove(sd_vfs *v, vfs_node *n)
+{
+  if (!n->in_lru)
+    return;
+  if (n->lru_prev) n->lru_prev->lru_next = n->lru_next; else v->lru_head = n->lru_next;
+  if (n->lru_next) n->lru_next->lru_prev = n->lru_prev; else v->lru_tail = n->lru_prev;
+  n->lru_prev = n->lru_next = NULL;
+  n->in_lru = FALSE;
+}
+
+static void lru_append(sd_vfs *v, vfs_node *n)
+{
+  if (n->in_lru || (n->flags & VFS_NF_ROOT))
+    return;
+  n->lru_prev = v->lru_tail;
+  n->lru_next = NULL;
+  if (v->lru_tail) v->lru_tail->lru_next = n; else v->lru_head = n;
+  v->lru_tail = n;
+  n->in_lru = TRUE;
+}
+
+void vfs_node_ref(sd_vfs *v, vfs_node *n)
+{
+  if (n->refs++ == 0)
+    lru_remove(v, n);
+}
 
 void vfs_node_unref(sd_vfs *v, vfs_node *n)
 {
-  SD_UNUSED(v);
-  if (--n->refs == 0 && !(n->flags & VFS_NF_IN_TABLE))
+  if (--n->refs != 0)
+    return;
+  if (n->flags & VFS_NF_IN_TABLE)
+    lru_append(v, n);
+  else
     node_free(n);
 }
 
@@ -279,22 +310,16 @@ void vfs_table_remove(sd_vfs *v, vfs_node *n)
   n->hnext = NULL;
   n->flags &= ~VFS_NF_IN_TABLE;
   v->nodes.count--;
+  lru_remove(v, n);
   if (n->refs == 0)
     node_free(n);
 }
 
-/* Evicts unreferenced nodes when the table is over its cap (02 §1.4; M0: a full sweep). */
+/* Evicts the oldest idle nodes when the table is over its cap (02 §1.4). */
 static void table_evict(sd_vfs *v)
 {
-  uint32_t i;
-  for (i = 0; i < v->nodes.nb && v->nodes.count > VFS_MAX_NODES / 2; i++) {
-    vfs_node *n = v->nodes.b[i], *next;
-    for (; n; n = next) {
-      next = n->hnext;
-      if (n->refs == 0 && !(n->flags & VFS_NF_ROOT))
-        vfs_table_remove(v, n);
-    }
-  }
+  while (v->lru_head && v->nodes.count > VFS_MAX_NODES / 2)
+    vfs_table_remove(v, v->lru_head);
 }
 
 static void table_insert(sd_vfs *v, vfs_node *n)
@@ -310,6 +335,8 @@ static void table_insert(sd_vfs *v, vfs_node *n)
   v->nodes.b[i] = n;
   n->flags |= VFS_NF_IN_TABLE;
   v->nodes.count++;
+  if (n->refs == 0)
+    lru_append(v, n);
 }
 
 void vfs_table_readd(sd_vfs *v, vfs_node *n)
@@ -407,10 +434,10 @@ vfs_node *vfs_child_insert(sd_vfs *v, vfs_node *parent, const WCHAR *wname, cons
   }
   if (n) {
     sd_free(key);
-    n->attr = *a;
+    vfs_node_set_attr(v, n, a);             /* validator rule for the data cache (02 §4.2) */
     n->attr_time = sd_tick_ms();
     n->eflags = eflags;
-    vfs_node_ref(n);
+    vfs_node_ref(v, n);
     return n;
   }
   if (vfs_join(v, parent->epath, raw, raw_len, &lpath) != SD_VFS_OK) {
@@ -438,9 +465,64 @@ vfs_node *vfs_child_insert(sd_vfs *v, vfs_node *parent, const WCHAR *wname, cons
   n->attr_time = sd_tick_ms();
   n->eflags = eflags;
   n->file_id = ++v->next_file_id;
+  n->cv_valid = (a->valid & SD_SFTP_ATTR_SIZE) && (a->valid & SD_SFTP_ATTR_TIMES);
+  n->cv_size = n->srv_size = a->size;
+  n->cv_mtime = a->mtime;
   table_insert(v, n);
-  vfs_node_ref(n);
+  vfs_node_ref(v, n);
   return n;
+}
+
+void vfs_listing_sync(sd_vfs *v, vfs_node *n)
+{
+  vfs_node *p = vfs_parent_of(v, n);
+  uint32_t i;
+  if (!p || !p->list)
+    return;
+  for (i = 0; i < p->list->n; i++) {
+    if (wcscmp(p->list->e[i].wname, n->wname) == 0) {
+      p->list->e[i].attr = n->attr;
+      return;
+    }
+  }
+}
+
+WCHAR *vfs_node_path(sd_vfs *v, vfs_node *n)
+{
+  /* Display names of the ancestors (keys may be folded); a missing ancestor falls back to its key
+     component. */
+  const WCHAR *parts[256];
+  vfs_node *chain[256];
+  uint32_t np = 0, i;
+  size_t total = 1;
+  WCHAR *r, *pk = NULL;
+  vfs_node *cur = n;
+  while (cur && !(cur->flags & VFS_NF_ROOT) && np < SD_COUNTOF(parts)) {
+    chain[np] = cur;
+    parts[np++] = cur->wname;
+    total += wcslen(cur->wname) + 1;
+    cur = vfs_parent_of(v, cur);
+  }
+  if (cur == NULL && np > 0 && wcschr(chain[np - 1]->key + 1, L'\\')) {
+    /* An ancestor left the table: use the key path for the part above. */
+    const WCHAR *k = chain[np - 1]->key, *sl = wcsrchr(k, L'\\');
+    pk = vfs_wcsndup(k, (size_t)(sl - k));
+    if (pk) total += wcslen(pk);
+  }
+  r = (WCHAR *)sd_alloc(total * sizeof(WCHAR));
+  if (!r) {
+    sd_free(pk);
+    return NULL;
+  }
+  r[0] = 0;
+  if (pk) wcscat_s(r, total, pk);
+  for (i = np; i > 0; i--) {
+    wcscat_s(r, total, L"\\");
+    wcscat_s(r, total, parts[i - 1]);
+  }
+  if (np == 0) wcscpy_s(r, total, L"\\");
+  sd_free(pk);
+  return r;
 }
 
 /* ---- Windows attributes (02 §3.1) ---- */
@@ -516,6 +598,8 @@ void vfs_info_from(sd_vfs *v, const vfs_node *n, const WCHAR *name, const vfs_at
 void vfs_learn_identity(sd_vfs *v, const vfs_attr *created, const vfs_attr *parent)
 {
   BOOL changed;
+  if (created && (created->valid & SD_SFTP_ATTR_TIMES))
+    v->skew = created->mtime - sd_unix_time_now();   /* server clock estimate for hot blocks (02 §4.2) */
   if (!created || !(created->valid & SD_SFTP_ATTR_UIDGID) || v->uid_definitive)
     return;
   changed = !v->uid_known || v->uid != created->uid;
@@ -524,11 +608,13 @@ void vfs_learn_identity(sd_vfs *v, const vfs_attr *created, const vfs_attr *pare
     v->gid = created->gid;
   v->uid_known = TRUE;
   v->uid_definitive = TRUE;
-  if (changed) {
+  {
+    /* Raised also when the provisional uid is merely confirmed: the host caches the identity once it
+       is definitive (02 §3.4 step 2), so it must hear about that moment. */
     sd_vfs_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.kind = SD_VFS_EV_IDENTITY;
-    SD_LOGI(VFS_LOG, "remote uid learned: %u", (unsigned)v->uid);
+    SD_LOGI(VFS_LOG, "remote uid %s: %u", changed ? "learned" : "confirmed", (unsigned)v->uid);
     vfs_event(v, &ev);
   }
 }
@@ -703,15 +789,15 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
     if (n->flags & VFS_NF_NEG) {
       if (now - n->attr_time < n->neg_ttl || !online) {
         sd_mutex_unlock(&v->lock);
-        InterlockedIncrement64(&v->cache_hits);
+        sd_atomic_inc64(&v->cache_hits);
         return SD_VFS_E_NOT_FOUND;
       }
       vfs_table_remove(v, n);
       n = NULL;
     } else if (!online || max_age < 0 || (int64_t)(now - n->attr_time) <= max_age) {
-      vfs_node_ref(n);
+      vfs_node_ref(v, n);
       sd_mutex_unlock(&v->lock);
-      InterlockedIncrement64(&v->cache_hits);
+      sd_atomic_inc64(&v->cache_hits);
       *out = n;
       return SD_VFS_OK;
     }
@@ -722,7 +808,7 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
         (!online || max_age < 0 || (int64_t)(now - parent->list->time) <= max_age)) {
       vfs_node *c = child_from_entry(v, parent, e, parent->list->time);
       sd_mutex_unlock(&v->lock);
-      InterlockedIncrement64(&v->cache_hits);
+      sd_atomic_inc64(&v->cache_hits);
       if (!c)
         return SD_VFS_E_NO_MEMORY;
       *out = c;
@@ -734,7 +820,7 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
     } else {
       insert_negative(v, ckey, comp);
       sd_mutex_unlock(&v->lock);
-      InterlockedIncrement64(&v->cache_hits);
+      sd_atomic_inc64(&v->cache_hits);
       return SD_VFS_E_NOT_FOUND;
     }
   } else if (n) {
@@ -742,7 +828,7 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
     raw_len = n->raw_len;
   }
   sd_mutex_unlock(&v->lock);
-  InterlockedIncrement64(&v->cache_misses);
+  sd_atomic_inc64(&v->cache_misses);
 
   if (!online)
     return SD_VFS_E_DISCONNECTED;           /* unknown while offline: never NOT_FOUND (02 §5.2) */
@@ -818,7 +904,7 @@ sd_vfs_status vfs_resolve(sd_vfs *v, const WCHAR *path, uint64_t dl, int64_t max
     return st;
   sd_mutex_lock(&v->lock);
   cur = v->root;
-  vfs_node_ref(cur);
+  vfs_node_ref(v, cur);
   sd_mutex_unlock(&v->lock);
   for (i = 0; i < p.n; i++) {
     BOOL last = (i + 1 == p.n);
@@ -1179,8 +1265,8 @@ sd_vfs_status vfs_listing_get(sd_vfs *v, vfs_node *d, uint64_t dl, BOOL force)
     if (c->flags & VFS_NF_NEG) {
       vfs_table_remove(v, c);
     } else if (c->raw_len == l->e[i].raw_len && memcmp(c->raw, l->e[i].raw, c->raw_len) == 0 &&
-               !(l->e[i].eflags & VFS_EF_LINK) && c->nwext == 0) {
-      c->attr = l->e[i].attr;
+               !(l->e[i].eflags & VFS_EF_LINK) && c->nwext == 0 && !c->wq_head) {
+      vfs_node_set_attr(v, c, &l->e[i].attr);
       c->attr_time = l->time;
     }
   }
@@ -1281,6 +1367,15 @@ static uint32_t def_u(UINT x, uint32_t d) { return x ? (uint32_t)x : d; }
 static void vfs_free_all(sd_vfs *v)
 {
   uint32_t i;
+  for (i = 0; i < v->nodes.nb; i++) {
+    vfs_node *n;
+    for (n = v->nodes.b[i]; n; n = n->hnext) {
+      if (n->dc) {
+        vfs_dc_close(v, n->dc);
+        n->dc = NULL;
+      }
+    }
+  }
   while (v->handles) {
     sd_vfs_handle *h = v->handles;
     v->handles = h->next;
@@ -1302,6 +1397,7 @@ static void vfs_free_all(sd_vfs *v)
   sd_free(v->fs_name);
   sd_free(v->offline_suffix);
   sd_free(v->owner_sid);
+  vfs_disk_close(v);
   sd_mutex_destroy(&v->lock);
   sd_free(v);
 }
@@ -1341,10 +1437,10 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (out) *out = NULL;
   if (!s || !o || !out || o->struct_size < sizeof(sd_vfs_options))
     return SD_VFS_E_UNSUPPORTED;
-  /* Later-milestone features (M0 scope). */
-  if (o->write_mode != SD_VFS_WRITE_THROUGH || o->global_mount || o->disk_cache_mb || o->mark_of_the_web ||
-      o->remote_codepage || o->symlinks < SD_SYMLINK_FOLLOW_INSIDE || o->symlinks > SD_SYMLINK_HIDE ||
-      o->remote_case < SD_VFS_CASE_AUTO || o->remote_case > SD_VFS_CASE_INSENSITIVE)
+  /* Later-milestone features (M1 scope). */
+  if ((o->write_mode != SD_VFS_WRITE_THROUGH && o->write_mode != SD_VFS_WRITE_BEHIND) || o->global_mount ||
+      o->mark_of_the_web || o->remote_codepage || o->symlinks < SD_SYMLINK_FOLLOW_INSIDE ||
+      o->symlinks > SD_SYMLINK_HIDE || o->remote_case < SD_VFS_CASE_AUTO || o->remote_case > SD_VFS_CASE_INSENSITIVE)
     return SD_VFS_E_UNSUPPORTED;
   if (sd_sftp_session_state(s) != SD_SFTP_ST_READY)
     return SD_VFS_E_DISCONNECTED;
@@ -1375,6 +1471,14 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
                   : def_u(o->max_list_mb, VFS_DEF_LIST_MB) * 1024u * 1024u;
   v->list_deadline = def_u(o->list_deadline_ms, VFS_DEF_LIST_DEADLINE);
   v->link_stats = def_u(o->max_link_stats, VFS_DEF_LINK_STATS);
+  v->write_behind = o->write_mode == SD_VFS_WRITE_BEHIND;
+  v->max_readahead = def_u(o->max_readahead, VFS_DEF_MAX_RA);
+  v->wb_window = def_u(o->wb_window, VFS_DEF_WB_WINDOW);
+  v->wb_window_mount = def_u(o->wb_window_mount, VFS_DEF_WB_MOUNT);
+  if (v->wb_window_mount < v->wb_window) v->wb_window_mount = v->wb_window;
+  v->grace = o->reconnect_grace_ms == 0xFFFFFFFFu ? 0 : def_u(o->reconnect_grace_ms, VFS_DEF_GRACE);
+  v->offline_wait = def_u(o->offline_wait_ms, VFS_DEF_OFFLINE_WAIT);
+  v->mount_id = vc_new_mount_id();
   v->label = vfs_wcsdup(o->volume_label ? o->volume_label : L"ShellDrive");
   v->fs_name = vfs_wcsdup(o->volume_fs_name ? o->volume_fs_name : L"NTFS");
   v->offline_suffix = vfs_wcsdup(o->offline_label_suffix ? o->offline_label_suffix : L"");
@@ -1390,13 +1494,28 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
     vfs_free_all(v);
     return vfs_map_err(e);
   }
-  v->max_read = (uint32_t)SD_MIN(info.limits.max_read ? info.limits.max_read : 32768u, 256u * 1024u);
-  v->max_write = (uint32_t)SD_MIN(info.limits.max_write ? info.limits.max_write : 32768u, 256u * 1024u);
-  if (info.identity.source == SD_SFTP_ID_EXEC ||
-      (info.identity.source == SD_SFTP_ID_HOME_OWNER && info.identity.uid != 0)) {
+  v->max_read = (LONG)SD_MIN(info.limits.max_read ? info.limits.max_read : 32768u, (uint64_t)VFS_BLK);
+  v->max_write = (LONG)SD_MIN(info.limits.max_write ? info.limits.max_write : 32768u, (uint64_t)VFS_BLK);
+  v->gen = (LONG)(info.generation ? info.generation : sd_sftp_session_generation(s));
+  if (o->known_identity && o->known_identity->uid_known && o->known_identity->definitive) {
+    v->uid_known = v->uid_definitive = TRUE;   /* cached by the host per server identity (02 §3.4 step 2) */
+    v->uid = o->known_identity->uid;
+    v->gid = o->known_identity->gid;
+  } else if (info.identity.source == SD_SFTP_ID_EXEC) {
+    v->uid_known = v->uid_definitive = TRUE;
+    v->uid = info.identity.uid;
+    v->gid = info.identity.gid;
+  } else if (info.identity.source == SD_SFTP_ID_HOME_OWNER && info.identity.uid != 0) {
     v->uid_known = TRUE;                    /* provisional (02 §3.4 steps 1, 3) */
     v->uid = info.identity.uid;
     v->gid = info.identity.gid;
+  }
+  {
+    char fp[160];
+    fp[0] = 0;
+    if (info.ssh && info.ssh->hostkey_fp_sha256)
+      strncpy_s(fp, sizeof(fp), info.ssh->hostkey_fp_sha256, _TRUNCATE);
+    vfs_disk_open(v, o, fp);                /* TM-R29 checks; refused -> memory tier only */
   }
 
   dl = vfs_deadline(v);
@@ -1446,10 +1565,27 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
     for (i = 0; i < v->root_len; i++) { h ^= (uint8_t)rp[i]; h *= 16777619u; }
     v->serial = h ^ vfs_hash_w(v->label);
   }
-  SD_LOGI(VFS_LOG, "mounted: case %s, symlinks %d, read-only %d", v->remote_insensitive ? "insensitive" : "sensitive",
-          v->symlinks, (int)v->read_only);
+  SD_LOGI(VFS_LOG, "mounted: case %s, symlinks %d, read-only %d, write %s, disk cache %d",
+          v->remote_insensitive ? "insensitive" : "sensitive", v->symlinks, (int)v->read_only,
+          v->write_behind ? "behind" : "through", (int)vfs_disk_enabled(v));
+  vfs_timer_start(v);
   *out = v;
   return SD_VFS_OK;
+}
+
+void sd_vfs_get_identity(sd_vfs *v, sd_vfs_identity *out)
+{
+  if (!out)
+    return;
+  memset(out, 0, sizeof(*out));
+  if (!v)
+    return;
+  sd_mutex_lock(&v->lock);
+  out->uid_known = v->uid_known;
+  out->definitive = v->uid_definitive;
+  out->uid = v->uid;
+  out->gid = v->gid;
+  sd_mutex_unlock(&v->lock);
 }
 
 void sd_vfs_quiesce(sd_vfs *v, DWORD budget_ms)
@@ -1459,7 +1595,9 @@ void sd_vfs_quiesce(sd_vfs *v, DWORD budget_ms)
     return;
   InterlockedExchange(&v->quiescing, 1);
   end = sd_tick_ms() + budget_ms;
-  /* Write-through: only the requests in flight; each finishes by its own deadline. */
+  /* Write-behind data drains within the budget; what is left is reported (02 §4.4, §6.6). */
+  vfs_data_quiesce(v, end);
+  /* Requests in flight finish by their own deadline. */
   while (InterlockedCompareExchange(&v->busy, 0, 0) != 0 && sd_tick_ms() < end)
     Sleep(10);
 }
@@ -1470,6 +1608,8 @@ void sd_vfs_unmount(sd_vfs *v)
   if (!v)
     return;
   InterlockedExchange(&v->quiescing, 1);
+  vfs_timer_stop(v);
+  vfs_data_quiesce(v, sd_tick_ms() + v->req_timeout);
   end = sd_tick_ms() + v->req_timeout + VFS_WAIT_GRACE_MS * 2;
   while (InterlockedCompareExchange(&v->busy, 0, 0) != 0 && sd_tick_ms() < end)
     Sleep(10);
@@ -1477,5 +1617,6 @@ void sd_vfs_unmount(sd_vfs *v)
     SD_LOGE(VFS_LOG, "unmount with requests still running; leaking the mount state");
     return;
   }
+  vc_drop_mount(v->mount_id);
   vfs_free_all(v);
 }

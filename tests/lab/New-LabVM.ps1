@@ -1,0 +1,71 @@
+<#
+.SYNOPSIS
+  Creates the Hyper-V lab VMs from user-supplied disks or ISOs, or takes their "base" checkpoint.
+
+.DESCRIPTION
+  For each VM in the lab config (or only -Name): generation 1, COM1 on the named pipe
+  \\.\pipe\sd-lab-<name> (read by Read-LabSerial.ps1), standard checkpoints, no automatic checkpoints.
+  With BaseVhdx a differencing disk is created on top of it (the base image is never written).
+  Without it, a 20 GB dynamic disk is created and InstallIso is attached for a manual Windows setup.
+
+  First-time workflow per VM (04 section 11.4):
+    1. New-LabVM.ps1 -Config lab.psd1 -Name <vm>
+    2. New-PayloadIso.ps1 -Flavours x86-ia32 -OutIso <iso>; attach it (Set-VMDvdDrive), boot the VM and
+       run \sdlab\install-runner.cmd inside the guest as an administrator; shut the guest down.
+    3. New-LabVM.ps1 -Config lab.psd1 -Name <vm> -Checkpoint     (takes the "base" checkpoint)
+  Afterwards Invoke-SdLab.ps1 restores "base" before every run.
+
+  Needs an elevated shell (or membership in "Hyper-V Administrators"). Downloads nothing.
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File tests\lab\New-LabVM.ps1 -Config D:\sdlab\lab.psd1
+#>
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory)] [string]$Config,
+  [string[]]$Name,
+  [switch]$Checkpoint
+)
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'SdLab.psm1') -Force
+Assert-HyperV
+$cfg = Import-LabConfig $Config
+$vms = @($cfg.VMs | Where-Object { -not $Name -or $Name -contains $_.Name })
+if (-not $vms) { throw 'No matching VM in the lab config.' }
+
+foreach ($v in $vms) {
+  $pipe = Get-LabPipeName $v.Name
+  if ($Checkpoint) {
+    $vm = Get-VM -Name $v.Name
+    if ($vm.State -ne 'Off') { throw "$($v.Name) is $($vm.State); shut the guest down first." }
+    Get-VMSnapshot -VM $vm -Name base -ErrorAction SilentlyContinue | Remove-VMSnapshot
+    Set-VMDvdDrive -VMName $v.Name -Path $null
+    Checkpoint-VM -VM $vm -SnapshotName base
+    Write-Host "$($v.Name): checkpoint 'base' taken."
+    continue
+  }
+  if (Get-VM -Name $v.Name -ErrorAction SilentlyContinue) { Write-Host "$($v.Name) exists, skipped."; continue }
+  $dir = Join-Path $cfg.LabRoot "vms\$($v.Name)"
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  $disk = Join-Path $dir 'system.vhdx'
+  if ($v.BaseVhdx) {
+    if (-not (Test-Path -LiteralPath $v.BaseVhdx)) { throw "$($v.Name): BaseVhdx '$($v.BaseVhdx)' not found." }
+    New-VHD -Path $disk -ParentPath $v.BaseVhdx -Differencing | Out-Null
+  } elseif ($v.InstallIso) {
+    if (-not (Test-Path -LiteralPath $v.InstallIso)) { throw "$($v.Name): InstallIso '$($v.InstallIso)' not found." }
+    New-VHD -Path $disk -SizeBytes 20GB -Dynamic | Out-Null
+  } else {
+    throw "$($v.Name): set BaseVhdx or InstallIso in the lab config."
+  }
+  $vm = New-VM -Name $v.Name -Generation 1 -MemoryStartupBytes ([int64]$v.MemoryMB * 1MB) -VHDPath $disk -Path $dir
+  Set-VM -VM $vm -CheckpointType Standard -AutomaticStopAction TurnOff -AutomaticCheckpointsEnabled $false
+  Set-VMMemory -VM $vm -DynamicMemoryEnabled $false
+  # NT 5.x / 6.1 guests need the reduced CPUID set (it also keeps the guest's view of the CPU stable).
+  Set-VMProcessor -VM $vm -Count $v.Cpus -CompatibilityForOlderOperatingSystemsEnabled $true
+  Get-VMNetworkAdapter -VM $vm | Remove-VMNetworkAdapter
+  if ($cfg.SwitchName) { Add-VMNetworkAdapter -VM $vm -SwitchName $cfg.SwitchName -IsLegacy $true }
+  Set-VMComPort -VM $vm -Number 1 -Path "\\.\pipe\$pipe"
+  if (-not (Get-VMDvdDrive -VM $vm)) { Add-VMDvdDrive -VM $vm -ControllerNumber 1 -ControllerLocation 0 }
+  if (-not $v.BaseVhdx) { Set-VMDvdDrive -VMName $v.Name -Path $v.InstallIso }
+  Write-Host "$($v.Name): created, COM1 = \\.\pipe\$pipe. Next: install-runner.cmd in the guest, then -Checkpoint."
+}
