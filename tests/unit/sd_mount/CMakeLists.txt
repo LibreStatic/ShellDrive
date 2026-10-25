@@ -7,5 +7,5 @@ target_include_directories(sd_mount_fake_backend PUBLIC "${CMAKE_CURRENT_SOURCE_
 set_target_properties(sd_mount_fake_backend PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(mount
-  SOURCES main.c test_mount.c
+  SOURCES main.c test_mount.c test_mount_m2.c
   DEPS sd_mount_fake_backend sd_mount)

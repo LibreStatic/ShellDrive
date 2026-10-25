@@ -17,6 +17,8 @@
 
 #define FAKE_PASSWORD   "secret"
 #define FAKE_PASSPHRASE "pass"
+#define FAKE_OTP        "123456"
+#define FAKE_PROXY_PASSWORD "proxypw"
 #define FAKE_FP         "SHA256:K3l2sJ0pAqv0d8ZbFakeFakeFakeFakeFakeFake0Q"
 
 const sd_mount_backend *fake_backend(void);
@@ -50,5 +52,26 @@ int      fake_backend_last_known_uid(uint32_t *uid);      /* 1 when known_identi
 /* raises a vfs event on the last mounted vfs, from a foreign thread like the real vfs */
 void     fake_backend_vfs_write_failed(const wchar_t *path, UINT64 bytes);
 void     fake_backend_vfs_identity(uint32_t uid, uint32_t gid);
+
+/* M2. Every hop of the chain: a proxy password prompt when its leg has a proxy user
+   (FAKE_PROXY_PASSWORD), TOFU unless trusted, then the same auth as above. Target host prefixes:
+   "kbd*" keyboard-interactive (password round, then an OTP round expecting FAKE_OTP), "legacy*"
+   negotiates 3des-cbc + hmac-sha1 (legacy ask: SD_PROMPT_LEGACY_ACK first; refuse: legacy_refused),
+   "chpw*" asks for a password change after the password (current = FAKE_PASSWORD, new == confirm),
+   "rotate*" announces one new and one removed host key after READY. connections > 1: one pool member
+   asks for the password (is_pool_member) after READY, then a POOL event (2 if it was answered right). */
+uint32_t fake_backend_last_hop_count(void);
+const char *fake_backend_last_hop_host(uint32_t i);
+const char *fake_backend_last_hop_user(uint32_t i);
+int      fake_backend_last_hop_proxy(uint32_t i);
+uint32_t fake_backend_last_hop_identities(uint32_t i);
+uint32_t fake_backend_last_hop_agent_keys(uint32_t i);
+int      fake_backend_last_hop_identities_only(uint32_t i);
+uint32_t fake_backend_last_connections(void);
+int      fake_backend_last_legacy_policy(void);
+uint32_t fake_backend_store_answers(void);           /* answers flagged SD_ANSWER_FROM_STORE */
+uint32_t fake_backend_applied(uint32_t *removed, const char **lookup_name);   /* kh_apply_hostkeys totals */
+uint32_t fake_backend_apply_calls(void);
+const char *fake_backend_last_new_password(void);
 
 #endif /* SD_FAKE_BACKEND_H */

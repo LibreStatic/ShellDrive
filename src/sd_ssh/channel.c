@@ -75,12 +75,18 @@ static int open_now(sd_ssh_conn *c, sd_ssh_channel *ch)
   ch->local_window = SSH_CH_WINDOW;
   ch->state = SSH_CH_OPENING;
   ch->deadline = ssh_now() + c->connect_timeout_ms;
-  sd_wr_init(&w, 256);
+  sd_wr_init(&w, 512);
   sd_wr_u8(&w, SSH_MSG_CHANNEL_OPEN);
-  sd_wr_cstring(&w, "session");
+  sd_wr_cstring(&w, ch->is_tcpip ? "direct-tcpip" : "session");
   sd_wr_u32(&w, ch->local_id);
   sd_wr_u32(&w, SSH_CH_WINDOW);
   sd_wr_u32(&w, SSH_CH_MAXPKT);
+  if (ch->is_tcpip) {           /* RFC 4254 §7.2: host to connect, port, originator address and port */
+    sd_wr_cstring(&w, ch->arg);
+    sd_wr_u32(&w, ch->tcpip_port);
+    sd_wr_cstring(&w, "127.0.0.1");
+    sd_wr_u32(&w, 0);
+  }
   ssh_send_wr(c, &w);
   return 1;
 }
@@ -138,6 +144,34 @@ static sd_err open_common(sd_ssh_conn *c, int is_exec, const char *arg, const sd
   e = ssh_post_cmd(c, &cc->cmd);
   if (e != SD_OK) { *out = NULL; sd_free(cc); ch_free(ch); }
   return e;
+}
+
+/* M2: direct-tcpip for ProxyJump (I/O thread only, 01 §5.1). */
+sd_err ssh_channel_open_tcpip(sd_ssh_conn *c, const char *host, uint16_t port, const sd_ssh_channel_sink *s,
+                              void *ctx, sd_ssh_channel **out)
+{
+  sd_ssh_channel *ch;
+  size_t n;
+  if (!c || !host || !s || !out || !port) return SD_E_INVALID_PARAM;
+  *out = NULL;
+  if (!sd_ssh_conn_is_io_thread(c)) return SD_E_INVALID_PARAM;
+  n = strlen(host);
+  if (n == 0 || n > 255) return SD_E_INVALID_PARAM;
+  ch = (sd_ssh_channel *)sd_calloc(1, sizeof(*ch));
+  if (ch) ch->arg = (char *)sd_alloc(n + 1);
+  if (!ch || !ch->arg) { if (ch) ch_free(ch); return SD_E_NO_MEMORY; }
+  memcpy(ch->arg, host, n + 1);
+  ch->c = c;
+  ch->sink = *s;
+  ch->ctx = ctx;
+  ch->is_tcpip = 1;
+  ch->tcpip_port = port;
+  ch->state = SSH_CH_PENDING;
+  ch->local_id = SSH_MAX_CHANNELS;
+  ch->serial = (uint32_t)InterlockedIncrement(&g_ch_serial);
+  *out = ch;
+  if (!open_now(c, ch)) *out = NULL;   /* on_open(err) already ran */
+  return SD_OK;
 }
 
 sd_err sd_ssh_channel_open_subsystem(sd_ssh_conn *c, const char *name, const sd_ssh_channel_sink *s, void *ctx,
@@ -239,6 +273,7 @@ static sd_err map_open_failure(uint32_t reason)
 {
   switch (reason) {
   case 1: return SD_E_ACCESS_DENIED;   /* administratively prohibited */
+  case 2: return SD_E_CONN_REFUSED;    /* connect failed (direct-tcpip) */
   case 3: return SD_E_UNSUPPORTED;     /* unknown channel type */
   case 4: return SD_E_BUSY;            /* resource shortage (e.g. MaxSessions) */
   default: return SD_E_FAILURE;
@@ -280,6 +315,13 @@ void ssh_channel_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
     ch->remote_window = win;
     ch->remote_max_packet = maxp ? maxp : 1;
     if (ch->close_wanted) { ch->state = SSH_CH_CLOSING; send_close(c, ch); return; }
+    if (ch->is_tcpip) {          /* no channel request: the tunnel is open */
+      ch->state = SSH_CH_OPEN;
+      ch->opened = 1;
+      ch->deadline = 0;
+      if (ch->sink.on_open) ch->sink.on_open(ch->ctx, SD_OK);
+      return;
+    }
     send_request(c, ch);
     return;
   }

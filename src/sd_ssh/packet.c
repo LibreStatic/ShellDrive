@@ -29,6 +29,8 @@ static int mac_info(const char *mac, sd_hash_alg *alg, int *etm)
   if (strcmp(mac, "hmac-sha2-512") == 0) { *alg = SD_HASH_SHA512; *etm = 0; return 1; }
   if (strcmp(mac, "hmac-sha2-256-etm@openssh.com") == 0) { *alg = SD_HASH_SHA256; *etm = 1; return 1; }
   if (strcmp(mac, "hmac-sha2-512-etm@openssh.com") == 0) { *alg = SD_HASH_SHA512; *etm = 1; return 1; }
+  if (strcmp(mac, "hmac-sha1") == 0) { *alg = SD_HASH_SHA1; *etm = 0; return 1; }
+  if (strcmp(mac, "hmac-sha1-etm@openssh.com") == 0) { *alg = SD_HASH_SHA1; *etm = 1; return 1; }
   return 0;
 }
 
@@ -70,6 +72,7 @@ sd_err ssh_dir_set_keys(ssh_dir *d, int encrypt, const char *cipher, const char 
 }
 
 static int dir_aead(const ssh_dir *d) { return d->ci && (d->ci->flags & SD_PC_AEAD); }
+static int cbc_mte(const ssh_dir *d) { return d->ci && (d->ci->flags & SD_PC_CBC) && !d->etm; }
 
 static void compute_mac(ssh_dir *d, const uint8_t *p, size_t n, uint8_t *out)
 {
@@ -133,6 +136,16 @@ sd_err ssh_pkt_open(ssh_dir *d, uint8_t *buf, size_t avail, size_t *consumed, sd
   payload->n = 0;
   *consumed = 0;
 
+  /* CBC with a non-ETM MAC (01 §4.1, Albrecht et al.): after an invalid length or a MAC failure keep
+     reading until SSH_MAX_PACKET_LEN bytes of this packet arrived, then fail, so the error's timing
+     does not tell where the length check failed. The input stays buffered (the caller's buffer holds
+     more than SSH_MAX_PACKET_LEN). */
+  if (d->rx_discard) {
+    if (avail < d->rx_discard) return SD_OK;
+    d->rx_discard = 0;
+    return SD_E_CRYPTO;
+  }
+
   if (!d->rx_have_len) {
     uint32_t len;
     int ctr_plain = d->ci && !aead && !d->etm;   /* length is inside the first encrypted block */
@@ -148,8 +161,10 @@ sd_err ssh_pkt_open(ssh_dir *d, uint8_t *buf, size_t avail, size_t *consumed, sd
       if (e != SD_OK) return SD_E_CRYPTO;
       len = sd_load_be32(buf);
     }
-    if (len < 5 || len > SSH_MAX_PACKET_LEN) return SD_E_PROTOCOL;
-    if (excl ? (len % d->block) != 0 : ((len + 4) % d->block) != 0) return SD_E_PROTOCOL;
+    if (len < 5 || len > SSH_MAX_PACKET_LEN || (excl ? (len % d->block) != 0 : ((len + 4) % d->block) != 0)) {
+      if (cbc_mte(d)) { d->rx_discard = SSH_MAX_PACKET_LEN; return avail < d->rx_discard ? SD_OK : SD_E_CRYPTO; }
+      return SD_E_PROTOCOL;
+    }
     d->rx_len = len;
     d->rx_have_len = 1;
   }
@@ -172,7 +187,10 @@ sd_err ssh_pkt_open(ssh_dir *d, uint8_t *buf, size_t avail, size_t *consumed, sd
     e = sd_pktcipher_crypt(d->pc, buf + d->block, 4 + (size_t)d->rx_len - d->block);
     if (e != SD_OK) return SD_E_CRYPTO;
     compute_mac(d, buf, 4 + (size_t)d->rx_len, mac);
-    if (!sd_ct_memeq(mac, buf + 4 + d->rx_len, d->mac_len)) return SD_E_CRYPTO;
+    if (!sd_ct_memeq(mac, buf + 4 + d->rx_len, d->mac_len)) {
+      if (cbc_mte(d) && total < SSH_MAX_PACKET_LEN) { d->rx_discard = SSH_MAX_PACKET_LEN; return avail < d->rx_discard ? SD_OK : SD_E_CRYPTO; }
+      return SD_E_CRYPTO;
+    }
   }
 
   padlen = buf[4];

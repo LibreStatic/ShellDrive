@@ -6,9 +6,27 @@
  * started after WebDAV was chosen, never for a Dokany mount, TM-R21). A forced backend never falls
  * back. sd_mount_backend_kind_used() reports the resolved one.
  *
- * Scope: one hop, direct TCP, drive letters only, no pool, prompts relayed to the host (hostkey TOFU,
- * password, key passphrase, keyboard-interactive). A changed host key is never a prompt: sd_ssh fails
- * the connection and sd_mount reports SD_E_HOSTKEY_MISMATCH with the stored and offered fingerprints.
+ * Scope: drive letters only, prompts relayed to the host (hostkey TOFU, password, key passphrase,
+ * keyboard-interactive, password change, legacy ack, proxy password). A changed host key is never a
+ * prompt: sd_ssh fails the connection and sd_mount reports SD_E_HOSTKEY_MISMATCH with the stored and
+ * offered fingerprints.
+ *
+ * M2 (03 §2.5, §3.4.1, §3.8, §4, §5.6, §7.6): a chain of up to 8 jump hops plus the target
+ * (params.hops), a proxy per leg, several identities per hop (files, a DPAPI-kept key blob, agent keys
+ * by fingerprint, certificates), agents, the D37 identities_only rule (resolved by the caller), the
+ * store list of known_hosts (machine, user, live sources), legacy policy and the legacy warning, the
+ * connection pool size (D18), UpdateHostKeys announcements, and saved secrets:
+ * - Prompts are first answered from the host's secret store (cb.secret_get, on the control thread)
+ *   with SD_ANSWER_FROM_STORE: passwords (and a keyboard-interactive round of exactly one non-echo
+ *   prompt that looks like a password, 4.2), key passphrases and proxy passwords. Never on a
+ *   hostkey_just_accepted connection for secrets that would travel through the freshly trusted hop or
+ *   a later one (TM-R05; passphrases decrypt a local key and are still filled), never twice for the
+ *   same hop and kind in one connection (a rejected stored secret goes to the user), never for OTP
+ *   rounds, password changes or legacy acks.
+ * - Pool members (is_pool_member) are answered from the store or cancelled, never shown; a cancelled
+ *   member raises warning pool_limited (reason interactive_auth) once.
+ * - An answer with SD_MOUNT_ANSWER_SAVE is written through cb.secret_put once the connection is READY
+ *   (authentication succeeded), and wiped otherwise.
  *
  * M1 resilience (01 §10.6, 02 §5, 03 §1.11): the session reconnects by itself (policy from the params;
  * the reconnect secret cache is on, TM-R05 is enforced by sd_ssh). A MOUNTED mount whose connection is
@@ -43,6 +61,7 @@
 #include "sd_vfs/sd_vfs.h"
 #include "sd_dokan/sd_dokan.h"
 #include "sd_webdav/sd_webdav.h"
+#include "sd_platform/sd_secbuf.h"
 
 typedef struct sd_mount sd_mount;
 
@@ -83,6 +102,12 @@ typedef struct sd_mount_backend {
   void   (*vfs_cache_set_budget)(UINT64 bytes);
   void   (*vfs_get_identity)(sd_vfs *v, sd_vfs_identity *out);
   void   (*webdav_emergency_unmap)(void);                /* crash filter (TM-R17 b) */
+  /* M2 (NULL in older fakes: answer_ex falls back to answer, ack/apply/unprotect are unsupported) */
+  sd_err (*prompt_answer_ex)(sd_prompt *p, uint32_t n, const char *const *utf8_responses, uint32_t answer_flags);
+  sd_err (*prompt_answer_ack)(sd_prompt *p, int accept);
+  sd_err (*kh_apply_hostkeys)(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                              const sd_hk_key *add, uint32_t add_count, const sd_hk_key *remove, uint32_t remove_count);
+  sd_err (*key_dpapi_unprotect)(const uint8_t *bytes, size_t len, const char *id, sd_secbuf **out);
 } sd_mount_backend;
 
 typedef enum sd_mount_backend_kind {
@@ -121,12 +146,59 @@ typedef struct sd_mount_params {
   uint32_t reconnect_max_ms;            /* 60000 */
   uint32_t reconnect_max_attempts;      /* 0 = unlimited */
   int no_secret_cache;                  /* auth.cache_secrets_for_reconnect = no */
+  /* M2; 0 / NULL = M1 behaviour */
+  const struct sd_mount_hop *hops;      /* jump hops then the target; NULL = one hop from the fields above */
+  uint32_t hop_count;                   /* 0..9 */
+  int legacy_policy;                    /* sd_legacy_policy; default SD_LEGACY_WARN (D33) */
+  int refuse_terrapin_exposed;
+  uint32_t connections;                 /* pool size 1..4 (D18); 0 = 1 */
+  uint32_t keepalive_ms, connect_timeout_ms;   /* 0 = sd_ssh defaults */
+  const wchar_t *profile_name;          /* shown in Credential Manager comments */
+  const sd_kh_store *kh_stores;         /* store list (5.1); NULL = the user store at known_hosts_path */
+  uint32_t kh_store_count;
 } sd_mount_params;
 
+/* One leg's proxy (3.8); kind SD_PROXY_NONE = direct. */
+typedef struct sd_mount_proxy {
+  int kind;                             /* sd_proxy_kind */
+  const wchar_t *host; uint16_t port;
+  const char *user;                     /* UTF-8; NULL/"" = none */
+  uint32_t auth;                        /* SD_PROXY_AUTH_* */
+  int allow_discovered_sspi;            /* policy AllowSystemProxySspi (TM-R10) */
+  int fallback_direct;                  /* system only */
+} sd_mount_proxy;
+
+#define SD_MOUNT_MAX_HOPS 9
+#define SD_MOUNT_MAX_IDENTITIES 4
+#define SD_MOUNT_MAX_AGENT_KEYS 8
+
+/* One hop of the chain. Strings are deep-copied by sd_mount_create. */
+typedef struct sd_mount_hop {
+  const wchar_t *host; uint16_t port;   /* port 0 = 22 */
+  const char *user;                     /* UTF-8, required */
+  const wchar_t *const *identities; uint32_t identity_count;   /* expanded key files (<= 4) */
+  const uint8_t *key_blob; size_t key_blob_len; const char *key_label;   /* decrypted DPAPI-kept key */
+  const wchar_t *certificate;           /* auth.certificate (applies to the first identity) */
+  uint32_t agents;                      /* SD_AGENT_* (0 in the service, D17) */
+  int identities_only;                  /* resolved (D37) */
+  const char *agent_keys;               /* comma list of SHA256: fingerprints (auth.agent_keys) */
+  uint32_t auth_methods;                /* SD_AUTH_*; 0 = all three */
+  const char *host_key_alias;
+  int update_host_keys;                 /* sd_hku_mode */
+  int no_save;                          /* auth.save_password = no: prompts are not savable */
+  sd_mount_proxy proxy;                 /* the leg that reaches this hop */
+} sd_mount_hop;
+
 typedef enum sd_mount_prompt_kind {
-  SD_MP_HOSTKEY, SD_MP_PASSWORD, SD_MP_PASSPHRASE, SD_MP_KBDINT
+  SD_MP_HOSTKEY, SD_MP_PASSWORD, SD_MP_PASSPHRASE, SD_MP_KBDINT,
+  SD_MP_PASSWORD_CHANGE, SD_MP_LEGACY_ACK, SD_MP_PROXY_PASSWORD     /* M2 */
 } sd_mount_prompt_kind;
-const char *sd_mount_prompt_kind_name(sd_mount_prompt_kind k);  /* "hostkey_unknown", "password", ... */
+/* "hostkey_unknown", "password", "passphrase", "kbdint", "password_change", "legacy_ack", "proxy_password" */
+const char *sd_mount_prompt_kind_name(sd_mount_prompt_kind k);
+
+/* Secret kinds of cb.secret_get / secret_put: same values as sd_secret_kind. Targets are raw
+   sd_secret targets ("user@host:port", "SHA256:...", "<http|socks5>:user@proxy:port"). */
+enum { SD_MOUNT_SECRET_PASSWORD = 0, SD_MOUNT_SECRET_PASSPHRASE = 1, SD_MOUNT_SECRET_PROXY = 2 };
 
 #define SD_MOUNT_PROMPT_MAX_ITEMS 8
 
@@ -150,7 +222,33 @@ typedef struct sd_mount_prompt {
   char name[256], instruction[1024];    /* kbd-int (server text, sanitized) */
   uint32_t item_count;
   struct { char text[512]; int echo; } items[SD_MOUNT_PROMPT_MAX_ITEMS];
+  /* M2 */
+  uint32_t hop_count;                   /* hops of the chain (1 = no jump hosts) */
+  char via_host[256];                   /* hop_index >= 1: the jump host before it (TM-R03) */
+  int is_reconnect;
+  int can_save;                         /* a "save" answer would be kept (password, passphrase, proxy) */
+  char proxy_host[256];                 /* SD_MP_PROXY_PASSWORD */
+  uint16_t proxy_port;
+  char legacy_names[512];               /* SD_MP_LEGACY_ACK: comma list */
 } sd_mount_prompt;
+
+/* UpdateHostKeys announcement (5.6), copied for the host. */
+#define SD_MOUNT_ANNOUNCE_MAX 8
+typedef struct sd_mount_hostkey { char type[64]; char fp_sha256[64]; uint8_t blob[2048]; size_t len; } sd_mount_hostkey;
+typedef struct sd_mount_announcement {
+  uint32_t hop_index;
+  char host[256];                       /* the hop's host (display) */
+  char lookup_name[300];
+  int mode;                             /* sd_hku_mode of the hop */
+  uint32_t add_count, remove_count;
+  sd_mount_hostkey add[SD_MOUNT_ANNOUNCE_MAX], remove[SD_MOUNT_ANNOUNCE_MAX];
+} sd_mount_announcement;
+/* Applies an announcement to the user store (never the machine store from a user connection):
+   removals first unless add_only, then the proven additions with "# updated-by=hostkeys-00". Opens
+   its own sd_known_hosts on the given store list (the user store must be writable in it). Any thread
+   that may do file I/O. */
+sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
+                               const sd_mount_announcement *a, int add_only);
 
 /* Details kept for the error report of a failed mount. */
 typedef struct sd_mount_failure {
@@ -181,6 +279,17 @@ typedef struct sd_mount_callbacks {
      the vfs mounts (return 1 and fill *out to pass a known identity), store once it is definitive. */
   int  (*lookup_identity)(void *ctx, sd_mount *m, const char *hostkey_fp, sd_vfs_identity *out);
   void (*store_identity)(void *ctx, sd_mount *m, const char *hostkey_fp, const sd_vfs_identity *id);
+  /* M2, all optional, control thread. secret_get: copy the saved secret (UTF-8, NUL-terminated) into
+     out and return 1; out is wiped by sd_mount after use. secret_put: save (value is wiped after). */
+  int  (*secret_get)(void *ctx, sd_mount *m, int kind, const char *target, char *out, size_t cap);
+  void (*secret_put)(void *ctx, sd_mount *m, int kind, const char *target, const char *value);
+  /* Warnings (03 §2.4, §7.6): "legacy_algorithms" (detail = comma list of the outdated algorithms
+     of that hop, sorted; the host compares the set with security.legacy_accepted), "proxy_cleartext"
+     (detail = proxy host:port), "pool_limited" (detail = "interactive_auth"). Once per mount and hop. */
+  void (*on_warning)(void *ctx, sd_mount *m, const char *code, uint32_t hop, const char *detail);
+  /* UpdateHostKeys (5.6): update_host_keys = yes was applied already (applied = 1, result in err);
+     ask: the host keeps it for review (hostkeys.announced); no: not called. */
+  void (*on_hostkeys_announced)(void *ctx, sd_mount *m, const sd_mount_announcement *a, int applied, sd_err err);
 } sd_mount_callbacks;
 
 sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *params, const sd_mount_callbacks *cb,
@@ -209,19 +318,28 @@ typedef struct sd_mount_conn {
   UINT64 offline_since_ms;              /* sd_tick_ms() of the loss; 0 when connected */
   uint32_t write_failed;                /* WRITE_FAILED events of this mount */
   wchar_t last_write_failed[260];       /* display path of the last one */
+  /* M2 */
+  uint32_t pool;                        /* pool members READY (incl. the primary); 0 before the first POOL event */
+  uint32_t pool_wanted;                 /* params.connections */
+  uint32_t failed_hop;                  /* hop of the last failure (0-based) */
 } sd_mount_conn;
 const char *sd_mount_session_state_name(sd_sftp_state st);   /* "ready", "reconnect_wait", ... */
 void sd_mount_get_conn(const sd_mount *m, sd_mount_conn *out);
 
 typedef enum sd_mount_answer_kind {
-  SD_MA_RESPONSES,                      /* password / passphrase / kbd-int responses */
-  SD_MA_HOSTKEY_TRUST,                  /* accept and store */
+  SD_MA_RESPONSES,                      /* password / passphrase / kbd-int / password change responses */
+  SD_MA_HOSTKEY_TRUST,                  /* accept and store; for legacy_ack: continue */
   SD_MA_HOSTKEY_ONCE,                   /* accept for this connection */
   SD_MA_REJECT                          /* reject the key or cancel the prompt */
 } sd_mount_answer_kind;
 /* Any thread. SD_E_NOT_FOUND when the prompt was answered, withdrawn or never existed. */
 sd_err sd_mount_answer(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kind, uint32_t n,
                        const char *const *utf8_responses);
+/* M2: answer flags. SAVE keeps the secret (cb.secret_put) once the connection is READY; ignored for
+   prompts that are not savable (can_save = 0). */
+enum { SD_MOUNT_ANSWER_SAVE = 1u << 0 };
+sd_err sd_mount_answer_ex(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kind, uint32_t n,
+                          const char *const *utf8_responses, uint32_t flags);
 /* Cancels every open prompt (e.g. the requesting client went away). Any thread. */
 uint32_t sd_mount_cancel_prompts(sd_mount *m);   /* returns how many were open */
 

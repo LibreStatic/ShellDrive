@@ -6,14 +6,16 @@
  * payload uses K_2 from block counter 1; the tag covers encrypted length || encrypted payload.
  * aesN-gcm@openssh.com follows RFC 5647 framing: AAD = 4-byte packet length, 12-byte nonce = 4-byte
  * fixed field + 64-bit invocation counter, incremented after every packet. aesN-ctr keeps one
- * 128-bit big-endian counter across calls. */
+ * 128-bit big-endian counter across calls. aesN-cbc and 3des-cbc (RFC 4253 6.3, legacy, decisions.md D33)
+ * keep the CBC chaining value across calls; 3DES is the constant-time core of des3.c. */
 #include <string.h>
 
 #include "crypto_internal.h"
+#include "des3_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_crypto/sd_ct.h"
 
-enum { PC_CHACHA = 1, PC_GCM = 2, PC_CTR = 3 };
+enum { PC_CHACHA = 1, PC_GCM = 2, PC_CTR = 3, PC_CBC = 4, PC_3DES = 5 };
 
 static const sd_pktcipher_info k_infos[] = {
   { "chacha20-poly1305@openssh.com", 64, 0, 8, 16, SD_PC_AEAD | SD_PC_LEN_ENCRYPTED },
@@ -22,6 +24,10 @@ static const sd_pktcipher_info k_infos[] = {
   { "aes128-ctr", 16, 16, 16, 0, 0 },
   { "aes192-ctr", 24, 16, 16, 0, 0 },
   { "aes256-ctr", 32, 16, 16, 0, 0 },
+  { "aes128-cbc", 16, 16, 16, 0, SD_PC_CBC | SD_PC_LEGACY },
+  { "aes192-cbc", 24, 16, 16, 0, SD_PC_CBC | SD_PC_LEGACY },
+  { "aes256-cbc", 32, 16, 16, 0, SD_PC_CBC | SD_PC_LEGACY },
+  { "3des-cbc", 24, 8, 8, 0, SD_PC_CBC | SD_PC_LEGACY },
 };
 
 struct sd_pktcipher {
@@ -29,9 +35,10 @@ struct sd_pktcipher {
   int kind;
   int encrypt;
   uint8_t k_main[32], k_hdr[32];   /* chacha: K_2, K_1 */
-  uint8_t iv[16];                  /* gcm: nonce (12 bytes); ctr: counter block */
+  uint8_t iv[16];                  /* gcm: nonce (12 bytes); ctr: counter block; cbc: chaining value */
   sd_cng_key *cng;                 /* CNG key when that backend is used, else NULL */
   sd_aes_own aes;
+  sd_des3_key des3;
 };
 
 const sd_pktcipher_info *sd_pktcipher_find(const char *ssh_name)
@@ -50,7 +57,7 @@ static int kind_of(const sd_pktcipher_info *i)
   size_t n = (size_t)(i - k_infos);
   if (i < k_infos || n >= SD_COUNTOF(k_infos))
     return 0;
-  return n == 0 ? PC_CHACHA : n <= 2 ? PC_GCM : PC_CTR;
+  return n == 0 ? PC_CHACHA : n <= 2 ? PC_GCM : n <= 5 ? PC_CTR : n <= 8 ? PC_CBC : PC_3DES;
 }
 
 sd_err sd_pktcipher_new(const sd_pktcipher_info *i, int encrypt, const uint8_t *key, const uint8_t *iv,
@@ -74,6 +81,12 @@ sd_err sd_pktcipher_new(const sd_pktcipher_info *i, int encrypt, const uint8_t *
   if (kind == PC_CHACHA) {
     memcpy(c->k_main, key, 32);
     memcpy(c->k_hdr, key + 32, 32);
+  } else if (kind == PC_3DES) {
+    memcpy(c->iv, iv, 8);
+    sd_des3_key_init(&c->des3, key);
+  } else if (kind == PC_CBC) {
+    memcpy(c->iv, iv, 16);
+    err = sd_aes_own_init(&c->aes, key, i->key_len);
   } else {
     memcpy(c->iv, iv, i->iv_len);
     if ((kind == PC_GCM && sd_crypto_use_cng_gcm()) || (kind == PC_CTR && sd_crypto_use_cng_aes()))
@@ -109,9 +122,68 @@ static void ctr_inc128(uint8_t c[16])
   }
 }
 
+/* AES-CBC on the own constant-time core; iv is the chaining value and is updated; in may equal out.
+   Decryption runs four blocks per core call. */
+static void aes_cbc_own(const sd_aes_own *k, int encrypt, uint8_t iv[16], const uint8_t *in, size_t len,
+                        uint8_t *out)
+{
+  size_t i, j;
+  if (encrypt) {
+    uint8_t blk[16];
+    for (i = 0; i < len; i += 16) {
+      for (j = 0; j < 16; j++)
+        blk[j] = (uint8_t)(in[i + j] ^ iv[j]);
+      sd_aes_own_encrypt(k, blk, out + i, 1);
+      memcpy(iv, out + i, 16);
+    }
+    sd_secure_zero(blk, sizeof(blk));
+  } else {
+    uint8_t ct[64], pt[64];
+    for (i = 0; i < len; i += 64) {
+      size_t n_bytes = SD_MIN((size_t)64, len - i);
+      memcpy(ct, in + i, n_bytes);
+      sd_aes_own_decrypt(k, ct, pt, n_bytes / 16);
+      for (j = 0; j < n_bytes; j++)
+        out[i + j] = (uint8_t)(pt[j] ^ (j < 16 ? iv[j] : ct[j - 16]));
+      memcpy(iv, ct + n_bytes - 16, 16);
+    }
+    sd_secure_zero(pt, sizeof(pt));
+    sd_secure_zero(ct, sizeof(ct));
+  }
+}
+
+sd_err sd_aes_cbc(int encrypt, const uint8_t *key, size_t key_len, const uint8_t iv[16],
+                  const uint8_t *in, size_t len, uint8_t *out)
+{
+  sd_aes_own k;
+  uint8_t chain[16];
+  sd_err err;
+  if (key == NULL || iv == NULL || len % 16 || (len && (in == NULL || out == NULL)))
+    return SD_E_INVALID_PARAM;
+  err = sd_aes_own_init(&k, key, key_len);
+  if (err != SD_OK)
+    return err;
+  memcpy(chain, iv, 16);
+  aes_cbc_own(&k, encrypt, chain, in, len, out);
+  sd_secure_zero(chain, sizeof(chain));
+  sd_aes_own_wipe(&k);
+  return SD_OK;
+}
+
 sd_err sd_pktcipher_crypt(sd_pktcipher *c, uint8_t *buf, size_t len)
 {
-  if (c == NULL || c->kind != PC_CTR || len % 16 || (len && buf == NULL))
+  if (c == NULL || (len && buf == NULL))
+    return SD_E_INVALID_PARAM;
+  if (c->kind == PC_CBC || c->kind == PC_3DES) {
+    if (len % c->info->block_len)
+      return SD_E_INVALID_PARAM;
+    if (c->kind == PC_3DES)
+      sd_des3_cbc(&c->des3, c->encrypt, c->iv, buf, len, buf);
+    else
+      aes_cbc_own(&c->aes, c->encrypt, c->iv, buf, len, buf);
+    return SD_OK;
+  }
+  if (c->kind != PC_CTR || len % 16)
     return SD_E_INVALID_PARAM;
   if (c->cng) {
     uint8_t ks[4096];
@@ -245,16 +317,14 @@ static const oneshot_name k_oneshot[] = {
   { "aes128-ctr", 16, 0 }, { "aes192-ctr", 24, 0 }, { "aes256-ctr", 32, 0 },
   { "aes128-cbc", 16, 1 }, { "aes192-cbc", 24, 1 }, { "aes256-cbc", 32, 1 },
   { "AES-128-CBC", 16, 1 }, { "AES-192-CBC", 24, 1 }, { "AES-256-CBC", 32, 1 },   /* PEM DEK-Info */
+  { "3des-cbc", 24, 2 }, { "DES-EDE3-CBC", 24, 2 },                              /* cbc = 2: 3DES */
 };
 
 sd_err sd_cipher_oneshot(const char *ssh_or_pem_name, int encrypt, const uint8_t *key, const uint8_t *iv,
                          uint8_t *buf, size_t len)
 {
   const oneshot_name *n = NULL;
-  sd_aes_own k;
-  uint8_t chain[16];
   size_t i;
-  sd_err err;
   if (ssh_or_pem_name == NULL || key == NULL || iv == NULL || (len && buf == NULL))
     return SD_E_INVALID_PARAM;
   for (i = 0; i < SD_COUNTOF(k_oneshot); i++)
@@ -262,36 +332,9 @@ sd_err sd_cipher_oneshot(const char *ssh_or_pem_name, int encrypt, const uint8_t
       n = &k_oneshot[i];
   if (n == NULL)
     return SD_E_UNSUPPORTED;
-  if (!n->cbc)
+  if (n->cbc == 0)
     return sd_aes_ctr(key, n->key_len, iv, buf, len, buf);
-  if (len % 16)
-    return SD_E_INVALID_PARAM;
-  err = sd_aes_own_init(&k, key, n->key_len);
-  if (err != SD_OK)
-    return err;
-  memcpy(chain, iv, 16);
-  if (encrypt) {
-    for (i = 0; i < len; i += 16) {
-      size_t j;
-      for (j = 0; j < 16; j++)
-        buf[i + j] ^= chain[j];
-      sd_aes_own_encrypt(&k, buf + i, buf + i, 1);
-      memcpy(chain, buf + i, 16);
-    }
-  } else {
-    uint8_t ct[64], pt[64];
-    for (i = 0; i < len; i += 64) {
-      size_t n_bytes = SD_MIN((size_t)64, len - i), j;
-      memcpy(ct, buf + i, n_bytes);
-      sd_aes_own_decrypt(&k, ct, pt, n_bytes / 16);
-      for (j = 0; j < n_bytes; j++)
-        buf[i + j] = (uint8_t)(pt[j] ^ (j < 16 ? chain[j] : ct[j - 16]));
-      memcpy(chain, ct + n_bytes - 16, 16);
-    }
-    sd_secure_zero(pt, sizeof(pt));
-    sd_secure_zero(ct, sizeof(ct));
-  }
-  sd_secure_zero(chain, sizeof(chain));
-  sd_aes_own_wipe(&k);
-  return SD_OK;
+  if (n->cbc == 2)
+    return sd_3des_cbc(encrypt, key, iv, buf, len, buf);
+  return sd_aes_cbc(encrypt, key, n->key_len, iv, buf, len, buf);
 }

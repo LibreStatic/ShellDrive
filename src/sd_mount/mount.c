@@ -1,5 +1,6 @@
 /* sd_mount glue (03 §1.11). See sd_mount.h for the contract. */
 #include <windows.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sd_mount/sd_mount.h"
@@ -10,11 +11,37 @@
 #include "sd_platform/sd_time.h"
 
 #define MAX_PROMPTS 8
+#define MAX_SAVES 8
+#define TARGET_CAP 320
+#define SECRET_CAP 1024
+#define NO_HOP 0xFFFFFFFFu
 
-typedef struct pending_prompt { uint32_t id; sd_prompt *p; sd_mount_prompt_kind kind; } pending_prompt;
+typedef struct pending_prompt {
+  uint32_t id; sd_prompt *p; sd_mount_prompt_kind kind;
+  /* M2 */
+  uint32_t hop;
+  int skind;                     /* SD_MOUNT_SECRET_* this prompt can be answered from, or -1 */
+  int savable;
+  char target[TARGET_CAP];
+} pending_prompt;
 
 enum { EV_READY, EV_FAILED, EV_DISCONNECTED, EV_CLOSED, EV_PROMPT, EV_PROMPT_CLOSED, EV_DOKAN_UNMOUNTED,
-       EV_CONN, EV_AUTH_REQUIRED, EV_WRITE_FAILED, EV_NOTICE, EV_IDENTITY };
+       EV_CONN, EV_AUTH_REQUIRED, EV_WRITE_FAILED, EV_NOTICE, EV_IDENTITY,
+       EV_WARNING, EV_ANNOUNCED };
+
+/* M2: owned copy of one hop (sd_mount_hop) */
+typedef struct owned_hop {
+  wchar_t *host; uint16_t port; char *user;
+  char host8[256];               /* UTF-8 host (secret targets, prompt labels) */
+  wchar_t *ident[SD_MOUNT_MAX_IDENTITIES]; uint32_t nident;
+  uint8_t *blob; size_t blob_len; char *label;
+  wchar_t *cert;
+  uint32_t agents; int ident_only;
+  char agent_key[SD_MOUNT_MAX_AGENT_KEYS][72]; uint32_t nagent_keys;
+  uint32_t methods; char *alias; int hku; int no_save;
+  int pkind; wchar_t *phost; uint16_t pport; char *puser; uint32_t pauth; int psspi, pfallback;
+  char phost8[256];
+} owned_hop;
 
 typedef struct mount_item {
   sd_mount *m;
@@ -27,6 +54,10 @@ typedef struct mount_item {
   const char *status;            /* static string */
   wchar_t path[260];
   char code[48], detail[256];
+  /* M2 */
+  int pool_member;               /* EV_PROMPT of a pool member: store or cancel, never shown */
+  uint32_t hop;                  /* EV_WARNING */
+  sd_mount_announcement *ann;    /* EV_ANNOUNCED */
 } mount_item;
 
 struct sd_mount {
@@ -73,6 +104,22 @@ struct sd_mount {
   sd_mount_conn conn;             /* M1 connection sub-state */
   char hostkey_fp[64];            /* verified host key of the current connection */
   sd_vfs_identity known_id;       /* passed to the vfs (lookup_identity) */
+  /* M2 */
+  owned_hop hops[SD_MOUNT_MAX_HOPS];
+  uint32_t nhops;
+  sd_ssh_hop sshhops[SD_MOUNT_MAX_HOPS];
+  sd_ssh_identity ids[SD_MOUNT_MAX_HOPS][SD_MOUNT_MAX_IDENTITIES + 1 + SD_MOUNT_MAX_AGENT_KEYS];
+  sd_kh_store *stores;
+  uint32_t nstores;
+  int legacy_policy, refuse_terrapin;
+  uint32_t connections, keepalive, ctimeout;
+  wchar_t *profile_name;
+  uint32_t ja_from;               /* first hop whose key was accepted by a prompt in this connection (TM-R05) */
+  uint32_t autofilled[3];         /* per secret kind, bit per hop: a stored secret was used in this connection */
+  struct { int kind; char target[TARGET_CAP]; char *value; size_t len; } saves[MAX_SAVES];
+  uint32_t nsaves;
+  uint32_t warned_legacy, warned_proxy;   /* bit per hop */
+  int warned_pool;
 };
 
 static const char *const k_sess_names[] = {
@@ -119,6 +166,9 @@ const char *sd_mount_prompt_kind_name(sd_mount_prompt_kind k)
   case SD_MP_PASSWORD:   return "password";
   case SD_MP_PASSPHRASE: return "passphrase";
   case SD_MP_KBDINT:     return "kbdint";
+  case SD_MP_PASSWORD_CHANGE: return "password_change";
+  case SD_MP_LEGACY_ACK: return "legacy_ack";
+  case SD_MP_PROXY_PASSWORD: return "proxy_password";
   }
   return "password";
 }
@@ -161,8 +211,39 @@ static void scopy(char *dst, size_t cap, const char *src)
 
 static void addref(sd_mount *m) { InterlockedIncrement(&m->refs); }
 
+static void wipe_saves(sd_mount *m)
+{
+  uint32_t i;
+  for (i = 0; i < m->nsaves; i++) {
+    if (m->saves[i].value) sd_secure_free(m->saves[i].value, m->saves[i].len + 1);
+    m->saves[i].value = NULL;
+  }
+  m->nsaves = 0;
+}
+
+static void free_hop(owned_hop *h)
+{
+  uint32_t i;
+  sd_free(h->host);
+  sd_free(h->user);
+  for (i = 0; i < SD_MOUNT_MAX_IDENTITIES; i++) sd_free(h->ident[i]);
+  if (h->blob) sd_secure_free(h->blob, h->blob_len);
+  sd_free(h->label);
+  sd_free(h->cert);
+  sd_free(h->alias);
+  sd_free(h->phost);
+  sd_free(h->puser);
+  memset(h, 0, sizeof(*h));
+}
+
 static void free_mount(sd_mount *m)
 {
+  uint32_t i;
+  wipe_saves(m);
+  for (i = 0; i < SD_MOUNT_MAX_HOPS; i++) free_hop(&m->hops[i]);
+  for (i = 0; i < m->nstores; i++) sd_free((void *)m->stores[i].path);
+  sd_free(m->stores);
+  sd_free(m->profile_name);
   sd_free(m->host);
   sd_free(m->identity);
   sd_free(m->label);
@@ -294,6 +375,9 @@ static void finish(sd_mount *m)
   sd_err why;
   if (m->finished)
     return;
+  sd_mutex_lock(&m->lock);
+  wipe_saves(m);
+  sd_mutex_unlock(&m->lock);
   if (m->sess) {
     m->be->session_destroy(m->sess);
     m->sess = NULL;
@@ -392,6 +476,54 @@ static int choose_backend(sd_mount *m)
   return SD_MOUNT_BACKEND_WEBDAV;
 }
 
+/* Authentication succeeded: keep the secrets the user asked to save (4.2). */
+static void commit_saves(sd_mount *m)
+{
+  uint32_t i, n;
+  struct { int kind; char target[TARGET_CAP]; char *value; size_t len; } local[MAX_SAVES];
+  sd_mutex_lock(&m->lock);
+  n = m->nsaves;
+  memcpy(local, m->saves, sizeof(local[0]) * n);
+  m->nsaves = 0;
+  sd_mutex_unlock(&m->lock);
+  for (i = 0; i < n; i++) {
+    if (m->cb.secret_put && local[i].value)
+      m->cb.secret_put(m->cb.ctx, m, local[i].kind, local[i].target, local[i].value);
+    if (local[i].value) sd_secure_free(local[i].value, local[i].len + 1);
+  }
+}
+
+/* 3.8: HTTP Basic and SOCKS5 username/password send the proxy password in clear text to the proxy. */
+static void warn_proxy_cleartext(sd_mount *m)
+{
+  uint32_t i;
+  for (i = 0; i < m->nhops; i++) {
+    owned_hop *h = &m->hops[i];
+    char detail[300];
+    int clear = (h->pkind == SD_PROXY_HTTP && (h->pauth & SD_PROXY_AUTH_BASIC) && h->puser && h->puser[0]) ||
+                (h->pkind == SD_PROXY_SOCKS5 && h->puser && h->puser[0]);
+    if (!clear || (m->warned_proxy & (1u << i)))
+      continue;
+    m->warned_proxy |= 1u << i;
+    scopy(detail, sizeof(detail), h->phost8);
+    {
+      char num[8];
+      uint32_t v = h->pport, k = 0;
+      char tmp[8];
+      size_t tn = 0, dl = strlen(detail);
+      do { tmp[tn++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+      while (tn) num[k++] = tmp[--tn];
+      num[k] = 0;
+      if (dl + k + 2 < sizeof(detail)) {
+        detail[dl] = ':';
+        memcpy(detail + dl + 1, num, k + 1);
+      }
+    }
+    if (m->cb.on_warning)
+      m->cb.on_warning(m->cb.ctx, m, "proxy_cleartext", i, detail);
+  }
+}
+
 static void on_ready(sd_mount *m)
 {
   sd_vfs_options vo;
@@ -400,6 +532,8 @@ static void on_ready(sd_mount *m)
   sd_err e;
   if (m->stopping)
     return;
+  commit_saves(m);
+  warn_proxy_cleartext(m);
   if (m->vfs) {
     /* reconnected (generation > 1): the vfs and the backend stay; the vfs re-syncs by itself */
     set_state(m, SD_MOUNT_MOUNTED, SD_OK);
@@ -499,6 +633,10 @@ static void on_ready(sd_mount *m)
   set_state(m, SD_MOUNT_MOUNTED, SD_OK);
 }
 
+static int try_autofill(sd_mount *m, const sd_mount_prompt *mp);
+static int take_prompt_by_id(sd_mount *m, uint32_t id, sd_prompt **p, sd_mount_prompt_kind *kind, pending_prompt *copy);
+static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, const sd_mount_announcement *a, int add_only);
+
 static void run_item(void *arg)
 {
   mount_item *it = (mount_item *)arg;
@@ -567,10 +705,52 @@ static void run_item(void *arg)
       }
       break;
     case EV_PROMPT:
+      if (try_autofill(m, it->prompt))
+        break;
+      if (it->pool_member) {
+        /* secondary pool connections never prompt (2.5, D18) */
+        uint32_t pid = it->prompt->id;
+        sd_prompt *p = NULL;
+        sd_mount_prompt_kind pk = SD_MP_PASSWORD;
+        if (take_prompt_by_id(m, pid, &p, &pk, NULL)) {
+          if (pk == SD_MP_HOSTKEY) m->be->prompt_answer_hostkey(p, SD_HK_REJECT);
+          else m->be->prompt_cancel(p);
+        }
+        if (!m->warned_pool) {
+          m->warned_pool = 1;
+          SD_LOGI("mount", "%c: pool member needs interactive auth; pool limited", (int)m->letter);
+          if (m->cb.on_warning) m->cb.on_warning(m->cb.ctx, m, "pool_limited", 0, "interactive_auth");
+        }
+        break;
+      }
       if (m->state == SD_MOUNT_CONNECTING && it->prompt->kind != SD_MP_HOSTKEY)
         set_state(m, SD_MOUNT_AUTHENTICATING, SD_OK);
       if (m->cb.on_prompt)
         m->cb.on_prompt(m->cb.ctx, m, it->prompt);
+      break;
+    case EV_WARNING:
+      if (m->cb.on_warning)
+        m->cb.on_warning(m->cb.ctx, m, it->code, it->hop, it->detail);
+      break;
+    case EV_ANNOUNCED:
+      if (it->ann) {
+        sd_mount_announcement *a = it->ann;
+        if (a->mode == SD_HKU_YES && m->kh && m->be->kh_apply_hostkeys) {
+          sd_err ae = apply_on(m->be, m->kh, a, 1);    /* removals always need the review (5.6) */
+          SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %s saved (%s)", (int)m->letter,
+                  (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
+          if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 1, ae);
+          if (a->remove_count && m->cb.on_hostkeys_announced) {
+            a->add_count = 0;                          /* what is left to review: the removals */
+            m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 0, SD_OK);
+          }
+        } else if (a->mode != SD_HKU_NO) {
+          if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 0, SD_OK);
+        } else {
+          SD_LOGI("mount", "%c: UpdateHostKeys announcement for %s ignored (update_host_keys = no)",
+                  (int)m->letter, a->lookup_name);
+        }
+      }
       break;
     case EV_PROMPT_CLOSED:
       if (m->cb.on_prompt_closed)
@@ -585,18 +765,76 @@ static void run_item(void *arg)
     }
   }
   sd_free(it->prompt);
+  sd_free(it->ann);
   sd_free(it);
   release(m);
 }
 
 /* ---- callbacks from I/O threads ---- */
 
+/* Password-shaped keyboard-interactive round (4.2): one prompt, no echo, text naming a password in
+   one of the PAM languages we know. OTP prompts never match. */
+static int password_shaped(const sd_auth_prompt_info *a)
+{
+  static const char *const words[] = { "password", "passwort", "contrase\xc3\xb1" "a", "mot de passe", "senha",
+                                       "kennwort", "parola d'ordine" };
+  char low[512];
+  size_t i, n;
+  if (a->item_count != 1 || a->items[0].echo || a->items[0].text == NULL)
+    return 0;
+  n = strlen(a->items[0].text);
+  if (n >= sizeof(low)) n = sizeof(low) - 1;
+  for (i = 0; i < n; i++) {
+    char c = a->items[0].text[i];
+    low[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+  }
+  low[n] = 0;
+  for (i = 0; i < SD_COUNTOF(words); i++)
+    if (strstr(low, words[i])) return 1;
+  return 0;
+}
+
+static void u16dec(char *out, size_t cap, uint32_t v)
+{
+  char tmp[12];
+  size_t n = 0, o = 0;
+  do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+  while (n && o + 1 < cap) out[o++] = tmp[--n];
+  out[o] = 0;
+}
+
+/* raw sd_secret targets (sd_secret.h): "user@host:port", "<scheme>:user@host:port" */
+static void make_userhost_target(char *out, size_t cap, const char *scheme, const char *user, const char *host,
+                                 uint16_t port)
+{
+  char num[12];
+  int v6 = strchr(host, ':') != NULL;
+  out[0] = 0;
+  u16dec(num, sizeof(num), port ? port : 22);
+  if (user == NULL || user[0] == 0 || host[0] == 0)
+    return;
+  if (scheme) { strcat_s(out, cap, scheme); strcat_s(out, cap, ":"); }
+  if (strlen(out) + strlen(user) + strlen(host) + strlen(num) + 5 >= cap) { out[0] = 0; return; }
+  strcat_s(out, cap, user);
+  strcat_s(out, cap, "@");
+  if (v6) strcat_s(out, cap, "[");
+  strcat_s(out, cap, host);
+  if (v6) strcat_s(out, cap, "]");
+  strcat_s(out, cap, ":");
+  strcat_s(out, cap, num);
+}
+
 static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *auth, const sd_hostkey_prompt_info *hk)
 {
   sd_mount *m = (sd_mount *)ctx;
   sd_mount_prompt *mp;
-  uint32_t i, id;
+  mount_item *it;
+  uint32_t i, id, hop;
   sd_mount_prompt_kind kind;
+  int skind = -1, savable = 0, pool = 0;
+  char target[TARGET_CAP];
+  owned_hop *oh;
+  target[0] = 0;
   if (hk) {
     kind = SD_MP_HOSTKEY;
   } else if (auth && auth->kind == SD_PROMPT_PASSWORD) {
@@ -605,31 +843,68 @@ static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *au
     kind = SD_MP_PASSPHRASE;
   } else if (auth && auth->kind == SD_PROMPT_KBDINT) {
     kind = SD_MP_KBDINT;
+  } else if (auth && auth->kind == SD_PROMPT_NEW_PASSWORD) {
+    kind = SD_MP_PASSWORD_CHANGE;
+  } else if (auth && auth->kind == SD_PROMPT_LEGACY_ACK) {
+    kind = SD_MP_LEGACY_ACK;
+  } else if (auth && auth->kind == SD_PROMPT_PROXY_PASSWORD) {
+    kind = SD_MP_PROXY_PASSWORD;
   } else {
-    /* password change, legacy ack, proxy password: not in M0 */
     m->be->prompt_cancel(p);
     return;
   }
-  if (auth && auth->is_pool_member) {
-    m->be->prompt_cancel(p);                /* pool members never prompt (01 §10.9) */
+  hop = hk ? hk->hop_index : auth->hop_index;
+  if (hop >= m->nhops) hop = m->nhops ? m->nhops - 1 : 0;
+  oh = &m->hops[hop];
+  pool = auth && auth->is_pool_member;
+  if (pool && kind != SD_MP_PASSWORD && kind != SD_MP_PASSPHRASE && kind != SD_MP_KBDINT && kind != SD_MP_PROXY_PASSWORD) {
+    m->be->prompt_cancel(p);                /* pool members never show UI (01 §10.9) */
     return;
   }
+  /* which saved secret could answer it (4.2) */
+  if (kind == SD_MP_PASSWORD || (kind == SD_MP_KBDINT && password_shaped(auth))) {
+    skind = SD_MOUNT_SECRET_PASSWORD;
+    make_userhost_target(target, sizeof(target), NULL, auth->user && auth->user[0] ? auth->user : oh->user,
+                         oh->host8, oh->port);
+  } else if (kind == SD_MP_PASSPHRASE && auth->key_fingerprint && strncmp(auth->key_fingerprint, "SHA256:", 7) == 0) {
+    skind = SD_MOUNT_SECRET_PASSPHRASE;
+    scopy(target, sizeof(target), auth->key_fingerprint);
+  } else if (kind == SD_MP_PROXY_PASSWORD) {
+    const char *scheme = oh->pkind == SD_PROXY_SOCKS5 ? "socks5" : "http";
+    char ph[256];
+    scopy(ph, sizeof(ph), auth->proxy_host && auth->proxy_host[0] ? auth->proxy_host : oh->phost8);
+    skind = SD_MOUNT_SECRET_PROXY;
+    make_userhost_target(target, sizeof(target), scheme, auth->user && auth->user[0] ? auth->user : oh->puser,
+                         ph, auth->proxy_port ? auth->proxy_port : oh->pport);
+  }
+  if (target[0] == 0)
+    skind = -1;
+  savable = skind >= 0 && !oh->no_save;
   mp = (sd_mount_prompt *)sd_calloc(1, sizeof(*mp));
+  it = (mount_item *)sd_calloc(1, sizeof(*it));
   sd_mutex_lock(&m->lock);
-  if (mp == NULL || m->nprompts >= MAX_PROMPTS || m->stopping) {
+  if (mp == NULL || it == NULL || m->nprompts >= MAX_PROMPTS || m->stopping) {
     sd_mutex_unlock(&m->lock);
     sd_free(mp);
+    sd_free(it);
     m->be->prompt_cancel(p);
     return;
   }
   id = ++m->next_prompt_id;
+  memset(&m->prompts[m->nprompts], 0, sizeof(m->prompts[0]));
   m->prompts[m->nprompts].id = id;
   m->prompts[m->nprompts].p = p;
   m->prompts[m->nprompts].kind = kind;
+  m->prompts[m->nprompts].hop = hop;
+  m->prompts[m->nprompts].skind = skind;
+  m->prompts[m->nprompts].savable = savable;
+  scopy(m->prompts[m->nprompts].target, TARGET_CAP, target);
   m->nprompts++;
   sd_mutex_unlock(&m->lock);
   mp->id = id;
   mp->kind = kind;
+  mp->hop_count = m->nhops ? m->nhops : 1;
+  mp->can_save = savable;
   if (hk) {
     mp->hop_index = hk->hop_index;
     scopy(mp->host, sizeof(mp->host), hk->host);
@@ -638,13 +913,16 @@ static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *au
     mp->key_bits = hk->key_bits;
     scopy(mp->fp_sha256, sizeof(mp->fp_sha256), hk->fp_sha256);
     scopy(mp->lookup_name, sizeof(mp->lookup_name), hk->lookup_name);
+    scopy(mp->via_host, sizeof(mp->via_host), hk->via_host);
+    mp->is_reconnect = hk->is_reconnect;
   } else {
     mp->hop_index = auth->hop_index;
     scopy(mp->host, sizeof(mp->host), auth->host);
-    mp->port = m->port;
+    mp->port = oh->port ? oh->port : m->port;
     scopy(mp->user, sizeof(mp->user), auth->user);
     mp->round = auth->round;
     mp->hostkey_just_accepted = auth->hostkey_just_accepted;
+    mp->is_reconnect = auth->is_reconnect;
     scopy(mp->key_path, sizeof(mp->key_path), auth->key_path);
     scopy(mp->key_fp, sizeof(mp->key_fp), auth->key_fingerprint);
     scopy(mp->name, sizeof(mp->name), auth->name);
@@ -654,14 +932,109 @@ static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *au
       scopy(mp->items[i].text, sizeof(mp->items[i].text), auth->items[i].text);
       mp->items[i].echo = auth->items[i].echo;
     }
-    if (kind == SD_MP_PASSWORD && mp->item_count == 0) {
+    if ((kind == SD_MP_PASSWORD || kind == SD_MP_PROXY_PASSWORD) && mp->item_count == 0) {
       mp->item_count = 1;
       mp->items[0].echo = 0;
     }
+    if (kind == SD_MP_PROXY_PASSWORD) {
+      scopy(mp->proxy_host, sizeof(mp->proxy_host), auth->proxy_host && auth->proxy_host[0] ? auth->proxy_host : oh->phost8);
+      mp->proxy_port = auth->proxy_port ? auth->proxy_port : oh->pport;
+      if (mp->user[0] == 0) scopy(mp->user, sizeof(mp->user), oh->puser);
+    }
+    if (kind == SD_MP_LEGACY_ACK)
+      scopy(mp->legacy_names, sizeof(mp->legacy_names), auth->legacy_names);
+    if (hop >= 1 && hop - 1 < m->nhops)
+      scopy(mp->via_host, sizeof(mp->via_host), m->hops[hop - 1].host8);
   }
   if (mp->port == 0)
     mp->port = m->port;
-  post_item(m, EV_PROMPT, SD_OK, id, mp);
+  it->m = m;
+  it->kind = EV_PROMPT;
+  it->prompt_id = id;
+  it->prompt = mp;
+  it->pool_member = pool;
+  addref(m);
+  m->cb.post(m->cb.ctx, run_item, it);
+}
+
+/* Control thread. Answers a prompt from the host's secret store when the rules allow it (see the
+   header): returns 1 when the prompt was answered (or vanished meanwhile). */
+static int try_autofill(sd_mount *m, const sd_mount_prompt *mp)
+{
+  pending_prompt pp;
+  sd_prompt *p = NULL;
+  sd_mount_prompt_kind pk;
+  char *buf;
+  const char *resp[1];
+  int found = 0;
+  uint32_t i, bit;
+  sd_err e;
+  if (m->cb.secret_get == NULL)
+    return 0;
+  memset(&pp, 0, sizeof(pp));
+  sd_mutex_lock(&m->lock);
+  for (i = 0; i < m->nprompts; i++)
+    if (m->prompts[i].id == mp->id) { pp = m->prompts[i]; found = 1; break; }
+  sd_mutex_unlock(&m->lock);
+  if (!found || pp.skind < 0 || pp.target[0] == 0)
+    return 0;
+  bit = pp.hop < 32 ? 1u << pp.hop : 0;
+  if (pp.skind != SD_MOUNT_SECRET_PASSPHRASE) {
+    uint32_t ja;
+    if (mp->hostkey_just_accepted)
+      return 0;                                  /* TM-R05 */
+    sd_mutex_lock(&m->lock);
+    ja = m->ja_from;
+    sd_mutex_unlock(&m->lock);
+    /* a password goes to hop `hop`; a proxy password of leg `hop` travels through hop - 1 */
+    if (ja != NO_HOP) {
+      if (pp.skind == SD_MOUNT_SECRET_PASSWORD && pp.hop >= ja) return 0;
+      if (pp.skind == SD_MOUNT_SECRET_PROXY && pp.hop >= 1 && pp.hop - 1 >= ja) return 0;
+    }
+  }
+  if ((m->autofilled[pp.skind] & bit) && mp->round > 0)
+    return 0;                                    /* the stored secret was rejected: ask the user */
+  buf = (char *)sd_alloc(SECRET_CAP);
+  if (buf == NULL)
+    return 0;
+  buf[0] = 0;
+  if (!m->cb.secret_get(m->cb.ctx, m, pp.skind, pp.target, buf, SECRET_CAP) || buf[0] == 0) {
+    sd_secure_free(buf, SECRET_CAP);
+    return 0;
+  }
+  buf[SECRET_CAP - 1] = 0;
+  if (!take_prompt_by_id(m, mp->id, &p, &pk, NULL)) {
+    sd_secure_free(buf, SECRET_CAP);
+    return 1;                                    /* withdrawn meanwhile */
+  }
+  resp[0] = buf;
+  e = m->be->prompt_answer_ex ? m->be->prompt_answer_ex(p, 1, resp, SD_ANSWER_FROM_STORE)
+                              : m->be->prompt_answer(p, 1, resp);
+  sd_secure_free(buf, SECRET_CAP);
+  m->autofilled[pp.skind] |= bit;
+  SD_LOGI("mount", "%c: %s prompt of hop %u answered from the saved secrets (%s)", (int)m->letter,
+          sd_mount_prompt_kind_name(pk), (unsigned)pp.hop, sd_err_name(e));
+  return 1;
+}
+
+static int take_prompt_by_id(sd_mount *m, uint32_t id, sd_prompt **p, sd_mount_prompt_kind *kind, pending_prompt *copy)
+{
+  uint32_t i;
+  int found = 0;
+  sd_mutex_lock(&m->lock);
+  for (i = 0; i < m->nprompts; i++) {
+    if (m->prompts[i].id == id) {
+      *p = m->prompts[i].p;
+      if (kind) *kind = m->prompts[i].kind;
+      if (copy) *copy = m->prompts[i];
+      m->prompts[i] = m->prompts[m->nprompts - 1];
+      m->nprompts--;
+      found = 1;
+      break;
+    }
+  }
+  sd_mutex_unlock(&m->lock);
+  return found;
 }
 
 static int take_prompt_by_ptr(sd_mount *m, sd_prompt *p, uint32_t *id)
@@ -696,20 +1069,117 @@ static void ssh_on_banner(void *ctx, uint32_t hop, const char *utf8)
   SD_LOGD("mount", "banner from hop %u: %s", hop, utf8);
 }
 
+/* 7.6: outdated algorithms by name (the legacy_mask of 01 only says that there are some). */
+static int legacy_name(const char *a)
+{
+  static const char *const exact[] = {
+    "diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
+    "ssh-rsa", "ssh-dss", "ssh-rsa-cert-v01@openssh.com", "ssh-dss-cert-v01@openssh.com",
+    "3des-cbc", "blowfish-cbc", "cast128-cbc", "arcfour", "arcfour128", "arcfour256", "aes128-cbc", "aes192-cbc",
+    "aes256-cbc", "rijndael-cbc@lysator.liu.se", "des-cbc",
+    "hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96", "hmac-sha1-etm@openssh.com", "hmac-sha1-96-etm@openssh.com",
+    "hmac-md5-etm@openssh.com", "hmac-md5-96-etm@openssh.com", "hmac-ripemd160", "hmac-ripemd160@openssh.com",
+    "hmac-ripemd160-etm@openssh.com"
+  };
+  size_t i;
+  if (a == NULL || a[0] == 0)
+    return 0;
+  for (i = 0; i < SD_COUNTOF(exact); i++)
+    if (strcmp(a, exact[i]) == 0) return 1;
+  return 0;
+}
+
+static int cmp_cstr(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+
+static void post_warning(sd_mount *m, const char *code, uint32_t hop, const char *detail)
+{
+  mount_item *it = (mount_item *)sd_calloc(1, sizeof(*it));
+  if (it == NULL)
+    return;
+  it->m = m;
+  it->kind = EV_WARNING;
+  it->hop = hop;
+  scopy(it->code, sizeof(it->code), code);
+  scopy(it->detail, sizeof(it->detail), detail);
+  addref(m);
+  m->cb.post(m->cb.ctx, run_item, it);
+}
+
 static void ssh_on_negotiated(void *ctx, const sd_ssh_negotiated *n)
 {
   sd_mount *m = (sd_mount *)ctx;
-  SD_LOGI("mount", "negotiated kex=%s hostkey=%s cipher=%s", n->kex, n->hostkey, n->cipher_c2s);
+  const char *names[8], *legacy[8];
+  uint32_t i, k = 0, hop = n->hop_index;
+  char detail[256];
+  int warn;
+  SD_LOGI("mount", "hop %u negotiated kex=%s hostkey=%s cipher=%s mac=%s", (unsigned)hop, n->kex, n->hostkey,
+          n->cipher_c2s, n->mac_c2s ? n->mac_c2s : "");
   sd_mutex_lock(&m->lock);
-  scopy(m->hostkey_fp, sizeof(m->hostkey_fp), n->hostkey_fp_sha256);
+  if (m->nhops == 0 || hop + 1 >= m->nhops)
+    scopy(m->hostkey_fp, sizeof(m->hostkey_fp), n->hostkey_fp_sha256);   /* the target's key */
   sd_mutex_unlock(&m->lock);
+  names[0] = n->kex; names[1] = n->hostkey; names[2] = n->cipher_c2s; names[3] = n->cipher_s2c;
+  names[4] = n->mac_c2s; names[5] = n->mac_s2c; names[6] = NULL; names[7] = NULL;
+  for (i = 0; i < 6; i++)
+    if (legacy_name(names[i])) legacy[k++] = names[i];
+  if (k == 0 && n->legacy_mask == 0)
+    return;
+  qsort((void *)legacy, k, sizeof(legacy[0]), cmp_cstr);
+  detail[0] = 0;
+  for (i = 0; i < k; i++) {
+    if (i > 0 && strcmp(legacy[i], legacy[i - 1]) == 0) continue;
+    if (detail[0]) strcat_s(detail, sizeof(detail), ",");
+    if (strlen(detail) + strlen(legacy[i]) + 1 < sizeof(detail)) strcat_s(detail, sizeof(detail), legacy[i]);
+  }
+  if (detail[0] == 0)
+    strcpy_s(detail, sizeof(detail), "legacy");  /* mask without a name we know */
+  sd_mutex_lock(&m->lock);
+  warn = m->legacy_policy != SD_LEGACY_ALLOW && hop < 32 && !(m->warned_legacy & (1u << hop));
+  if (warn) m->warned_legacy |= 1u << hop;
+  sd_mutex_unlock(&m->lock);
+  if (m->legacy_policy == SD_LEGACY_ALLOW)
+    SD_LOGI("mount", "hop %u uses outdated algorithms (allowed): %s", (unsigned)hop, detail);
+  else if (warn)
+    post_warning(m, "legacy_algorithms", hop, detail);
+}
+
+static void copy_hk(sd_mount_hostkey *d, const sd_hk_key *k)
+{
+  scopy(d->type, sizeof(d->type), k->type);
+  scopy(d->fp_sha256, sizeof(d->fp_sha256), k->fp_sha256);
+  d->len = (k->blob && k->len <= sizeof(d->blob)) ? k->len : 0;
+  if (d->len) memcpy(d->blob, k->blob, d->len);
 }
 
 static void ssh_on_hostkey_event(void *ctx, const sd_hostkey_event *e)
 {
   sd_mount *m = (sd_mount *)ctx;
+  if (e->kind == SD_HKEV_ANNOUNCED) {
+    sd_mount_announcement *a = (sd_mount_announcement *)sd_calloc(1, sizeof(*a));
+    mount_item *it = (mount_item *)sd_calloc(1, sizeof(*it));
+    uint32_t i, hop = e->hop_index < m->nhops ? e->hop_index : (m->nhops ? m->nhops - 1 : 0);
+    if (a == NULL || it == NULL) {
+      sd_free(a);
+      sd_free(it);
+      return;
+    }
+    a->hop_index = e->hop_index;
+    scopy(a->host, sizeof(a->host), m->hops[hop].host8);
+    scopy(a->lookup_name, sizeof(a->lookup_name), e->lookup_name);
+    a->mode = m->hops[hop].hku;
+    for (i = 0; i < e->add_count && a->add_count < SD_MOUNT_ANNOUNCE_MAX; i++)
+      copy_hk(&a->add[a->add_count++], &e->add[i]);
+    for (i = 0; i < e->remove_count && a->remove_count < SD_MOUNT_ANNOUNCE_MAX; i++)
+      copy_hk(&a->remove[a->remove_count++], &e->remove[i]);
+    it->m = m;
+    it->kind = EV_ANNOUNCED;
+    it->ann = a;
+    addref(m);
+    m->cb.post(m->cb.ctx, run_item, it);
+    return;
+  }
   if (e->kind != SD_HKEV_MISMATCH)
-    return;    /* UpdateHostKeys announcements: M2 */
+    return;
   sd_mutex_lock(&m->lock);
   if (e->old_key) {
     scopy(m->fail.stored_type, sizeof(m->fail.stored_type), e->old_key->type);
@@ -732,10 +1202,24 @@ static void ssh_on_hostkey_event(void *ctx, const sd_hostkey_event *e)
 static void sftp_on_event(void *ctx, const sd_sftp_event *ev)
 {
   sd_mount *m = (sd_mount *)ctx;
-  if (ev->type != SD_SFTP_EV_STATE)
+  if (ev->type != SD_SFTP_EV_STATE && ev->type != SD_SFTP_EV_POOL)
     return;
+  if (ev->type == SD_SFTP_EV_POOL) {
+    sd_mutex_lock(&m->lock);
+    m->conn.pool = ev->connections;
+    sd_mutex_unlock(&m->lock);
+    post_item(m, EV_CONN, SD_OK, 0, NULL);
+    return;
+  }
   sd_mutex_lock(&m->lock);
   m->conn.session = ev->state;
+  if (ev->state == SD_SFTP_ST_CONNECTING) {
+    /* a new connection: TM-R05 and the "stored secret rejected" memory are per connection */
+    m->ja_from = NO_HOP;
+    memset(m->autofilled, 0, sizeof(m->autofilled));
+  }
+  if (ev->state == SD_SFTP_ST_FAILED || ev->state == SD_SFTP_ST_AUTH_REQUIRED)
+    m->conn.failed_hop = ev->failed_hop;
   switch (ev->state) {
   case SD_SFTP_ST_READY:
     if (m->conn.generation && ev->generation != m->conn.generation)
@@ -797,6 +1281,77 @@ static PSID process_sid(void)
   return copy;
 }
 
+static int utf8_of(const wchar_t *w, char *out, size_t cap)
+{
+  size_t got = 0;
+  out[0] = 0;
+  if (w == NULL) return 1;
+  if (sd_utf16_to_utf8(w, wcslen(w), out, cap - 1, &got, SD_UTF_REPLACE) != SD_OK) return 0;
+  out[got] = 0;
+  return 1;
+}
+
+/* Deep copy of one hop; 0 on allocation failure or an invalid hop. */
+static int copy_hop(owned_hop *d, const sd_mount_hop *h)
+{
+  uint32_t i;
+  if (h->host == NULL || h->host[0] == 0 || h->user == NULL || h->user[0] == 0 ||
+      h->identity_count > SD_MOUNT_MAX_IDENTITIES)
+    return 0;
+  d->host = wdup(h->host);
+  d->user = sdup(h->user);
+  d->port = h->port ? h->port : 22;
+  if (d->host == NULL || d->user == NULL || !utf8_of(h->host, d->host8, sizeof(d->host8)))
+    return 0;
+  for (i = 0; i < h->identity_count; i++) {
+    if (h->identities[i] == NULL || h->identities[i][0] == 0) continue;
+    if ((d->ident[d->nident] = wdup(h->identities[i])) == NULL) return 0;
+    d->nident++;
+  }
+  if (h->key_blob && h->key_blob_len) {
+    d->blob = (uint8_t *)sd_alloc(h->key_blob_len);
+    if (d->blob == NULL) return 0;
+    memcpy(d->blob, h->key_blob, h->key_blob_len);
+    d->blob_len = h->key_blob_len;
+    d->label = sdup(h->key_label);
+  }
+  d->cert = wdup(h->certificate);
+  d->agents = h->agents;
+  d->ident_only = h->identities_only;
+  if (h->agent_keys) {
+    const char *q = h->agent_keys;
+    while (*q && d->nagent_keys < SD_MOUNT_MAX_AGENT_KEYS) {
+      size_t n = 0;
+      while (*q == ' ' || *q == ',' || *q == '\t') q++;
+      while (q[n] && q[n] != ',' && q[n] != ' ' && q[n] != '\t') n++;
+      if (n && n < sizeof(d->agent_key[0]) && strncmp(q, "SHA256:", 7) == 0) {
+        memcpy(d->agent_key[d->nagent_keys], q, n);
+        d->agent_key[d->nagent_keys][n] = 0;
+        d->nagent_keys++;
+      }
+      q += n;
+    }
+  }
+  d->methods = h->auth_methods ? h->auth_methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
+  d->alias = sdup(h->host_key_alias);
+  d->hku = h->update_host_keys;
+  d->no_save = h->no_save;
+  d->pkind = h->proxy.kind;
+  if (d->pkind != SD_PROXY_NONE) {
+    d->phost = wdup(h->proxy.host);
+    d->puser = sdup(h->proxy.user);
+    d->pport = h->proxy.port;
+    d->pauth = h->proxy.auth;
+    d->psspi = h->proxy.allow_discovered_sspi;
+    d->pfallback = h->proxy.fallback_direct;
+    if (!utf8_of(h->proxy.host, d->phost8, sizeof(d->phost8)))
+      return 0;
+    if (d->pkind != SD_PROXY_SYSTEM && d->phost == NULL)
+      return 0;
+  }
+  return 1;
+}
+
 sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, const sd_mount_callbacks *cb,
                        sd_mount **out)
 {
@@ -850,6 +1405,61 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
     release(m);
     return SD_E_NO_MEMORY;
   }
+  /* M2 */
+  m->ja_from = NO_HOP;
+  m->legacy_policy = p->legacy_policy;
+  m->refuse_terrapin = p->refuse_terrapin_exposed;
+  m->connections = p->connections >= 1 && p->connections <= 4 ? p->connections : 1;
+  m->conn.pool_wanted = m->connections;
+  m->keepalive = p->keepalive_ms;
+  m->ctimeout = p->connect_timeout_ms;
+  m->profile_name = wdup(p->profile_name);
+  if (p->hops && p->hop_count) {
+    uint32_t i;
+    if (p->hop_count > SD_MOUNT_MAX_HOPS) {
+      release(m);
+      return SD_E_INVALID_PARAM;
+    }
+    for (i = 0; i < p->hop_count; i++) {
+      if (!copy_hop(&m->hops[i], &p->hops[i])) {
+        release(m);
+        return SD_E_INVALID_PARAM;
+      }
+    }
+    m->nhops = p->hop_count;
+  } else {
+    /* M0/M1: one hop from the flat fields */
+    sd_mount_hop h;
+    const wchar_t *ids[1];
+    memset(&h, 0, sizeof(h));
+    h.host = p->host;
+    h.port = m->port;
+    h.user = p->user;
+    ids[0] = m->identity;
+    h.identities = ids;
+    h.identity_count = m->identity ? 1 : 0;
+    h.identities_only = m->identity ? 1 : 0;      /* D37 */
+    h.auth_methods = m->methods;
+    h.update_host_keys = SD_HKU_ASK;
+    if (!copy_hop(&m->hops[0], &h)) {
+      release(m);
+      return SD_E_NO_MEMORY;
+    }
+    m->nhops = 1;
+  }
+  if (p->kh_stores && p->kh_store_count) {
+    uint32_t i;
+    m->stores = (sd_kh_store *)sd_calloc(p->kh_store_count, sizeof(sd_kh_store));
+    if (m->stores == NULL) {
+      release(m);
+      return SD_E_NO_MEMORY;
+    }
+    for (i = 0; i < p->kh_store_count; i++) {
+      m->stores[i] = p->kh_stores[i];
+      m->stores[i].path = wdup(p->kh_stores[i].path);
+    }
+    m->nstores = p->kh_store_count;
+  }
   *out = m;
   return SD_OK;
 }
@@ -864,33 +1474,72 @@ sd_err sd_mount_start(sd_mount *m)
     m->be->vfs_cache_set_budget(m->cache_mem);   /* process-wide; 0 = min(256 MB, RAM/16) */
   e = m->be->ssh_global_init();
   if (e == SD_OK) {
-    memset(&m->store, 0, sizeof(m->store));
-    m->store.kind = SD_KH_STORE_USER;
-    m->store.path = m->kh_path;
-    m->store.writable = 1;
-    e = m->be->kh_open(&m->store, 1, &m->kh);
+    if (m->nstores) {
+      e = m->be->kh_open(m->stores, m->nstores, &m->kh);
+    } else {
+      memset(&m->store, 0, sizeof(m->store));
+      m->store.kind = SD_KH_STORE_USER;
+      m->store.path = m->kh_path;
+      m->store.writable = 1;
+      e = m->be->kh_open(&m->store, 1, &m->kh);
+    }
   }
   if (e == SD_OK) {
-    memset(&m->ident, 0, sizeof(m->ident));
-    m->ident.kind = SD_ID_FILE;
-    m->ident.path = m->identity;
-    memset(&m->hop, 0, sizeof(m->hop));
-    m->hop.host = m->host;
-    m->hop.port = m->port;
-    m->hop.auth.user = m->user;
-    m->hop.auth.identities = m->identity ? &m->ident : NULL;
-    m->hop.auth.identity_count = m->identity ? 1 : 0;
-    m->hop.auth.methods = m->methods | (m->identity ? SD_AUTH_PUBLICKEY : 0);
-    m->hop.auth.agents = 0;                    /* agents: M2 */
-    m->hop.auth.identities_only = m->identity ? 1 : 0;   /* D37 */
-    m->hop.auth.cache_secrets_for_reconnect = m->no_secret_cache ? 0 : 1;   /* 03 §3.4 default yes */
-    m->hop.proxy.kind = SD_PROXY_NONE;
-    m->hop.update_host_keys = SD_HKU_NO;       /* announcements: M2 */
+    uint32_t i, k;
+    memset(m->sshhops, 0, sizeof(m->sshhops));
+    memset(m->ids, 0, sizeof(m->ids));
+    for (i = 0; i < m->nhops; i++) {
+      owned_hop *oh = &m->hops[i];
+      sd_ssh_hop *sh = &m->sshhops[i];
+      sd_ssh_identity *id = m->ids[i];
+      uint32_t n = 0;
+      for (k = 0; k < oh->nident; k++) {
+        id[n].kind = SD_ID_FILE;
+        id[n].path = oh->ident[k];
+        if (k == 0) id[n].cert_path = oh->cert;
+        n++;
+      }
+      if (oh->blob) {
+        id[n].kind = SD_ID_BLOB;
+        id[n].blob = oh->blob;
+        id[n].blob_len = oh->blob_len;
+        id[n].label = oh->label;
+        if (oh->nident == 0) id[n].cert_path = oh->cert;
+        n++;
+      }
+      for (k = 0; k < oh->nagent_keys; k++) {
+        id[n].kind = SD_ID_AGENT_KEY;
+        id[n].agent_fingerprint = oh->agent_key[k];
+        n++;
+      }
+      sh->host = oh->host;
+      sh->port = oh->port;
+      sh->host_key_alias = oh->alias;
+      sh->auth.user = oh->user;
+      sh->auth.identities = n ? id : NULL;
+      sh->auth.identity_count = n;
+      sh->auth.methods = oh->methods | ((oh->nident || oh->blob) ? SD_AUTH_PUBLICKEY : 0);
+      sh->auth.agents = oh->agents;
+      sh->auth.identities_only = oh->ident_only;
+      sh->auth.cache_secrets_for_reconnect = m->no_secret_cache ? 0 : 1;   /* 03 §3.4 default yes */
+      sh->proxy.kind = (sd_proxy_kind)oh->pkind;
+      sh->proxy.host = oh->phost;
+      sh->proxy.port = oh->pport;
+      sh->proxy.auth = oh->pauth;
+      sh->proxy.allow_discovered_sspi = oh->psspi;
+      sh->proxy.user = oh->puser;
+      sh->proxy.remote_dns = 1;                /* socks5h semantics (3.8) */
+      sh->proxy.fallback_direct = oh->pfallback;
+      sh->update_host_keys = (sd_hku_mode)oh->hku;
+    }
     memset(&m->ssh, 0, sizeof(m->ssh));
     m->ssh.struct_size = sizeof(m->ssh);
-    m->ssh.hops = &m->hop;
-    m->ssh.hop_count = 1;
-    m->ssh.algos.legacy_policy = SD_LEGACY_WARN;
+    m->ssh.hops = m->sshhops;
+    m->ssh.hop_count = m->nhops;
+    m->ssh.algos.legacy_policy = (sd_legacy_policy)m->legacy_policy;
+    m->ssh.algos.refuse_terrapin_exposed = m->refuse_terrapin;
+    m->ssh.connect_timeout_ms = m->ctimeout;
+    m->ssh.keepalive_interval_ms = m->keepalive;
     m->ssh.known_hosts = m->kh;
     memset(&m->sshcb, 0, sizeof(m->sshcb));
     m->sshcb.ctx = m;
@@ -902,7 +1551,7 @@ sd_err sd_mount_start(sd_mount *m)
     memset(&m->sopt, 0, sizeof(m->sopt));
     m->sopt.struct_size = sizeof(m->sopt);
     m->sopt.channels = m->channels;            /* meta + bulk (D19) unless the profile says 1 */
-    m->sopt.connections = 1;
+    m->sopt.connections = m->connections;      /* D18: sd_sftp opens members only after non-interactive auth */
     m->sopt.flags = SD_SFTP_OPT_REFINE_ERRORS;
     m->sopt.reconnect.enabled = m->reconnect_disabled ? 0 : 1;
     m->sopt.reconnect.initial_delay_ms = m->rc_initial;
@@ -982,26 +1631,47 @@ void sd_mount_get_failure(const sd_mount *m, sd_mount_failure *out)
 sd_err sd_mount_answer(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kind, uint32_t n,
                        const char *const *utf8_responses)
 {
+  return sd_mount_answer_ex(m, prompt_id, kind, n, utf8_responses, 0);
+}
+
+sd_err sd_mount_answer_ex(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kind, uint32_t n,
+                          const char *const *utf8_responses, uint32_t flags)
+{
   sd_prompt *p = NULL;
   sd_mount_prompt_kind pk = SD_MP_PASSWORD;
-  uint32_t i;
+  pending_prompt pp;
   sd_err e;
   if (m == NULL)
     return SD_E_INVALID_PARAM;
-  sd_mutex_lock(&m->lock);
-  for (i = 0; i < m->nprompts; i++) {
-    if (m->prompts[i].id == prompt_id) {
-      p = m->prompts[i].p;
-      pk = m->prompts[i].kind;
-      m->prompts[i] = m->prompts[m->nprompts - 1];
-      m->nprompts--;
-      break;
-    }
-  }
-  sd_mutex_unlock(&m->lock);
-  if (p == NULL)
+  if (!take_prompt_by_id(m, prompt_id, &p, &pk, &pp))
     return SD_E_NOT_FOUND;
-  if (kind == SD_MA_REJECT) {
+  if (pk == SD_MP_HOSTKEY && (kind == SD_MA_HOSTKEY_TRUST || kind == SD_MA_HOSTKEY_ONCE)) {
+    /* TM-R05: this connection is now hostkey_just_accepted from this hop on */
+    sd_mutex_lock(&m->lock);
+    if (m->ja_from == NO_HOP || pp.hop < m->ja_from) m->ja_from = pp.hop;
+    sd_mutex_unlock(&m->lock);
+  }
+  if ((flags & SD_MOUNT_ANSWER_SAVE) && kind == SD_MA_RESPONSES && pp.savable && n >= 1 && utf8_responses &&
+      utf8_responses[0] && utf8_responses[0][0]) {
+    size_t len = strlen(utf8_responses[0]);
+    char *v = (char *)sd_alloc(len + 1);
+    sd_mutex_lock(&m->lock);
+    if (v && m->nsaves < MAX_SAVES) {
+      memcpy(v, utf8_responses[0], len + 1);
+      m->saves[m->nsaves].kind = pp.skind;
+      scopy(m->saves[m->nsaves].target, TARGET_CAP, pp.target);
+      m->saves[m->nsaves].value = v;
+      m->saves[m->nsaves].len = len;
+      m->nsaves++;
+      v = NULL;
+    }
+    sd_mutex_unlock(&m->lock);
+    if (v) sd_secure_free(v, len + 1);
+  }
+  if (pk == SD_MP_LEGACY_ACK) {
+    int accept = kind == SD_MA_HOSTKEY_TRUST || kind == SD_MA_HOSTKEY_ONCE;
+    e = m->be->prompt_answer_ack ? m->be->prompt_answer_ack(p, accept) : m->be->prompt_cancel(p);
+  } else if (kind == SD_MA_REJECT) {
     e = pk == SD_MP_HOSTKEY ? m->be->prompt_answer_hostkey(p, SD_HK_REJECT) : m->be->prompt_cancel(p);
   } else if (pk == SD_MP_HOSTKEY) {
     e = kind == SD_MA_HOSTKEY_TRUST ? m->be->prompt_answer_hostkey(p, SD_HK_ACCEPT_AND_STORE)
@@ -1013,6 +1683,45 @@ sd_err sd_mount_answer(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kin
     e = m->be->prompt_cancel(p);
   }
   post_item(m, EV_PROMPT_CLOSED, SD_OK, prompt_id, NULL);
+  return e;
+}
+
+/* ---- UpdateHostKeys (5.6) ---- */
+
+static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, const sd_mount_announcement *a, int add_only)
+{
+  sd_hk_key add[SD_MOUNT_ANNOUNCE_MAX], rem[SD_MOUNT_ANNOUNCE_MAX];
+  uint32_t i, na = 0, nr = 0;
+  if (be->kh_apply_hostkeys == NULL)
+    return SD_E_UNSUPPORTED;
+  for (i = 0; i < a->add_count && i < SD_MOUNT_ANNOUNCE_MAX; i++) {
+    if (a->add[i].len == 0) continue;
+    add[na].blob = a->add[i].blob; add[na].len = a->add[i].len;
+    add[na].type = a->add[i].type; add[na].fp_sha256 = a->add[i].fp_sha256;
+    na++;
+  }
+  for (i = 0; !add_only && i < a->remove_count && i < SD_MOUNT_ANNOUNCE_MAX; i++) {
+    if (a->remove[i].len == 0) continue;
+    rem[nr].blob = a->remove[i].blob; rem[nr].len = a->remove[i].len;
+    rem[nr].type = a->remove[i].type; rem[nr].fp_sha256 = a->remove[i].fp_sha256;
+    nr++;
+  }
+  return be->kh_apply_hostkeys(kh, SD_KH_STORE_USER, a->lookup_name, na ? add : NULL, na, nr ? rem : NULL, nr);
+}
+
+sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
+                               const sd_mount_announcement *a, int add_only)
+{
+  sd_known_hosts *kh = NULL;
+  sd_err e;
+  if (be == NULL || stores == NULL || store_count == 0 || a == NULL || a->lookup_name[0] == 0)
+    return SD_E_INVALID_PARAM;
+  if (be->kh_apply_hostkeys == NULL)
+    return SD_E_UNSUPPORTED;
+  if ((e = be->kh_open(stores, store_count, &kh)) != SD_OK)
+    return e;
+  e = apply_on(be, kh, a, add_only);
+  be->kh_close(kh);
   return e;
 }
 

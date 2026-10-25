@@ -1,0 +1,41 @@
+# fixture for the ssh_config importer (03 §3.7)
+User globaluser
+IdentityFile ~/.ssh/id_global
+
+Host web web-alias
+    HostName web.example.org
+    Port 2222
+    IdentityFile ~/.ssh/id_web
+    IdentityFile %d/.ssh/id_%r_%h
+    CertificateFile ~/.ssh/id_web-cert.pub
+    User deploy
+
+Host bastion
+    HostName bastion.example.org
+    User jump
+    IdentitiesOnly no
+    ForwardAgent yes
+
+Host db
+    HostName db.internal
+    ProxyJump bastion,ssh://admin@10.0.0.5:2222
+    IdentitiesOnly yes
+
+Host direct
+    ProxyJump none
+    ProxyCommand nc %h %p
+
+Host *.corp !secret.corp
+    User corpuser
+    Port 2022
+
+Host build.corp secret.corp
+    HostName %h.example
+
+Match host foo
+    User matched
+
+Host *
+    Port 2200
+    ServerAliveInterval 30
+Include ~/.ssh/config.d/*

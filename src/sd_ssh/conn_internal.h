@@ -1,6 +1,7 @@
-/* Private state of an sd_ssh connection chain (M0: one hop). Shared by conn.c, kex.c, auth.c,
- * channel.c and prompt.c. Everything in sd_ssh_conn is touched only by the chain's I/O thread,
- * except the command queue (qlock) and the worker counter (Interlocked). */
+/* Private state of an sd_ssh connection chain: one sd_ssh_conn per hop (M2, jump_chain.c). Shared by
+ * conn.c, kex.c, auth.c, channel.c, prompt.c, jump_chain.c and proxy_conn.c. Everything in sd_ssh_conn
+ * is touched only by the chain's I/O thread (the root's), except the command queue (qlock) and the
+ * worker counter (Interlocked), which only the root uses. */
 #ifndef SD_SSH_CONN_INTERNAL_H
 #define SD_SSH_CONN_INTERNAL_H
 
@@ -14,6 +15,7 @@
 #include "sd_ssh/sd_keyfile.h"
 #include "sd_ssh/sd_ssh.h"
 #include "ssh_internal.h"
+#include "proxy_internal.h"
 
 #define SSH_MAX_CHANNELS   64u
 #define SSH_CH_WINDOW      (2u * 1024u * 1024u)
@@ -29,9 +31,12 @@ struct ssh_cmd {
   ssh_cmd *next;
   void (*run)(sd_ssh_conn *c, ssh_cmd *cmd);   /* I/O thread; frees cmd */
   void (*drop)(ssh_cmd *cmd);                  /* queue closed; frees cmd (no callbacks) */
+  sd_ssh_conn *conn;                           /* set by ssh_post_cmd: the hop run() receives */
 };
 
-/* Posts a command; SD_E_SHUTDOWN once the I/O thread has exited (cmd is then NOT consumed). */
+/* Posts a command; SD_E_SHUTDOWN once the I/O thread has exited (cmd is then NOT consumed).
+   M2: c may be any hop of a chain; the command goes to the chain's queue (c->root) and run()
+   receives c. */
 sd_err ssh_post_cmd(sd_ssh_conn *c, ssh_cmd *cmd);
 
 /* Worker items (QueueUserWorkItem). work() runs on the worker; then cmd is posted back. */
@@ -47,7 +52,8 @@ sd_err ssh_queue_work(sd_ssh_conn *c, ssh_work *w);
 /* ---- prompts (prompt.c) ---- */
 
 typedef enum ssh_prompt_purpose {
-  SSH_PP_HOSTKEY, SSH_PP_PASSWORD, SSH_PP_KBDINT, SSH_PP_PASSPHRASE, SSH_PP_LEGACY
+  SSH_PP_HOSTKEY, SSH_PP_PASSWORD, SSH_PP_KBDINT, SSH_PP_PASSPHRASE, SSH_PP_LEGACY,
+  SSH_PP_PROXY                /* M2: SD_PROMPT_PROXY_PASSWORD (proxy_conn.c) */
 } ssh_prompt_purpose;
 
 typedef struct ssh_prompt_answer {
@@ -98,7 +104,15 @@ typedef struct ssh_ident {
   char *path_utf8;            /* for prompts */
   sd_secbuf *blob;            /* SD_ID_BLOB */
   char *label;
+  char agent_fp[64];          /* SD_ID_AGENT_KEY: "SHA256:..." */
+  wchar_t *cert_path;         /* explicit certificate file (else <path>-cert.pub for SD_ID_FILE) */
+  uint8_t *cert_blob; size_t cert_len;   /* explicit certificate file bytes (SD_ID_BLOB) */
 } ssh_ident;
+
+/* Auth configuration of one hop (auth_cfg.c): validation, deep copy into c, release. */
+sd_err ssh_auth_cfg_check(const sd_ssh_auth_cfg *a);
+sd_err ssh_auth_cfg_copy(sd_ssh_conn *c, const sd_ssh_auth_cfg *a);
+void   ssh_auth_cfg_free(sd_ssh_conn *c);
 
 /* ---- channels (channel.c) ---- */
 
@@ -111,6 +125,8 @@ struct sd_ssh_channel {
   sd_ssh_channel_sink sink;
   void *ctx;
   int is_exec;
+  int is_tcpip;               /* M2: direct-tcpip (arg = host, tcpip_port) for ProxyJump hops */
+  uint16_t tcpip_port;
   char *arg;                  /* subsystem name or command */
   ssh_ch_state state;
   uint32_t local_id, remote_id;
@@ -125,6 +141,10 @@ struct sd_ssh_channel {
   uint32_t serial;            /* identifies the channel in commands posted from other threads */
 };
 
+/* M2: direct-tcpip channel (01 §4.8) to host:port, originator 127.0.0.1:0. I/O thread only; on_open
+   follows the same rules as the public opens (may run before this returns; *out is then NULL). */
+sd_err ssh_channel_open_tcpip(sd_ssh_conn *c, const char *host, uint16_t port, const sd_ssh_channel_sink *s,
+                              void *ctx, sd_ssh_channel **out);
 void ssh_channel_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n);
 void ssh_channels_fail_all(sd_ssh_conn *c, sd_err why);
 void ssh_channels_timers(sd_ssh_conn *c, uint64_t now, uint64_t *next);
@@ -141,7 +161,9 @@ typedef struct ssh_kex_state {
   uint8_t *i_s; size_t i_s_len;
   ssh_kexinit server;
   ssh_algs algs;
-  uint8_t x_priv[32], q_c[32];
+  struct ssh_kexm *km;        /* method state (kex_methods.c) */
+  uint32_t gex_bits;          /* GEX: bits of the server's group */
+  int fetch;                  /* re-key of sd_ssh_conn_fetch_hostkeys: another host key is expected */
   uint8_t key_c2s[64], key_s2c[64], iv_c2s[32], iv_s2c[32], mac_c2s[64], mac_s2c[64];
 } ssh_kex_state;
 
@@ -156,22 +178,42 @@ void ssh_kex_on_legacy_answer(sd_ssh_conn *c, ssh_prompt_answer *a);
 /* ---- auth state (auth.c) ---- */
 
 typedef enum ssh_auth_step {
-  SSH_AU_NONE, SSH_AU_PK_PROBE, SSH_AU_PK_QUERY, SSH_AU_PK_LOAD, SSH_AU_PK_SIGN, SSH_AU_PASSWORD,
-  SSH_AU_KBDINT, SSH_AU_PROMPT
+  SSH_AU_NONE, SSH_AU_PK_PREP, SSH_AU_PK_QUERY, SSH_AU_PK_LOAD, SSH_AU_PK_SIGNING, SSH_AU_PK_SIGN,
+  SSH_AU_PASSWORD, SSH_AU_PWCHANGE, SSH_AU_KBDINT, SSH_AU_PROMPT
 } ssh_auth_step;
+
+/* One publickey candidate (01 §6.2): a key or certificate to offer, and how to sign for it. */
+enum { SSH_CS_KEY = 1, SSH_CS_AGENT = 2 };
+typedef struct ssh_cand {
+  uint8_t src;                /* SSH_CS_KEY: identity key file/blob; SSH_CS_AGENT: an agent signs */
+  uint8_t is_cert;
+  uint8_t pub_unknown;        /* encrypted PEM without public part: decrypt before the query */
+  uint32_t ident;             /* identity index, or UINT32_MAX for extra agent keys */
+  uint32_t agent;             /* SD_AGENT_* for SSH_CS_AGENT */
+  uint8_t *blob; size_t blob_len;            /* offered key or certificate blob */
+  uint8_t *sign_blob; size_t sign_blob_len;  /* SSH_CS_AGENT: blob the agent signs with */
+  char key_type[64];          /* plain key type ("ssh-rsa", ...; agents may report unknown types) */
+  char fp[64];                /* fingerprint of the plain key (logs, passphrase prompts) */
+  uint32_t bits;
+} ssh_cand;
 
 typedef struct ssh_auth {
   ssh_auth_step step;
   char methods[512];
-  uint32_t id_next, pk_attempts;
-  sd_secbuf *key_file;        /* current identity bytes */
-  uint8_t cand_blob[1024]; size_t cand_len;
-  char cand_fp[64];
-  int cand_encrypted;
+  /* publickey */
+  int prep_done;
+  ssh_cand *cand; uint32_t ncand, cand_next, pk_attempts;
+  uint32_t nid;
+  sd_secbuf **idfile;         /* per identity: key file bytes */
+  sd_ssh_key **idkey;         /* per identity: decrypted key (kept for cert + plain candidates) */
+  uint8_t *idenc;             /* per identity: encrypted */
+  char alg[64];               /* algorithm of the current attempt */
+  const char *rsa_algs[3]; uint32_t rsa_nalg, rsa_idx;   /* RSA signature algorithm sequence */
   uint32_t pass_tries;
-  uint32_t password_rounds, kbd_rounds;
+  /* password / keyboard-interactive */
+  uint32_t password_rounds, kbd_rounds, kbd_info_rounds, kbd_empty_rounds, pwchange_rounds;
   int partial_pk, partial_pw, partial_kbd;
-  sd_ssh_key *key;
+  char pwchange_prompt[1024];
   /* reconnect cache (01 §7.4) */
   int pw_cache_tried, pw_from_cache, pp_cache_tried, pp_from_cache;
   sd_secbuf *pw_pending, *pp_pending;   /* user answers, stored in the cache once they worked */
@@ -184,14 +226,49 @@ void ssh_auth_clear(sd_ssh_conn *c);
 
 /* ---- connection ---- */
 
+/* M2 states: SYSPROXY (system proxy resolution on a worker), TUNNEL (hop i >= 1: direct-tcpip
+   channel opening on hop i-1), PROXY (proxy handshake running over the socket or the tunnel). */
 typedef enum ssh_conn_state {
-  SSH_ST_IDLE, SSH_ST_RESOLVING, SSH_ST_CONNECTING, SSH_ST_VERSION, SSH_ST_KEX, SSH_ST_LEGACY_ACK,
-  SSH_ST_SERVICE, SSH_ST_AUTH, SSH_ST_CONNECTED, SSH_ST_CLOSING, SSH_ST_CLOSED
+  SSH_ST_IDLE, SSH_ST_SYSPROXY, SSH_ST_RESOLVING, SSH_ST_CONNECTING, SSH_ST_TUNNEL, SSH_ST_PROXY,
+  SSH_ST_VERSION, SSH_ST_KEX, SSH_ST_LEGACY_ACK, SSH_ST_SERVICE, SSH_ST_AUTH, SSH_ST_CONNECTED,
+  SSH_ST_CLOSING, SSH_ST_CLOSED
 } ssh_conn_state;
 
 typedef struct ssh_pending { struct ssh_pending *next; size_t n; uint8_t p[1]; } ssh_pending;
 
 typedef struct ssh_attempt { SOCKET s; WSAEVENT ev; uint64_t started; } ssh_attempt;
+
+/* ---- ProxyJump chain and proxies (jump_chain.c, proxy_conn.c; 01 §3.3, §5) ----
+ * A chain is one sd_ssh_conn per hop. The public object is the target hop (hops[n-1]); it owns the
+ * I/O thread, the command queue and the worker counter (root). Hop 0 runs over a TCP socket, hop
+ * i >= 1 over a direct-tcpip channel on hop i-1 (ssh_tunnel). Either may carry a proxy handshake
+ * first (ssh_px). Every hop has its own transport, KEX, host key check, auth and secret cache. */
+
+typedef struct ssh_tunnel {           /* sink context of the direct-tcpip channel of hop i >= 1 */
+  sd_ssh_conn *c;                     /* NULL once the hop let go of it */
+  sd_ssh_channel *ch;
+  int open;
+} ssh_tunnel;
+
+typedef struct ssh_pxcfg {            /* deep copy of sd_proxy_cfg */
+  sd_proxy_kind kind;
+  wchar_t *host_w; char *host8; uint16_t port;
+  uint32_t auth;
+  int allow_discovered_sspi, remote_dns, fallback_direct;
+  char *user;
+} ssh_pxcfg;
+
+typedef struct ssh_pxrun {            /* per connect attempt */
+  sd_proxy_kind kind;                 /* effective (after system proxy resolution) */
+  wchar_t host_w[256]; char host8[256]; uint16_t port;
+  int discovered;                     /* SD_PROXY_ORIGIN_DISCOVERED */
+  ssh_px px;
+  int px_active;
+  int pw_from_cache, pw_cache_tried;
+  sd_secbuf *pw_pending;              /* user answer, cached once the tunnel is up */
+  void *sspi;                         /* ssh_sspi */
+  uint32_t reopens;
+} ssh_pxrun;
 
 struct sd_ssh_conn {
   /* configuration (deep copies) */
@@ -201,6 +278,8 @@ struct sd_ssh_conn {
   char lookup_name[320];
   char *user;
   ssh_ident *ids; uint32_t id_count;
+  uint32_t agents;            /* SD_AGENT_* (auth_cfg.c) */
+  int identities_only;        /* D37 */
   uint32_t methods;
   int pool_member;
   sd_legacy_policy legacy_policy;
@@ -250,7 +329,7 @@ struct sd_ssh_conn {
   ssh_kex_state kex;
   ssh_lists fixed_lists;      /* lists of the initial KEX, reused for rekeys */
   uint8_t session_id[64]; size_t session_id_len;
-  uint8_t hostkey[512]; size_t hostkey_len;
+  uint8_t hostkey[SSH_HOSTKEY_BUF]; size_t hostkey_len;
   char hostkey_fp[64];
   int strict;
   uint32_t legacy_mask;
@@ -273,7 +352,7 @@ struct sd_ssh_conn {
   /* reconnect (01 §8): survives across connects of this object */
   int ever_connected;         /* a connect reached CONNECTED; later connects are reconnects */
   int is_reconnect;           /* the current connect is a reconnect (prompts carry is_reconnect) */
-  uint8_t pinned_hostkey[512]; size_t pinned_len;   /* key verified by the last successful connect */
+  uint8_t pinned_hostkey[SSH_HOSTKEY_BUF]; size_t pinned_len;   /* key verified by the last successful connect */
   int pinned_unstored;        /* the pinned key was accepted once (not in any store) */
   int hk_once;                /* this connect accepted the host key with ACCEPT_ONCE */
   int cache_secrets;          /* cache_secrets_for_reconnect */
@@ -287,7 +366,84 @@ struct sd_ssh_conn {
 
   /* channels */
   sd_ssh_channel *ch[SSH_MAX_CHANNELS];
+
+  /* M2: chain (jump_chain.c) */
+  sd_ssh_conn *root;          /* queue/thread owner (the target hop); == this for the public object */
+  sd_ssh_conn **hops;         /* root only: hops[0..nhops-1], hops[nhops-1] == root */
+  uint32_t nhops;
+  uint32_t hop_index;
+  sd_ssh_conn *outer;         /* hop i >= 1: hop i-1 */
+  char *via_host;             /* hop i >= 1: sanitized host of hop i-1 (TM-R03); borrowed */
+  char *host_ascii;           /* host as sent to proxies / direct-tcpip (brackets removed) */
+  ssh_tunnel *tun;            /* hop i >= 1: the direct-tcpip channel carrying this hop */
+  sd_ssh_callbacks user_cb;   /* root only: the caller's callbacks; every hop's cb are adapters */
+  sd_ssh_done_cb chain_done; void *chain_ctx;           /* root: public connect */
+  sd_ssh_done_cb chain_disc_done; void *chain_disc_ctx; /* root: public disconnect */
+  int chain_service;          /* the process runs as LocalSystem (system proxy source) */
+
+  /* M2: proxy (proxy_conn.c) */
+  ssh_pxcfg pxcfg;
+  ssh_pxrun pxr;
+  ssh_secret px_secret;       /* cached proxy password (01 §7.4) */
+  int in_reset;               /* the lower transport was reopened inside process_input */
+
+  /* M2: transport (kex.c, hostkey_update.c) */
+  sd_hku_mode hku_mode;       /* update_host_keys of this hop (01 §7.5) */
+  struct ssh_hku *hku;        /* UpdateHostKeys / fetch_hostkeys state; ssh_hku_free() */
+  sd_hk_result hk_res;        /* known_hosts verdict for this connect's host key */
+  int hk_res_valid;
 };
+
+/* ---- M2 transport hooks (hostkey_update.c; 01 §7.5, §4.3) ---- */
+/* Server global request; returns 1 if handled (the caller then does nothing else). */
+int  ssh_hku_on_global_request(sd_ssh_conn *c, sd_span name, int want_reply, const uint8_t *p, size_t n);
+/* REQUEST_SUCCESS / REQUEST_FAILURE / UNIMPLEMENTED for a global request; returns 1 if it answered
+   one of ours (hostkeys-prove-00), 0 if it belongs to the keepalive accounting. */
+int  ssh_hku_on_reply(sd_ssh_conn *c, const uint8_t *p, size_t n);
+void ssh_hku_reset(sd_ssh_conn *c);         /* new connect: forget announcements and requests */
+void ssh_hku_free(sd_ssh_conn *c);          /* connection destroyed; withdraws pending fetches */
+/* Comma list of the legacy names for SD_PROMPT_LEGACY_ACK (kex.c). */
+void ssh_kex_legacy_names(const sd_ssh_conn *c, char *out, size_t cap);
+
+/* ---- per-hop setup (conn.c) ---- */
+sd_err ssh_hop_init(sd_ssh_conn *c, const sd_ssh_config *cfg, const sd_ssh_hop *h, uint32_t hop_index);
+void   ssh_hop_release(sd_ssh_conn *c);
+unsigned __stdcall ssh_io_main(void *arg);      /* the chain's I/O thread (arg = root) */
+
+/* ---- chain helpers (jump_chain.c) ---- */
+sd_err ssh_chain_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out);
+void   ssh_chain_destroy(sd_ssh_conn *root);
+void   ssh_chain_connect(sd_ssh_conn *root, sd_ssh_done_cb done, void *ctx);      /* I/O thread */
+void   ssh_chain_disconnect(sd_ssh_conn *root, sd_ssh_done_cb done, void *ctx);   /* I/O thread */
+/* Per hop (conn.c): start a connect attempt of this hop / disconnect it; done runs once. */
+void   ssh_hop_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx);
+void   ssh_hop_disconnect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx);
+/* Transport below SSH is up (TCP connected or tunnel open): proxy handshake or identification. */
+void   ssh_transport_up(sd_ssh_conn *c);
+/* Bytes from the lower transport of a tunnelled hop. */
+void   ssh_ingest(sd_ssh_conn *c, const uint8_t *p, size_t n);
+void   ssh_flush(sd_ssh_conn *c);
+void   ssh_tunnel_open(sd_ssh_conn *c);         /* hop i >= 1: SSH_ST_TUNNEL */
+void   ssh_tunnel_release(sd_ssh_conn *c);      /* closes the tunnel channel, detaches */
+void   ssh_start_dns(sd_ssh_conn *c);           /* hop 0: DNS of the proxy or the host */
+void   ssh_close_lower(sd_ssh_conn *c);         /* socket or tunnel (for proxy reopen) */
+void   ssh_reconnect_lower(sd_ssh_conn *c);     /* proxy reopen: close and connect the lower transport again */
+void   ssh_proxy_tunnel_ready(sd_ssh_conn *c);  /* proxy handshake done: send the identification */
+
+/* ---- proxy glue (proxy_conn.c) ---- */
+sd_err ssh_pxcfg_copy(ssh_pxcfg *d, const sd_proxy_cfg *s, uint32_t hop_index);
+void   ssh_pxcfg_free(ssh_pxcfg *d);
+void   ssh_proxy_reset(sd_ssh_conn *c);          /* start of a connect attempt */
+void   ssh_proxy_begin(sd_ssh_conn *c);          /* SYSPROXY step, then DNS / tunnel */
+int    ssh_proxy_active(const sd_ssh_conn *c);   /* this attempt runs a proxy handshake */
+void   ssh_proxy_start(sd_ssh_conn *c);          /* transport up: send the first proxy bytes */
+size_t ssh_proxy_input(sd_ssh_conn *c, const uint8_t *p, size_t n);   /* bytes used; may switch to VERSION */
+void   ssh_proxy_on_answer(sd_ssh_conn *c, ssh_prompt_answer *a);
+void   ssh_proxy_done_cleanup(sd_ssh_conn *c);   /* wipes per-attempt proxy state */
+/* Host and port the lower transport connects to (proxy or hop). */
+const wchar_t *ssh_lower_host_w(const sd_ssh_conn *c);
+const char    *ssh_lower_host8(const sd_ssh_conn *c);
+uint16_t       ssh_lower_port(const sd_ssh_conn *c);
 
 /* conn.c helpers used by the protocol units */
 extern const char ssh_ident_c[];        /* V_C, without CR LF */

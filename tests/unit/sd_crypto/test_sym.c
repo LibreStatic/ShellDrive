@@ -435,7 +435,7 @@ SD_TEST(pktcipher_aes_ctr_streams)
 {
   static const char *names[3] = { "aes128-ctr", "aes192-ctr", "aes256-ctr" };
   int i;
-  SD_CHECK(sd_pktcipher_find("aes256-cbc") == NULL);
+  SD_CHECK(sd_pktcipher_find("blowfish-cbc") == NULL);   /* aes*-cbc and 3des-cbc exist since M2 */
   SD_CHECK(sd_pktcipher_find(NULL) == NULL);
   for (i = 0; i < 3; i++) {
     const sd_pktcipher_info *info = sd_pktcipher_find(names[i]);

@@ -13,7 +13,22 @@ struct sd_prompt {
   int cancelled;
   sd_hostkey_decision decision;
   char resp[256];
+  /* M2 */
+  char resp2[3][256];             /* every response (password change: current, new, confirm) */
+  uint32_t nresp;
+  uint32_t flags;                 /* answer flags (SD_ANSWER_FROM_STORE) */
+  int ack;                        /* legacy ack: 1 accept */
 };
+
+#define FAKE_MAX_HOPS 9
+typedef struct fake_hop {
+  char host[256]; uint16_t port; char user[128];
+  char identity[MAX_PATH * 3];
+  uint32_t nidentities, nagent_keys;
+  int proxy_kind; char proxy_host[256]; char proxy_user[128]; uint16_t proxy_port;
+  int identities_only;
+  int hku;
+} fake_hop;
 
 struct sd_sftp_session {
   sd_sftp_event_cb ev;
@@ -28,6 +43,11 @@ struct sd_sftp_session {
   volatile LONG close_req;
   sd_mutex lock;
   struct sd_prompt *prompts;      /* kept until destroy */
+  /* M2 */
+  fake_hop hops[FAKE_MAX_HOPS];
+  uint32_t nhops;
+  int legacy_policy;
+  uint32_t connections;
 };
 
 struct sd_vfs { int unused; };
@@ -58,6 +78,12 @@ static uint32_t g_last_known_uid;
 static sd_vfs_event_cb g_vfs_cb;
 static void *g_vfs_ctx;
 static sd_vfs_identity g_vfs_ident;
+/* M2 */
+static fake_hop g_last_hops[FAKE_MAX_HOPS];
+static uint32_t g_last_nhops, g_last_connections, g_store_answers, g_applied_add, g_applied_remove, g_apply_calls;
+static int g_last_legacy;
+static char g_applied_name[300];
+static char g_last_new_password[256];
 
 static void init_once(void *arg) { SD_UNUSED(arg); sd_mutex_init(&g_lock); }
 static void ensure(void) { sd_once_run(&g_once, init_once, NULL); }
@@ -75,8 +101,29 @@ void fake_backend_reset(void)
   g_dokan_starts = g_vfs_mounts = g_budget_calls = 0;
   g_vfs_cb = NULL;
   memset(&g_vfs_ident, 0, sizeof(g_vfs_ident));
+  g_last_nhops = g_last_connections = g_store_answers = g_applied_add = g_applied_remove = g_apply_calls = 0;
+  g_applied_name[0] = g_last_new_password[0] = 0;
   sd_mutex_unlock(&g_lock);
 }
+
+uint32_t fake_backend_last_hop_count(void) { return g_last_nhops; }
+const char *fake_backend_last_hop_host(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].host : ""; }
+const char *fake_backend_last_hop_user(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].user : ""; }
+int fake_backend_last_hop_proxy(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].proxy_kind : -1; }
+uint32_t fake_backend_last_hop_identities(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].nidentities : 0; }
+uint32_t fake_backend_last_hop_agent_keys(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].nagent_keys : 0; }
+int fake_backend_last_hop_identities_only(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].identities_only : -1; }
+uint32_t fake_backend_last_connections(void) { return g_last_connections; }
+int fake_backend_last_legacy_policy(void) { return g_last_legacy; }
+uint32_t fake_backend_store_answers(void) { return g_store_answers; }
+uint32_t fake_backend_applied(uint32_t *removed, const char **name)
+{
+  if (removed) *removed = g_applied_remove;
+  if (name) *name = g_applied_name;
+  return g_applied_add;
+}
+uint32_t fake_backend_apply_calls(void) { return g_apply_calls; }
+const char *fake_backend_last_new_password(void) { return g_last_new_password; }
 
 void fake_backend_drop(int fail) { InterlockedExchange(&g_drop_req, fail ? 1 : 0); }
 uint32_t fake_backend_dokan_starts(void) { return (uint32_t)g_dokan_starts; }
@@ -241,17 +288,25 @@ static struct sd_prompt *ask(struct sd_sftp_session *s, const sd_auth_prompt_inf
   }
 }
 
-static int password_flow(struct sd_sftp_session *s, sd_prompt_kind kind, const char *expect, sd_err *fail)
+static int password_flow_hop(struct sd_sftp_session *s, uint32_t hop, sd_prompt_kind kind, const char *expect,
+                             int just_accepted, sd_err *fail)
 {
   uint32_t round;
   sd_prompt_item item;
+  const fake_hop *h = &s->hops[hop < s->nhops ? hop : 0];
   for (round = 0; round < 2; round++) {
     sd_auth_prompt_info ai;
     struct sd_prompt *p;
     memset(&ai, 0, sizeof(ai));
     ai.kind = kind;
-    ai.host = s->host;
-    ai.user = s->user;
+    ai.hop_index = hop;
+    ai.host = h->host;
+    ai.user = kind == SD_PROMPT_PROXY_PASSWORD ? h->proxy_user : h->user;
+    ai.hostkey_just_accepted = just_accepted && kind != SD_PROMPT_KEY_PASSPHRASE;
+    if (kind == SD_PROMPT_PROXY_PASSWORD) {
+      ai.proxy_host = h->proxy_host;
+      ai.proxy_port = h->proxy_port;
+    }
     ai.name = "";
     ai.instruction = "";
     item.text = kind == SD_PROMPT_KEY_PASSPHRASE ? "Passphrase: " : "Password: ";
@@ -259,7 +314,7 @@ static int password_flow(struct sd_sftp_session *s, sd_prompt_kind kind, const c
     ai.items = &item;
     ai.item_count = 1;
     ai.round = round;
-    ai.key_path = kind == SD_PROMPT_KEY_PASSPHRASE ? s->identity : NULL;
+    ai.key_path = kind == SD_PROMPT_KEY_PASSPHRASE ? h->identity : NULL;
     ai.key_fingerprint = kind == SD_PROMPT_KEY_PASSPHRASE ? FAKE_FP : NULL;
     p = ask(s, &ai, NULL);
     if (p == NULL) {
@@ -267,14 +322,99 @@ static int password_flow(struct sd_sftp_session *s, sd_prompt_kind kind, const c
       return 0;
     }
     if (p->cancelled) {
-      *fail = SD_E_CANCELLED;
+      *fail = kind == SD_PROMPT_PROXY_PASSWORD ? SD_E_PROXY_AUTH : SD_E_CANCELLED;
       return 0;
     }
     if (strcmp(p->resp, expect) == 0)
       return 1;
   }
-  *fail = kind == SD_PROMPT_KEY_PASSPHRASE ? SD_E_BAD_PASSPHRASE : SD_E_AUTH_FAILED;
+  *fail = kind == SD_PROMPT_KEY_PASSPHRASE ? SD_E_BAD_PASSPHRASE
+        : kind == SD_PROMPT_PROXY_PASSWORD ? SD_E_PROXY_AUTH : SD_E_AUTH_FAILED;
   return 0;
+}
+
+/* keyboard-interactive: a password-shaped round, then an OTP round (FAKE_OTP). */
+static int kbdint_flow(struct sd_sftp_session *s, uint32_t hop, int just_accepted, sd_err *fail)
+{
+  sd_prompt_item item;
+  const fake_hop *h = &s->hops[hop];
+  uint32_t round, tries = 0;
+  for (round = 0; round < 2 && tries < 4; tries++) {
+    sd_auth_prompt_info ai;
+    struct sd_prompt *p;
+    memset(&ai, 0, sizeof(ai));
+    ai.kind = SD_PROMPT_KBDINT;
+    ai.hop_index = hop;
+    ai.host = h->host;
+    ai.user = h->user;
+    ai.name = "";
+    ai.instruction = round == 0 ? "" : "Two-factor authentication";
+    item.text = round == 0 ? "Password: " : "Verification code: ";
+    item.echo = 0;
+    ai.items = &item;
+    ai.item_count = 1;
+    ai.round = tries;
+    ai.hostkey_just_accepted = just_accepted;
+    p = ask(s, &ai, NULL);
+    if (p == NULL) { *fail = SD_E_SHUTDOWN; return 0; }
+    if (p->cancelled) { *fail = SD_E_CANCELLED; return 0; }
+    if (strcmp(p->resp, round == 0 ? FAKE_PASSWORD : FAKE_OTP) == 0)
+      round++;
+  }
+  if (round == 2)
+    return 1;
+  *fail = SD_E_AUTH_FAILED;
+  return 0;
+}
+
+/* SSH_MSG_USERAUTH_PASSWD_CHANGEREQ: current, new, confirm (01 §6.7). */
+static int change_flow(struct sd_sftp_session *s, uint32_t hop, sd_err *fail)
+{
+  sd_prompt_item items[3];
+  sd_auth_prompt_info ai;
+  struct sd_prompt *p;
+  memset(&ai, 0, sizeof(ai));
+  ai.kind = SD_PROMPT_NEW_PASSWORD;
+  ai.hop_index = hop;
+  ai.host = s->hops[hop].host;
+  ai.user = s->hops[hop].user;
+  ai.name = "";
+  ai.instruction = "Your password has expired.";
+  items[0].text = "Current password: "; items[0].echo = 0;
+  items[1].text = "New password: "; items[1].echo = 0;
+  items[2].text = "Retype new password: "; items[2].echo = 0;
+  ai.items = items;
+  ai.item_count = 3;
+  p = ask(s, &ai, NULL);
+  if (p == NULL) { *fail = SD_E_SHUTDOWN; return 0; }
+  if (p->cancelled || p->nresp != 3) { *fail = SD_E_CANCELLED; return 0; }
+  if (strcmp(p->resp2[0], FAKE_PASSWORD) != 0 || p->resp2[1][0] == 0 || strcmp(p->resp2[1], p->resp2[2]) != 0) {
+    *fail = SD_E_AUTH_FAILED;
+    return 0;
+  }
+  sd_mutex_lock(&g_lock);
+  strcpy_s(g_last_new_password, sizeof(g_last_new_password), p->resp2[1]);
+  sd_mutex_unlock(&g_lock);
+  return 1;
+}
+
+static int legacy_ack_flow(struct sd_sftp_session *s, uint32_t hop, sd_err *fail)
+{
+  sd_auth_prompt_info ai;
+  struct sd_prompt *p;
+  memset(&ai, 0, sizeof(ai));
+  ai.kind = SD_PROMPT_LEGACY_ACK;
+  ai.hop_index = hop;
+  ai.host = s->hops[hop].host;
+  ai.user = s->hops[hop].user;
+  ai.name = "";
+  ai.instruction = "";
+  ai.legacy_mask = 1;
+  ai.legacy_names = "3des-cbc,hmac-sha1";
+  p = ask(s, &ai, NULL);
+  if (p == NULL) { *fail = SD_E_SHUTDOWN; return 0; }
+  if (p->cancelled || !p->ack) { *fail = SD_E_LEGACY_REJECTED; return 0; }
+  return 1;
 }
 
 static unsigned __stdcall session_thread(void *arg)
@@ -301,43 +441,109 @@ static unsigned __stdcall session_thread(void *arg)
       s->cb.on_hostkey_event(s->cb.ctx, &he);
     fail = SD_E_HOSTKEY_MISMATCH;
   } else {
+    /* every hop: proxy password (leg with a proxy user), TOFU, legacy ack, then authentication */
     int just_accepted = 0;
-    if (!fake_backend_is_trusted(s->host)) {
-      sd_hostkey_prompt_info hk;
-      struct sd_prompt *p;
-      memset(&hk, 0, sizeof(hk));
-      hk.host = s->host;
-      hk.port = s->port;
-      hk.lookup_name = s->host;
-      hk.key_type = "ssh-ed25519";
-      hk.key_bits = 256;
-      hk.fp_sha256 = FAKE_FP;
-      hk.fp_md5 = "";
-      hk.status = SD_HK_NEW;
-      p = ask(s, NULL, &hk);
-      if (p == NULL) fail = SD_E_SHUTDOWN;
-      else if (p->cancelled || p->decision == SD_HK_REJECT) fail = SD_E_HOSTKEY_REJECTED;
-      else {
-        if (p->decision == SD_HK_ACCEPT_AND_STORE) trust(s->host);
-        just_accepted = 1;
+    uint32_t hop;
+    for (hop = 0; hop < s->nhops && fail == SD_OK; hop++) {
+      const fake_hop *h = &s->hops[hop];
+      int target = hop + 1 == s->nhops;
+      if (h->proxy_kind != SD_PROXY_NONE && h->proxy_user[0])
+        password_flow_hop(s, hop, SD_PROMPT_PROXY_PASSWORD, FAKE_PROXY_PASSWORD, just_accepted, &fail);
+      if (fail == SD_OK && !fake_backend_is_trusted(h->host)) {
+        sd_hostkey_prompt_info hk;
+        struct sd_prompt *p;
+        memset(&hk, 0, sizeof(hk));
+        hk.hop_index = hop;
+        hk.host = h->host;
+        hk.port = h->port;
+        hk.via_host = hop ? s->hops[hop - 1].host : NULL;
+        hk.lookup_name = h->host;
+        hk.key_type = "ssh-ed25519";
+        hk.key_bits = 256;
+        hk.fp_sha256 = FAKE_FP;
+        hk.fp_md5 = "";
+        hk.status = SD_HK_NEW;
+        p = ask(s, NULL, &hk);
+        if (p == NULL) fail = SD_E_SHUTDOWN;
+        else if (p->cancelled || p->decision == SD_HK_REJECT) fail = SD_E_HOSTKEY_REJECTED;
+        else {
+          if (p->decision == SD_HK_ACCEPT_AND_STORE) trust(h->host);
+          just_accepted = 1;
+        }
       }
-    }
-    SD_UNUSED(just_accepted);
-    if (fail == SD_OK) {
-      if (s->identity[0] && strstr(s->identity, "encrypted"))
-        password_flow(s, SD_PROMPT_KEY_PASSPHRASE, FAKE_PASSPHRASE, &fail);
-      else if (s->identity[0] == 0)
-        password_flow(s, SD_PROMPT_PASSWORD, FAKE_PASSWORD, &fail);
+      if (fail == SD_OK && target && starts_with(h->host, "legacy") && s->legacy_policy == SD_LEGACY_ASK)
+        legacy_ack_flow(s, hop, &fail);
+      if (fail == SD_OK && target && starts_with(h->host, "legacy") && s->legacy_policy == SD_LEGACY_REFUSE)
+        fail = SD_E_LEGACY_REJECTED;
+      if (fail != SD_OK) break;
+      if (target && starts_with(h->host, "kbd"))
+        kbdint_flow(s, hop, just_accepted, &fail);
+      else if (h->identity[0] && strstr(h->identity, "encrypted"))
+        password_flow_hop(s, hop, SD_PROMPT_KEY_PASSPHRASE, FAKE_PASSPHRASE, just_accepted, &fail);
+      else if (h->identity[0] == 0 && h->nidentities == 0)
+        password_flow_hop(s, hop, SD_PROMPT_PASSWORD, FAKE_PASSWORD, just_accepted, &fail);
+      if (fail == SD_OK && target && starts_with(h->host, "chpw"))
+        change_flow(s, hop, &fail);
+      if (fail == SD_OK) {
+        sd_ssh_negotiated n;
+        memset(&n, 0, sizeof(n));
+        n.hop_index = hop;
+        n.kex = "curve25519-sha256";
+        n.hostkey = "ssh-ed25519";
+        n.cipher_c2s = n.cipher_s2c = target && starts_with(h->host, "legacy") ? "3des-cbc" : "aes256-gcm@openssh.com";
+        n.mac_c2s = n.mac_s2c = target && starts_with(h->host, "legacy") ? "hmac-sha1" : "";
+        n.legacy_mask = target && starts_with(h->host, "legacy") ? 3u : 0u;
+        n.hostkey_fp_sha256 = FAKE_FP;
+        if (s->cb.on_negotiated)
+          s->cb.on_negotiated(s->cb.ctx, &n);
+      }
     }
   }
   if (fail == SD_OK && !s->close_req) {
-    sd_ssh_negotiated n;
-    memset(&n, 0, sizeof(n));
-    n.kex = n.hostkey = n.cipher_c2s = "fake";
-    n.hostkey_fp_sha256 = FAKE_FP;
-    if (s->cb.on_negotiated)
-      s->cb.on_negotiated(s->cb.ctx, &n);
     emit_state(s, SD_SFTP_ST_READY, SD_OK);
+    if (s->nhops && starts_with(s->hops[s->nhops - 1].host, "rotate") && s->cb.on_hostkey_event) {
+      /* UpdateHostKeys: one proven new key, one key no longer offered (5.6) */
+      static const uint8_t add_blob[] = { 0, 0, 0, 11, 's', 's', 'h', '-', 'e', 'd', '2', '5', '5', '1', '9', 0, 0, 0, 1, 0xA1 };
+      static const uint8_t rem_blob[] = { 0, 0, 0, 7, 's', 's', 'h', '-', 'r', 's', 'a', 0, 0, 0, 1, 0xB2 };
+      sd_hostkey_event he;
+      sd_hk_key add, rem;
+      memset(&he, 0, sizeof(he));
+      add.blob = add_blob; add.len = sizeof(add_blob); add.type = "ssh-ed25519";
+      add.fp_sha256 = "SHA256:newnewnewnewnewnewnewnewnewnewnewnewnew0";
+      rem.blob = rem_blob; rem.len = sizeof(rem_blob); rem.type = "ssh-rsa";
+      rem.fp_sha256 = "SHA256:oldoldoldoldoldoldoldoldoldoldoldoldold00";
+      he.kind = SD_HKEV_ANNOUNCED;
+      he.hop_index = s->nhops - 1;
+      he.lookup_name = s->hops[s->nhops - 1].host;
+      he.store = SD_KH_STORE_USER;
+      he.add = &add; he.add_count = 1;
+      he.remove = &rem; he.remove_count = 1;
+      s->cb.on_hostkey_event(s->cb.ctx, &he);
+    }
+    if (s->connections > 1) {
+      /* the pool (D18): one member, which asks for the password: answered from the store or cancelled */
+      sd_auth_prompt_info ai;
+      sd_prompt_item item;
+      struct sd_prompt *p;
+      sd_sftp_event ev;
+      memset(&ai, 0, sizeof(ai));
+      ai.kind = SD_PROMPT_PASSWORD;
+      ai.hop_index = s->nhops - 1;
+      ai.host = s->hops[s->nhops - 1].host;
+      ai.user = s->hops[s->nhops - 1].user;
+      ai.name = ai.instruction = "";
+      item.text = "Password: ";
+      item.echo = 0;
+      ai.items = &item;
+      ai.item_count = 1;
+      ai.is_pool_member = 1;
+      p = ask(s, &ai, NULL);
+      memset(&ev, 0, sizeof(ev));
+      ev.type = SD_SFTP_EV_POOL;
+      ev.member = 1;
+      ev.connections = (p && !p->cancelled && strcmp(p->resp, FAKE_PASSWORD) == 0) ? 2 : 1;
+      s->ev(s->ev_ctx, &ev);
+    }
   } else if (fail != SD_OK && fail != SD_E_SHUTDOWN) {
     emit_state(s, SD_SFTP_ST_FAILED, fail);
   }
@@ -390,7 +596,7 @@ static sd_err f_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks 
                                sd_sftp_event_cb ev, void *ev_ctx, sd_sftp_session **out)
 {
   struct sd_sftp_session *s;
-  if (ssh == NULL || ssh->hop_count != 1 || ssh->struct_size != sizeof(sd_ssh_config))
+  if (ssh == NULL || ssh->hop_count < 1 || ssh->hop_count > FAKE_MAX_HOPS || ssh->struct_size != sizeof(sd_ssh_config))
     return SD_E_INVALID_PARAM;
   if (opt) {
     g_last_rc_enabled = opt->reconnect.enabled;
@@ -404,14 +610,44 @@ static sd_err f_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks 
   s->ev = ev;
   s->ev_ctx = ev_ctx;
   s->cb = *cb;
-  to_utf8(ssh->hops[0].host, s->host, sizeof(s->host));
-  s->port = ssh->hops[0].port;
-  if (ssh->hops[0].auth.user) {
-    size_t n = strlen(ssh->hops[0].auth.user);
-    if (n < sizeof(s->user)) memcpy(s->user, ssh->hops[0].auth.user, n + 1);
+  {
+    uint32_t i, k;
+    const sd_ssh_hop *t = &ssh->hops[ssh->hop_count - 1];
+    s->nhops = ssh->hop_count;
+    s->legacy_policy = ssh->algos.legacy_policy;
+    s->connections = opt ? opt->connections : 1;
+    for (i = 0; i < ssh->hop_count; i++) {
+      const sd_ssh_hop *sh = &ssh->hops[i];
+      fake_hop *h = &s->hops[i];
+      to_utf8(sh->host, h->host, sizeof(h->host));
+      h->port = sh->port;
+      if (sh->auth.user && strlen(sh->auth.user) < sizeof(h->user))
+        memcpy(h->user, sh->auth.user, strlen(sh->auth.user) + 1);
+      for (k = 0; k < sh->auth.identity_count; k++) {
+        if (sh->auth.identities[k].kind == SD_ID_AGENT_KEY) h->nagent_keys++;
+        else h->nidentities++;
+        if (sh->auth.identities[k].kind == SD_ID_FILE && h->identity[0] == 0)
+          to_utf8(sh->auth.identities[k].path, h->identity, sizeof(h->identity));
+      }
+      h->identities_only = sh->auth.identities_only;
+      h->proxy_kind = sh->proxy.kind;
+      h->proxy_port = sh->proxy.port;
+      to_utf8(sh->proxy.host, h->proxy_host, sizeof(h->proxy_host));
+      if (sh->proxy.user && strlen(sh->proxy.user) < sizeof(h->proxy_user))
+        memcpy(h->proxy_user, sh->proxy.user, strlen(sh->proxy.user) + 1);
+      h->hku = sh->update_host_keys;
+    }
+    to_utf8(t->host, s->host, sizeof(s->host));
+    s->port = t->port;
+    memcpy(s->user, s->hops[ssh->hop_count - 1].user, sizeof(s->user));
+    memcpy(s->identity, s->hops[ssh->hop_count - 1].identity, sizeof(s->identity));
+    sd_mutex_lock(&g_lock);
+    memcpy(g_last_hops, s->hops, sizeof(g_last_hops));
+    g_last_nhops = s->nhops;
+    g_last_connections = s->connections;
+    g_last_legacy = s->legacy_policy;
+    sd_mutex_unlock(&g_lock);
   }
-  if (ssh->hops[0].auth.identity_count)
-    to_utf8(ssh->hops[0].auth.identities[0].path, s->identity, sizeof(s->identity));
   s->wake = CreateEventW(NULL, FALSE, FALSE, NULL);
   *out = s;
   InterlockedIncrement(&g_live);
@@ -450,9 +686,11 @@ static void f_session_destroy(sd_sftp_session *s)
   InterlockedDecrement(&g_live);
 }
 
-static sd_err finish_prompt(sd_prompt *p, int cancelled, sd_hostkey_decision d, const char *resp)
+static sd_err finish_prompt_ex(sd_prompt *p, int cancelled, sd_hostkey_decision d, uint32_t n,
+                               const char *const *r, uint32_t flags, int ack)
 {
   struct sd_sftp_session *s = p->s;
+  uint32_t i;
   sd_mutex_lock(&s->lock);
   if (p->done) {
     sd_mutex_unlock(&s->lock);
@@ -461,20 +699,68 @@ static sd_err finish_prompt(sd_prompt *p, int cancelled, sd_hostkey_decision d, 
   p->done = 1;
   p->cancelled = cancelled;
   p->decision = d;
-  if (resp) {
-    size_t n = strlen(resp);
-    if (n >= sizeof(p->resp)) n = sizeof(p->resp) - 1;
-    memcpy(p->resp, resp, n);
-    p->resp[n] = 0;
+  p->flags = flags;
+  p->ack = ack;
+  for (i = 0; r && i < n && i < 3; i++) {
+    size_t k = strlen(r[i]);
+    if (k >= sizeof(p->resp2[0])) k = sizeof(p->resp2[0]) - 1;
+    memcpy(p->resp2[i], r[i], k);
+    p->resp2[i][k] = 0;
   }
+  p->nresp = r ? (n < 3 ? n : 3) : 0;
+  if (r && n) memcpy(p->resp, p->resp2[0], sizeof(p->resp));
   sd_mutex_unlock(&s->lock);
+  if (flags & SD_ANSWER_FROM_STORE) InterlockedIncrement((volatile LONG *)&g_store_answers);
   SetEvent(s->wake);
   return SD_OK;
 }
 
+static sd_err finish_prompt(sd_prompt *p, int cancelled, sd_hostkey_decision d, const char *resp)
+{
+  const char *r[1];
+  r[0] = resp;
+  return finish_prompt_ex(p, cancelled, d, resp ? 1 : 0, resp ? r : NULL, 0, 0);
+}
+
 static sd_err f_prompt_answer(sd_prompt *p, uint32_t n, const char *const *r)
 {
-  return finish_prompt(p, 0, SD_HK_REJECT, n ? r[0] : "");
+  return finish_prompt_ex(p, 0, SD_HK_REJECT, n, r, 0, 0);
+}
+
+static sd_err f_prompt_answer_ex(sd_prompt *p, uint32_t n, const char *const *r, uint32_t flags)
+{
+  return finish_prompt_ex(p, 0, SD_HK_REJECT, n, r, flags, 0);
+}
+
+static sd_err f_prompt_answer_ack(sd_prompt *p, int accept)
+{
+  return finish_prompt_ex(p, 0, SD_HK_REJECT, 0, NULL, 0, accept);
+}
+
+static sd_err f_kh_apply(sd_known_hosts *kh, sd_kh_store_kind target, const char *name, const sd_hk_key *add,
+                         uint32_t add_count, const sd_hk_key *remove, uint32_t remove_count)
+{
+  SD_UNUSED(kh);
+  SD_UNUSED(add);
+  SD_UNUSED(remove);
+  if (target != SD_KH_STORE_USER)
+    return SD_E_ACCESS_DENIED;
+  sd_mutex_lock(&g_lock);
+  g_applied_add += add_count;
+  g_applied_remove += remove_count;
+  g_apply_calls++;
+  strncpy_s(g_applied_name, sizeof(g_applied_name), name ? name : "", _TRUNCATE);
+  sd_mutex_unlock(&g_lock);
+  if (add_count) trust(name);
+  return SD_OK;
+}
+
+static sd_err f_key_unprotect(const uint8_t *bytes, size_t len, const char *id, sd_secbuf **out)
+{
+  SD_UNUSED(id);
+  if (len < 8 || memcmp(bytes, "SDKEY1", 6) != 0)
+    return SD_E_KEY_FORMAT;
+  return sd_secbuf_from(bytes + 8, len - 8, out);
 }
 
 static sd_err f_prompt_answer_hostkey(sd_prompt *p, sd_hostkey_decision d)
@@ -693,6 +979,10 @@ static const sd_mount_backend k_fake = {
   f_cache_budget,
   f_vfs_get_identity,
   f_wd_emergency,
+  f_prompt_answer_ex,
+  f_prompt_answer_ack,
+  f_kh_apply,
+  f_key_unprotect,
 };
 
 const sd_mount_backend *fake_backend(void)

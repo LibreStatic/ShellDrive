@@ -119,4 +119,7 @@ sd_err sd_bcrypt_pbkdf(const void *pass, size_t plen, const uint8_t *salt, size_
 sd_err sd_pbkdf2_hmac(sd_hash_alg h, const void *pass, size_t plen, const uint8_t *salt, size_t slen,
                       uint32_t iters, uint8_t *out, size_t outlen);
 
+#include "sd_crypto/sd_crypto_pq.h"   /* M2 symmetric/PQ additions */
+#include "sd_crypto/sd_crypto_pk.h"   /* M2 public-key additions */
+
 #endif /* SD_CRYPTO_H */

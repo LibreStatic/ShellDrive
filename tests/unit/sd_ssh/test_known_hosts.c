@@ -92,10 +92,11 @@ SD_TEST(ssh_kh_check_statuses)
   SD_CHECK_EQ_INT(r.status, SD_HK_MISMATCH);
   SD_CHECK_EQ_INT(r.line, 4);
   SD_CHECK_STR(r.stored_type, "ssh-ed25519");
-  /* a mismatching line wins over a matching one (D7) */
-  _snprintf_s(text, sizeof(text), _TRUNCATE, "h ssh-ed25519 %s\nh ssh-ed25519 %s\n", KEY_A_B64, bb64);
+  /* M2: one store may hold several keys of a type (UpdateHostKeys rotation): a matching line wins
+     within the store; a mismatch in ANOTHER store still blocks (D7, test_known_hosts_m2.c) */
+  _snprintf_s(text, sizeof(text), _TRUNCATE, "h ssh-ed25519 %s\nh ssh-ed25519 %s\n", bb64, KEY_A_B64);
   SD_CHECK_EQ_INT(ssh_kh_check_buffer(text, strlen(text), "h", a, al, &r, &other), SD_OK);
-  SD_CHECK_EQ_INT(r.status, SD_HK_MISMATCH);
+  SD_CHECK_EQ_INT(r.status, SD_HK_MATCH);
   SD_CHECK_EQ_INT(r.line, 2);
   /* NEW_TYPE: only an RSA key is stored for the name (TM-R04: fail, never a prompt) */
   _snprintf_s(text, sizeof(text), _TRUNCATE,

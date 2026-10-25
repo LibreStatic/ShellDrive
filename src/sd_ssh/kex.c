@@ -1,17 +1,22 @@
-/* Key exchange: curve25519-sha256 (RFC 8731), strict KEX, rekeying, host key verification
- * (01 §4.2-§4.4, §7.1; TM-R01, TM-R04, TM-R05). I/O thread only. */
+/* Key exchange state machine (01 §4.2-§4.4, §7.1; TM-R01, TM-R04, TM-R05; D33, D34): KEXINIT
+ * after the server's KEXINIT, list construction, strict KEX, every KEX method of kex_methods.c,
+ * host key signature check, legacy classification, rekeying (including the restricted re-key of
+ * sd_ssh_conn_fetch_hostkeys) and the known_hosts verification. I/O thread only. */
 #include <string.h>
 
 #include "sd_base/sd_mem.h"
 #include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_time.h"
-#include "conn_internal.h"
+#include "hostkey_internal.h"
+#include "kex_internal.h"
+#include "transport_internal.h"
 
 void ssh_kex_reset(sd_ssh_conn *c)
 {
   ssh_kex_state *k = &c->kex;
   if (k->i_c) sd_free(k->i_c);
   if (k->i_s) sd_free(k->i_s);
+  if (k->km) ssh_kexm_free(k->km);
   sd_secure_zero(k, sizeof(*k));
 }
 
@@ -25,6 +30,8 @@ static int hw_aes(void)
   uint32_t f = sd_cpu_features();
   return (f & SD_CPU_AESNI) && (f & SD_CPU_PCLMUL);
 }
+
+static int allow_legacy(const sd_ssh_conn *c) { return c->legacy_policy != SD_LEGACY_REFUSE; }
 
 static sd_err send_kexinit(sd_ssh_conn *c, const ssh_lists *l)
 {
@@ -43,19 +50,29 @@ static sd_err send_kexinit(sd_ssh_conn *c, const ssh_lists *l)
   return ssh_send_wr(c, &w);
 }
 
-static void send_ecdh_init(sd_ssh_conn *c);
+static void start_method(sd_ssh_conn *c);
 
 static void negotiate(sd_ssh_conn *c)
 {
   ssh_kex_state *k = &c->kex;
   const char *cat = NULL;
   sd_err e;
-  /* The initial KEXINIT carried the same lists plus the pseudo names, which negotiation skips. */
-  e = ssh_negotiate(&c->fixed_lists, &k->server, &k->algs, &cat);
+  /* The initial KEXINIT carried the same lists plus the pseudo names, which negotiation skips.
+     A fetch re-key sent fixed_lists with another host key list; negotiate against what was sent. */
+  if (k->fetch) {
+    ssh_lists sent = c->fixed_lists;
+    ssh_kexinit mine;
+    if (ssh_kexinit_parse(k->i_c, k->i_c_len, &mine) == SD_OK && ssh_span_copy(mine.hostkey, sent.hostkey, sizeof(sent.hostkey)))
+      e = ssh_negotiate(&sent, &k->server, &k->algs, &cat);
+    else
+      e = SD_E_INTERNAL;
+  } else {
+    e = ssh_negotiate(&c->fixed_lists, &k->server, &k->algs, &cat);
+  }
   if (e != SD_OK) {
     int restricted = c->stored_types.count > 0 || c->stored_types.has_ca;
     ssh_log(c, SD_LOG_WARN, "no common %s algorithm", cat ? cat : "?");
-    if (cat && strcmp(cat, "hostkey") == 0 && restricted)
+    if (cat && strcmp(cat, "hostkey") == 0 && (restricted || k->fetch))
       ssh_fail(c, SD_E_HOSTKEY_TYPE_UNAVAILABLE, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "host_key_type_unavailable");
     else
       ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "no common algorithm");
@@ -73,22 +90,27 @@ static void negotiate(sd_ssh_conn *c)
     k->ignore_next_kex_packet = !right;
   }
   if (k->initial) {
-    if (!c->strict) c->legacy_mask |= SD_LEGACY_NO_STRICT_KEX;
-    if (!c->strict && (strcmp(k->algs.enc_c2s, "chacha20-poly1305@openssh.com") == 0 ||
-                       strcmp(k->algs.enc_s2c, "chacha20-poly1305@openssh.com") == 0)) {
-      c->legacy_mask |= SD_LEGACY_TERRAPIN_EXPOSED;
+    c->legacy_mask |= ssh_legacy_mask_for(&k->algs, c->strict);
+    if (c->legacy_mask & SD_LEGACY_TERRAPIN_EXPOSED) {
+      /* only possible with rule 3 (no unaffected pair) or with the fallback lists (01 §4.3) */
+      ssh_log(c, SD_LOG_WARN, "terrapin_exposed: %s/%s %s/%s without strict KEX", k->algs.enc_c2s, k->algs.mac_c2s,
+              k->algs.enc_s2c, k->algs.mac_s2c);
       if (c->refuse_terrapin) {
-        ssh_log(c, SD_LOG_WARN, "terrapin_exposed");
         ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "terrapin_exposed");
         return;
       }
     }
-    if ((k->algs.mac_c2s[0] && !strstr(k->algs.mac_c2s, "-etm@")) || (k->algs.mac_s2c[0] && !strstr(k->algs.mac_s2c, "-etm@")))
-      c->legacy_mask |= SD_LEGACY_MAC_NON_ETM;
+    {
+      ssh_hku *u = ssh_hku_get(c);
+      if (u) {
+        if (!ssh_span_copy(k->server.hostkey, u->server_hk_algs, sizeof(u->server_hk_algs))) u->server_hk_algs[0] = '\0';
+        u->gen = c->gen;
+      }
+    }
   }
   ssh_log(c, SD_LOG_DEBUG, "negotiated kex=%s hostkey=%s c2s=%s/%s s2c=%s/%s", k->algs.kex, k->algs.hostkey,
           k->algs.enc_c2s, k->algs.mac_c2s, k->algs.enc_s2c, k->algs.mac_s2c);
-  send_ecdh_init(c);
+  start_method(c);
 }
 
 void ssh_kex_try_send_initial(sd_ssh_conn *c)
@@ -108,6 +130,7 @@ void ssh_kex_try_send_initial(sd_ssh_conn *c)
   in.hw_aes = hw_aes();
   in.disabled = c->disabled;
   in.refuse_terrapin_exposed = c->refuse_terrapin && in.server != NULL;
+  in.allow_legacy = allow_legacy(c);
   in.initial = 1;
   e = ssh_build_lists(&in, &sent, &res);
   if (e == SD_OK) {
@@ -117,7 +140,8 @@ void ssh_kex_try_send_initial(sd_ssh_conn *c)
   if (e != SD_OK) {
     if (e == SD_E_KEX_FAILED && res.terrapin_exposed) ssh_log(c, SD_LOG_WARN, "terrapin_exposed");
     ssh_fail(c, e, SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
-             e == SD_E_HOSTKEY_TYPE_UNAVAILABLE ? "host_key_type_unavailable" : "algorithm lists");
+             e == SD_E_HOSTKEY_TYPE_UNAVAILABLE ? "host_key_type_unavailable" :
+             res.terrapin_exposed ? "terrapin_exposed" : "algorithm lists");
     return;
   }
   if (!in.server) {
@@ -126,6 +150,7 @@ void ssh_kex_try_send_initial(sd_ssh_conn *c)
   } else {
     if (res.terrapin_exposed) ssh_log(c, SD_LOG_WARN, "server offers only Terrapin-affected ciphers");
     if (res.chacha_removed) ssh_log(c, SD_LOG_DEBUG, "chacha20-poly1305 removed: server lacks strict KEX");
+    if (res.etm_removed) ssh_log(c, SD_LOG_DEBUG, "CBC without strict KEX: -etm MACs removed");
   }
   e = send_kexinit(c, &sent);
   if (e != SD_OK) { ssh_fail(c, e, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "send KEXINIT"); return; }
@@ -143,6 +168,25 @@ void ssh_kex_start_rekey(sd_ssh_conn *c)
   ssh_log(c, SD_LOG_DEBUG, "rekey started");
   e = send_kexinit(c, &c->fixed_lists);
   if (e != SD_OK) ssh_fail(c, e, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "send KEXINIT");
+}
+
+sd_err ssh_kex_start_fetch_rekey(sd_ssh_conn *c, const char *hk_list)
+{
+  ssh_kex_state *k = &c->kex;
+  ssh_lists l;
+  sd_err e;
+  if (c->failing || k->active || c->session_id_len == 0 || c->st != SSH_ST_CONNECTED) return SD_E_BUSY;
+  l = c->fixed_lists;
+  if (strlen(hk_list) >= sizeof(l.hostkey)) return SD_E_INVALID_PARAM;
+  memcpy(l.hostkey, hk_list, strlen(hk_list) + 1);
+  ssh_kex_reset(c);
+  k->active = 1;
+  k->initial = 0;
+  k->fetch = 1;
+  ssh_log(c, SD_LOG_INFO, "re-key restricted to host key algorithms %s", hk_list);
+  e = send_kexinit(c, &l);
+  if (e != SD_OK) ssh_fail(c, e, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "send KEXINIT");
+  return e;
 }
 
 static void on_kexinit(sd_ssh_conn *c, const uint8_t *p, size_t n)
@@ -180,58 +224,43 @@ static void on_kexinit(sd_ssh_conn *c, const uint8_t *p, size_t n)
   negotiate(c);
 }
 
-static void send_ecdh_init(sd_ssh_conn *c)
+static void start_method(sd_ssh_conn *c)
 {
   ssh_kex_state *k = &c->kex;
-  uint8_t buf[64];
   sd_wr w;
   sd_err e;
-  if (strcmp(k->algs.kex, "curve25519-sha256") != 0 && strcmp(k->algs.kex, "curve25519-sha256@libssh.org") != 0) {
-    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "unsupported kex");
+  sd_wr_init(&w, 16 * 1024);
+  e = ssh_kexm_start(ssh_kex_method_find(k->algs.kex), allow_legacy(c), &k->km, &w);
+  if (e != SD_OK) {
+    sd_wr_free(&w);
+    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, e == SD_E_UNSUPPORTED ? "unsupported kex" : "kex init");
     return;
   }
-  e = ssh_random(k->x_priv, 32);
-  if (e == SD_OK) e = sd_x25519_base(k->q_c, k->x_priv);
-  if (e != SD_OK) { ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "x25519"); return; }
-  sd_wr_init_fixed(&w, buf, sizeof(buf));
-  sd_wr_u8(&w, SSH_MSG_KEX_ECDH_INIT);
-  sd_wr_string(&w, k->q_c, 32);
   k->sent_init = 1;
-  ssh_send(c, w.p, w.len);
+  ssh_send_wr(c, &w);
 }
 
-/* RFC 4253 §7.2 key derivation with SHA-256. */
-static void derive(const uint8_t *kmp, size_t kmp_len, const uint8_t *h, size_t hlen, char x,
-                   const uint8_t *sid, size_t sid_len, uint8_t *out, size_t need)
+static void on_gex_group(sd_ssh_conn *c, const uint8_t *p, size_t n)
 {
-  uint8_t acc[128];
-  size_t have = 0;
-  sd_hash_ctx hc;
-  sd_hash_init(&hc, SD_HASH_SHA256);
-  sd_hash_update(&hc, kmp, kmp_len);
-  sd_hash_update(&hc, h, hlen);
-  sd_hash_update(&hc, &x, 1);
-  sd_hash_update(&hc, sid, sid_len);
-  sd_hash_final(&hc, acc);
-  have = 32;
-  while (have < need && have + 32 <= sizeof(acc)) {
-    sd_hash_init(&hc, SD_HASH_SHA256);
-    sd_hash_update(&hc, kmp, kmp_len);
-    sd_hash_update(&hc, h, hlen);
-    sd_hash_update(&hc, acc, have);
-    sd_hash_final(&hc, acc + have);
-    have += 32;
+  ssh_kex_state *k = &c->kex;
+  sd_wr w;
+  uint32_t bits = 0;
+  sd_err e;
+  sd_wr_init(&w, 16 * 1024);
+  e = ssh_kexm_gex_group(k->km, p, n, &w, &bits);
+  if (e != SD_OK) {
+    sd_wr_free(&w);
+    ssh_log(c, SD_LOG_WARN, "group exchange: server group of %u bits rejected", bits);
+    ssh_fail(c, e == SD_E_PROTOCOL ? SD_E_PROTOCOL : SD_E_KEX_FAILED,
+             e == SD_E_PROTOCOL ? SSH_DISCONNECT_PROTOCOL_ERROR : SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "gex group");
+    return;
   }
-  memcpy(out, acc, need);
-  sd_secure_zero(acc, sizeof(acc));
-}
-
-static void hash_string(sd_hash_ctx *hc, const void *p, size_t n)
-{
-  uint8_t l[4];
-  sd_store_be32(l, (uint32_t)n);
-  sd_hash_update(hc, l, 4);
-  sd_hash_update(hc, p, n);
+  k->gex_bits = bits;
+  if (bits < 2048) {
+    c->legacy_mask |= SD_LEGACY_DH_SMALL;
+    ssh_log(c, SD_LOG_WARN, "group exchange: small group of %u bits accepted (legacy)", bits);
+  }
+  ssh_send_wr(c, &w);
 }
 
 static void start_hostkey_check(sd_ssh_conn *c);
@@ -240,64 +269,51 @@ static void send_newkeys(sd_ssh_conn *c);
 static void on_reply(sd_ssh_conn *c, const uint8_t *p, size_t n)
 {
   ssh_kex_state *k = &c->kex;
-  sd_rd r, kr, sr;
-  sd_span ks, qs, sig, kt, pk, st, sv;
-  uint8_t shared[32], h[32];
+  ssh_kex_hash_in hin;
+  sd_span ks, sig;
   sd_wr kmp;
-  sd_hash_ctx hc;
+  uint8_t h[SD_HASH_MAX_LEN];
+  size_t hlen = 0;
   size_t klen = 0, ivlen = 0, mlen = 0, klen2 = 0, ivlen2 = 0, mlen2 = 0;
+  uint32_t bits = 0;
+  sd_hash_alg ha;
   sd_err e;
 
-  if (!k->sent_init || k->reply_done) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "unexpected KEX reply"); return; }
-  sd_rd_init(&r, p + 1, n - 1);
-  ks = sd_rd_string(&r, 16384);
-  qs = sd_rd_string(&r, 64);
-  sig = sd_rd_string(&r, 1024);
-  if (!sd_rd_done(&r) || qs.n != 32 || ks.n > sizeof(c->hostkey)) {
-    ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "bad KEX reply");
+  if (!k->sent_init || k->reply_done || !k->km) {
+    ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "unexpected KEX reply");
     return;
   }
-  sd_rd_init(&kr, ks.p, ks.n);
-  kt = sd_rd_string(&kr, 64);
-  pk = sd_rd_string(&kr, 64);
-  if (!sd_rd_done(&kr) || !ssh_span_eq(kt, k->algs.hostkey) || !ssh_span_eq(kt, "ssh-ed25519") || pk.n != 32) {
-    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "host key type does not match");
-    return;
-  }
-  sd_rd_init(&sr, sig.p, sig.n);
-  st = sd_rd_string(&sr, 64);
-  sv = sd_rd_string(&sr, 64);
-  if (!sd_rd_done(&sr) || !ssh_span_eq(st, "ssh-ed25519") || sv.n != 64) {
-    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "bad host key signature encoding");
-    return;
-  }
-  e = sd_x25519(shared, k->x_priv, qs.p);
-  sd_secure_zero(k->x_priv, sizeof(k->x_priv));
-  if (e != SD_OK) { ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "x25519 shared secret rejected"); return; }
-  sd_wr_init_secret(&kmp, 64);
-  sd_wr_mpint(&kmp, shared, 32);    /* RFC 8731: the X25519 output as a big-endian unsigned number */
-  sd_secure_zero(shared, sizeof(shared));
-  if (!sd_wr_ok(&kmp)) { sd_wr_free(&kmp); ssh_fail(c, SD_E_NO_MEMORY, 0, "kex"); return; }
-
-  sd_hash_init(&hc, SD_HASH_SHA256);
-  hash_string(&hc, ssh_ident_c, strlen(ssh_ident_c));
-  hash_string(&hc, c->ident_s, strlen(c->ident_s));
-  hash_string(&hc, k->i_c, k->i_c_len);
-  hash_string(&hc, k->i_s, k->i_s_len);
-  hash_string(&hc, ks.p, ks.n);
-  hash_string(&hc, k->q_c, 32);
-  hash_string(&hc, qs.p, 32);
-  sd_hash_update(&hc, kmp.p, kmp.len);
-  sd_hash_final(&hc, h);
-
-  if (sd_ed25519_verify(sv.p, pk.p, h, 32) != SD_OK) {
+  hin.v_c = ssh_ident_c;
+  hin.v_s = c->ident_s;
+  hin.i_c = k->i_c; hin.i_c_len = k->i_c_len;
+  hin.i_s = k->i_s; hin.i_s_len = k->i_s_len;
+  sd_wr_init_secret(&kmp, 4096);
+  e = ssh_kexm_finish(k->km, p, n, &hin, &ks, &sig, &kmp, h, &hlen);
+  if (e != SD_OK) {
     sd_wr_free(&kmp);
-    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "host key signature invalid");
+    ssh_fail(c, e == SD_E_PROTOCOL ? SD_E_PROTOCOL : SD_E_KEX_FAILED,
+             e == SD_E_PROTOCOL ? SSH_DISCONNECT_PROTOCOL_ERROR : SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
+             e == SD_E_PROTOCOL ? "bad KEX reply" : "key exchange: invalid server value");
     return;
   }
+  ha = ssh_kex_method_find(k->algs.kex)->hash;
+  if (ks.n > sizeof(c->hostkey)) {
+    sd_wr_free(&kmp);
+    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "host key too large");
+    return;
+  }
+  e = ssh_hostkey_verify_kex(k->algs.hostkey, ks.p, ks.n, sig.p, sig.n, h, hlen, &bits);
+  if (e != SD_OK) {
+    sd_wr_free(&kmp);
+    ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
+             e == SD_E_CRYPTO ? "host key signature invalid" : "host key type does not match");
+    return;
+  }
+  if (strcmp(ssh_hostkey_alg_key_type(k->algs.hostkey), "ssh-rsa") == 0 && bits < 2048)
+    c->legacy_mask |= SD_LEGACY_RSA_SHORT;
   if (c->session_id_len == 0) {
-    memcpy(c->session_id, h, 32);
-    c->session_id_len = 32;
+    memcpy(c->session_id, h, hlen);
+    c->session_id_len = hlen;
   }
   e = ssh_alg_key_sizes(k->algs.enc_c2s, k->algs.mac_c2s, &klen, &ivlen, &mlen);
   if (e == SD_OK) e = ssh_alg_key_sizes(k->algs.enc_s2c, k->algs.mac_s2c, &klen2, &ivlen2, &mlen2);
@@ -306,15 +322,17 @@ static void on_reply(sd_ssh_conn *c, const uint8_t *p, size_t n)
     ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "cipher unavailable");
     return;
   }
-  if (ivlen) derive(kmp.p, kmp.len, h, 32, 'A', c->session_id, c->session_id_len, k->iv_c2s, ivlen);
-  if (ivlen2) derive(kmp.p, kmp.len, h, 32, 'B', c->session_id, c->session_id_len, k->iv_s2c, ivlen2);
-  derive(kmp.p, kmp.len, h, 32, 'C', c->session_id, c->session_id_len, k->key_c2s, klen);
-  derive(kmp.p, kmp.len, h, 32, 'D', c->session_id, c->session_id_len, k->key_s2c, klen2);
-  if (mlen) derive(kmp.p, kmp.len, h, 32, 'E', c->session_id, c->session_id_len, k->mac_c2s, mlen);
-  if (mlen2) derive(kmp.p, kmp.len, h, 32, 'F', c->session_id, c->session_id_len, k->mac_s2c, mlen2);
+  if (ivlen) ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'A', c->session_id, c->session_id_len, k->iv_c2s, ivlen);
+  if (ivlen2) ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'B', c->session_id, c->session_id_len, k->iv_s2c, ivlen2);
+  ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'C', c->session_id, c->session_id_len, k->key_c2s, klen);
+  ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'D', c->session_id, c->session_id_len, k->key_s2c, klen2);
+  if (mlen) ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'E', c->session_id, c->session_id_len, k->mac_c2s, mlen);
+  if (mlen2) ssh_kex_derive(ha, kmp.p, kmp.len, h, hlen, 'F', c->session_id, c->session_id_len, k->mac_s2c, mlen2);
   sd_wr_free(&kmp);
   sd_secure_zero(h, sizeof(h));
   k->reply_done = 1;
+  ssh_kexm_free(k->km);
+  k->km = NULL;
 
   if (k->initial) {
     memcpy(c->hostkey, ks.p, ks.n);
@@ -322,6 +340,11 @@ static void on_reply(sd_ssh_conn *c, const uint8_t *p, size_t n)
     if (sd_hostkey_fingerprint_sha256(ks.p, ks.n, c->hostkey_fp) != SD_OK) c->hostkey_fp[0] = '\0';
     ssh_log(c, SD_LOG_INFO, "host key %s %s", k->algs.hostkey, c->hostkey_fp);
     start_hostkey_check(c);
+  } else if (k->fetch) {
+    /* sd_ssh_conn_fetch_hostkeys: the server signed this authenticated exchange with another key */
+    ssh_hku_on_fetch_key(c, ks.p, ks.n);
+    k->hostkey_ok = 1;
+    send_newkeys(c);
   } else {
     if (ks.n != c->hostkey_len || memcmp(ks.p, c->hostkey, ks.n) != 0) {
       ssh_fail(c, SD_E_HOSTKEY_MISMATCH, SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE, "host key changed during rekey");
@@ -332,14 +355,29 @@ static void on_reply(sd_ssh_conn *c, const uint8_t *p, size_t n)
   }
 }
 
+void ssh_kex_legacy_names(const sd_ssh_conn *c, char *out, size_t cap)
+{
+  if (!cap) return;
+  out[0] = '\0';
+  if (c->hku && c->hku->gen == c->gen && c->hku->legacy_names[0]) {
+    size_t n = strlen(c->hku->legacy_names);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, c->hku->legacy_names, n);
+    out[n] = '\0';
+    return;
+  }
+  if (c->legacy_mask & SD_LEGACY_TERRAPIN_EXPOSED) { if (cap > 16) memcpy(out, "terrapin_exposed", 17); }
+  else if (cap > 13) memcpy(out, "no_strict_kex", 14);
+}
+
 static void kex_check_done(sd_ssh_conn *c)
 {
   ssh_kex_state *k = &c->kex;
-  int initial = k->initial;
+  int initial = k->initial, fetch = k->fetch;
   sd_ssh_negotiated neg;
   if (!k->newkeys_sent || !k->newkeys_recv) return;
   memset(&neg, 0, sizeof(neg));
-  neg.hop_index = 0;
+  neg.hop_index = c->hop_index;
   neg.kex = k->algs.kex;
   neg.hostkey = k->algs.hostkey;
   neg.cipher_c2s = k->algs.enc_c2s;
@@ -352,11 +390,23 @@ static void kex_check_done(sd_ssh_conn *c)
   neg.hostkey_fp_sha256 = c->hostkey_fp;
   neg.strict_kex = c->strict;
   neg.legacy_mask = c->legacy_mask;
-  ssh_log(c, SD_LOG_INFO, "kex done kex=%s cipher=%s/%s strict=%d", neg.kex, neg.cipher_c2s, neg.cipher_s2c, c->strict);
+  if (initial) {
+    ssh_hku *u = ssh_hku_get(c);
+    if (u) {
+      ssh_legacy_names(&k->algs, c->legacy_mask, u->legacy_names, sizeof(u->legacy_names));
+      u->gen = c->gen;
+    }
+    if (c->legacy_mask & ~(uint32_t)SD_LEGACY_MAC_NON_ETM)
+      ssh_log(c, SD_LOG_WARN, "legacy algorithms in use (mask 0x%x): %s", c->legacy_mask,
+              u ? u->legacy_names : "");
+  }
+  ssh_log(c, SD_LOG_INFO, "kex done kex=%s hostkey=%s cipher=%s/%s mac=%s/%s strict=%d", neg.kex, neg.hostkey,
+          neg.cipher_c2s, neg.cipher_s2c, neg.mac_c2s, neg.mac_s2c, c->strict);
   if (c->cb.on_negotiated) c->cb.on_negotiated(c->cb.ctx, &neg);
   ssh_kex_reset(c);   /* wipes the derived keys (already installed) */
   c->last_kex_tick = ssh_now();
   if (initial) ssh_after_initial_kex(c);
+  else if (fetch) ssh_hku_on_rekey_done(c);
 }
 
 static void send_newkeys(sd_ssh_conn *c)
@@ -388,11 +438,16 @@ static void on_newkeys(sd_ssh_conn *c)
 void ssh_kex_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
 {
   uint8_t m = p[0];
+  ssh_kex_state *k = &c->kex;
   if (m == SSH_MSG_KEXINIT) { on_kexinit(c, p, n); return; }
-  if (!c->kex.active) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "KEX message outside KEX"); return; }
-  if (m >= 30 && m <= 49 && c->kex.ignore_next_kex_packet) { c->kex.ignore_next_kex_packet = 0; return; }
+  if (!k->active) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "KEX message outside KEX"); return; }
+  if (m >= 30 && m <= 49 && k->ignore_next_kex_packet) { k->ignore_next_kex_packet = 0; return; }
   if (m == SSH_MSG_NEWKEYS) { on_newkeys(c); return; }
-  if (m == SSH_MSG_KEX_ECDH_REPLY) { on_reply(c, p, n); return; }
+  if (k->km && m == ssh_kexm_reply_msg(k->km)) {
+    if (ssh_kexm_awaiting_group(k->km)) on_gex_group(c, p, n);
+    else on_reply(c, p, n);
+    return;
+  }
   ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "unexpected KEX message");
 }
 
@@ -402,7 +457,7 @@ typedef struct hk_work {
   ssh_work w;
   sd_known_hosts *kh;
   char name[320];
-  uint8_t blob[512]; size_t len;
+  uint8_t blob[SSH_HOSTKEY_BUF]; size_t len;
   int add;                    /* 1: sd_known_hosts_add instead of check */
   sd_hk_result res;
   sd_err err;
@@ -426,6 +481,7 @@ static void hk_do(ssh_work *w)
       *o++ = (char)('0' + t.wMonth / 10); *o++ = (char)('0' + t.wMonth % 10); *o++ = '-';
       *o++ = (char)('0' + t.wDay / 10); *o++ = (char)('0' + t.wDay % 10); *o = '\0';
     }
+    /* a certificate is stored as its plain key (known_hosts converts it) */
     h->err = sd_known_hosts_add(h->kh, SD_KH_STORE_USER, h->name, h->blob, h->len, comment);
   } else {
     h->err = sd_known_hosts_check(h->kh, h->name, h->blob, h->len, (uint64_t)sd_unix_time_now(), &h->res);
@@ -436,18 +492,21 @@ static void raise_hostkey_prompt(sd_ssh_conn *c)
 {
   sd_prompt *p = ssh_prompt_new(c, SSH_PP_HOSTKEY, SD_PROMPT_HOSTKEY);
   sd_hostkey_prompt_info *hi;
+  uint32_t bits;
   if (!p) { ssh_fail(c, SD_E_NO_MEMORY, SSH_DISCONNECT_BY_APPLICATION, "prompt"); return; }
   hi = ssh_prompt_hk_info(p);
-  hi->hop_index = 0;
+  hi->hop_index = c->hop_index;
   hi->host = c->host_utf8;
   hi->port = c->port;
-  hi->via_host = NULL;
+  hi->via_host = c->via_host ? ssh_prompt_str(p, c->via_host) : NULL;
   hi->lookup_name = ssh_prompt_str(p, c->lookup_name);
   hi->key_type = ssh_prompt_str(p, c->kex.algs.hostkey);
-  hi->key_bits = 256;
+  bits = ssh_blob_key_bits(c->hostkey, c->hostkey_len);
+  hi->key_bits = bits ? bits : 256;
   hi->fp_sha256 = ssh_prompt_str(p, c->hostkey_fp);
   hi->fp_md5 = "";
   hi->status = SD_HK_NEW;
+  hi->is_reconnect = c->is_reconnect;
   ssh_prompt_raise(c, p);
 }
 
@@ -491,13 +550,16 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
     ssh_fail(c, SD_E_HOSTKEY_REJECTED, SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE, "known_hosts unavailable");
     return;
   }
+  c->hk_res = h->res;
+  c->hk_res_valid = 1;
   switch (h->res.status) {
   case SD_HK_MATCH:
   case SD_HK_MATCH_CA:
     if (c->is_reconnect && c->pinned_len && !hostkey_is_pinned(c))
       ssh_log(c, SD_LOG_WARN, "host key of %s changed since the previous connection; it matches a trusted entry",
               c->lookup_name);
-    ssh_log(c, SD_LOG_INFO, "host key verified for %s", c->lookup_name);
+    ssh_log(c, SD_LOG_INFO, "host key verified for %s%s", c->lookup_name,
+            h->res.status == SD_HK_MATCH_CA ? " (certificate)" : "");
     sd_free(h);
     hostkey_ok(c);
     return;
@@ -516,7 +578,7 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
     sd_hk_key oldk, newk;
     memset(&ev, 0, sizeof(ev));
     ev.kind = h->res.status == SD_HK_MISMATCH ? SD_HKEV_MISMATCH : SD_HKEV_REVOKED;
-    ev.hop_index = 0;
+    ev.hop_index = c->hop_index;
     ev.lookup_name = c->lookup_name;
     ev.store = h->res.store;
     ev.path = h->res.path;
@@ -561,6 +623,7 @@ static sd_err queue_hk_work(sd_ssh_conn *c, int add)
 static void start_hostkey_check(sd_ssh_conn *c)
 {
   c->kex.hk_check_started = 1;
+  c->hk_res_valid = 0;
   if (!c->kh) { if (!accept_pinned(c)) raise_hostkey_prompt(c); return; }
   if (queue_hk_work(c, 0) != SD_OK) ssh_fail(c, SD_E_INTERNAL, SSH_DISCONNECT_BY_APPLICATION, "worker");
 }

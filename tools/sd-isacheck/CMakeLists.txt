@@ -24,6 +24,8 @@ endif()
 # compiler runtime helper (_allmul, _aullshr, ...). Owned with the crypto agent: a new constant-time
 # source is added here (the gate fails when a listed object disappears from the library).
 set(SD_CT_SOURCES aes_ct ct curve25519 gcm chacha_poly hash)
+list(APPEND SD_CT_SOURCES sha3 mlkem des3 blake2b argon2)   # M2 symmetric/PQ (sources_pq.cmake)
+list(APPEND SD_CT_SOURCES bn rsa dh ec_p sha1)              # M2 public key (sources_pk.cmake; dh_gex is public-only)
 set(_ct_args --ct-lib "$<TARGET_FILE:sd_crypto>" --config "$<CONFIG>")   # Release only, see sd-isacheck.c
 foreach(_s IN LISTS SD_CT_SOURCES)
   list(APPEND _ct_args --ct-member "${_s}.obj")

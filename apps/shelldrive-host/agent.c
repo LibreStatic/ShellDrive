@@ -14,6 +14,14 @@
  * cache, 03 §3.2), WebDAV mapping cleanup at start and stop (TM-R17 d) and in the crash filter
  * (TM-R17 b).
  *
+ * M2: the profile's connection chain (sd_chain_resolve: ProxyJump hops, a proxy per leg, identities,
+ * DPAPI-kept keys, agents, D37), the known_hosts store list with the live sources of settings.ini
+ * (5.1), legacy policy and the legacy_algorithms warning (filtered by security.legacy_accepted),
+ * the pool size, saved secrets (sd_secret: prompts answered from Credential Manager / DPAPI by
+ * sd_mount, "save" answers kept after a successful login with the comment the client localized),
+ * the new prompt kinds (password_change, legacy_ack, proxy_password) and UpdateHostKeys
+ * announcements: "hostkeys.announced" events, hostkey.announced.list / .accept (5.6).
+ *
  * M0 gaps (documented in docs/dev/m0-notes.md by the lead): no hidden window (WM_ENDSESSION, WTS
  * and power notifications), no prompt queue while locked, no UI launch for prompts, no autostart. */
 #include <windows.h>
@@ -25,11 +33,40 @@
 #include "sd_base/sd_utf.h"
 #include "sd_config/sd_config.h"
 #include "sd_ipc/sd_ipc.h"
+#include "sd_secret/sd_secret.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
 
 typedef struct work { struct work *next; void (*fn)(void *); void *arg; } work;
+
+/* M2: what sd_mount_create needs for the chain; freed once sd_mount_create copied it. */
+typedef struct host_chain {
+  uint32_t count;
+  sd_mount_hop hop[SD_MOUNT_MAX_HOPS];
+  wchar_t host[SD_MOUNT_MAX_HOPS][256];
+  char user[SD_MOUNT_MAX_HOPS][128];
+  wchar_t ident[SD_MOUNT_MAX_HOPS][SD_MOUNT_MAX_IDENTITIES][MAX_PATH];
+  const wchar_t *ident_ptr[SD_MOUNT_MAX_HOPS][SD_MOUNT_MAX_IDENTITIES];
+  wchar_t cert[SD_MOUNT_MAX_HOPS][MAX_PATH];
+  char agent_keys[SD_MOUNT_MAX_HOPS][512];
+  char alias[SD_MOUNT_MAX_HOPS][256];
+  sd_secbuf *key[SD_MOUNT_MAX_HOPS];
+  char key_label[SD_MOUNT_MAX_HOPS][64];
+  wchar_t proxy_host[SD_MOUNT_MAX_HOPS][256];
+  char proxy_user[SD_MOUNT_MAX_HOPS][128];
+  sd_kh_store stores[4];
+  uint32_t nstores;
+  wchar_t machine_kh[MAX_PATH];
+} host_chain;
+
+/* A pending UpdateHostKeys announcement (5.6, update_host_keys = ask). */
+typedef struct host_announce {
+  struct host_announce *next;
+  char id[16];                  /* "a-<n>" */
+  char mount_id[16];
+  sd_mount_announcement a;
+} host_announce;
 
 typedef struct host_mount {
   struct host_mount *next;
@@ -53,6 +90,11 @@ typedef struct host_mount {
   wchar_t cache_dir[MAX_PATH];  /* per-source cache folder ("" when it could not be created) */
   char remote[1024];
   int started, stop_requested;
+  /* M2 */
+  host_chain *chain;            /* owned until sd_mount_create */
+  char legacy_accepted[80];     /* security.legacy_accepted of the profile */
+  wchar_t save_comment[256];    /* Credential Manager comment, localized by the client */
+  uint32_t hop_count;
 } host_mount;
 
 static struct {
@@ -67,6 +109,10 @@ static struct {
   volatile LONG stop;
   uint64_t last_busy;
   sd_settings settings;         /* settings.ini, read at start */
+  /* M2 */
+  host_announce *announces;
+  uint32_t next_announce;
+  wchar_t user_kh[MAX_PATH];
 } g;
 
 /* ---- control queue ---- */
@@ -138,6 +184,17 @@ static void jw_letter(sd_json_writer *jw, wchar_t l)
   char t[3];
   t[0] = (char)l; t[1] = ':'; t[2] = 0;
   sd_jw_cstr(jw, t);
+}
+
+static void free_chain(host_chain *c)
+{
+  uint32_t i;
+  if (c == NULL)
+    return;
+  for (i = 0; i < SD_MOUNT_MAX_HOPS; i++)
+    sd_secbuf_free(c->key[i]);
+  sd_secure_zero(c, sizeof(*c));
+  sd_free(c);
 }
 
 static host_mount *find_by_mount(sd_mount *m)
@@ -287,6 +344,7 @@ static void destroy_record_locked(host_mount *h)
   for (pp = &g.mounts; *pp; pp = &(*pp)->next)
     if (*pp == h) { *pp = h->next; break; }
   if (h->m) sd_mount_destroy(h->m);
+  free_chain(h->chain);
   sd_free(h);
 }
 
@@ -350,6 +408,187 @@ static void on_notice(void *ctx, sd_mount *m, const char *code, const char *deta
   h = find_by_mount(m);
   if (h && code && code[0])
     send_warning(h, code, NULL, 0, NULL, detail);
+  sd_mutex_unlock(&g.lock);
+}
+
+/* M2 warnings (03 §2.4, §7.6): legacy_algorithms carries "algorithms": [...]. */
+static void on_warning(void *ctx, sd_mount *m, const char *code, uint32_t hop, const char *detail)
+{
+  host_mount *h;
+  SD_UNUSED(ctx);
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h && code) {
+    sd_wr d;
+    sd_json_writer jw;
+    int suppress = 0;
+    if (strcmp(code, "legacy_algorithms") == 0 && detail && h->legacy_accepted[0]) {
+      const char *names[16];
+      char buf[256], hash[80];
+      uint32_t n = 0;
+      char *t, *ctxs = NULL;
+      scopy(buf, sizeof(buf), detail);
+      for (t = strtok_s(buf, ",", &ctxs); t && n < 16; t = strtok_s(NULL, ",", &ctxs)) names[n++] = t;
+      sd_legacy_set_hash(names, n, hash);
+      suppress = strcmp(hash, h->legacy_accepted) == 0;   /* "Don't warn again for this server" (7.6) */
+    }
+    if (suppress) {
+      SD_LOGI("agent", "%s: legacy algorithms %s accepted by the profile", h->id, detail);
+    } else {
+      SD_LOGW("agent", "%s: warning %s (hop %u): %s", h->id, code, (unsigned)hop, detail ? detail : "");
+      sd_wr_init(&d, 16 * 1024);
+      sd_jw_init(&jw, &d);
+      sd_jw_obj_begin(&jw);
+      sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, code);
+      sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, h->id);
+      sd_jw_key(&jw, "data");
+      sd_jw_obj_begin(&jw);
+      sd_jw_key(&jw, "target"); jw_letter(&jw, h->letter);
+      sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, h->host);
+      sd_jw_key(&jw, "hop"); sd_jw_int(&jw, (int64_t)hop + 1);
+      sd_jw_key(&jw, "hops"); sd_jw_int(&jw, h->hop_count ? h->hop_count : 1);
+      if (detail) { sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, detail); }
+      if (strcmp(code, "legacy_algorithms") == 0 && detail) {
+        char buf[256];
+        char *t, *ctxs = NULL;
+        scopy(buf, sizeof(buf), detail);
+        sd_jw_key(&jw, "algorithms");
+        sd_jw_arr_begin(&jw);
+        for (t = strtok_s(buf, ",", &ctxs); t; t = strtok_s(NULL, ",", &ctxs)) sd_jw_cstr(&jw, t);
+        sd_jw_arr_end(&jw);
+      }
+      sd_jw_obj_end(&jw);
+      sd_jw_obj_end(&jw);
+      if (sd_jw_finish(&jw) == SD_OK) {
+        broadcast_data("mount", "warning", &d);
+        broadcast_data("warning", "warning", &d);
+      }
+      sd_wr_free(&d);
+    }
+  }
+  sd_mutex_unlock(&g.lock);
+}
+
+/* Saved secrets (03 §4): user scope; sd_mount decides when they may be used (TM-R05). */
+static int secret_get(void *ctx, sd_mount *m, int kind, const char *target, char *out, size_t cap)
+{
+  sd_secbuf *b = NULL;
+  int ok = 0;
+  SD_UNUSED(ctx);
+  SD_UNUSED(m);
+  if (sd_secret_get(SD_SECRET_USER, (sd_secret_kind)kind, target, &b) == SD_OK) {
+    if (b->len + 1 <= cap) {
+      memcpy(out, b->p, b->len);
+      out[b->len] = 0;
+      ok = 1;
+    }
+    sd_secbuf_free(b);
+  }
+  return ok;
+}
+
+static void secret_put(void *ctx, sd_mount *m, int kind, const char *target, const char *value)
+{
+  host_mount *h;
+  wchar_t comment[256];
+  sd_err e;
+  SD_UNUSED(ctx);
+  comment[0] = 0;
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h) memcpy(comment, h->save_comment, sizeof(comment));
+  sd_mutex_unlock(&g.lock);
+  e = sd_secret_put(SD_SECRET_USER, (sd_secret_kind)kind, target, comment[0] ? comment : NULL, value, strlen(value));
+  if (e != SD_OK)
+    SD_LOGW("agent", "cannot save the secret (%s)", sd_err_name(e));
+}
+
+static void write_keys_json(sd_json_writer *jw, const char *key, const sd_mount_hostkey *k, uint32_t n)
+{
+  uint32_t i;
+  sd_jw_key(jw, key);
+  sd_jw_arr_begin(jw);
+  for (i = 0; i < n; i++) {
+    sd_jw_obj_begin(jw);
+    sd_jw_key(jw, "type"); sd_jw_cstr(jw, k[i].type);
+    sd_jw_key(jw, "fingerprint"); sd_jw_cstr(jw, k[i].fp_sha256);
+    sd_jw_obj_end(jw);
+  }
+  sd_jw_arr_end(jw);
+}
+
+static void write_announce_json(sd_json_writer *jw, const host_announce *x)
+{
+  sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "id"); sd_jw_cstr(jw, x->id);
+  sd_jw_key(jw, "mount_id"); sd_jw_cstr(jw, x->mount_id);
+  sd_jw_key(jw, "host"); sd_jw_cstr(jw, x->a.host);
+  sd_jw_key(jw, "lookup_name"); sd_jw_cstr(jw, x->a.lookup_name);
+  sd_jw_key(jw, "hop"); sd_jw_int(jw, (int64_t)x->a.hop_index + 1);
+  write_keys_json(jw, "add", x->a.add, x->a.add_count);
+  write_keys_json(jw, "remove", x->a.remove, x->a.remove_count);
+  sd_jw_obj_end(jw);
+}
+
+/* UpdateHostKeys (5.6): ask -> kept for review and announced; yes -> already applied, announced too. */
+static void on_hostkeys_announced(void *ctx, sd_mount *m, const sd_mount_announcement *a, int applied, sd_err err)
+{
+  host_mount *h;
+  SD_UNUSED(ctx);
+  sd_mutex_lock(&g.lock);
+  h = find_by_mount(m);
+  if (h) {
+    sd_wr d;
+    sd_json_writer jw;
+    sd_wr_init(&d, 64 * 1024);
+    sd_jw_init(&jw, &d);
+    if (applied) {
+      sd_jw_obj_begin(&jw);
+      sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, h->id);
+      sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, a->host);
+      sd_jw_key(&jw, "applied"); sd_jw_bool(&jw, 1);
+      sd_jw_key(&jw, "result"); sd_jw_cstr(&jw, sd_err_name(err));
+      write_keys_json(&jw, "add", a->add, a->add_count);
+      sd_jw_obj_end(&jw);
+    } else {
+      host_announce *x = (host_announce *)sd_calloc(1, sizeof(*x)), *o;
+      char tmp[12];
+      size_t n = 0, i = 0;
+      uint32_t v;
+      if (x == NULL) {
+        sd_mutex_unlock(&g.lock);
+        sd_wr_free(&d);
+        return;
+      }
+      /* once per host and announced key set: a newer announcement for the same name replaces the old */
+      for (o = g.announces; o; o = o->next)
+        if (strcmp(o->a.lookup_name, a->lookup_name) == 0) break;
+      if (o) {
+        memcpy(x->id, o->id, sizeof(x->id));
+        o->a = *a;
+        scopy(o->mount_id, sizeof(o->mount_id), h->id);
+        sd_free(x);
+        x = o;
+      } else {
+        v = ++g.next_announce;
+        x->id[i++] = 'a'; x->id[i++] = '-';
+        do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+        while (n) x->id[i++] = tmp[--n];
+        x->id[i] = 0;
+        x->a = *a;
+        scopy(x->mount_id, sizeof(x->mount_id), h->id);
+        x->next = g.announces;
+        g.announces = x;
+      }
+      write_announce_json(&jw, x);
+      SD_LOGI("agent", "%s: %s offered new host keys (%s)", h->id, a->lookup_name, x->id);
+    }
+    if (sd_jw_finish(&jw) == SD_OK) {
+      broadcast_data("mount", "hostkeys.announced", &d);
+      broadcast_data("hostkeys", "hostkeys.announced", &d);
+    }
+    sd_wr_free(&d);
+  }
   sd_mutex_unlock(&g.lock);
 }
 
@@ -456,7 +695,9 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
   sd_jw_key(&jw, "port"); sd_jw_int(&jw, p->port ? p->port : h->port);
   sd_jw_key(&jw, "user"); sd_jw_cstr(&jw, p->user[0] ? p->user : h->user);
   sd_jw_key(&jw, "hop"); sd_jw_int(&jw, (int64_t)p->hop_index + 1);
-  sd_jw_key(&jw, "hops"); sd_jw_int(&jw, 1);
+  sd_jw_key(&jw, "hops"); sd_jw_int(&jw, p->hop_count ? p->hop_count : 1);
+  if (p->via_host[0]) { sd_jw_key(&jw, "via_host"); sd_jw_cstr(&jw, p->via_host); }
+  sd_jw_key(&jw, "is_reconnect"); sd_jw_bool(&jw, p->is_reconnect);
   if (p->kind == SD_MP_HOSTKEY) {
     sd_jw_key(&jw, "key_type"); sd_jw_cstr(&jw, p->key_type);
     sd_jw_key(&jw, "key_bits"); sd_jw_int(&jw, p->key_bits);
@@ -469,7 +710,20 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
       sd_jw_key(&jw, "key_path"); sd_jw_cstr(&jw, p->key_path);
       sd_jw_key(&jw, "key_fingerprint"); sd_jw_cstr(&jw, p->key_fp);
     }
-    if (p->kind == SD_MP_KBDINT) {
+    if (p->kind == SD_MP_PROXY_PASSWORD) {
+      sd_jw_key(&jw, "proxy_host"); sd_jw_cstr(&jw, p->proxy_host);
+      sd_jw_key(&jw, "proxy_port"); sd_jw_int(&jw, p->proxy_port);
+    }
+    if (p->kind == SD_MP_LEGACY_ACK) {
+      char buf[512];
+      char *t, *ctxs = NULL;
+      scopy(buf, sizeof(buf), p->legacy_names);
+      sd_jw_key(&jw, "algorithms");
+      sd_jw_arr_begin(&jw);
+      for (t = strtok_s(buf, ",", &ctxs); t; t = strtok_s(NULL, ",", &ctxs)) sd_jw_cstr(&jw, t);
+      sd_jw_arr_end(&jw);
+    }
+    if (p->kind == SD_MP_KBDINT || p->kind == SD_MP_PASSWORD_CHANGE) {
       sd_jw_key(&jw, "kbdint");
       sd_jw_obj_begin(&jw);
       sd_jw_key(&jw, "name"); sd_jw_cstr(&jw, p->name);
@@ -486,7 +740,7 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
       sd_jw_obj_end(&jw);
     }
   }
-  sd_jw_key(&jw, "can_save"); sd_jw_bool(&jw, 0);
+  sd_jw_key(&jw, "can_save"); sd_jw_bool(&jw, p->can_save);
   sd_jw_key(&jw, "deadline_ms"); sd_jw_int(&jw, 120000);
   sd_jw_obj_end(&jw);
   sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
@@ -559,6 +813,10 @@ static void work_start(void *arg)
   cb.on_notice = on_notice;
   cb.lookup_identity = lookup_identity;
   cb.store_identity = store_identity;
+  cb.secret_get = secret_get;
+  cb.secret_put = secret_put;
+  cb.on_warning = on_warning;
+  cb.on_hostkeys_announced = on_hostkeys_announced;
   sd_mutex_lock(&g.lock);
   if (h->stop_requested) {
     /* unmounted before it started */
@@ -566,12 +824,19 @@ static void work_start(void *arg)
     for (pp = &g.mounts; *pp; pp = &(*pp)->next)
       if (*pp == h) { *pp = h->next; break; }
     sd_mutex_unlock(&g.lock);
+    free_chain(h->chain);
     sd_free(h);
     return;
   }
   e = sd_mount_create(host_backend(), &h->params, &cb, &m);
   h->m = m;
   h->started = 1;
+  free_chain(h->chain);         /* sd_mount copied it (key blobs included) */
+  h->chain = NULL;
+  h->params.hops = NULL;
+  h->params.hop_count = 0;
+  h->params.kh_stores = NULL;
+  h->params.kh_store_count = 0;
   sd_mutex_unlock(&g.lock);
   if (e != SD_OK) {
     sd_mutex_lock(&g.lock);
@@ -659,9 +924,127 @@ static sd_err fail(sd_ipc_error *err, sd_err e, const char *code, const char *de
   return err->err;
 }
 
-static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+/* M2: sd_chain -> sd_mount_hop[] with every string the hops need (03 §3.4.1, §3.8). */
+static uint32_t agents_of(int agent)
 {
-  sd_profile prof;
+  switch (agent) {
+  case SD_PROFILE_AGENT_PAGEANT: return SD_AGENT_PAGEANT;
+  case SD_PROFILE_AGENT_OPENSSH: return SD_AGENT_OPENSSH;
+  case SD_PROFILE_AGENT_NONE:    return 0;
+  default:                       return SD_AGENT_PAGEANT | SD_AGENT_OPENSSH;
+  }
+}
+
+static uint32_t methods_of(uint32_t pm)
+{
+  return ((pm & SD_PROFILE_AUTH_PUBLICKEY) ? SD_AUTH_PUBLICKEY : 0) | ((pm & SD_PROFILE_AUTH_KBDINT) ? SD_AUTH_KBDINT : 0) |
+         ((pm & SD_PROFILE_AUTH_PASSWORD) ? SD_AUTH_PASSWORD : 0);
+}
+
+/* proxy_auth (3.8): auto = Basic or Kerberos-only Negotiate; negotiate also NTLM; basic; none. */
+static uint32_t proxy_auth_of(const sd_proxy_spec *x, int pa)
+{
+  if (x->kind == SD_PROFILE_PROXY_SOCKS5)
+    return x->user[0] ? SD_PROXY_AUTH_USERPASS : 0;
+  switch (pa) {
+  case SD_PROFILE_PROXY_AUTH_BASIC:     return SD_PROXY_AUTH_BASIC;
+  case SD_PROFILE_PROXY_AUTH_NEGOTIATE: return SD_PROXY_AUTH_SSPI | (x->user[0] ? SD_PROXY_AUTH_BASIC : 0);
+  case SD_PROFILE_PROXY_AUTH_NONE:      return 0;
+  default:                              return SD_PROXY_AUTH_SSPI_KERBEROS | (x->user[0] ? SD_PROXY_AUTH_BASIC : 0);
+  }
+}
+
+static sd_err build_chain(host_mount *h, const sd_profile *prof, const sd_chain *ch, const char **why)
+{
+  host_chain *c = (host_chain *)sd_calloc(1, sizeof(*c));
+  uint32_t i, k;
+  if (c == NULL)
+    return SD_E_NO_MEMORY;
+  h->chain = c;
+  c->count = ch->count;
+  for (i = 0; i < ch->count && i < SD_MOUNT_MAX_HOPS; i++) {
+    const sd_chain_hop *s = &ch->hop[i];
+    sd_mount_hop *d = &c->hop[i];
+    if (!wide_from_utf8(s->host, c->host[i], SD_COUNTOF(c->host[i]))) { *why = "invalid host"; return SD_E_INVALID_PARAM; }
+    d->host = c->host[i];
+    d->port = s->port ? s->port : 22;
+    if (s->user[0]) scopy(c->user[i], sizeof(c->user[i]), s->user);
+    else scopy(c->user[i], sizeof(c->user[i]), prof->user);   /* the Windows user name (filled above) */
+    d->user = c->user[i];
+    for (k = 0; k < s->identity_count && k < SD_MOUNT_MAX_IDENTITIES; k++) {
+      if (sd_config_expand_path(s->identity[k], c->ident[i][k], MAX_PATH) != SD_OK) { *why = "invalid identity path"; return SD_E_INVALID_PARAM; }
+      c->ident_ptr[i][k] = c->ident[i][k];
+    }
+    d->identities = c->ident_ptr[i];
+    d->identity_count = k;
+    if (s->certificate[0]) {
+      if (sd_config_expand_path(s->certificate, c->cert[i], MAX_PATH) != SD_OK) { *why = "invalid certificate path"; return SD_E_INVALID_PARAM; }
+      d->certificate = c->cert[i];
+    }
+    if (s->identity_store[0]) {
+      /* a DPAPI-kept key (4.4): read the file, decrypt with the user's logon (sd_keyfile) */
+      uint8_t *img = NULL;
+      size_t len = 0;
+      sd_err e = sd_secret_key_read(SD_SECRET_USER, s->identity_store, &img, &len);
+      if (e == SD_OK)
+        e = host_backend()->key_dpapi_unprotect ? host_backend()->key_dpapi_unprotect(img, len, s->identity_store, &c->key[i])
+                                                : SD_E_UNSUPPORTED;
+      sd_free(img);
+      if (e != SD_OK) {
+        *why = "the protected key cannot be opened";
+        return e == SD_E_NOT_FOUND ? SD_E_KEY_FORMAT : e;
+      }
+      d->key_blob = c->key[i]->p;
+      d->key_blob_len = c->key[i]->len;
+      scopy(c->key_label[i], sizeof(c->key_label[i]), s->identity_store);
+      d->key_label = c->key_label[i];
+    }
+    d->agents = agents_of(s->agent);
+    d->identities_only = s->identities_only;
+    scopy(c->agent_keys[i], sizeof(c->agent_keys[i]), s->agent_keys);
+    d->agent_keys = c->agent_keys[i];
+    d->auth_methods = methods_of(s->auth_methods);
+    scopy(c->alias[i], sizeof(c->alias[i]), s->host_key_alias);
+    d->host_key_alias = c->alias[i][0] ? c->alias[i] : NULL;
+    d->update_host_keys = s->update_host_keys;            /* same values as sd_hku_mode */
+    d->no_save = !s->save_password;
+    if (ch->proxy[i].kind != SD_PROFILE_PROXY_NONE) {
+      const sd_proxy_spec *x = &ch->proxy[i];
+      d->proxy.kind = x->kind;                            /* same values as sd_proxy_kind */
+      if (x->host[0] && !wide_from_utf8(x->host, c->proxy_host[i], SD_COUNTOF(c->proxy_host[i]))) {
+        *why = "invalid proxy";
+        return SD_E_INVALID_PARAM;
+      }
+      d->proxy.host = c->proxy_host[i][0] ? c->proxy_host[i] : NULL;
+      d->proxy.port = x->port;
+      scopy(c->proxy_user[i], sizeof(c->proxy_user[i]), x->user);
+      d->proxy.user = c->proxy_user[i][0] ? c->proxy_user[i] : NULL;
+      d->proxy.auth = proxy_auth_of(x, ch->proxy_auth[i]);
+      d->proxy.fallback_direct = (ch->proxy_fallback_direct & (1u << i)) ? 1 : 0;
+    }
+  }
+  /* known_hosts (5.1): machine (read-only here), user, then the live sources the settings allow */
+  c->stores[c->nstores].kind = SD_KH_STORE_MACHINE;
+  c->stores[c->nstores].writable = 0;
+  c->nstores++;
+  c->stores[c->nstores].kind = SD_KH_STORE_USER;
+  c->stores[c->nstores].path = h->kh[0] ? h->kh : NULL;
+  c->stores[c->nstores].writable = 1;
+  c->nstores++;
+  if (g.settings.openssh_source) {
+    c->stores[c->nstores].kind = SD_KH_SRC_OPENSSH;
+    c->nstores++;
+  }
+  if (g.settings.putty_source) {
+    c->stores[c->nstores].kind = SD_KH_SRC_PUTTY;
+    c->nstores++;
+  }
+  return SD_OK;
+}
+
+static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err,
+                                sd_profile *prof)
+{
   const sd_json *adhoc = sd_json_get(params, "adhoc");
   const char *pname = sd_json_get_str(params, "profile");
   const char *target = sd_json_get_str(params, "target");
@@ -675,24 +1058,33 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   int ro = 0;
   sd_err e;
 
-  sd_profile_defaults(&prof);
+  sd_profile_defaults(prof);
   if (adhoc) {
     const char *v;
     int64_t port = 22;
-    if ((v = sd_json_get_str(adhoc, "host")) == NULL || strlen(v) >= sizeof(prof.host))
+    if ((v = sd_json_get_str(adhoc, "host")) == NULL || strlen(v) >= sizeof(prof->host))
       return fail(err, SD_E_INVALID_PARAM, "usage", "adhoc.host required");
-    scopy(prof.host, sizeof(prof.host), v);
-    scopy(prof.name, sizeof(prof.name), v);
+    scopy(prof->host, sizeof(prof->host), v);
+    scopy(prof->name, sizeof(prof->name), v);
     if (sd_json_get(adhoc, "port") && (!sd_json_get_int64(adhoc, "port", &port) || port < 1 || port > 65535))
       return fail(err, SD_E_INVALID_PARAM, "usage", "adhoc.port invalid");
-    prof.port = (uint16_t)port;
-    if ((v = sd_json_get_str(adhoc, "user")) != NULL) scopy(prof.user, sizeof(prof.user), v);
-    if ((v = sd_json_get_str(adhoc, "identity")) != NULL) scopy(prof.identity, sizeof(prof.identity), v);
-    if ((v = sd_json_get_str(adhoc, "remote_path")) != NULL) scopy(prof.remote_path, sizeof(prof.remote_path), v);
-    if (sd_profile_validate(&prof, &bad) != SD_OK)
+    prof->port = (uint16_t)port;
+    if ((v = sd_json_get_str(adhoc, "user")) != NULL) scopy(prof->user, sizeof(prof->user), v);
+    if ((v = sd_json_get_str(adhoc, "identity")) != NULL) scopy(prof->identity, sizeof(prof->identity), v);
+    if ((v = sd_json_get_str(adhoc, "remote_path")) != NULL) scopy(prof->remote_path, sizeof(prof->remote_path), v);
+    /* M2: --jump and --proxy */
+    if ((v = sd_json_get_str(adhoc, "jump")) != NULL) {
+      sd_jump_list jl;
+      if (strlen(v) >= sizeof(prof->jump) || sd_jump_parse(v, &jl) != SD_OK)
+        return fail(err, SD_E_INVALID_PARAM, "usage", "invalid jump host list");
+      scopy(prof->jump, sizeof(prof->jump), v);
+    }
+    if ((v = sd_json_get_str(adhoc, "proxy")) != NULL && sd_proxy_spec_parse(v, &prof->proxy[0]) != SD_OK)
+      return fail(err, SD_E_INVALID_PARAM, "usage", "invalid proxy");
+    if (sd_profile_validate(prof, &bad) != SD_OK)
       return fail(err, SD_E_INVALID_PARAM, "usage", bad);
   } else if (pname) {
-    e = sd_profile_find(pname, &prof, NULL, 0);
+    e = sd_profile_find(pname, prof, NULL, 0);
     if (e == SD_E_NOT_FOUND)
       return fail(err, e, "profile_not_found", "no such profile");
     if (e != SD_OK)
@@ -701,26 +1093,32 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
     return fail(err, SD_E_INVALID_PARAM, "usage", "profile or adhoc required");
   }
   if (sd_json_get_bool(params, "read_only", &ro) && ro)
-    prof.read_only = 1;
+    prof->read_only = 1;
+  if (sd_json_get(params, "connections")) {
+    int64_t nc = 0;
+    if (!sd_json_get_int64(params, "connections", &nc) || nc < 1 || nc > 4)
+      return fail(err, SD_E_INVALID_PARAM, "usage", "connections must be 1 to 4");
+    prof->connections = (uint32_t)nc;
+  }
   if (pbackend && !sd_mount_backend_kind_parse(pbackend, &backend))
     return fail(err, SD_E_INVALID_PARAM, "usage", "backend must be auto, dokany or webdav");
   if (pbackend == NULL)
-    backend = (sd_mount_backend_kind)prof.backend;    /* mount.backend (same values) */
+    backend = (sd_mount_backend_kind)prof->backend;    /* mount.backend (same values) */
   if (target == NULL || strcmp(target, "auto") == 0)
-    target = prof.target;
+    target = prof->target;
   if (strcmp(target, "auto") != 0) {
     if (!wide_from_utf8(target, wt, SD_COUNTOF(wt)) || (letter = sd_parse_drive_letter(wt)) == 0)
       return fail(err, SD_E_INVALID_PARAM, "invalid_target", "target must be a drive letter");
     if (letter < L'D')
       return fail(err, SD_E_INVALID_PARAM, "invalid_target", "drive letters A: to C: are not used");
   }
-  if (prof.user[0] == 0) {
+  if (prof->user[0] == 0) {
     wchar_t wu[128];
     DWORD n = SD_COUNTOF(wu);
     size_t got = 0;
     if (GetUserNameW(wu, &n) && n > 0 &&
-        sd_utf16_to_utf8(wu, n - 1, prof.user, sizeof(prof.user) - 1, &got, SD_UTF_STRICT) == SD_OK)
-      prof.user[got] = 0;
+        sd_utf16_to_utf8(wu, n - 1, prof->user, sizeof(prof->user) - 1, &got, SD_UTF_STRICT) == SD_OK)
+      prof->user[got] = 0;
     else
       return fail(err, SD_E_INVALID_PARAM, "usage", "user required");
   }
@@ -728,24 +1126,24 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   h = (host_mount *)sd_calloc(1, sizeof(*h));
   if (h == NULL)
     return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
-  scopy(h->profile_name, sizeof(h->profile_name), prof.name);
-  scopy(h->profile_id, sizeof(h->profile_id), prof.id);
-  scopy(h->host, sizeof(h->host), prof.host);
-  scopy(h->user, sizeof(h->user), prof.user);
-  scopy(h->remote, sizeof(h->remote), prof.remote_path);
-  h->port = prof.port;
-  h->read_only = prof.read_only;
+  scopy(h->profile_name, sizeof(h->profile_name), prof->name);
+  scopy(h->profile_id, sizeof(h->profile_id), prof->id);
+  scopy(h->host, sizeof(h->host), prof->host);
+  scopy(h->user, sizeof(h->user), prof->user);
+  scopy(h->remote, sizeof(h->remote), prof->remote_path);
+  h->port = prof->port;
+  h->read_only = prof->read_only;
   h->backend_req = (int)backend;
   h->initiator = sd_ipc_client_id(client);
   h->prompt_none = (pmode && strcmp(pmode, "none") == 0) ||
                    !(sd_ipc_client_caps(client) & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI));
   h->state = SD_MOUNT_CONNECTING;
-  if (!wide_from_utf8(prof.host, h->whost, SD_COUNTOF(h->whost)) ||
-      !wide_from_utf8(prof.label[0] ? prof.label : prof.name, h->label, SD_COUNTOF(h->label))) {
+  if (!wide_from_utf8(prof->host, h->whost, SD_COUNTOF(h->whost)) ||
+      !wide_from_utf8(prof->label[0] ? prof->label : prof->name, h->label, SD_COUNTOF(h->label))) {
     sd_free(h);
     return fail(err, SD_E_INVALID_PARAM, "usage", "invalid host or label");
   }
-  if (prof.identity[0] && sd_config_expand_path(prof.identity, h->identity, SD_COUNTOF(h->identity)) != SD_OK) {
+  if (prof->identity[0] && sd_config_expand_path(prof->identity, h->identity, SD_COUNTOF(h->identity)) != SD_OK) {
     sd_free(h);
     return fail(err, SD_E_INVALID_PARAM, "usage", "invalid identity path");
   }
@@ -756,8 +1154,8 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   {
     /* per-source cache folder (disk tier, identity cache): key "user@host:port" */
     char key[512], pnum[8];
-    size_t kn = strlen(prof.user) + strlen(prof.host) + 8;
-    uint32_t v = prof.port, pi = 0;
+    size_t kn = strlen(prof->user) + strlen(prof->host) + 8;
+    uint32_t v = prof->port, pi = 0;
     char tmp[8];
     size_t tn = 0;
     do { tmp[tn++] = (char)('0' + v % 10u); v /= 10u; } while (v);
@@ -765,9 +1163,9 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
     pnum[pi] = 0;
     if (kn < sizeof(key)) {
       key[0] = 0;
-      strcat_s(key, sizeof(key), prof.user);
+      strcat_s(key, sizeof(key), prof->user);
       strcat_s(key, sizeof(key), "@");
-      strcat_s(key, sizeof(key), prof.host);
+      strcat_s(key, sizeof(key), prof->host);
       strcat_s(key, sizeof(key), ":");
       strcat_s(key, sizeof(key), pnum);
       if (sd_config_cache_dir(key, h->cache_dir, SD_COUNTOF(h->cache_dir)) != SD_OK) {
@@ -777,10 +1175,25 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
     }
   }
 
+  {
+    sd_chain *ch = NULL;
+    const char *why = NULL;
+    e = sd_chain_resolve(prof, NULL, NULL, &ch, &why);
+    if (e == SD_OK) {
+      e = build_chain(h, prof, ch, &why);
+      sd_free(ch);
+    }
+    if (e != SD_OK) {
+      free_chain(h->chain);
+      sd_free(h);
+      return fail(err, e, e == SD_E_INVALID_PARAM ? "usage" : NULL, why ? why : "cannot resolve the jump hosts");
+    }
+  }
   sd_mutex_lock(&g.lock);
   for (o = g.mounts; o; o = o->next) {
-    if (prof.id[0] && strcmp(o->profile_id, prof.id) == 0) {
+    if (prof->id[0] && strcmp(o->profile_id, prof->id) == 0) {
       sd_mutex_unlock(&g.lock);
+      free_chain(h->chain);
       sd_free(h);
       return fail(err, SD_E_EXISTS, "already_mounted", "profile already mounted");
     }
@@ -789,6 +1202,7 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
     if (letter_in_use_locked(letter)) {
       char detail[32];
       sd_mutex_unlock(&g.lock);
+      free_chain(h->chain);
       sd_free(h);
       scopy(detail, sizeof(detail), "drive letter in use: X:");
       detail[21] = (char)letter;     /* the CLI reads the letter from the end of the detail */
@@ -800,6 +1214,7 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
       if (!letter_in_use_locked(l)) { letter = l; break; }
     if (letter == 0) {
       sd_mutex_unlock(&g.lock);
+      free_chain(h->chain);
       sd_free(h);
       return fail(err, SD_E_EXISTS, "target_in_use", "no free drive letter");
     }
@@ -821,23 +1236,37 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   h->params.port = h->port;
   h->params.user = h->user;
   h->params.identity_path = h->identity[0] ? h->identity : NULL;
-  h->params.auth_methods = ((prof.auth_methods & SD_PROFILE_AUTH_PUBLICKEY) ? SD_AUTH_PUBLICKEY : 0) |
-                           ((prof.auth_methods & SD_PROFILE_AUTH_KBDINT) ? SD_AUTH_KBDINT : 0) |
-                           ((prof.auth_methods & SD_PROFILE_AUTH_PASSWORD) ? SD_AUTH_PASSWORD : 0);
+  h->params.auth_methods = ((prof->auth_methods & SD_PROFILE_AUTH_PUBLICKEY) ? SD_AUTH_PUBLICKEY : 0) |
+                           ((prof->auth_methods & SD_PROFILE_AUTH_KBDINT) ? SD_AUTH_KBDINT : 0) |
+                           ((prof->auth_methods & SD_PROFILE_AUTH_PASSWORD) ? SD_AUTH_PASSWORD : 0);
   h->params.remote_path = h->remote[0] ? h->remote : NULL;
   h->params.letter = letter;
-  h->params.read_only = prof.read_only;
-  h->params.symlinks = prof.symlinks;
-  h->params.write_mode = prof.write_mode;
+  h->params.read_only = prof->read_only;
+  h->params.symlinks = prof->symlinks;
+  h->params.write_mode = prof->write_mode;
   h->params.volume_label = h->label;
   h->params.known_hosts_path = h->kh[0] ? h->kh : NULL;
   h->params.backend = h->backend_req;
-  h->params.disk_cache_mb = prof.disk_cache_mb;
+  h->params.disk_cache_mb = prof->disk_cache_mb;
   h->params.disk_cache_dir = h->cache_dir[0] ? h->cache_dir : NULL;
-  h->params.offline_wait_ms = prof.offline_wait_ms;
-  h->params.reconnect_grace_ms = prof.reconnect_grace_ms;
-  h->params.channels = prof.channels;
+  h->params.offline_wait_ms = prof->offline_wait_ms;
+  h->params.reconnect_grace_ms = prof->reconnect_grace_ms;
+  h->params.channels = prof->channels;
   h->params.cache_memory_bytes = g.settings.cache_memory;
+  /* M2 */
+  h->params.hops = h->chain->hop;
+  h->params.hop_count = h->chain->count;
+  h->params.legacy_policy = prof->legacy_algorithms;          /* same values as sd_legacy_policy */
+  h->params.refuse_terrapin_exposed = prof->refuse_terrapin_exposed;
+  h->params.connections = prof->connections;
+  h->params.keepalive_ms = prof->keepalive_ms;
+  h->params.connect_timeout_ms = prof->connect_timeout_ms;
+  h->params.no_secret_cache = !prof->cache_secrets;
+  h->params.profile_name = h->label;
+  h->params.kh_stores = h->chain->stores;
+  h->params.kh_store_count = h->chain->nstores;
+  h->hop_count = h->chain->count;
+  scopy(h->legacy_accepted, sizeof(h->legacy_accepted), prof->legacy_accepted);
   h->next = g.mounts;
   g.mounts = h;
   g.last_busy = sd_tick_ms();
@@ -849,6 +1278,17 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   SD_LOGI("agent", "mount %s requested by client %llu", h->id, (unsigned long long)h->initiator);
   post(NULL, work_start, h);
   return SD_OK;
+}
+
+static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  sd_profile *prof = (sd_profile *)sd_alloc(sizeof(sd_profile));   /* ~13 KB: off the IPC thread stack */
+  sd_err e;
+  if (prof == NULL)
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  e = handle_mount_body(client, params, res, err, prof);
+  sd_free(prof);
+  return e;
 }
 
 static int mount_matches(host_mount *h, const char *target, const char *mount_id, const char *profile)
@@ -918,6 +1358,9 @@ static sd_err handle_prompt_answer(const sd_json *params, sd_json_writer *res, s
   sd_mount_answer_kind kind;
   host_mount *h;
   sd_err e = SD_E_NOT_FOUND;
+  int save = 0;
+  const char *comment = sd_json_get_str(params, "save_comment");
+  sd_json_get_bool(params, "save", &save);
   if (!parse_prompt_id(pid, &mnum, &id) || action == NULL)
     return fail(err, SD_E_INVALID_PARAM, "usage", "prompt_id and action required");
   if (strcmp(action, "accept") == 0) kind = SD_MA_HOSTKEY_TRUST;
@@ -940,7 +1383,9 @@ static sd_err handle_prompt_answer(const sd_json *params, sd_json_writer *res, s
     if (h->num == mnum && h->m) {
       if (kind == SD_MA_REJECT && strcmp(action, "cancel") == 0)
         scopy(h->fail_code, sizeof(h->fail_code), "cancelled");
-      e = sd_mount_answer(h->m, id, kind, n, r);
+      if (save && comment && !wide_from_utf8(comment, h->save_comment, SD_COUNTOF(h->save_comment)))
+        h->save_comment[0] = 0;
+      e = sd_mount_answer_ex(h->m, id, kind, n, r, save ? SD_MOUNT_ANSWER_SAVE : 0);
       break;
     }
   }
@@ -951,10 +1396,63 @@ static sd_err handle_prompt_answer(const sd_json *params, sd_json_writer *res, s
   return SD_OK;
 }
 
+static sd_err handle_announced_list(sd_json_writer *res)
+{
+  host_announce *x;
+  sd_mutex_lock(&g.lock);
+  sd_jw_key(res, "announcements");
+  sd_jw_arr_begin(res);
+  for (x = g.announces; x; x = x->next)
+    write_announce_json(res, x);
+  sd_jw_arr_end(res);
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
+/* hostkey.announced.accept {id, add_only}: applies the reviewed announcement to the user store. */
+static sd_err handle_announced_accept(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *id = sd_json_get_str(params, "id");
+  int add_only = 0;
+  host_announce **pp, *x = NULL;
+  sd_kh_store st;
+  sd_err e;
+  sd_json_get_bool(params, "add_only", &add_only);
+  if (id == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "id required");
+  sd_mutex_lock(&g.lock);
+  for (pp = &g.announces; *pp; pp = &(*pp)->next)
+    if (strcmp((*pp)->id, id) == 0) { x = *pp; *pp = x->next; break; }
+  sd_mutex_unlock(&g.lock);
+  if (x == NULL)
+    return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
+  memset(&st, 0, sizeof(st));
+  st.kind = SD_KH_STORE_USER;                    /* never the machine store from a user's connection */
+  st.path = g.user_kh[0] ? g.user_kh : NULL;
+  st.writable = 1;
+  e = sd_mount_apply_hostkeys(host_backend(), &st, 1, &x->a, add_only);
+  if (e != SD_OK) {
+    sd_mutex_lock(&g.lock);                      /* keep it for another try */
+    x->next = g.announces;
+    g.announces = x;
+    sd_mutex_unlock(&g.lock);
+    return fail(err, e, NULL, "cannot update known_hosts");
+  }
+  SD_LOGI("agent", "host keys of %s updated (%u added, %u removed)", x->a.lookup_name, (unsigned)x->a.add_count,
+          add_only ? 0u : (unsigned)x->a.remove_count);
+  sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
+  sd_jw_key(res, "added"); sd_jw_int(res, x->a.add_count);
+  sd_jw_key(res, "removed"); sd_jw_int(res, add_only ? 0 : x->a.remove_count);
+  sd_free(x);
+  return SD_OK;
+}
+
 static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                           sd_json_writer *res, sd_ipc_error *err)
 {
   SD_UNUSED(ctx);
+  if (strcmp(method, "hostkey.announced.list") == 0) return handle_announced_list(res);
+  if (strcmp(method, "hostkey.announced.accept") == 0) return handle_announced_accept(params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(params, res, err);
   if (strcmp(method, "list") == 0) return handle_list(res);
@@ -1021,6 +1519,28 @@ int host_agent_run(const host_agent_opts *opts)
   memset(&g, 0, sizeof(g));
   (void)sd_settings_load(&g.settings);
   sd_log_set_level((sd_log_level)g.settings.log_level);
+  {
+    sd_secret_config sc;
+    wchar_t root[MAX_PATH];
+    memset(&sc, 0, sizeof(sc));
+    sc.persist_enterprise = g.settings.persist_enterprise;
+#ifdef SD_HOST_TEST_HOOKS
+    {
+      /* tests: secrets live as DPAPI files under the test root, never in the real Credential Manager */
+      static wchar_t tdir[MAX_PATH];
+      if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", tdir, MAX_PATH) - 1u < MAX_PATH - 1u) {
+        sc.user_dir = tdir;
+        sc.prefix = "com.librestatic.shelldrive.test:";
+        sc.force_dpapi = 1;
+      }
+    }
+#endif
+    sd_secret_configure(&sc);
+    if (sd_config_root(root, SD_COUNTOF(root)) == SD_OK && wcslen(root) + 13 < SD_COUNTOF(g.user_kh)) {
+      memcpy(g.user_kh, root, (wcslen(root) + 1) * sizeof(wchar_t));
+      wcscat_s(g.user_kh, SD_COUNTOF(g.user_kh), L"\\known_hosts");
+    }
+  }
   sd_mutex_init(&g.lock);
   sd_mutex_init(&g.qlock);
   g.qev = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -1110,6 +1630,11 @@ int host_agent_run(const host_agent_opts *opts)
   /* mounts that did not finish their teardown in time must not leave a mapping behind (TM-R17) */
   cleanup_webdav_mappings("stop");
   SetUnhandledExceptionFilter(g_prev_filter);
+  while (g.announces) {
+    host_announce *x = g.announces;
+    g.announces = x->next;
+    sd_free(x);
+  }
   if (ready) CloseHandle(ready);
   if (stop_ev) CloseHandle(stop_ev);
   if (mutex) CloseHandle(mutex);

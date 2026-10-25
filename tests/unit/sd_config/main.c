@@ -12,6 +12,14 @@ SD_TEST_DECL(config_paths_and_expansion);
 SD_TEST_DECL(profile_m1_keys);
 SD_TEST_DECL(cache_dir_and_identity_cache);
 SD_TEST_DECL(settings_log_level_and_cache_memory);
+SD_TEST_DECL(profile_m2_keys_round_trip);
+SD_TEST_DECL(proxy_spec_and_jump_parse);
+SD_TEST_DECL(chain_resolution);
+SD_TEST_DECL(legacy_set_hash);
+SD_TEST_DECL(import_putty_reg_export);
+SD_TEST_DECL(import_putty_test_registry_key);
+SD_TEST_DECL(import_ssh_config);
+SD_TEST_DECL(import_duplicates_and_write);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ini_parses_grammar),
@@ -26,6 +34,14 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(profile_m1_keys),
   SD_TEST_ENTRY(cache_dir_and_identity_cache),
   SD_TEST_ENTRY(settings_log_level_and_cache_memory),
+  SD_TEST_ENTRY(profile_m2_keys_round_trip),
+  SD_TEST_ENTRY(proxy_spec_and_jump_parse),
+  SD_TEST_ENTRY(chain_resolution),
+  SD_TEST_ENTRY(legacy_set_hash),
+  SD_TEST_ENTRY(import_putty_reg_export),
+  SD_TEST_ENTRY(import_putty_test_registry_key),
+  SD_TEST_ENTRY(import_ssh_config),
+  SD_TEST_ENTRY(import_duplicates_and_write),
 };
 
 int main(int argc, char **argv)

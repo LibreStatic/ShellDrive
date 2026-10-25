@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "sd_config/sd_config.h"
+#include "config_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
 #include "sd_platform/sd_log.h"
@@ -102,6 +103,7 @@ void sd_profile_defaults(sd_profile *p)
   p->write_mode = SD_PROFILE_WRITE_THROUGH;
   p->backend = SD_PROFILE_BACKEND_AUTO;
   p->channels = 2;
+  sd_profile_m2_defaults(p);
 }
 
 static int valid_id(const char *id)
@@ -158,6 +160,7 @@ sd_err sd_profile_validate(const sd_profile *p, const char **bad_key)
   else if (p->offline_wait_ms > 600000u) bad = "mount.offline_wait";
   else if (p->disk_cache_mb > 1024u * 1024u) bad = "cache.disk";
   else if (has_ctl(p->label)) bad = "mount.label";
+  else bad = sd_profile_m2_validate(p);
   if (bad_key) *bad_key = bad;
   return bad ? SD_E_INVALID_PARAM : SD_OK;
 }
@@ -249,6 +252,10 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
     if (!sd_ini_parse_u32(v, &u) || u < 1 || u > 2) BAD("connection.channels");
     p->channels = u;
   }
+  {
+    const char *m2 = sd_profile_m2_from_ini(ini, p);
+    if (m2) BAD(m2);
+  }
   if (p->name[0] == 0)
     scpy(p->name, sizeof(p->name), p->host);
 #undef BAD
@@ -332,7 +339,7 @@ sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
   if (p->channels != 2 || sd_ini_get(d, "connection", "channels"))
     SET("connection", "channels", p->channels == 1 ? "1" : "2");
 #undef SET
-  return SD_OK;
+  return sd_profile_m2_to_ini(p, d);
 }
 
 sd_err sd_profile_new_id(char out[33])
@@ -499,6 +506,13 @@ static sd_err make_dir(const wchar_t *path, int protect)
   return e;
 }
 
+sd_err sd_config_make_protected_dir(const wchar_t *path)
+{
+  if (path == NULL || path[0] == 0)
+    return SD_E_INVALID_PARAM;
+  return make_dir(path, 1);
+}
+
 /* Creates every missing component of `dir`; components whose prefix length is >= protect_from_len
    (the product folder and below) get the protected DACL. */
 static sd_err make_tree(const wchar_t *dir, int protect_from_len)
@@ -625,6 +639,8 @@ void sd_settings_defaults(sd_settings *s)
 {
   memset(s, 0, sizeof(*s));
   s->log_level = 2;
+  s->openssh_source = 1;
+  s->putty_source = 1;
 }
 
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
@@ -644,6 +660,22 @@ sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
     uint64_t sz;
     if (sd_ini_parse_size(v, &sz)) s->cache_memory = sz;
     else { SD_LOGW("config", "settings.ini: invalid [cache] memory"); e = SD_E_INVALID_PARAM; }
+  }
+  {
+    int b;
+    if ((v = sd_ini_get(ini, "hostkeys", "openssh_source")) != NULL) {
+      if (sd_ini_parse_bool(v, &b)) s->openssh_source = b;
+      else { SD_LOGW("config", "settings.ini: invalid [hostkeys] openssh_source"); e = SD_E_INVALID_PARAM; }
+    }
+    if ((v = sd_ini_get(ini, "hostkeys", "putty_source")) != NULL) {
+      if (sd_ini_parse_bool(v, &b)) s->putty_source = b;
+      else { SD_LOGW("config", "settings.ini: invalid [hostkeys] putty_source"); e = SD_E_INVALID_PARAM; }
+    }
+    if ((v = sd_ini_get(ini, "credentials", "persist")) != NULL) {
+      if (strcmp(v, "local") == 0) s->persist_enterprise = 0;
+      else if (strcmp(v, "enterprise") == 0) s->persist_enterprise = 1;
+      else { SD_LOGW("config", "settings.ini: invalid [credentials] persist"); e = SD_E_INVALID_PARAM; }
+    }
   }
   return e;
 }
@@ -793,6 +825,7 @@ sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx)
   wchar_t dir[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH];
   WIN32_FIND_DATAW fd;
   HANDLE f;
+  sd_profile *pp;
   sd_err e = sd_config_profiles_dir(dir, SD_COUNTOF(dir));
   if (e != SD_OK)
     return e;
@@ -801,8 +834,11 @@ sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx)
   f = FindFirstFileExW(pattern, FindExInfoStandard, &fd, FindExSearchNameMatch, NULL, 0);
   if (f == INVALID_HANDLE_VALUE)
     return SD_OK;   /* no profiles (or no folder yet) */
+  if ((pp = (sd_profile *)sd_alloc(sizeof(*pp))) == NULL) {
+    FindClose(f);
+    return SD_E_NO_MEMORY;
+  }
   do {
-    sd_profile p;
     const char *bad = NULL;
     size_t nl = wcslen(fd.cFileName);
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -812,14 +848,15 @@ sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx)
     if (!wcpy(path, SD_COUNTOF(path), dir) || !wcat(path, SD_COUNTOF(path), L"\\") ||
         !wcat(path, SD_COUNTOF(path), fd.cFileName))
       continue;
-    if (sd_profile_load_file(path, &p, &bad) != SD_OK) {
+    if (sd_profile_load_file(path, pp, &bad) != SD_OK) {
       SD_LOGW("config", "skipping profile %ls (invalid %s)", path, bad ? bad : "file");
       continue;
     }
-    if (!cb(ctx, &p, path))
+    if (!cb(ctx, pp, path))
       break;
   } while (FindNextFileW(f, &fd));
   FindClose(f);
+  sd_free(pp);
   return SD_OK;
 }
 
@@ -931,7 +968,7 @@ sd_err sd_profile_save(sd_profile *p)
   wchar_t path[MAX_PATH], dir[MAX_PATH], name[64];
   sd_ini *ini = NULL;
   HANDLE lock = NULL;
-  sd_profile existing;
+  sd_profile *existing;
   sd_wr w;
   sd_err e;
   const char *bad = NULL;
@@ -941,9 +978,13 @@ sd_err sd_profile_save(sd_profile *p)
     return e;
   if ((e = sd_profile_validate(p, &bad)) != SD_OK)
     return e;
-  if ((e = sd_config_lock(&lock, 5000)) != SD_OK)
+  if ((existing = (sd_profile *)sd_alloc(sizeof(*existing))) == NULL)
+    return SD_E_NO_MEMORY;
+  if ((e = sd_config_lock(&lock, 5000)) != SD_OK) {
+    sd_free(existing);
     return e;
-  if (sd_profile_find(p->id, &existing, path, SD_COUNTOF(path)) == SD_OK && strcmp(existing.id, p->id) == 0) {
+  }
+  if (sd_profile_find(p->id, existing, path, SD_COUNTOF(path)) == SD_OK && strcmp(existing->id, p->id) == 0) {
     e = load_ini(path, &ini);
   } else {
     /* new file: <slug>.ini, or <slug>-<id prefix>.ini if taken */
@@ -981,6 +1022,7 @@ sd_err sd_profile_save(sd_profile *p)
   }
   sd_ini_free(ini);
   sd_config_unlock(lock);
+  sd_free(existing);
   return e;
 }
 

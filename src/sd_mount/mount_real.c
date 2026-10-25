@@ -1,6 +1,7 @@
 /* sd_mount_backend bound to the real modules (sd_ssh, sd_sftp, sd_vfs, sd_dokan, sd_webdav). Built as its own
  * library (sd_mount_real) so binaries and tests that use fakes never pull these symbols in. */
 #include "sd_mount/sd_mount.h"
+#include "sd_ssh/sd_keyfile.h"
 
 static const sd_mount_backend k_real = {
   "real",
@@ -28,6 +29,10 @@ static const sd_mount_backend k_real = {
   sd_vfs_cache_set_budget,
   sd_vfs_get_identity,
   sd_webdav_emergency_unmap,
+  sd_prompt_answer_ex,
+  sd_prompt_answer_ack,
+  sd_known_hosts_apply_hostkeys,
+  sd_ssh_key_dpapi_unprotect,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

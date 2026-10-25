@@ -44,11 +44,21 @@ enum {
 };
 
 #define SSH_MAX_PACKET_LEN   (256u * 1024u)    /* inbound packet_length limit (01 §4.1) */
+#define SSH_HOSTKEY_BUF      8192u             /* K_S / host certificate kept per connection */
 #define SSH_MAX_PAYLOAD_OUT  (SSH_MAX_PACKET_LEN - 1024u)
 
-/* legacy_mask bits (01 §4.3); only the ones M0 can produce are used. */
+/* legacy_mask bits (01 §4.3). The UI warns for every bit except SD_LEGACY_MAC_NON_ETM (D33). */
 enum {
-  SD_LEGACY_MAC_NON_ETM      = 1u << 6,
+  SD_LEGACY_KEX_SHA1         = 1u << 0,   /* group1 / group14-sha1 / gex-sha1 */
+  SD_LEGACY_DH_1024          = 1u << 1,   /* group1 */
+  SD_LEGACY_DH_SMALL         = 1u << 2,   /* GEX group < 2048 bits */
+  SD_LEGACY_CIPHER_CBC       = 1u << 3,
+  SD_LEGACY_CIPHER_3DES      = 1u << 4,
+  SD_LEGACY_MAC_SHA1         = 1u << 5,
+  SD_LEGACY_MAC_NON_ETM      = 1u << 6,   /* informational only */
+  SD_LEGACY_HOSTKEY_SHA1     = 1u << 7,   /* ssh-rsa host key signature */
+  SD_LEGACY_USERAUTH_SHA1    = 1u << 8,   /* we signed with ssh-rsa (auth) */
+  SD_LEGACY_RSA_SHORT        = 1u << 9,   /* RSA key < 2048 bits (host or user) */
   SD_LEGACY_NO_STRICT_KEX    = 1u << 10,
   SD_LEGACY_TERRAPIN_EXPOSED = 1u << 11
 };
@@ -107,14 +117,20 @@ typedef struct ssh_list_input {
   const char *disabled;          /* comma list or NULL */
   int refuse_terrapin_exposed;
   int initial;                   /* first KEX: add ext-info-c and kex-strict-c-v00@openssh.com */
-  /* cipher availability; NULL = sd_pktcipher_find(). Used by tests. */
+  int allow_legacy;              /* legacy_policy != REFUSE: legacy algorithms ranked last (D33) */
+  const char *hostkey_only;      /* non-NULL: exact host-key list (fetch_hostkeys re-key, 01 §4.3) */
+  /* availability; NULL = sd_pktcipher_find() / ssh_kex_supported() / ssh_hostkey_alg_supported().
+     Used by tests. */
   int (*cipher_available)(const char *name);
+  int (*kex_available)(const char *name);
+  int (*hostkey_available)(const char *name);
 } ssh_list_input;
 
 typedef struct ssh_list_result {
   int strict;                    /* server KEXINIT has kex-strict-s-v00@openssh.com */
   int terrapin_exposed;          /* rule 3 of 01 §4.3: no unaffected pair, connecting anyway */
   int chacha_removed;            /* rule 2 applied in at least one direction */
+  int etm_removed;               /* rule 2: CBC will be chosen, -etm MACs removed for that direction */
 } ssh_list_result;
 
 /* Builds the lists we send. Errors: SD_E_HOSTKEY_TYPE_UNAVAILABLE (stored types not supported),
@@ -134,7 +150,30 @@ sd_err ssh_negotiate(const ssh_lists *ours, const ssh_kexinit *server, ssh_algs 
 /* Encodes our KEXINIT payload (message byte included). */
 void ssh_kexinit_encode(sd_wr *w, const uint8_t cookie[16], const ssh_lists *l);
 int  ssh_cipher_is_aead(const char *name);
+int  ssh_cipher_is_cbc(const char *name);
+int  ssh_mac_is_etm(const char *name);
 int  ssh_csv_contains(const char *csv, const char *name);
+/* 1 for algorithms of the [legacy] tier of 01 §4.3. */
+int  ssh_alg_is_legacy(const char *name);
+/* Host key algorithm -> key blob type ("rsa-sha2-512" -> "ssh-rsa"; certs -> plain type); NULL if unknown. */
+const char *ssh_hostkey_alg_key_type(const char *alg);
+int  ssh_hostkey_alg_is_cert(const char *alg);
+/* Plain (non-certificate) host key algorithms for a key type in static order, e.g. "ssh-rsa" ->
+   "rsa-sha2-512,rsa-sha2-256[,ssh-rsa]". SD_E_HOSTKEY_TYPE_UNAVAILABLE when none is usable. */
+sd_err ssh_hostkey_algs_for_type(const char *key_type, int allow_legacy, int (*avail)(const char *),
+                                 char *out, size_t cap);
+/* legacy_mask bits that follow from the negotiated names alone (01 §4.3); the KEX adds
+   SD_LEGACY_DH_SMALL / SD_LEGACY_RSA_SHORT from the actual group and key. */
+uint32_t ssh_legacy_mask_for(const ssh_algs *a, int strict);
+/* Comma list of the negotiated legacy algorithm names (+ pseudo names for the other bits), for
+   SD_PROMPT_LEGACY_ACK.legacy_names. */
+void ssh_legacy_names(const ssh_algs *a, uint32_t mask, char *out, size_t cap);
+
+/* ---- KEX methods and host keys (kex_methods.c, hostkey_verify.c) ---- */
+
+/* 1 if the KEX method / host key algorithm is implemented with the crypto available now. */
+int ssh_kex_supported(const char *name);
+int ssh_hostkey_alg_supported(const char *name);
 
 /* ---- binary packet protocol (packet.c) ---- */
 
@@ -152,6 +191,7 @@ typedef struct ssh_dir {
   /* receive-side partial state */
   int rx_have_len;
   uint32_t rx_len;
+  size_t rx_discard;             /* CBC + non-ETM MAC failure: fail once this many bytes are buffered */
 } ssh_dir;
 
 void   ssh_dir_init(ssh_dir *d);

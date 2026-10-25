@@ -23,3 +23,6 @@ add_test(NAME interop.ssh COMMAND sd-test-ssh-interop)
 # interop.sftp_ssh kills and restarts the same fixture: never run both at once
 set_tests_properties(interop.ssh PROPERTIES LABELS interop TIMEOUT 300 SKIP_RETURN_CODE 77
   RESOURCE_LOCK wsl_sshd_fixture)
+
+# M2 per-area test lists (each area owns tests_<area>.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/tests_auth.cmake OPTIONAL)

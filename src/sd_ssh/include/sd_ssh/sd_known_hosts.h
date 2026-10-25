@@ -2,8 +2,23 @@
  *
  * sd_known_hosts is the ONLY component that reads, writes and locks known_hosts files. It has no
  * transport dependency: the CLI and UI link it (and the key-file parsers) without the SSH stack.
- * M0 scope: the user store (plain entries, TOFU add) and MATCH / NEW / NEW_TYPE / MISMATCH; machine
- * store, live OpenSSH/PuTTY sources, @cert-authority and @revoked follow in M2 (types are final).
+ * M2 scope: machine and user stores (plain entries written, hashed |1| entries read and optionally
+ * written), @revoked, @cert-authority (host certificates, SD_HK_MATCH_CA), and the live read-only
+ * sources of D7:
+ * - SD_KH_SRC_OPENSSH: path NULL = %USERPROFILE%\.ssh\known_hosts plus known_hosts2 if present;
+ *   a path names one file instead.
+ * - SD_KH_SRC_PUTTY: path NULL = HKCU\Software\SimonTatham\PuTTY\SshHostKeys; a path names another
+ *   key under HKCU (tests). rsa2, ssh-ed25519 and ecdsa-sha2-nistp256/384/521 values are converted
+ *   (01 §7.3); other types are counted as invalid by sd_known_hosts_import.
+ * A live source is used only when nobody but the user, SYSTEM and Administrators can change it
+ * (TM-R06: owner and DACL of the file and its directory, or of the registry key; reparse points and
+ * volumes without persistent ACLs are refused); otherwise it is skipped entirely and reported
+ * SD_KH_SRC_INSECURE. In live sources, wildcard-only lines (only '*', '?', '.') are ignored for MATCH
+ * and the stored-type list but still count for MISMATCH and @revoked. A MATCH found only in a live
+ * source is copied into the writable user store with "# imported-from=openssh|putty added=<date>".
+ * Every store and source is consulted: @revoked wins, then a valid host certificate (MATCH_CA), then
+ * any MISMATCH (D7), then MATCH. A certificate whose CA line applies to the name but that fails
+ * validation (01 §7.1) is a MISMATCH unless its plain key is known (then MATCH, as in OpenSSH).
  *
  * Threading: an sd_known_hosts object is thread-safe and shared by all connections of a process.
  * Every call does file I/O: run it on worker items, never on an SSH I/O thread or a Dokany thread.
@@ -65,11 +80,44 @@ void   sd_known_hosts_close(sd_known_hosts *kh);
 /* lookup_name: lowercase host, "[host]:port" when port != 22, or the host_key_alias (01 §7.1). */
 sd_err sd_known_hosts_check(sd_known_hosts *kh, const char *lookup_name, const uint8_t *blob, size_t len,
                             uint64_t now_unix, sd_hk_result *res);
-/* Appends a plain entry (D8) to a writable store, creating the file with the TM-R07 DACL. */
+/* Appends a plain entry (D8) to a writable store, creating the file with the TM-R07 DACL.
+   A host certificate blob is stored as its plain key. */
 sd_err sd_known_hosts_add(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
                           const uint8_t *blob, size_t len, const char *comment);
+/* As sd_known_hosts_add; SD_KH_ADD_HASHED writes the name as |1|salt|HMAC-SHA1 (OpenSSH
+   HashKnownHosts). Our own stores are written plain by default (D8). */
+enum { SD_KH_ADD_HASHED = 1u << 0 };
+sd_err sd_known_hosts_add_ex(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                             const uint8_t *blob, size_t len, const char *comment, uint32_t flags);
 sd_err sd_known_hosts_remove(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
                              const char *key_type /* NULL = all */);
+/* Removes the entries of exactly this key for lookup_name (lines naming only that host, plain or
+   hashed). SD_E_NOT_FOUND if there is none. Used to apply UpdateHostKeys removals after review. */
+sd_err sd_known_hosts_remove_key(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                                 const uint8_t *blob, size_t len);
+
+/* Plain keys stored for lookup_name in one store or source (no @revoked / @cert-authority lines).
+   explicit_name: the line names only this host (one pattern, plain or hashed), so it can be removed
+   without touching other hosts. Return nonzero from the callback to stop. Pointers are valid during
+   the callback only. */
+typedef struct sd_kh_entry {
+  const uint8_t *blob; size_t len;
+  const char *type;
+  uint32_t line;
+  int explicit_name;
+  int wildcard_only;
+} sd_kh_entry;
+typedef int (*sd_kh_entry_cb)(void *ctx, const sd_kh_entry *e);
+sd_err sd_known_hosts_list(sd_known_hosts *kh, sd_kh_store_kind store, const char *lookup_name,
+                           sd_kh_entry_cb cb, void *ctx);
+
+/* Applies a reviewed UpdateHostKeys announcement (01 §7.5, SD_HKEV_ANNOUNCED): adds the proven keys
+   with "# updated-by=hostkeys-00 added=<date>" (keys already present are skipped) and removes the
+   listed keys (sd_known_hosts_remove_key). sd_ssh never calls this itself; the host does, at once for
+   update_host_keys = yes or after the review dialog for ask. Stops at the first error. */
+sd_err sd_known_hosts_apply_hostkeys(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                                     const sd_hk_key *add, uint32_t add_count,
+                                     const sd_hk_key *remove, uint32_t remove_count);
 sd_err sd_known_hosts_import(sd_known_hosts *kh, sd_kh_store_kind source, sd_kh_store_kind target,
                              sd_kh_import_report *rep);
 
