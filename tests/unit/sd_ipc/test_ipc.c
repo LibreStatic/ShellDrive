@@ -380,6 +380,18 @@ SD_TEST(ipc_server_closes_bad_clients)
   sd_ipc_server_stop(s);
 }
 
+static int test_process_is_elevated(void)
+{
+  HANDLE tok = NULL;
+  DWORD elevated = 0, len = 0;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+    return 0;
+  if (!GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elevated, sizeof(elevated), &len))
+    elevated = 0;
+  CloseHandle(tok);
+  return elevated != 0;
+}
+
 SD_TEST(ipc_instance_quota_and_rate_limit)
 {
   srv_ctx ctx;
@@ -414,7 +426,11 @@ SD_TEST(ipc_instance_quota_and_rate_limit)
     sd_json_free(res);
     res = NULL;
   }
-  SD_CHECK(limited >= 2);
+  /* elevated admins are exempt from the rate limit by design (TM-R25); CI runners are elevated */
+  if (test_process_is_elevated())
+    SD_CHECK_EQ_INT(limited, 0);
+  else
+    SD_CHECK(limited >= 2);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("rate_limited"), 8);
   sd_ipc_close(c1);
   sd_ipc_server_stop(s);
