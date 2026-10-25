@@ -125,3 +125,30 @@ API: `src/sd_crypto/include/sd_crypto/sd_crypto_pq.h` (included by `sd_crypto.h`
   installed; replace them with puttygen output when available.
 - CNG differential: AES-CBC and 3DES-CBC everywhere CNG exists; ML-KEM-768 against `BCRYPT_MLKEM_ALGORITHM`
   where bcrypt.dll provides it (seed import, ek export compare, cross encaps/decaps, tampered ciphertext).
+## Matrix-driven transport interop (backend, M2 order step 2)
+
+`tests/unit/sd_ssh/test_interop_m2.c` (`sd-test-ssh-interop-m2`) consumes the row recipe of
+`run-matrix.ps1` (every `SD_IT_*` variable; `tests/interop/README.md`); plain `ctest` skips it with
+77. One generic `mx_connect` builds whatever the row describes (server, `SD_IT_JUMP` hops,
+`SD_IT_PROXY` with Basic / RFC 1929 credentials, `SD_IT_CERT`, OTP) so the same tests cover every
+row without per-server code. Entry points and their labels:
+
+| CTest entry | Labels | What it proves |
+|---|---|---|
+| `interop.ssh_matrix_connect` | `srv_all` | connect + exec over the row recipe; negotiated KEX vs `SD_IT_EXPECT_KEX`, legacy mask vs `SD_IT_EXPECT_LEGACY`, strict KEX, zero host-key prompts (the fixture known_hosts decides every hop, host certificates via `@cert-authority` on `cert`), TOTP kbdint on `otp`/`demo` |
+| `interop.ssh_matrix_kex` | `srv_modern;srv_ossh10;srv_ossh10pq;srv_legacy;srv_legacy3des;srv_cert` | walks KEX × host-key combinations with `algos.disabled` lists: mlkem768x25519-sha256, curve25519-sha256, ECDH P-256, rsa-sha2-512 host keys; the legacy DH set (gex-sha256, group14-sha1, gex-sha1, group1-sha1) with ssh-rsa; 3des-cbc on `legacy3des`; the host-certificate host-key algorithm on `cert` |
+| `interop.ssh_matrix_pq` | `srv_ossh10pq` | without ML-KEM in the offer KEX fails (`SD_E_KEX_FAILED`) |
+| `interop.ssh_matrix_update` | `srv_rotate` | `hostkeys-00@openssh.com` announcement with proof, `sd_known_hosts_apply_hostkeys`, server rotated to B only, reconnect authenticates with the learned key; leaves the fixture in mode `ab` (RESOURCE_LOCK `wsl_rotate_fixture`) |
+
+TOTP is computed in-process (RFC 6238 over `SD_IT_OTP_SECRET`; the secret is never printed) with
+`sd_hmac(SD_HASH_SHA1)`; later kbdint rounds use the next 30 s step. State of the full run
+(2026-10-25, `x64-modern` Release, fixtures per the table in this file): every entry passes on every
+row whose fixtures are up, including the demo row (SOCKS5 auth proxy -> OTP bastion -> target, PPK
+v3 key, ML-KEM). Squid/Dante rows stay fixture-down as before.
+
+Fix to the runner: the per-row ctest invocation now runs with `$ErrorActionPreference = 'Continue'`
+(Windows PowerShell 5.1 turns native stderr into error records; with 'Stop' the script aborted at
+the first failing row instead of collecting the table).
+
+Dev helper `build/run-row.sh` (untracked, build dir) runs one sub-test for one row by hand with the
+same variables the runner sets.

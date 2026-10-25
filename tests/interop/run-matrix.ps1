@@ -193,8 +193,10 @@ try {
     Set-Content -Path $list -Value $names -Encoding Ascii
     Remove-Item -ErrorAction SilentlyContinue $junit
     Write-Host "== row $($row.Name): $($names.Count) test(s)"
-    & $Ctest --test-dir $BuildDir -C $Config --tests-from-file $list --output-junit $junit --timeout $Timeout `
-      --output-on-failure *> (Join-Path $outDir "$($row.Name).log")
+    # Windows PowerShell 5.1 turns native stderr into error records, which 'Stop' would throw on
+    # before the remaining rows run; judge by the JUnit results instead.
+    & { $ErrorActionPreference = 'Continue'; & $Ctest --test-dir $BuildDir -C $Config --tests-from-file $list --output-junit $junit --timeout $Timeout `
+      --output-on-failure *> (Join-Path $outDir "$($row.Name).log") }
     $rowState[$row.Name] = 'ran'
     foreach ($n in $names) { if (-not $results[$n]) { $results[$n] = @{} }; $results[$n][$row.Name] = 'fail' }
     if (Test-Path $junit) {
