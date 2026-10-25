@@ -1,8 +1,9 @@
 # 03 — Applications and platform integration
 
-Status: proposed design, revised to apply `decisions.md` (D1–D32) and the conflict resolutions of
-`00-integration-review.md` (see the changelog at the end). Where this document and `decisions.md` disagree,
-`decisions.md` wins. Scope: everything around the SSH/SFTP/crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`,
+Status: proposed design, revised to apply `decisions.md` (D1–D39), the conflict resolutions of
+`00-integration-review.md` and the threat model's recommended changes (`05-threat-model.md` §8, `TM-Rxx`, as
+adjusted by D33–D39; see the changelog at the end). Where this document and `decisions.md` disagree,
+`decisions.md` wins. Threat ids (`T-xx`) and security tests (`TST-xx`) refer to 05. Scope: everything around the SSH/SFTP/crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`,
 see 01) and the filesystem layer (`sd_vfs`, `sd_webdav`, `sd_dokan`, see 02): processes, IPC, configuration,
 credentials, host key storage, CLI, tray and main window, Explorer integration, localization, logging and
 diagnostics. Build, installer, updater and CI are designed in 04; this document lists what they must provide.
@@ -54,8 +55,16 @@ Why these four and not one:
 
 - **One agent per (user SID, Terminal Services session ID).** Identity is enforced by the pipe name (2.1) and a
   session-local mutex `Local\ShellDrive.agent.<SID>`. `Local\` objects are per session on XP and later, so the
-  mutex alone gives the per-session uniqueness; the SID in the name guards against the rare case of a different user
-  in the same session (`runas` in the same desktop).
+  mutex gives the per-session uniqueness; the SID in the name guards against the rare case of a different user
+  in the same session (`runas` in the same desktop). The mutex, the ready event and the snapshot section are
+  created with the explicit owner and DACL of 2.2 "Named kernel objects" (TM-R26, T-47); a pre-existing object with
+  a foreign owner is treated as squatting (log, run without the object, tray warning `named_object_squatted`).
+  The pipe's `FILE_FLAG_FIRST_PIPE_INSTANCE` (2.2) remains the authoritative uniqueness check, so a squatted mutex
+  costs only the double-start optimization.
+- **Stale mappings at start (TM-R17 d):** before binding its WebDAV listener the agent enumerates the connections of
+  its logon session (`WNetOpenEnum(RESOURCE_CONNECTED)`) and cancels every `\\localhost@<port>\DavWWWRoot\s-…`
+  mapping it did not create in this process (they belong to a dead agent; their port may now be anyone's), then
+  reconciles labels, icons and Network location entries (1.11).
 - **Always runs with the non-elevated (filtered) token** on Vista+ when the user is a split-token administrator.
   Drive letters are bound to the logon session LUID of the token that creates them (WNet drive letters are tracked
   per AuthenticationID —
@@ -153,8 +162,23 @@ Why these four and not one:
 
 ### 1.4 The UI (`shelldrive-ui.exe`)
 
-- One instance per (user, session): mutex `Local\ShellDrive.ui.<SID>`; a second launch forwards its command line
-  to the first via `WM_COPYDATA` to a window with a private class name and exits.
+- One instance per (user, session): mutex `Local\ShellDrive.ui.<SID>` (explicit DACL as in 2.2, TM-R26); a second
+  launch forwards its command line to the first via `WM_COPYDATA` to a window with a private class name and exits.
+- **`WM_COPYDATA` validation (TM-R26, T-48):** the receiving window takes the sender from `wParam`
+  (`GetWindowThreadProcessId` → `OpenProcess(PROCESS_QUERY_INFORMATION` on XP, `PROCESS_QUERY_LIMITED_INFORMATION`
+  on Vista+) → `OpenProcessToken`) and accepts the message only if the sender's token user SID equals ours and its
+  integrity level is ≥ ours (Vista+). The payload is a versioned, length-checked UTF-16 argument vector; only the
+  documented verbs of `--action` (mount, mount-file, unmount, reconnect, show) and the plain "show main window"
+  request are accepted, each with its fixed argument shape (profile id = 32 hex, drive `X:` or an absolute path);
+  everything else is dropped and logged at warn.
+- **Agent watch (TM-R17 c, e):** the UI holds a `SYNCHRONIZE` handle to its agent's process (the server PID from
+  `GetNamedPipeServerProcessId` on Vista+, from the `server_pid` field of the `hello` reply on XP, whose process
+  token must carry our SID). When the process ends without a prior `agent.shutdown`/shutdown-event sequence, the UI
+  cancels every mapping of that agent (`\\localhost@<port>` targets it learned from `list`) with
+  `WNetCancelConnection2W(…, TRUE)` and notifies "ShellDrive stopped unexpectedly. Its drives were disconnected to
+  protect your files." Long-running CLI commands (`mount --wait`, `logs --follow`) do the same. Elevated-view
+  mappings live in the elevated logon session, which the unelevated UI cannot touch; they are covered by the
+  elevated watcher of 1.7.2.
 - Modes: `--tray` (tray icon, main window hidden; launched by `HKCU\...\Run\ShellDriveTray` if enabled),
   default (open main window), `--prompt-host` (started by the agent when a prompt needs a UI and none is
   connected; shows only the prompt then stays as a tray if the user's setting says so), `--action <verb> <target>`
@@ -180,6 +204,13 @@ Why these four and not one:
 - It reads mount state from a per-session read-only shared-memory snapshot published by the agent
   (`Local\ShellDrive.state.<SID>`, 8.2) and performs actions by launching `shelldrive-ui.exe --action ...`. It does
   not speak the IPC protocol and does not start the agent itself (the UI does).
+- **The snapshot is untrusted input to Explorer (TM-R26, T-47, T-60).** The DLL maps the section only if its owner
+  (`GetSecurityInfo(SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION)`) is the current
+  user's SID and its mandatory label is absent (= medium) or ≥ medium; otherwise it behaves as if the section did not
+  exist. Every offset and length in the snapshot (and in `menu.cache`, 8.2) is bounds-checked against the mapped
+  size before use, string slots are length-limited and need not be NUL-terminated, and a seqlock retry is bounded
+  (3 tries, then "no data"). AppContainer processes cannot squat it: their named objects are redirected to a
+  per-package namespace; low-integrity processes can create objects in `Local\` and are caught by the label check.
 - Compatibility across versions (C5): there is no IPC to version. Instead the snapshot layout carries a version
   field, is **architecture-independent** (fixed-width little-endian fields, offsets instead of pointers, UTF-16
   strings in fixed-size slots), so an x86 DLL under WOW64 reads a section written by an x64 or ARM64 host, and a DLL
@@ -222,7 +253,12 @@ Why these four and not one:
   per-mount secret. The call creates the same drive letter in the elevated logon session pointing at the
   agent's WebDAV server. When the agent unmounts, the elevated mapping goes stale (the server rejects it) until
   the elevated CLI removes it or the session ends; `shelldrive unmount` run elevated removes both. This is opt-in
-  because of that wart.
+  because of that wart. **Elevated watcher (TM-R17 e, T-40):** after mapping, the elevated CLI starts a detached
+  copy of itself in the hidden mode `--watch-elevated-view <agent pid> <letter>` (not in `help`, `DETACHED_PROCESS`,
+  elevated token inherited) that holds a `SYNCHRONIZE` handle to the agent process and polls the mount
+  through `list` every 30 s; when the agent exits or the mount is gone it cancels the elevated mapping with
+  `WNetCancelConnection2W(…, TRUE)` and exits. A stale elevated mapping therefore never points at a port that another
+  user could bind.
 - **System-wide fix offered, never applied silently:** the per-machine installer shows an unchecked option "Make
   ShellDrive drives visible to programs run as administrator" that sets `EnableLinkedConnections`; the MSI exposes
   it as the public property `ENABLELINKEDCONNECTIONS`, **default 0** (D24), so corporate deployments opt in
@@ -283,6 +319,12 @@ Enabled when a file named `shelldrive.portable` exists next to the executables. 
   `settings.ini` and `state\` (3.4, C8).
 - Secrets still go to Credential Manager/DPAPI of the current machine and user (DPAPI blobs do not travel with the
   USB stick — documented in the UI; a portable install on another PC asks for passwords again).
+- **Volumes without ACLs (TM-R29, T-55, T-59):** at start the host checks `GetVolumeInformationW` flags of the
+  volumes holding `data\` and the cache directory. Without `FILE_PERSISTENT_ACLS` (FAT, exFAT, most sticks) the disk
+  cache is refused (`cache.disk` treated as 0, `warning disk_cache_refused`), and the UI shows once per medium
+  (remembered by volume serial in `data\state\portable.ini`): "This drive has no file permissions. Anyone who gets
+  this drive can read your profile list and change trusted host keys." The same disk-cache rule applies to an
+  installed copy whose `%LOCALAPPDATA%` cache directory sits on such a volume.
 
 ### 1.10 Architecture matrix
 
@@ -359,6 +401,39 @@ Server side:
   token's deny-only Administrators group as non-member, so this naturally requires elevation).
 - Request size cap 1 MiB, at most 32 concurrent client instances per server, per-client idle timeout 10 min for
   non-subscribed connections.
+- **Refused client tokens (both servers, T-45, T-46):** `OpenThreadToken` failure, an anonymous or
+  identification-level impersonation that cannot be opened, an integrity level below medium (Vista+,
+  `TokenIntegrityLevel`) and an AppContainer token (`TokenIsAppContainer`, Windows 8+, resolved at runtime) are
+  refused at `hello` with `access_denied` and the instance is closed. Deny is the default on every error path.
+- **Service pipe quotas (TM-R25, T-46).** The service pipe is pre-authentication SYSTEM attack surface for every
+  interactive user, so it is rationed:
+  - At most **4 concurrent instances per client user SID** (checked at `hello`; the 5th is closed with
+    `too_many_connections`), and **2 of the 32 instances are reserved** for elevated administrators: once 30
+    instances are in use, a new client that is not an elevated admin is closed at `hello`. The listener always keeps
+    one pending instance so that an admin can reach `hello`.
+  - Clients that are not elevated admins: request cap **64 KiB** (instead of 1 MiB), at most 10 requests per second
+    per connection (excess requests get `rate_limited`), idle timeout **60 s** for non-subscribed connections, and
+    at most one subscription per connection. A connection that sends malformed JSON is closed.
+  - JSON parsing (`sd_json`) and method dispatch for the service are fuzz targets (TST-02).
+- **What non-admins may see on the service pipe (TM-R25):** `list` returns, for global mounts whose
+  `service_access` admits the caller, only `letter`, `label` and `state`; for every other global mount only its
+  letter in `reserved_letters` (the letter is visible system-wide anyway and the agent needs it to avoid conflicts,
+  2.6). Host, user, remote path, proxy legs, algorithms and last error are returned only to elevated admins.
+  `status` details, `log.tail`, `diag.collect` and the topics `prompt`, `log` and `hostkeys` are elevated-admin
+  only (`access_denied` otherwise). Non-admins may subscribe to `mount` and `warning` (filtered the same way) and to
+  `attention` (2.6 rule 3).
+- **Named kernel objects (TM-R26, T-47).** The agent creates `Local\ShellDrive.agent.<SID>` (mutex),
+  `Local\ShellDrive.agent.ready.<SID>` (event) and `Local\ShellDrive.state.<SID>` (section), and the UI creates
+  `Local\ShellDrive.ui.<SID>`, each with `O:<UserSID>D:P(A;;GA;;;<UserSID>)(A;;GA;;;SY)` and, on Vista+, the
+  explicit label `S:(ML;;NW;;;ME)` (XP has no labels). Readers open the section with `FILE_MAP_READ` only. If `Create*W` reports `ERROR_ALREADY_EXISTS`, the creator reads the owner: our SID means a second
+  instance of ours (normal); any other owner, or a label below medium, is squatting: the agent logs an error, runs
+  without that object (no snapshot: the shell extension shows no drive items; no ready event: clients fall back to
+  polling the pipe for 10 s) and the UI shows the warning "Another program is interfering with ShellDrive in this
+  session. Drive menus in Explorer are turned off." Readers (CLI/UI waiting on the ready event, the shell DLL) apply
+  the same owner and label checks before trusting an object.
+- **Shared server-verification helper:** the client-side checks below are one function, `sd_pipe_verify_server(h,
+  expected_owner_sid, flags)` in `sd_platform`, which 01 §6.5 also uses for the OpenSSH agent pipe (TM-R08: owner
+  `S-1-5-18` for the default `openssh-ssh-agent` pipe, or our SID for a user pipe named by `SSH_AUTH_SOCK`).
 
 Client side (anti-spoofing; important because pipe names are global and predictable):
 
@@ -402,11 +477,11 @@ Error `code` strings are stable English identifiers; `detail` is English (for lo
 | Method | Agent | Service | Notes |
 |---|---|---|---|
 | `hello` | x | x | version negotiation |
-| `subscribe` `{topics:[...]}` | x | x | topics: `mount`, `prompt`, `log`, `warning`, `config` |
+| `subscribe` `{topics:[...]}` | x | x | topics: `mount`, `prompt`, `log`, `warning`, `config`, `hostkeys`, `update`, `attention` (service only); on the service, `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
 | `mount` `{profile_id \| adhoc:{...}, overrides, prompt_mode}` | x | x (admin) | returns `mount_id` immediately; completion via `mount.state` event or `wait:true` |
 | `unmount` `{mount_id \| target, force}` | x | x (admin) | |
-| `list` | x | x | mounts with state, backend, target, negotiated algorithm summary, warnings |
-| `status` `{mount_id, stats}` | x | x | detailed: reconnect count, cache stats, last error, pool size and `pool_limited` reason, proxy legs in use; `stats:true` adds `sd_vfs_stats` and `sd_sftp_session_stats` (RTT, throughput) |
+| `list` | x | x | mounts with state, backend, target, negotiated algorithm summary, warnings; service: filtered for non-admins (2.2, TM-R25) |
+| `status` `{mount_id, stats}` | x | x (admin, elevated, for details) | detailed: reconnect count, cache stats, last error, pool size and `pool_limited` reason, proxy legs in use; `stats:true` adds `sd_vfs_stats` and `sd_sftp_session_stats` (RTT, throughput) |
 | `refresh` `{mount_id \| target, path}` | x | x (admin) | drops metadata TTLs for a subtree (02 §4.1) |
 | `profile.test` `{profile_id \| adhoc:{...}}` | x | x (admin) | connect + auth + `realpath` without mounting ("Test connection", 7.5); prompts route as for `mount` |
 | `mount.attach_info` `{mount_id}` | x | x (read-only) | agent: elevated-view support (1.7.2). Service: global WebDAV drives in `attach` mode (1.3); returned only when the caller's SID is in the profile's `service_access`. WebDAV only; returns the UNC with the path token, never a credential |
@@ -424,9 +499,11 @@ Error `code` strings are stable English identifiers; `detail` is English (for lo
 
 Events: `mount.state {mount_id, state: connecting|authenticating|mounted|offline|auth_required|failed|unmounting|unmounted, error?}`,
 `prompt.request`, `prompt.closed {prompt_id, reason: answered|cancelled|timeout}`,
-`warning {code:"legacy_algorithms"|"elevated_view_missing"|"write_failed"|"pool_limited"|"proxy_cleartext"|..., mount_id, data}`,
+`warning {code:"legacy_algorithms"|"terrapin_exposed"|"elevated_view_missing"|"write_failed"|"pool_limited"|"proxy_cleartext"|"hostkey_source_insecure"|"agent_untrusted"|"disk_cache_refused"|"named_object_squatted"|"dokany_denied"|..., mount_id, data}`,
 `hostkeys.announced {announce_id, mount_id, host, port, add:[{type, fp}], remove:[{type, fp}]}` (5.6),
-`update.available {version, notes_url}`, `config.changed`, `log {line}`. Topics gain `hostkeys` and `update`.
+`update.available {version, notes_url}`, `update.stale {days}` (TM-R36, 7.7), `config.changed`, `log {line}`,
+`attention {count}` (service only: number of global mounts waiting for an administrator, no other content; 2.6).
+`hello` replies carry `server_pid` (used by the agent watch, 1.4).
 
 `write_failed` (C45) is raised when data acknowledged to an application under write-behind could not be written
 (02 §4.4); it is always delivered, cannot be disabled and is mirrored in the event list (7.7).
@@ -449,11 +526,27 @@ host key is never a prompt: it is a hard failure with a notification that leads 
   "prompt_id":"p-12","kind":"kbdint","mount_id":"m-3","profile_id":"web","profile_name":"Web server",
   "host":"example.org","port":22,"user":"deploy","hop":1,"hops":2,
   "kbdint":{"name":"","instruction":"","prompts":[{"text":"Verification code: ","echo":false}]},
-  "can_save":false,"deadline_ms":120000}}
+  "can_save":false,"hostkey_just_accepted":false,"deadline_ms":120000}}
 ```
 
 Prompt text that comes from the server (`kbdint` texts, banners) is displayed verbatim, marked visually as coming
-from the server, and sanitized (control characters stripped, length capped at 2 KiB per field).
+from the server, and sanitized: control characters stripped, **bidi controls (U+202A–U+202E, U+2066–U+2069,
+U+200E, U+200F) and zero-width characters (U+200B–U+200D, U+2060, U+FEFF) removed** (TM-R09, T-18), length capped
+at 2 KiB per field. Host names, user names and profile names shown in any prompt or notification get the same
+bidi/zero-width stripping. The hop's host (and "Jump host N of M") is rendered by our own label **outside** the
+server-text box, so server text can never pose as the host line.
+
+**Fresh trust (TM-R05, T-10).** If the host key of any hop of the current connection was accepted by TOFU or
+"Connect once" during this connection (including after "remove old key and reconnect", 5.4), the connection is
+`hostkey_just_accepted`. For such a connection `sd_mount` does **not** answer secrets that would be sent through the freshly
+trusted hop from Credential Manager, the DPAPI store or the reconnect cache: `password` and `kbdint` prompts of that
+hop and of every later hop, and `proxy_password` prompts of legs tunneled through it (`sd_ssh` applies the same rule
+to its reconnect cache, 12.1). Key passphrases may still be filled from the store: they decrypt a local key and
+never reach the server. The prompt is shown to the user with `hostkey_just_accepted: true`,
+and the dialog adds "You just accepted this server's identity. ShellDrive did not send your saved password
+automatically." with the saved value not pre-filled. Pool members are not opened for a `hostkey_just_accepted` connection
+(the pool stays at 1 until the next connection, which then verifies the stored key normally). The flag ends with the
+connection: a later reconnect that matches the now stored key behaves normally.
 
 **Agent routing order** (first that applies):
 
@@ -470,7 +563,9 @@ Several clients may display the same prompt; the first `prompt.answer` wins and 
 `prompt.closed`. Secrets in answers are wiped (`SecureZeroMemory`) after being handed to `sd_ssh`.
 
 **ProxyJump:** each hop prompts separately; the prompt carries `hop`/`hops` and the hop's host so the dialog says
-"Jump host 1 of 2: bastion.example.org".
+"Jump host 1 of 2: bastion.example.org". For hop i ≥ 1 (and the target behind jump hosts) prompts and the host key
+dialog also say "Reached through jump host <hop i−1 host>" (TM-R03, T-19), because that hop chose where the
+connection really went.
 
 ### 2.6 Service prompts and service/agent cooperation
 
@@ -479,7 +574,15 @@ The service cannot show UI. Rules:
 1. **Profiles with `scope = service` must be non-interactive capable**, validated when saved and at service start:
    the host key of every hop is in the machine known_hosts, and the authentication method is publickey with a
    key stored in the service secret store or an unencrypted key file readable only by SYSTEM/Administrators, or
-   password stored in the service secret store. `kbdint` and agent (Pageant/OpenSSH agent) are not allowed for
+   password stored in the service secret store. **Key files are read safely (TM-R27, T-51):** the service accepts
+   only paths under `%ProgramData%\ShellDrive\service\` or paths whose every component is owned by SYSTEM or
+   Administrators and not writable by others; it opens the file with `FILE_FLAG_OPEN_REPARSE_POINT` and refuses it if
+   the file or any path component is a reparse point (each component is opened the same way); owner and DACL are
+   checked **on the opened handle** (`GetSecurityInfo(SE_FILE_OBJECT…)` via the handle) and the bytes are read from
+   that same handle, so there is no check-then-open gap. The service never reads HKCU, user profile paths or paths
+   with `~\` or user environment variables (only `%ProgramData%`, `%ProgramFiles%`, `%SystemRoot%` expand in machine
+   profiles). The same rules apply to `certificate` files and to machine profiles, `known_hosts` and `settings.ini`
+   it loads. `kbdint` and agent (Pageant/OpenSSH agent) are not allowed for
    service profiles (no agent exists pre-logon; D17). Proxy legs need either no authentication, Negotiate/NTLM
    (machine account, via SSPI) or a proxy secret in the service secret store; `proxy = system` reads the WinHTTP
    machine configuration (3.8). `backend = webdav` is accepted (D11, 1.3) but the UI states that the drive appears
@@ -489,11 +592,12 @@ The service cannot show UI. Rules:
    service, shows the fingerprint and asks for confirmation (optionally `--expect SHA256:...` for scripted
    deployment, where a mismatch fails).
 3. **If a prompt is nevertheless needed at runtime** (password changed on the server, new hop added), the service
-   fails the mount, writes an Event Log warning (10.3) and publishes a `prompt.request` to service-pipe subscribers.
-   Only **elevated** admin clients may answer (2.2). The agent's UI in each session subscribes to the service pipe
-   read-only; if the logged-on user is an administrator (checked via the linked token,
-   `GetTokenInformation(TokenLinkedToken)`, Vista+; group membership on XP), the tray shows "A global ShellDrive drive
-   needs attention". Clicking it relaunches `shelldrive-ui.exe --elevated-admin` with the UAC prompt, which then
+   fails the mount, writes an Event Log warning (10.3) and publishes a `prompt.request` to service-pipe subscribers
+   of the `prompt` topic, which only elevated admins may hold (TM-R25). Only **elevated** admin clients may answer
+   (2.2). The agent's UI in each session subscribes to the service pipe read-only, to the content-free `attention`
+   topic (a count of mounts waiting for an administrator); if the logged-on user is an administrator (checked via
+   the linked token, `GetTokenInformation(TokenLinkedToken)`, Vista+; group membership on XP), the tray shows "A
+   global ShellDrive drive needs attention". Clicking it relaunches `shelldrive-ui.exe --elevated-admin` with the UAC prompt, which then
    answers the service prompt. Non-elevated answers are rejected on purpose: otherwise any medium-integrity program
    could inject trust into the SYSTEM-level mount.
 4. We do not use `WTSSendMessage` to pop message boxes into user sessions (noisy, no input, wrong session
@@ -501,7 +605,8 @@ The service cannot show UI. Rules:
 
 Agent ↔ service cooperation is deliberately thin:
 
-- The agent connects to the service pipe (when present) to list global mounts and their letters. It refuses to
+- The agent connects to the service pipe (when present) to list global mounts and their letters (for mounts the
+  user is not in `service_access` for, only the letter, `reserved_letters`, 2.2). It refuses to
   mount a per-user drive on a letter used by a global mount (the per-session device map would shadow the global
   letter only for that user, which is confusing). Auto letter selection skips them.
 - The agent does not proxy commands to the service; elevated clients talk to the service directly. The only
@@ -566,7 +671,7 @@ void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event)
   UI greys out policy-controlled settings and says why.
 - **This document owns the settings schema, including update settings (C8).** Update settings live in
   `settings.ini [update]`, not in `HKLM|HKCU\Software\ShellDrive\Update\*`; the last accepted manifest serial lives
-  in `state\update.ini`. MSI properties (`UPDATECHECK`, `UPDATEURL`, `ENABLELINKEDCONNECTIONS`, …) are applied by
+  in `state\last_serial.<channel>` (3.4). MSI properties (`UPDATECHECK`, `UPDATEURL`, `ENABLELINKEDCONNECTIONS`, …) are applied by
   writing the machine `settings.ini` (or, for `EnableLinkedConnections`, the Windows value itself). The only
   non-policy registry value of ours is `HKLM\Software\ShellDrive\Version`, written by the MSI for Intune detection
   and never read by the apps.
@@ -585,7 +690,7 @@ Paths come from `SHGetFolderPathW` (XP+), never from Known Folder APIs (Vista+).
 | Fallback secrets | `%APPDATA%\ShellDrive\secrets\<hash>.sdsec` (4.3) | `%ProgramData%\ShellDrive\service\secrets\<hash>.sdsec` |
 | Cache | `%LOCALAPPDATA%\ShellDrive\cache\` | `%ProgramData%\ShellDrive\service\cache\` |
 | Logs, dumps | `%LOCALAPPDATA%\ShellDrive\logs\` | `%ProgramData%\ShellDrive\logs\` |
-| Runtime state (incl. `update.ini` with `last_serial`, `explorer.ini`, `menu.cache`) | `%LOCALAPPDATA%\ShellDrive\state\` | `%ProgramData%\ShellDrive\service\state\` (machine `update.ini` written by elevated setup) |
+| Runtime state (`explorer.ini`, `menu.cache`; updater state `last_serial.<channel>`, `last_verified.<channel>`, `keyset`, cached `dokany-deny` list, 04 §9.2/§9.3) | `%LOCALAPPDATA%\ShellDrive\state\` | updater state: `%ProgramData%\ShellDrive\state\` (written by elevated setup, readable by users); service runtime state: `%ProgramData%\ShellDrive\service\state\` |
 | Network location entries (8.7) | `CSIDL_NETHOOD` (`%APPDATA%\Microsoft\Windows\Network Shortcuts` on Vista+, `%USERPROFILE%\NetHood` on XP) | — |
 | Network location placeholders (8.7) | `%LOCALAPPDATA%\ShellDrive\places\<profile id>\` | — |
 
@@ -601,8 +706,24 @@ inheritance:
   `D:PAI(A;OICI;FA;;;SY)` only (admins can still take ownership, which is accepted: admins are trusted).
 - `logs\`: SYSTEM and Administrators full; users none (logs contain host names of global mounts).
 
-Per-user `keys\` and `secrets\` get an explicit protected DACL (user + SYSTEM) at creation, in case `%APPDATA%` was
-redirected to a share with loose ACLs.
+Before re-applying machine ACLs, the service (and elevated setup, 04 §6.4) checks the **owner** of
+`%ProgramData%\ShellDrive` and of each subfolder, opening every component with `FILE_FLAG_OPEN_REPARSE_POINT` and
+following no reparse point (TM-R34, T-63). If an owner is not SYSTEM or Administrators, or a component is a reparse
+point, the service does not "fix" the ACL and does not load anything from that tree (machine profiles,
+`known_hosts`, `settings.ini`, service keys and secrets): it logs Event 3102 (10.3) and
+stays idle until an elevated setup or `shelldrive service repair-data` (elevated) renames the folder aside and
+recreates it (04 §6.4). Content of a renamed folder is never imported. Setup creates `%ProgramData%\ShellDrive`
+(or resets it this way) with the DACLs above before it writes anything there: the elevated setup EXE itself
+(04 §6.4), and the `programdata-secure` hook (6.1) for MSI installs that bypass the EXE (04 §8.3).
+
+Per-user data gets an explicit protected DACL `D:P(A;OICI;FA;;;<UserSID>)(A;OICI;FA;;;SY)` at creation, in case
+`%APPDATA%` was redirected to a share with loose ACLs or a tool created the folder with inherited ACLs (TM-R07,
+T-13): `%APPDATA%\ShellDrive\` itself, `profiles\`, `overrides\`, `keys\`, `secrets\` and `known_hosts`, and
+`%LOCALAPPDATA%\ShellDrive\` (`cache\`, `logs\`, `state\`, `places\`, which holds the `menu.cache` the shell
+extension reads, 8.2). When the agent finds an existing per-user folder whose DACL grants write to anyone other
+than the user, SYSTEM or Administrators, it re-applies the protected DACL (it owns the folder) and logs a warning;
+if it is not the owner, it logs an error and the UI shows "ShellDrive's settings folder can be changed by other
+users." with a link to the admin guide. Portable mode skips this on volumes without ACLs (1.9).
 
 ### 3.3 File format (`sd_ini` grammar)
 
@@ -613,7 +734,8 @@ redirected to a share with loose ACLs.
 - Lists are comma-separated. Booleans: `yes/no/true/false/1/0`. Durations: integer + `ms|s|m|h`. Sizes:
   integer + `K|M|G`.
 - Path values expand `%VAR%` (`ExpandEnvironmentStringsW`) and a leading `~\`/`~/` (user profile). Nothing else is
-  expanded.
+  expanded. In the service, `~\` and every variable other than `%ProgramData%`, `%ProgramFiles%` and
+  `%SystemRoot%` make the value invalid (TM-R27, 2.6 rule 1).
 - Unknown sections/keys are **preserved** on rewrite (round-trip, including comments), so newer versions and hand
   edits survive older writers.
 - `format = 1` in `[profile]`; a newer `format` is opened read-only with a warning.
@@ -638,6 +760,7 @@ identity = ~\.ssh\id_ed25519                ; OpenSSH, PEM/PKCS#8 or .ppk; may r
 identity_store = 2b9e...                    ; id of a DPAPI-protected key in keys\ (4.4); alternative to identity
 certificate = ~\.ssh\id_ed25519-cert.pub
 agent = auto                                ; auto | pageant | openssh | none
+;identities_only = yes                      ; yes | no; unset = yes when an identity is configured (D37)
 save_password = yes                         ; allow saving password/passphrase to Credential Manager
 
 [proxy]
@@ -655,7 +778,8 @@ backend = auto                              ; auto | webdav | dokany
 read_only = no
 write_mode = through                        ; through (default, D9) | behind
 label = Web server                          ; Explorer label; default = name
-symlinks = follow                           ; follow | hide  (reparse is reserved and rejected, D12)
+symlinks = follow_inside                    ; follow_inside (default, D40) | follow | hide  (reparse reserved, D12; TM-R13)
+shell_active_files = block                  ; show | block (default from security.trust: untrusted -> block, trusted -> show; D41)
 hide_dotfiles = yes
 exec_hint = yes                             ; +x mapping hint (see 02)
 autostart = no                              ; no | logon | boot (boot requires scope = service)
@@ -670,7 +794,8 @@ neg_ttl = 10s
 disk = 0                                    ; per-profile disk cache size; 0 (default) disables it (plaintext copies)
 
 [security]
-legacy_algorithms = warn                    ; allow | warn | ask | refuse  (policy can force refuse)
+trust = untrusted                           ; untrusted (default) | trusted  (gates shell-active files; D41, TM-R14)
+legacy_algorithms = warn                    ; allow | warn | ask | refuse  (policy can force refuse; D33)
 legacy_accepted = sha256:4f1c...            ; hash of the last accepted legacy algorithm set (7.6)
 host_key_alias =                            ; known_hosts lookup name override (like OpenSSH HostKeyAlias)
 update_host_keys = ask                      ; ask | yes | no  (UpdateHostKeys, 5.6)
@@ -691,16 +816,18 @@ the value from `sd_mount`.
 | `profile.format` | `1` | `sd_config` | — |
 | `profile.id`, `profile.name`, `profile.scope` | id, name, `user \| users \| service` | `sd_config` | — |
 | `profile.host`, `profile.port`, `profile.user`, `profile.remote_path` | (—, `22`, —, login dir) | `sd_ssh` / `sd_vfs` | — |
-| `profile.service_access` | SID list (`S-1-5-32-545`, Users); `scope = service` only | `sd_webdav` (global attach, 1.3), Dokany SD synthesis (02 §3) | — |
+| `profile.service_access` | SID list, **no default: required** for `scope = service` (D35, TM-R24); `scope = service` only | `sd_webdav` (global attach, 1.3), Dokany SD synthesis (02 §3, §6.4), vfs access check | — |
+| `profile.service_access_write` | SID list (empty = read-only for every non-admin, D35); must be a subset of `service_access` | Dokany volume SD (write ACEs), `sd_vfs` per-request check, `sd_webdav` (02 §6.4, §7.7) | — |
 | `auth.methods` | list (`publickey, keyboard-interactive, password`) | `sd_ssh` | — |
 | `auth.identity`, `auth.identity.N`, `auth.identity_store`, `auth.certificate` | paths / key id | `sd_mount` → `sd_ssh` (`SD_ID_BLOB` for stored keys, C22) | — |
 | `auth.agent` | `auto \| pageant \| openssh \| none` (`auto`; forced `none` for service) | `sd_ssh` | — |
-| `auth.identities_only` | bool (`no`) | `sd_ssh` | — |
+| `auth.identities_only` | `yes \| no` (unset: `yes` when the profile or hop profile sets `identity`, `identity_store` or `agent_keys`, else `no`; D37, TM-Q07; an explicit `no` turns it off) | `sd_mount` resolves to a bool → `sd_ssh` (`sd_ssh_config` hop `identities_only`, 01 §6.2) | — |
+| `auth.agent_keys` | list of `SHA256:` fingerprints (empty) | `sd_mount` → `sd_ssh`: agent keys offered when `identities_only` is on, besides agent keys whose public key equals a configured identity | — |
 | `auth.save_password` | bool (`yes`) | UI / `sd_secret` | `DisableCredentialSaving` |
-| `auth.cache_secrets_for_reconnect` | bool (`yes`) | `sd_ssh` (owns the reconnect cache, C20) | — |
+| `auth.cache_secrets_for_reconnect` | bool (`yes`, TM-Q08 kept; never filled or used on a `hostkey_just_accepted` connection, TM-R05, 4.6) | `sd_ssh` (owns the reconnect cache, C20) | — |
 | `proxy.jump` | hop list (empty; ≤ 8 hops) | `sd_mount` | — |
 | `proxy.proxy`, `proxy.proxy.N` | `none \| system \| http://[user@]host:port \| socks5://[user@]host:port` (`none`) | `sd_mount` → `sd_ssh` (3.8) | `ProxyServer` |
-| `proxy.proxy_auth`, `proxy.proxy_auth.N` | `auto \| basic \| negotiate \| none` (`auto`, HTTP only) | `sd_ssh` (`sd_proxy_cfg.auth`: `BASIC\|SSPI`, `BASIC`, `SSPI`, 0; 01 §16) | — |
+| `proxy.proxy_auth`, `proxy.proxy_auth.N` | `auto \| basic \| negotiate \| none` (`auto`, HTTP only; `auto` = Basic or Kerberos-only Negotiate, NTLM only with `negotiate`; SSPI never to a WPAD/PAC-discovered proxy, TM-R10, 3.8) | `sd_ssh` (`sd_proxy_cfg.auth`: `BASIC\|SSPI_KERBEROS`, `BASIC`, `SSPI`, 0; 01 §5.2, §16) | `AllowSystemProxySspi` |
 | `proxy.proxy_fallback_direct`, `proxy.proxy_fallback_direct.N` | bool (`no`); only for `proxy = system` | `sd_ssh` (01 §5.2) | `AllowSystemProxy` |
 | `connection.connections` | `1..4` (`1`) | `sd_sftp` pool (`sd_sftp_options.connections`, D18, 01 §10.9) | — |
 | `connection.channels` | `1 \| 2` (`2`) | `sd_sftp` (D19) | — |
@@ -710,7 +837,9 @@ the value from `sd_mount`.
 | `mount.fsync_on_flush` | bool (`yes`) | `sd_vfs` | — |
 | `mount.atomic_put` | bool (`no`) | `sd_webdav` | — |
 | `mount.label`, `mount.hide_dotfiles`, `mount.exec_hint` | (name, `yes`, `yes`) | `sd_vfs` / backends | — |
-| `mount.symlinks` | `follow \| hide` (`follow`); `reparse` reserved, rejected with `symlinks_reparse_unsupported` | `sd_vfs` | — |
+| `mount.symlinks` | `follow_inside \| follow \| hide` (`follow_inside` for every profile, D40, TM-R13); `reparse` reserved, rejected with `symlinks_reparse_unsupported` | `sd_vfs` (02 §6.9) | — |
+| `mount.shell_active_files` | `show \| block` (`block` when `security.trust = untrusted`, the default, `show` when `trusted`; blocks opening for every process, D41, TM-R14) | `sd_vfs` / backends (02 §4.1, §6.4) | — |
+| `mount.mark_of_the_web` | `off \| internet` (`off`; opt-in per profile, not derived from `security.trust`, which D41 ties to shell-active files only; Dokany only, enabled after TST-21, TM-R15) | `sd_dokan` (02 §1.1, §6.4) | — |
 | `mount.case`, `mount.remote_case` | `insensitive \| sensitive` (`insensitive`); `auto \| sensitive \| insensitive` (`auto`) | `sd_vfs` | — |
 | `mount.remote_charset` | code page (empty = UTF-8) | `sd_vfs` (stage 1 of the name map, C23) | — |
 | `mount.umask`, `mount.map_readonly`, `mount.show_special`, `mount.allow_system`, `mount.strict_acl` | (`022`, `yes`, `no`, `yes`, `no`) | `sd_vfs` | — |
@@ -723,9 +852,10 @@ the value from `sd_mount`.
 | `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate` | (`30s`, `30s`, `10s`, `1s`) | `sd_vfs` | — |
 | `cache.disk` | size (`0`) | `sd_vfs` (`disk_cache_mb`, dir from 3.2) | — |
 | `cache.max_readahead` | size (`8M`) | `sd_vfs` | — |
-| `security.legacy_algorithms` | `allow \| warn \| ask \| refuse` (`warn`) | `sd_ssh` (`legacy_policy` = `SD_LEGACY_ALLOW\|WARN\|ASK\|REFUSE`) + UI (7.6) | `LegacyAlgorithms` |
+| `security.trust` | `untrusted \| trusted` (`untrusted`, D41) | `sd_mount`: selects the default of `shell_active_files` (D41, TM-R14) | — |
+| `security.legacy_algorithms` | `allow \| warn \| ask \| refuse` (`warn`: enabled, ranked last, warning only, D33) | `sd_ssh` (`legacy_policy` = `SD_LEGACY_ALLOW\|WARN\|ASK\|REFUSE`) + UI (7.6) | `LegacyAlgorithms` |
 | `security.legacy_accepted`, `security.host_key_alias` | hash, name | UI / `sd_ssh` | — |
-| `security.refuse_terrapin_exposed` | bool (`no`) | `sd_ssh` | — |
+| `security.refuse_terrapin_exposed` | bool (`no`; with TM-R01/D34 only servers that offer nothing but affected ciphers are "exposed") | `sd_ssh` (01 §4.2) | — |
 | `security.crypto_backend` | `auto \| own` (`auto`) | `sd_crypto` | — |
 | `security.update_host_keys` | `ask \| yes \| no` (`ask`; service: `no` unless policy) | `sd_ssh` + host (5.6) | `UpdateHostKeys` |
 | `security.keepalive`, `security.connect_timeout` | (`15s`, `20s`) | `sd_ssh` | — |
@@ -735,6 +865,34 @@ Keys renamed by this revision are read under their old names once and rewritten 
 
 Semantics owned by this layer:
 
+- **Who may use a global drive (D35, TM-R24, T-43).** `service_access` has no implicit default. The profile editor
+  (elevated) shows the "Who can use this drive" list **empty** with quick-add buttons ("All users of this computer",
+  "Administrators", "Choose users or groups…" through the object picker `DsObjectPicker`, falling back to a typed
+  account name on XP workgroups) and refuses to save a `scope = service` profile until the list has at least one
+  entry; `shelldrive profile add --machine --scope service` requires `--access SID|NAME[,…]` (exit 2 otherwise). A
+  second list "Who can change files" fills `service_access_write`, empty by default, with the note "People not in
+  this list can only read." `BUILTIN\Administrators` always gets write in both the volume SD and the vfs check
+  (which, with UAC, means elevated processes of admins who are in `service_access`), so the two agree (02 §6.4). A machine profile deployed by file
+  (`DEFAULTPROFILES`, MSI) without `service_access` fails validation with `service_access_required` (Event 3100) and
+  is not mounted. Every mutating operation through a global drive (create, write-close, rename, delete, set
+  attributes) is recorded at info in the Event Log as Event 1200 (`%1` profile, `%2` user SID, `%3` account name,
+  `%4` operation, `%5` remote path), coalesced per (user, operation, path) per 60 s, so changes can be attributed
+  although the server sees only the service account (repudiation). The Application log is readable by local users;
+  members of `service_access` can see those paths anyway, and the admin guide says so.
+- **Identity selection (D37, TM-Q07, T-15).** With `identities_only` resolved to `yes`, `sd_ssh` offers only the
+  configured identities (files, `identity_store` keys and their certificates) and agent keys whose public key
+  equals one of them or whose fingerprint is in `agent_keys`; other agent keys are never offered to that hop or
+  target. The editor shows "Offer only the selected keys (recommended)" checked as soon as a key is chosen; the
+  "Too many authentication failures" hint of 01 §6.2 then no longer applies. Profiles without any identity keep
+  `no`, so agent-only users are unaffected.
+- **Symlinks (D40, TM-R13, T-26).** `follow_inside` is the default for every profile (links that resolve outside
+  the mount root appear dangling); when `follow` is chosen the editor explains: "Links can lead outside the remote
+  folder; the folder is not a boundary."
+- **Server trust (D41, TM-R14, TM-R15, T-28, T-29).** Profiles are `security.trust = untrusted` by default, which
+  blocks opening shell-active files (`.library-ms`, `.searchConnector-ms`, `.url`, `.lnk`, `.scf`, remote-icon
+  `desktop.ini`; final list after TST-20) for every process. The Security page has "I trust the files on this
+  server" (unchecked; sets `trusted`, which allows them). `shell_active_files` can still be set individually on the
+  Drive page. "Mark files as downloaded from the Internet" (`mark_of_the_web`, after TST-21) is a separate opt-in.
 - **ProxyJump** entries resolve first to profiles in the same scope (by name, then id), else are parsed as
   `[user@]host[:port]` and inherit `[auth]` from the profile that references them. Cycles and chains longer than 8
   hops are rejected at save time. Each hop has its own host key verification.
@@ -767,12 +925,16 @@ Semantics owned by this layer:
   "Extra connections are used only when signing in needs no typing (for example with a key)."
 
 Global settings (`settings.ini`): `[ui] language, start_tray, notify_*`, `[agent] start_at_logon, idle_exit`,
-`[log] level, max_size, max_files, etw`, `[cache] memory` (global memory budget, C46), `[defaults] backend,
+`[log] level, max_size, max_files, etw, privacy = standard|strict` (10.1, TM-R31), `[cache] memory` (global memory budget, C46), `[defaults] backend,
 legacy_algorithms, write_mode, proxy, ...` (defaults for new profiles), `[credentials] persist = local |
 enterprise`, `[hostkeys] openssh_source = yes, putty_source = yes` (5.1), `[update] enabled = yes|no, channel =
 stable|beta, manifest_url =` (C8; consumed by the updater in the agent, 04 §9), `[service] webdav_global_mode =
 auto|system|link|attach` (machine file only, 1.3), `[explorer] modern_menu = auto|off` (8.6). `last_serial` is not a
-setting: it is state (`state\update.ini`). The MSI properties `UPDATECHECK` and `UPDATEURL` write
+setting: it is state in `state\`, kept **per channel** as `last_serial.<channel>` (`last_serial.stable`,
+`last_serial.beta`, TM-R37, 04 §9.2), next to `last_verified.<channel>` (time of the last verified manifest, for the
+staleness warning of 7.7, TM-R36), `keyset` (highest accepted key set, 04 §9.3) and the cached `dokany-deny` list
+(04 §9.2). `[backend] dokany = yes|no` (machine file only; `no` is written by the MSI property `DOKANY=0` and
+makes `backend = auto` resolve to WebDAV, 04 §8.4, D36). The MSI properties `UPDATECHECK` and `UPDATEURL` write
 `[update] enabled` and `manifest_url` of the machine `settings.ini`; per-user values override machine values
 unless a policy is set.
 
@@ -784,8 +946,11 @@ All values live in the single key `HKLM|HKCU\Software\Policies\ShellDrive` (HKLM
 `DisableKnownHostsSources` (1 = do not read `~/.ssh/known_hosts` or PuTTY), `UpdateHostKeys` (0 never, 1 ask,
 2 accept proven keys; for the service, 2 is the only way to let it update the machine store), `ForceWriteThrough`
 (1 = `write_mode = behind` refused), `ProxyServer` (a proxy spec forced as leg 1 for every profile),
-`AllowSystemProxy`, `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`, `HideTrayIcon`,
-`DisableNetworkLocations`, `DisableModernContextMenu`. ADMX/ADML produced by 04, localized from our catalogs
+`AllowSystemProxy`, `AllowSystemProxySspi` (0 default: SSPI is never answered to a proxy that came from `proxy = system`,
+WPAD or PAC; 1 lifts that restriction, the scheme rules of 3.8 still apply; TM-R10), `AllowWebDavTokenOnly` (1 default; 0 forbids the
+token-only WebDAV fallback, 02 §7.4, TM-R19), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
+`HideTrayIcon`, `DisableNetworkLocations`, `DisableModernContextMenu`, `LogPrivacy` (0 standard, 1 strict; 10.1,
+TM-R31). ADMX/ADML produced by 04, localized from our catalogs
 (`sdl10n` emits the ADML, C41).
 
 ### 3.6 Concurrency
@@ -813,7 +978,10 @@ REG_SZ written by PuTTY in the ANSI code page; reading them with `RegQueryValueE
 **[verify value names and ProxyMethod numbering against PuTTY `settings.c`]**
 
 **OpenSSH `ssh_config`** — `%USERPROFILE%\.ssh\config` (or a path given). Supported keywords: `Host`, `HostName`,
-`User`, `Port`, `IdentityFile`, `ProxyJump`, `CertificateFile`. Semantics follow OpenSSH: first obtained value
+`User`, `Port`, `IdentityFile`, `IdentitiesOnly`, `ProxyJump`, `CertificateFile`. `IdentitiesOnly yes|no` becomes
+`identities_only = yes|no`; when it is absent the key stays unset (D37 default), so an imported profile with an
+`IdentityFile` offers only that key, unlike OpenSSH's own default; the import preview says so in the profile's
+note column. PuTTY sessions with a `PublicKeyFile` get the same unset default. Semantics follow OpenSSH: first obtained value
 wins, `Host` sections apply in file order, wildcard sections (`Host *`, `Host *.corp`) are not imported as
 profiles but contribute defaults to the literal hosts they match; negated patterns (`!pattern`) are honored.
 `IdentityFile` tokens `%d %u %h %r %%` and `~` are expanded; multiple `IdentityFile` lines become `identity`,
@@ -839,10 +1007,15 @@ through as `SD_PROXY_SYSTEM`.
   (default 1080). `socks5h` semantics are always used: the target name is sent to the proxy for resolution
   (address type 3), so internal names resolve on the proxy side. No password in the spec; the parser rejects
   `user:pass@`.
-- **HTTP auth:** `proxy_auth = auto` tries without credentials, then on `407` uses `Negotiate`/`NTLM` via SSPI with
-  the caller's logon credentials if offered (service: machine account), else `Basic` with the configured user and
-  the saved secret or a `proxy_password` prompt. `basic` and `negotiate` force one scheme; `none` never answers a
-  `407`.
+- **HTTP auth (TM-R10, T-20):** `proxy_auth = auto` tries without credentials, then on `407` uses `Negotiate`
+  via SSPI **restricted to Kerberos** (package list excluding NTLM through `SEC_WINNT_AUTH_IDENTITY_EX`) with the
+  caller's logon credentials if offered (service: machine account), else `Basic` with the configured user and the
+  saved secret or a `proxy_password` prompt. A `407` offering only `NTLM` is answered only with `proxy_auth =
+  negotiate`, which allows Negotiate with NTLM fallback and plain NTLM. SSPI (any package) is used only for a proxy
+  configured explicitly in the profile or by policy `ProxyServer`, never for one obtained from `proxy = system`,
+  WPAD or PAC unless policy `AllowSystemProxySspi = 1`; otherwise such a `407` falls through to `Basic` (if a user
+  is configured) or fails with `proxy_auth_failed` and the hint "This proxy asked for your Windows sign-in.
+  ShellDrive only sends it to proxies you set up yourself." `basic` forces Basic; `none` never answers a `407`.
 - **System proxy (opt-in only).** `proxy = system` makes `sd_ssh` read the WinHTTP/WinINet configuration: agent —
   `WinHttpGetIEProxyConfigForCurrentUser` (XP SP1+), with WPAD/PAC through `WinHttpGetProxyForUrl` for the
   pseudo-URL `https://<host>:<port>/` (so PAC rules written for CONNECT apply); service —
@@ -934,6 +1107,7 @@ the original key file remains the user's backup.
 - Rejected: Credential Manager as SYSTEM. Works, but is invisible/unmanageable for admins and has the 512-byte
   constraint on XP; files are easier to back up and to wipe on uninstall.
 - Secrets are write-only over IPC: there is no method to read them back.
+- Secrets are deleted when the last service profile referencing them is removed, and at uninstall (4.7).
 
 ### 4.6 In-memory handling
 
@@ -942,6 +1116,20 @@ on free). The host keeps **no** reconnect cache of its own (C20): `sd_ssh` owns 
 profile key `auth.cache_secrets_for_reconnect`; `CryptProtectMemory` on Vista+, `RtlEncryptMemory` on XP, 01 §7.4/§8).
 The host answers `is_reconnect` prompts from Credential Manager/DPAPI only; if nothing is saved and the cache is
 off, reconnect raises a normal prompt.
+
+**Reconnect secret caching rules (TM-R05, TM-Q08, T-10, T-56).** The cache stays on by default; these rules bound
+it:
+
+1. A secret enters the cache only after the server accepted it (authentication success) on a connection whose host
+   keys all verified as `MATCH`/`MATCH_CA` against stored keys. Secrets typed on a `hostkey_just_accepted` connection (2.5)
+   are not cached; the next connection, which verifies the now stored key, may cache them.
+2. A cached secret is used only for the same (hop, user, host, port, host key fingerprint) it was accepted for, and
+   only while the mount exists; a reconnect that meets a different or newly trusted host key gets no cached or
+   stored secret (5.4: a changed key is a hard failure anyway).
+3. The cache entry of a mount is wiped when the mount is unmounted, when its profile is edited or deleted, at
+   logoff and on `cache.clear`.
+4. OTP and other `kbdint` answers that did not match the password shape of 4.2 are never cached.
+5. With `cache_secrets_for_reconnect = no`, reconnect uses only saved secrets or prompts (`is_reconnect`), as above.
 
 ```c
 /* sd_secret.h */
@@ -957,6 +1145,24 @@ int  sd_secret_delete(sd_secret_scope s, sd_secret_kind k, const wchar_t *target
 int  sd_secret_enum(sd_secret_scope s, sd_secret_enum_cb cb, void *ctx);       /* targets only, never values */
 void sd_secret_buf_free(sd_secret_buf *b);                                     /* wipes */
 ```
+
+### 4.7 Secrets at uninstall (TM-R28, T-54)
+
+- **Per-machine uninstall** removes `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\` **by default**
+  (MSI property `REMOVESECRETS=1` default, EXE checkbox "Remove the service's saved passwords and keys" checked;
+  04 §6.7, §8.4). Machine profiles, `known_hosts` and settings still follow `REMOVEDATA` (default keep). Files are
+  overwritten with zeros before deletion where the volume allows it (best effort; SSDs give no guarantee, so the
+  admin guide points to full-disk encryption, TM-R31).
+- **Every uninstall** (per-user, per-machine, ARP, `msiexec /x`, SYSTEM/Intune) deletes the cache directories
+  (`%LOCALAPPDATA%\ShellDrive\cache\` of the invoking user, `service\cache\`); they hold plaintext copies of remote
+  files.
+- The invoking user's per-user secrets (Credential Manager targets `ShellDrive:*`, `secrets\`, `keys\`) are removed
+  by `--installer-hook user-cleanup --secrets` when "Also remove my settings" is checked. Other users' Credential
+  Manager entries and profile folders cannot be cleaned by setup (their profiles and credential sets are not
+  loaded, and no ShellDrive code runs for them after uninstall). This residue is listed in the summary and the admin
+  guide gives the per-user commands (`cmdkey /list` filtered on `ShellDrive:`, and the folders of 3.2).
+- The uninstall summary (EXE final page, MSI log, `uninstall.exe /quiet` log) lists what was kept: profiles,
+  `known_hosts`, per-user data of other users.
 
 ---
 
@@ -986,6 +1192,19 @@ mutex.
   key of the same type in another. Settings `[hostkeys] openssh_source`, `putty_source` (both `yes`) and the policy
   `DisableKnownHostsSources` turn the sources off. The service never uses live sources (no user profile; PuTTY is
   HKCU).
+- **Live-source checks on every read (TM-R06, T-11; performed inside `sd_known_hosts`, 01 §7.2, which owns the I/O;
+  this layer owns the warning and UX).** Before each read of `~/.ssh/known_hosts`/`known_hosts2`, the
+  file is opened and its DACL and owner are checked **on the handle** (`GetSecurityInfo`): it is used only if no ACE
+  grants write (`FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `WRITE_DAC`, `WRITE_OWNER`, `DELETE`, `GENERIC_WRITE`/`ALL`) to
+  anyone but the user, SYSTEM and Administrators, and the owner is one of them; the parent `.ssh` folder gets the same
+  check (a writable folder allows replacing the file). For PuTTY, the `SshHostKeys` key's DACL is checked the same
+  way (`RegGetKeySecurity`). A source that fails is skipped for that lookup (neither MATCH nor MISMATCH counted), the
+  mount carries `warning hostkey_source_insecure` (once per source per agent run, notification on, Settings shows the
+  source as "Ignored: other users can change this file") and `diag --check` lists it. On volumes without ACLs (FAT)
+  the source is skipped the same way. Lines whose host pattern consists only of wildcards (`*`, `*.*`, `?*` and
+  similar, after stripping `!` negations) are **ignored for MATCH** from live sources but still count for MISMATCH,
+  so a planted catch-all line can block but never grant trust. Our own stores are not subject to the wildcard rule
+  (admins may deliberately use patterns in the machine store).
 - A `@revoked` line in any store wins. A `@cert-authority` line is honored (host certificates, 01 §7.1).
 - `StrictHostKeyChecking` policy: unknown keys are rejected for users too (no TOFU); only the machine store counts
   and live sources are ignored.
@@ -998,22 +1217,37 @@ mutex.
 
 ### 5.2 First-connection (TOFU) dialog
 
-Content: profile name, host and port (and hop N of M), key type, SHA-256 fingerprint in OpenSSH form
-(`SHA256:...`) in a read-only, selectable edit control, an expandable "More" with MD5 fingerprint (for comparison
-with old servers) and the full public key. Text explains in plain language how to check the fingerprint with the
-server admin. Buttons: **Trust and connect** (standard default button; all information is on screen, so Enter
-accepts), **Connect once** (not saved), **Cancel**. If the
-same host is known with a *different key type* only (server added a new key type), the dialog says so; it is still
-a TOFU prompt for the new type.
+Content: profile name, host and port (and hop N of M, with "Reached through jump host <host>" for hop i ≥ 1 and for
+a target behind jump hosts, 2.5), key type, SHA-256 fingerprint in OpenSSH form (`SHA256:...`) in a read-only,
+selectable edit control, an expandable "More" with MD5 fingerprint (for comparison with old servers) and the full
+public key. Text explains in plain language how to check the fingerprint with the server admin. Host and profile
+names are shown after bidi/zero-width stripping (TM-R09). Buttons: **Trust and connect**, **Connect once** (not
+saved), **Cancel**. **There is no default button (TM-R03, T-08):** the dialog sets `DM_SETDEFID` to none and initial
+focus on the fingerprint edit control, so Enter does nothing until the user has moved focus to a button; Escape
+cancels. (This is the one dialog where 11's "default button" rule is deliberately not followed.)
+
+**Known host, other key type (TM-R04, T-09).** When any key is stored for the lookup name (any store or live source,
+including `@cert-authority` lines that match), `sd_mount` passes 01 the list of stored key types and `sd_ssh` offers
+only those types (plus their certificate variants) in the host-key algorithm list. A server that offers none of
+them fails with `host_key_type_unavailable` (exit 6); there is **no** TOFU prompt and the dialog is never shown with
+"first contact" wording for a host that has keys of other types. The failure notification reads "example.org did
+not offer the type of key ShellDrive knows for it (stored: ED25519). ShellDrive stopped the connection." with
+**Manage host keys…**, where the user can explicitly add a key of another type (6.1 `hostkey add --from-server`,
+verified inside a connection authenticated with the stored key). The details dialog lists stored types and
+fingerprints next to what the server offered, so a key type change is always visible. New types are otherwise
+learned only through UpdateHostKeys (5.6). Automatic reconnects follow the same rule (no prompt, hard failure).
 
 ### 5.3 CLI equivalent
 
 ```
 The authenticity of host 'example.org' (port 22) can't be established.
+Reached through jump host 'bastion.example.org'.
 ED25519 key fingerprint: SHA256:4bWb...  
-Trust this key? [y]es, [o]nce, [n]o:
+Trust this key? [y]es, [o]nce, [N]o:
 ```
-Localized; the y/o/n letters are localized too (they are in the catalog, with a translator note).
+Localized; the y/o/n letters are localized too (they are in the catalog, with a translator note). The "Reached
+through" line appears only for hop i ≥ 1. **The default answer is "no" (TM-R03):** an empty line, EOF or any input
+other than the yes/once letters (or the full words) rejects the key (exit 5, `host_key_rejected`).
 
 ### 5.4 Changed key
 
@@ -1021,6 +1255,7 @@ Hard block: mount fails with `host_key_mismatch` (exit 6), a notification "The i
 ShellDrive stopped the connection." opening a details dialog that shows old and new fingerprints, the store and line
 where the old key lives, and a **Manage host keys…** button. No "connect anyway". To accept the new key the user
 removes the old one in the host key manager (confirmation dialog warns about MITM) and reconnects (TOFU again).
+That reconnect is `hostkey_just_accepted` (2.5, TM-R05): saved passwords are not sent automatically, the user types them.
 When the old key lives in a live read-only source (`~/.ssh/known_hosts` or PuTTY), ShellDrive cannot remove it;
 the dialog names the file and line (or the PuTTY registry value) and offers **Open file location** and "Stop
 using keys from this source" (turns the source off in settings), because a mismatch in any source blocks (D7).
@@ -1046,8 +1281,9 @@ CLI: `shelldrive hostkey import --from putty|openssh [FILE] [--dry-run]` (one-sh
 here:
 
 - An announcement is considered only when the connection's host key was verified as `MATCH` against a **stored**
-  key (not "Connect once", not a CA match, not a key that was just accepted by TOFU in the same connection) and
-  user authentication has completed.
+  key (not "Connect once", not a CA match, not a key that was just accepted by TOFU in the same connection, that is
+  never on a `hostkey_just_accepted` connection, 2.5) and user authentication has completed. The review dialog shows, per
+  key, its type next to the stored types ("New key type: ECDSA; stored: ED25519"), so a type change is explicit.
 - Only keys the server **proves** (`hostkeys-prove-00` signatures valid) are candidates for addition. Keys stored
   for the host but absent from the announcement are candidates for removal; they are never removed automatically.
 - `security.update_host_keys` (policy `UpdateHostKeys`):
@@ -1089,14 +1325,14 @@ shelldrive profile list | show <p> | add <name> [options] | edit <p> [options] |
                    | rename <p> <new> | export <p> [FILE] | import --from putty|openssh|file [FILE] [--dry-run]
                    | test <p>                     connect + auth + realpath, no mount
 shelldrive credential set <profile|--target T|--proxy SPEC> [--stdin] | remove <...> | list
-shelldrive hostkey list [host] [--announced] | add --from-server host[:port] [--expect SHA256:...]
+shelldrive hostkey list [host] [--announced] | add --from-server host[:port] [--type T] [--expect SHA256:...]
                    | remove <host[:port]> [--type T] | import --from putty|openssh [FILE] [--dry-run]
                    | accept-announced <id> [--add-only]
 shelldrive location add <profile> | remove <profile> | repair     Network location entries (8.7)
-shelldrive service install | uninstall | start | stop | status
+shelldrive service install | uninstall | start | stop | status | repair-data     (repair-data: 3.2, TM-R34)
 shelldrive cache clear [<profile>|--all]
 shelldrive logs [--component agent|service|ui] [--lines N] [--follow] [--path]
-shelldrive diag [--check] [--bundle FILE.zip [--include-dumps] [--anonymize]] [--fix linked-connections|webclient]
+shelldrive diag [--check] [--bundle FILE.zip [--include-dumps] [--no-anonymize]] [--fix linked-connections|webclient]
 shelldrive diag bench <X:> [--scenario NAME] [--json]           developer/support benchmark (02 §11)
 shelldrive update check [--manifest PATH|URL] | apply [--version V]
 shelldrive selftest [--json]                      exit 0 = healthy (smoke tests, 04 §11)
@@ -1108,8 +1344,17 @@ shelldrive help [command]
 
 Aliases kept so that other designs' wording works (C7): `shelldrive bench …` = `diag bench …`,
 `shelldrive stats <X:>` = `status <X:> --stats`, `shelldrive admin webclient-enable` = `diag --fix webclient`,
-`shelldrive diag collect` = `diag --bundle` (default file name in the current directory). Aliases are not listed in
-`help` except under the command they map to.
+`shelldrive diag collect` = `diag --bundle` (default file name in the current directory); `diag --bundle
+--anonymize` is still accepted and is the default (TM-R31). Aliases are not listed in `help` except under the
+command they map to.
+
+`hostkey add --from-server` without `--machine` is the explicit "add key" action of the host key manager for the
+user store (TM-R04): it connects offering only the stored key types, so the server is verified against a stored key
+(a mismatch fails as in 5.4), then obtains the server's other host keys (or only `--type T`) **inside that verified
+connection**, through `hostkeys-prove-00@openssh.com` when the server announced them, otherwise through a re-key
+restricted to the requested type (requirement in 12.1), and shows them for confirmation ("example.org also has an
+ECDSA key. Add it?"). For a host with no stored key it behaves as a plain TOFU (5.2). It is how a new key type is
+learned when the server does not announce it through UpdateHostKeys.
 
 **Installer hooks (hidden, not in `help`, not localized):** `--installer-hook <name> --apply|--revert
 [--log FILE]`, idempotent, each with a rollback counterpart. The same code is reachable as
@@ -1120,12 +1365,21 @@ window appears (04 §8.3). The hook names are fixed here and used unchanged by 0
 | Hook | Effect |
 |---|---|
 | `webdav-tune` | sets `FileSizeLimitInBytes=0xFFFFFFFF` and `FileAttributesLimitInBytes=100000000` under the WebClient parameters, records the originals in `%ProgramData%\ShellDrive\service\state\webdav-tune.ini`, restores them on `--revert`; never touches `BasicAuthLevel` (C28). Per-machine only. |
-| `user-cleanup` | for the current user: removes Network location entries (8.7), `HKCU` Run/tray keys, label/icon keys from `state\explorer.ini`, per-user shell registration. Per-user uninstall runs it; per-machine uninstall runs it for the invoking user. |
+| `user-cleanup` | for the current user: removes Network location entries (8.7), `HKCU` Run/tray keys, label/icon keys from `state\explorer.ini`, per-user shell registration and the cache directory (TM-R28); with `--secrets` also the `ShellDrive:*` Credential Manager targets, `keys\` and `secrets\` (4.7). Per-user uninstall runs it; per-machine uninstall runs it for the invoking user. |
 | `modern-menu` | registers (`--apply`, current user) or removes (`--revert`; elevated: for all users with `RemoveForAllUsers`) the sparse package for the Windows 11 menu (8.6). No-op when no signed package is present or the OS is older than build 22000. |
 | `signal-shutdown` | signals the shutdown events of every running agent it may open (12.3). |
+| `programdata-secure` | per-machine only, runs as SYSTEM: the owner/reparse-point check of 3.2 on `%ProgramData%\ShellDrive` and its subfolders; a foreign-owned folder or a reparse point is renamed aside (`ShellDrive.untrusted-<n>`, never imported) and the tree is created fresh with the 3.2 DACLs; correct folders only get their DACLs re-applied. Reads no file content. Used by MSI installs that do not go through the setup EXE (04 §8.3, TM-R34); `--revert` is a no-op. |
 
 Exit codes of hooks: 0 success, 1 failure (details in the log, English). `--selftest` of the host is a separate
 flag of `shelldrive-host.exe`, not a hook.
+
+**Hooks running as SYSTEM (TM-R35, T-64):** when the hook host's token is LocalSystem (MSI deferred `NoImpersonate`
+custom actions, Intune), it loads no user configuration (no `%APPDATA%`, no HKCU, no per-user `settings.ini`),
+resolves no environment-relative or user-writable path (only `%SystemRoot%`, `%ProgramFiles%` and the
+admin-owned `%ProgramData%\ShellDrive` checked as in 3.2), opens no window and starts no child process, and writes
+its log only under `%ProgramData%\ShellDrive\logs\`. `user-cleanup` and `modern-menu --apply` refuse to run as
+SYSTEM. Which hooks run during repair is decided by 04 §8.3 (only the idempotent `webdav-tune` and
+`programdata-secure`, which reads no content).
 
 Global options: `--json`, `--quiet`, `--verbose`, `--machine` (operate on machine scope through the service;
 requires elevation), `--lang <code>`, `--output-encoding auto|utf8|utf16|ansi|oem`, `--no-color` (we print no
@@ -1147,13 +1401,13 @@ On XP the check is plain group membership.
 |---|---|---|
 | 0 | success | |
 | 1 | generic failure | `internal`, `io_error` |
-| 2 | usage error | `usage` |
+| 2 | usage error | `usage`, `service_access_required` |
 | 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found` |
 | 4 | authentication failed or required | `auth_failed`, `prompt_required` |
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
-| 6 | host key mismatch | `host_key_mismatch` |
+| 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |
-| 8 | agent/service unavailable | `agent_unavailable`, `service_not_installed` |
+| 8 | agent/service unavailable | `agent_unavailable`, `service_not_installed`, `too_many_connections`, `rate_limited` (TM-R25) |
 | 9 | elevation or permission required | `elevation_required`, `access_denied` |
 | 10 | conflict | `target_in_use`, `already_mounted` |
 | 11 | backend unavailable | `backend_unavailable`, `webclient_disabled` |
@@ -1289,9 +1543,13 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   "Save proxy password"; keepalive, timeouts; "Parallel connections" spin box 1–4 with the 2FA note from 3.4),
   Drive (target, backend with availability text, read-only, **Writes**: "Wait for the server to confirm each write
   (safer)" (default) / "Write in the background (faster; if the connection drops, recent changes can be lost and
-  ShellDrive tells you)", label, symlinks "Follow"/"Hide", dot-files, autostart, "Show in This PC under Network
-  locations"), Cache (TTLs, disk cache size, default off), Security (legacy algorithm policy, host key alias, "When
-  the server offers new host keys": Ask me / Save them automatically / Ignore, show stored host keys).
+  ShellDrive tells you)", label, symlinks "Stay inside the remote folder" (default)/"Follow"/"Hide", dot-files, autostart, "Show in This PC under Network
+  locations", "Block opening shortcut and library files from this server in Explorer", "Mark files as downloaded
+  from the Internet"), Cache (TTLs, disk cache size, default off), Security ("I trust the files on this server",
+  legacy algorithm policy, host key alias, "When the server offers new host keys": Ask me / Save them automatically
+  / Ignore, show stored host keys). Authentication has "Offer only the selected keys (recommended)" (D37). For
+  `scope = service` profiles the General page has the required "Who can use this drive" and the optional "Who can
+  change files" lists (3.4.1, D35).
   "Test connection" runs `profile.test` (connect + auth + `realpath`, no mount). For `scope = users` templates
   every control is read-only except target and autostart (D25).
 - Host key manager: ListView (host, port, type, fingerprint, store user/machine, source: "ShellDrive", "Copied
@@ -1303,9 +1561,20 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   folder", "Create diagnostic bundle…".
 - Settings: language (with "System default"), start at sign-in (agent / tray separately), notifications per type,
   default backend, default write mode, credential roaming, memory cache budget, "Trust host keys accepted in
-  PuTTY" / "Trust host keys accepted in OpenSSH" (5.1), updates (check automatically, channel), linked connections
-  status + "Change…" (elevated), WebClient status, Windows 11 menu status (8.6).
+  PuTTY" / "Trust host keys accepted in OpenSSH" (5.1, with the "Ignored: other users can change this file" state of
+  TM-R06), updates (check automatically, channel), linked connections status + "Change…" (elevated), WebClient
+  status, Windows 11 menu status (8.6), "Keep host names and file paths out of log files" (`[log] privacy =
+  strict`, 10.1).
+- **Token-only WebDAV fallback (TM-R19, 02 §7.4):** never switched on automatically. When 02 reports that the
+  redirector cannot authenticate, the UI asks every time: "Windows could not sign in to ShellDrive's local file
+  server. Continue with a less protected connection? Other programs that learn the drive's address can then read
+  your files." (**Continue**, **Cancel**; no default button). The question is not offered, and the mount fails with
+  `policy_denied`, on Remote Desktop Session Hosts, when more than one interactive session is active, or with policy
+  `AllowWebDavTokenOnly = 0`.
 - First-run wizard (`PropertySheet` with `PSH_WIZARD97`, XP+): welcome, import (5.5), create first profile, finish.
+  The finish page and the admin guide recommend full-disk encryption (BitLocker/device encryption) when keys are
+  kept by ShellDrive or the disk cache is turned on, and explain that saved passwords are only as safe as the
+  Windows password (TM-R31, T-53, T-56, T-73).
 
 ### 7.6 Legacy algorithm warning UX
 
@@ -1327,6 +1596,15 @@ mask (C21); the `ask` prompt is 01's `SD_PROMPT_LEGACY_ACK`.
     `legacy_refused` (exit 15) with a message naming what the server offered.
 - CLI: a localized warning line on stderr ("Warning: example.org uses outdated algorithms: hmac-sha1.") and the
   `warnings` array in JSON. Service: Event Log warning once per mount.
+- **Defaults stay as decided (D33):** legacy algorithms (including `diffie-hellman-group1-sha1` and GEX groups below
+  2048 bits) remain enabled, ranked last, with `warn` as the default; the threat model's `ask` default and 2048-bit
+  floor (TM-Q01) were rejected. Profiles and policy can still choose `ask` or `refuse`.
+- **Terrapin (D34, TM-R01, T-01):** `sd_ssh` chooses the cipher after seeing the server's KEXINIT and avoids
+  `chacha20-poly1305@openssh.com` and CBC + `*-etm` MACs when the server lacks strict KEX. If the server offers only
+  affected combinations, the connection proceeds (unless `refuse_terrapin_exposed = yes`) and the mount carries
+  `warning terrapin_exposed`, shown like a legacy warning: "The connection to example.org is open to a known attack
+  (Terrapin) because the server is out of date. Ask the server's administrator to update OpenSSH." The Security
+  column and the Details dialog show it; `legacy_accepted` does not silence it.
 
 ### 7.7 Notifications
 
@@ -1339,7 +1617,11 @@ disabled), **write failed** (`write_failed`, always, cannot be disabled, C45: "C
 be saved because the connection to example.org was lost."), server offered new host keys (on, 5.6), new host keys
 saved automatically (on), proxy sends password unencrypted (on, once per profile and proxy), extra connections not
 used because signing in needs typing (off), service needs attention (admins, on), update available (on; 04 decides
-content). Every notification is also recorded in the main window's event list so nothing exists only as a
+content), update information is stale (on: "ShellDrive could not check for updates for {days} days." plural-aware,
+shown when the last verified manifest is older than 14 days, TM-R36), connection open to the Terrapin attack (on,
+once per host), known_hosts source ignored because other users can change it (on, TM-R06), agent stopped
+unexpectedly and drives disconnected (always, TM-R17), interference with ShellDrive's session objects (always,
+TM-R26), disk cache refused on a volume without permissions (on, TM-R29). Every notification is also recorded in the main window's event list so nothing exists only as a
 transient balloon.
 
 ---
@@ -1355,6 +1637,15 @@ transient balloon.
 - "Mount with ShellDrive" is offered on the This PC/My Computer item's context menu (submenu with profiles) and as
   the default verb of `.sdmount` files (a one-line file `profile = <id>` the user can put on the desktop; static
   verb `HKCR\ShellDrive.Mount\shell\open\command = "shelldrive-ui.exe" --action mount-file "%1"`, no handler code).
+- **`.sdmount` grammar (TM-R32, T-61):** the file is at most 4 KiB of UTF-8 (BOM allowed) and contains exactly one
+  non-comment line `profile = <32 lowercase hex>` naming an **existing** profile visible to the user (own or
+  `scope = users` template). Any other key, a second `profile` line, a missing or unknown profile id makes the file
+  invalid: the UI shows "This file does not refer to one of your ShellDrive connections." and does nothing. Host
+  names, users, paths or options are never read from the file, so a file can only start a mount the user already
+  configured. If the file carries Mark-of-the-Web (`:Zone.Identifier` stream with `ZoneId` ≥ 3, read with
+  `CreateFileW` on `<file>:Zone.Identifier`; absent stream = no mark), the UI asks first: "This file came from
+  another computer. Connect to {profile}?" (**Connect**, **Cancel**; no default button), and never opens the drive
+  automatically afterwards. Placeholder files we create (8.7) carry no mark.
 - **"Add network location" entries (D14, v1, milestone M3):** each per-user profile with `network_location = yes`
   gets a Network Shortcuts entry, shown in This PC under "Network locations" (Vista+) and in My Network Places
   (XP). It opens the drive when mounted and mounts it when not (8.7).
@@ -1377,7 +1668,11 @@ transient balloon.
   the agent rewrites with a sequence counter; content: version, seq, array of {target, profile id, profile name,
   state, remote URL}) and reads profile names for the This PC submenu from a small cache file
   `%LOCALAPPDATA%\ShellDrive\state\menu.cache` written by the agent/UI. It never opens the pipe, never touches the
-  network, never loads profile files. If the section is missing, drives get no items and the This PC submenu shows
+  network, never loads profile files. Both inputs are untrusted (TM-R26): the section is used only after the owner
+  and label checks of 1.6, `menu.cache` only if its owner is the user (folder DACL from 3.2), and every offset,
+  length and count in either is bounds-checked against the mapped/read size (size caps: section 256 KiB,
+  `menu.cache` 64 KiB, at most 256 entries). The parser is a fuzz target run inside a test host and, in the lab,
+  inside Explorer (TST-02, TST-24). If the section is missing, drives get no items and the This PC submenu shows
   profiles from the cache with "ShellDrive is not running" items still working (the UI starts the agent).
 - `InvokeCommand` launches `shelldrive-ui.exe --action <verb> <args>` with `CreateProcessW` (full path from our
   own registry key, quoted) and returns. Errors are shown by the UI, localized.
@@ -1502,7 +1797,7 @@ Design:
   in `[.ShellClassInfo]` **[verify that folder shortcuts honor it; otherwise the target's icon is shown]**.
 - **Target while unmounted:** `target.lnk` points to the placeholder folder
   `%LOCALAPPDATA%\ShellDrive\places\<profile id>\`, which contains one file `Connect to <name>.sdmount`
-  (`profile = <id>`, the existing `.sdmount` verb, 8.1). Double-click mounts through
+  (`profile = <id>`, the existing `.sdmount` verb and its strict grammar, 8.1). Double-click mounts through
   `shelldrive-ui.exe --action mount-file` and opens the drive. A placeholder is used instead of a link to
   `shelldrive-ui.exe` because a Network location must be a folder to look like one, and a folder shortcut to a
   missing drive letter shows an error.
@@ -1642,6 +1937,50 @@ wchar_t       *sd_l10n_format_alloc(sd_msg_id id, const sd_arg *args, size_t nar
 #define SD_I(n, val)  { (n), SD_ARG_INT, { .i = (val) } }
 ```
 
+### 9.6 Strings added by the threat-model integration
+
+New user-facing strings (English source shown; symbolic ids are the PO `msgctxt`). Like every catalog entry they
+must exist in all six locales (en, es, fr, pt-BR, it, de) with the registers of AGENTS.md before the milestone that
+ships them; `sdl10n` fails the build otherwise (9.2). Placeholders are named; `{days}` and `{count}` entries are
+plural entries with every CLDR form of 9.4. Log lines, Event Log messages and JSON codes stay English.
+
+| Id (domain) | English source | Where |
+|---|---|---|
+| `hk.no_default_hint` (ui) | Choose a button to continue. | 5.2, 11 |
+| `hk.via_jump` (common) | Reached through jump host {host}. | 2.5, 5.2, 5.3 |
+| `hk.type_unavailable` (common) | {host} did not offer the type of key ShellDrive knows for it (stored: {types}). ShellDrive stopped the connection. | 5.2 |
+| `hk.add_other_type` (ui, cli) | {host} also has a {type} key. Add it? | 6.1 |
+| `hk.source_insecure` (common) | Ignored: other users can change this file. | 5.1, 7.5 |
+| `prompt.hostkey_just_accepted` (ui, cli) | You just accepted this server's identity. ShellDrive did not send your saved password automatically. | 2.5 |
+| `warn.terrapin` (common) | The connection to {host} is open to a known attack (Terrapin) because the server is out of date. Ask the server's administrator to update OpenSSH. | 7.6 |
+| `warn.agent_died` (ui) | ShellDrive stopped unexpectedly. Its drives were disconnected to protect your files. | 1.4 |
+| `warn.objects_squatted` (ui) | Another program is interfering with ShellDrive in this session. Drive menus in Explorer are turned off. | 2.2 |
+| `warn.no_acl_medium` (ui) | This drive has no file permissions. Anyone who gets this drive can read your profile list and change trusted host keys. | 1.9 |
+| `warn.data_dir_loose` (ui) | ShellDrive's settings folder can be changed by other users. | 3.2 |
+| `warn.update_stale` (ui, plural `days`) | ShellDrive could not check for updates for {days} day. / … for {days} days. | 7.7 |
+| `proxy.sspi_refused` (common) | This proxy asked for your Windows sign-in. ShellDrive only sends it to proxies you set up yourself. | 3.8 |
+| `webdav.token_only_ask` (ui) | Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files. | 7.5 |
+| `sdmount.invalid` (ui) | This file does not refer to one of your ShellDrive connections. | 8.1 |
+| `sdmount.motw_ask` (ui) | This file came from another computer. Connect to {profile}? | 8.1 |
+| `editor.trust_trusted` (ui) | I trust the files on this server | 3.4.1, 7.5 |
+| `editor.symlinks_inside` (ui) | Stay inside the remote folder | 3.4.1, 7.5 |
+| `warn.agent_untrusted` (common) | ShellDrive did not use your SSH agent because it is not running under your account. | 2.4 |
+| `editor.block_shell_files` (ui) | Block opening shortcut and library files from this server in Explorer | 7.5 |
+| `editor.motw` (ui) | Mark files as downloaded from the Internet | 7.5 |
+| `editor.identities_only` (ui) | Offer only the selected keys (recommended) | 3.4.1 |
+| `editor.symlinks_follow_note` (ui) | Links can lead outside the remote folder; the folder is not a boundary. | 3.4.1 |
+| `editor.service_access` (ui) | Who can use this drive | 3.4.1 |
+| `editor.service_access_required` (ui, cli) | Choose who can use this drive before saving. | 3.4.1 |
+| `editor.service_access_write` (ui) | Who can change files | 3.4.1 |
+| `editor.read_only_note` (ui) | People not in this list can only read. | 3.4.1 |
+| `settings.log_privacy` (ui) | Keep host names and file paths out of log files | 7.5, 10.1 |
+| `diag.anonymize` (ui) | Hide server names and file paths | 10.5 |
+| `diag.webclient_domain` (cli, ui) | WebClient is running on a domain-joined computer. If every connection uses Dokany, consider disabling it. | 10.5 |
+| `wizard.fde_note` (ui) | Saved passwords and keys are only as safe as your Windows password. Turn on BitLocker or device encryption if you keep keys in ShellDrive or use the disk cache. | 7.5 |
+| `installer.dokany_option` (installer) | Installs Dokany, a signed file system driver from another project. Without it ShellDrive uses the slower WebDAV connection. | 12.3 (D36) |
+| `installer.remove_service_secrets` (installer) | Remove the service's saved passwords and keys | 4.7 |
+| `cli.hostkey_default_no` (cli) | Trust this key? [y]es, [o]nce, [N]o: | 5.3 |
+
 ---
 
 ## 10. Logging and diagnostics
@@ -1658,8 +1997,20 @@ wchar_t       *sd_l10n_format_alloc(sd_msg_id id, const sd_arg *args, size_t nar
   records under pressure, never error/warn.
 - **Redaction rules (enforced by API, not by convention):** the logger has no format specifier for secrets;
   `sd_secret_buf` cannot be printed; kbdint responses, passwords, passphrases, private keys, proxy passwords and WebDAV path tokens are
-  never logged. Host names, user names and remote paths are logged (needed for support); `diag --bundle` offers
-  "Anonymize host and user names" (replaced by stable hashes).
+  never logged.
+- **Privacy of names and paths (TM-R31, T-58).** Log fields are typed: `host`, `user` and `rpath` (remote path)
+  fields go through the logger's privacy filter instead of being formatted as plain strings.
+  - `[log] privacy = standard` (default): host and user names are logged (needed for support); **remote paths are
+    logged only at debug and trace level**, except in error records (a failed operation names its path), so the
+    default info log does not accumulate file names.
+  - `[log] privacy = strict` (setting, or policy `LogPrivacy = 1`): host names, user names and remote paths are
+    replaced in every record, error records included, by stable short hashes (`h:3f9a1c`, HMAC-SHA-256 with a random
+    per-installation key kept in `state\log.key`, so the same host maps to the same hash within one machine but
+    hashes cannot be compared across machines). The UI and `diag --check` show which mode is active.
+  - `diag --bundle` **anonymizes by default** (host, user names and remote paths replaced by stable hashes in logs,
+    configuration and `diag --check` output); `--no-anonymize` (CLI) or unchecking "Hide server names and file
+    paths" (UI, checked by default) opts out.
+  - The Event Log follows the same rule for remote paths except Event 1200, whose purpose is attribution (3.4.1).
 - `OutputDebugStringW` sink at debug level when a debugger is attached (`IsDebuggerPresent`).
 
 ### 10.2 ETW (optional, Vista+)
@@ -1679,7 +2030,11 @@ v1.0 (can ship in v1.x without format changes).
   negotiated, 3000 host key mismatch (`%1` host, `%2` expected fingerprint, `%3` received fingerprint), 3001 prompt
   required (needs an administrator), 3100 configuration invalid, 2300 server announced new host keys (`%1` host,
   `%2` added fingerprints, `%3` removed fingerprints; 5.6), 2301 host keys updated by policy, 2400 global WebDAV drive
-  waiting for user sign-in (`attach` mode, 1.3). `ReportEventW` (XP+).
+  waiting for user sign-in (`attach` mode, 1.3), 1200 change through a global drive (info; `%1` profile, `%2` user
+  SID, `%3` account name, `%4` operation, `%5` remote path; coalesced per 60 s; D35/TM-R24), 3101 service pipe client
+  refused or over quota (warning, at most once per SID per 10 min; `%1` SID, `%2` reason; TM-R25), 3102 untrusted
+  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`; TM-R27, TM-R34).
+  `ReportEventW` (XP+).
 - The agent does not write to the Event Log (users cannot register sources; its file log is enough).
 
 ### 10.4 Crash dumps
@@ -1695,9 +2050,26 @@ v1.0 (can ship in v1.x without format changes).
   less reliable on XP, and it is one code path.
 - Dump type: `MiniDumpNormal | MiniDumpWithThreadInfo` (the latter only if `ImagehlpApiVersion` reports a dbghelp
   that knows it) — **no full memory and no indirectly referenced memory**, to keep secrets out of dumps.
+- **Secret-bearing stacks are left out (TM-R30, T-57).** A normal minidump still holds every thread's stack, so
+  `MiniDumpWriteDump` gets a `MINIDUMP_CALLBACK_INFORMATION` whose callback answers `IncludeThreadCallback` with
+  "exclude" for threads marked sensitive and, in `ThreadCallback`, strips the stack (`ThreadWriteStack` flag
+  cleared) of the faulting thread if it is sensitive. Sensitive are: SSH I/O threads (01), worker items while they run a KDF
+  or private-key operation (they set a thread-local "sensitive" mark through `sd_dump_mark_sensitive()` for the
+  duration), the IPC thread while it holds a prompt answer, the UI thread while a password, passphrase or kbdint
+  dialog is open, and the CLI's console-reading thread while reading a secret. The faulting thread is always kept,
+  with its stack unless it is sensitive (then only registers and context remain); a log line names the dropped
+  threads. There is no option to include those stacks (decisions.md D43: crash dumps never contain
+  secret-bearing stacks). Code that handles secrets wipes its stack buffers before returning
+  (01 §2.4 rule 8, applies to our prompt handling as well).
+- **Order after a crash:** write our dump → in the agent, cancel this process's WebDAV mappings
+  (`WNetCancelConnection2W(…, TRUE)` for every mapping it created; TM-R17 b) → `TerminateProcess(GetCurrentProcess(),
+  …)`. The filter never returns `EXCEPTION_CONTINUE_SEARCH`, so Windows Error Reporting does not collect a second,
+  possibly larger report or send it according to WER consent settings. If the dump thread does not answer within
+  10 s, the filter still cancels the mappings and terminates.
 - Files: `logs\crash\<binary>-<yyyymmdd-hhmmss>-<pid>.dmp`, keep the newest 5. Never uploaded automatically; the
   next UI start shows "ShellDrive closed unexpectedly. Create a diagnostic bundle?".
-- Windows Error Reporting LocalDumps (Vista SP1+) is documented for admins as an alternative for full dumps.
+- Windows Error Reporting LocalDumps (Vista SP1+) can be configured by admins for full dumps; the admin guide warns
+  that full dumps of ShellDrive contain session keys and passwords and must be handled as secrets.
 
 ### 10.5 `shelldrive diag`
 
@@ -1708,12 +2080,20 @@ read-only and never changed, C28); `EnableLinkedConnections` state and whether t
 admin; service installed/running and its global WebDAV mode (1.3); free drive letters; configuration parse errors;
 known_hosts parse errors and active live sources; system proxy configuration as `proxy = system` would resolve it;
 Network location entries in sync (8.7); Windows 11 menu package registered (8.6); clock skew hint; OS version,
-architecture and build flavour. `--fix webclient` (elevated) sets WebClient to manual start and starts
-it; `--fix linked-connections` as in 1.7.2. Every fix asks for confirmation unless `--yes`.
+architecture and build flavour. **Security notes (TM-R06, TM-R21, TM-R23, TM-R29, TM-R31, TM-R34):** live
+known_hosts sources ignored as insecure; per-user or machine data folders with loose ACLs or a foreign owner; a
+Dokany version on the signed `dokany-deny` list (02 §6.3; the backend is then disabled and `backend = auto` picks
+WebDAV, with `warning dokany_denied`); disk cache on a volume without ACLs; log privacy mode; and, on domain-joined
+machines, "WebClient is running" with the advice to set it to disabled where Dokany covers every profile
+(`AllowedBackends = dokany`, admin guide). `--fix webclient` (elevated) sets WebClient to manual start and starts
+it; it refuses (exit 15, `policy_denied`) when `AllowedBackends` excludes WebDAV, and warns on domain-joined
+machines. The host never starts WebClient for a profile that resolved to Dokany (TM-R21, 1.3). `--fix
+linked-connections` as in 1.7.2. Every fix asks for confirmation unless `--yes`.
 
 `diag --bundle FILE.zip` writes a stored (uncompressed) ZIP — trivial writer, no zlib dependency — with logs,
-crash dump list (dumps only if `--include-dumps`), redacted configuration (secrets never exist in config; host/user
-anonymized on request), `diag --check` JSON, the latest setup and update logs (04 §13), and versions. The user
+crash dump list (dumps only if `--include-dumps`, with a warning that dumps may contain file contents and names),
+redacted configuration (secrets never exist in config; host, user names and remote paths **anonymized by default**,
+`--no-anonymize` to opt out, TM-R31), `diag --check` JSON, the latest setup and update logs (04 §13), and versions. The user
 attaches it manually; nothing is sent. `diag collect` is an alias (6.1).
 
 `diag bench <X:>` runs 02 §11's harness (plain Win32 file APIs on the mounted drive, both backends) and prints a
@@ -1728,7 +2108,10 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   them without extra code. If a custom control is ever added it must answer `WM_GETOBJECT`.
 - Every input has a preceding static label with a mnemonic (`&`), so screen readers pick up the name and keyboard
   users can jump; tab order follows visual order (generated from the layout table); dialogs work with
-  `IsDialogMessage`; default and cancel buttons are set; Escape closes.
+  `IsDialogMessage`; default and cancel buttons are set; Escape closes. Exception: trust decisions (host key
+  dialog 5.2, token-only fallback 7.5, Mark-of-the-Web `.sdmount` question 8.1) have **no default button**
+  (TM-R03); keyboard users reach the buttons with Tab or their mnemonics, and the dialog text says so for screen
+  readers ("Choose a button to continue").
 - All functions reachable by keyboard: toolbar commands have menu equivalents and accelerators; ListView supports
   Apps key/Shift+F10 context menus; tray icon reachable with Win+B and operated with Enter/Apps key.
 - Status never only by color or icon: always text too (ListView columns, tray tooltip).
@@ -1764,7 +2147,29 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   keys, removal candidates, target store); `sd_mount` turns it into IPC `hostkeys.announced`.
 - `SD_ID_BLOB` (key bytes + optional passphrase callback), `sd_ssh_key_probe(bytes) → {type, pub blob, fp,
   encrypted}`, `sd_ssh_key_serialize_openssh(key, no cipher)` (C22, for 4.4 and service keys).
-- Reconnect secret cache owned by `sd_ssh` (`cache_secrets_for_reconnect`, C20).
+- Reconnect secret cache owned by `sd_ssh` (`cache_secrets_for_reconnect`, C20), following the rules of 4.6
+  (TM-R05): never filled from or used on a connection where any hop's key was accepted by TOFU or "Connect once";
+  bound to (hop, user, host, port, host key fingerprint). `sd_ssh` reports per hop whether the key was
+  just accepted (`hostkey_just_accepted` in `sd_auth_prompt_info` and the connection result) so `sd_mount` can apply 2.5.
+- **Host key type restriction (TM-R04; 01 §4.3/§7.1 own the mechanism):** `sd_ssh_config` takes the list of key
+  types stored for each hop's lookup name (from every store and live source, including `@cert-authority` matches);
+  when non-empty, only those types and their certificate variants are offered, and a server that offers none fails
+  with `SD_E_HOSTKEY_TYPE_UNAVAILABLE` (→ `host_key_type_unavailable`) instead of `SD_HK_NEW_TYPE`. For the explicit
+  "add key" action (6.1) `sd_ssh` provides a way to obtain and verify another host key type inside an already
+  verified connection (`hostkeys-prove-00` for announced keys, else a re-key restricted to that type).
+- **Terrapin (D34, TM-R01):** our KEXINIT is sent after the server's; without strict KEX the affected ciphers are
+  removed for that connection; `on_negotiated` reports `terrapin_exposed` when only affected combinations remained.
+- **Identities only (D37):** `sd_ssh_config.identities_only` plus the list of allowed agent key fingerprints
+  (`auth.agent_keys` and the public keys of configured identities).
+- **Proxy SSPI (TM-R10):** `sd_proxy_cfg` distinguishes `SSPI_KERBEROS` (Negotiate without NTLM) from `SSPI`
+  (Negotiate/NTLM) and carries whether the proxy came from `proxy = system`/WPAD/PAC, in which case SSPI is not
+  used unless the host passes `allow_system_sspi` (policy `AllowSystemProxySspi`).
+- **Sanitization (TM-R09):** server text and host names handed to prompts are stripped of bidi and zero-width
+  characters (2.5), in addition to control characters.
+- **Dumps (TM-R30):** I/O threads and KDF/private-key work mark themselves with `sd_dump_mark_sensitive()` (an
+  `sd_platform` hook) and wipe secret stack buffers before return (01 §2.4 rule 8).
+- **Agent pipes (TM-R08):** 01 §6.5 uses `sd_pipe_verify_server` (2.2) for the OpenSSH agent pipe and checks the
+  Pageant window's process token (user SID equal to ours, integrity ≥ ours).
 - Proxies (D20): HTTP CONNECT (Basic; Negotiate/NTLM via SSPI, optional) and SOCKS5 (no auth or RFC 1929) as a
   transport stage for leg 1 and inside a `direct-tcpip` channel for later legs (3.8); a `proxy_password` prompt
   through the same asynchronous prompt mechanism; error codes for 6.2 exit 16. No ProxyCommand.
@@ -1800,10 +2205,16 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
 - A backend availability probe used by `backend = auto`, `diag` and the UI (Dokany version; WebClient state and
   registry values).
 - Cache clear per profile; cache directory passed in by us (3.2).
+- Threat-model keys consumed by 02 (C46 names): `service_access_write` and the read-only default for non-admins
+  in the volume SD and the vfs check (D35, TM-R24); `symlinks = follow_inside` (TM-R13); `shell_active_files`
+  (TM-R14); `mark_of_the_web` after TST-21 (TM-R15); the token-only fallback reported to the host as a question,
+  never switched on by 02 itself, plus `AllowWebDavTokenOnly` (TM-R19); a mutating-operation callback (user SID,
+  operation, path) for Event 1200 on global mounts (TM-R24); `SO_EXCLUSIVEADDRUSE` on every listener (TM-R17 a); the
+  `dokany-deny` verdict exposed through the backend availability probe (TM-R23).
 - Status (reconciled 2026-10-24): met in 02 — `service_access` SID check for service-hosted servers (02 §7.4,
   §7.7), mechanisms `system`/`link`/`attach` with the M5 go/no-go (02 §7.7), one `sd_sftp_session` per mount for
   any pool size (02 §5.6, `sd_vfs_mount`), `write_mode`, `volume_fs_name`, `offline_label_suffix`, `symlinks =
-  follow | hide` only (02 §6.9), one global memory budget (02 §4.2).
+  follow_inside | follow | hide` (02 §6.9, D40), one global memory budget (02 §4.2).
 
 ### 12.3 To build / installer / updater / CI (04)
 
@@ -1812,7 +2223,11 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   `shelldrive selftest --json` (C2).
 - Installer options: start at sign-in (Run keys; HKLM Run with `--if-needed` on per-machine installs, C11), install
   service (**checked** on per-machine installs, absent on per-user installs, MSI feature on by default with a way to
-  turn it off, D6), `EnableLinkedConnections` (unchecked, explained; MSI property `ENABLELINKEDCONNECTIONS`,
+  turn it off, D6), **install Dokany** as an explicit option (D36, TM-Q06; 7 SP1+, **pre-checked**, with the text
+  "Installs Dokany, a signed file system driver from another project. Without it ShellDrive uses the slower WebDAV
+  connection." and unchecking leaving WebDAV only; mirrored by the MSI property `DOKANY=1|0` and the EXE switch
+  `/dokany=auto|install|skip`, owned by 04 §6.3/§6.5/§8.4; `DOKANY=0` writes `[backend] dokany = no`, 3.4); after install, the UI Settings page and `diag --check` show whether Dokany is present and
+  how to add it later, `EnableLinkedConnections` (unchecked, explained; MSI property `ENABLELINKEDCONNECTIONS`,
   default 0, D24), shell extension registration incl. Approved list and both registry views, versioned
   `shellext\<version>\` directories with `InprocServer32` rewrite (C4), Event Log source, machine directory ACLs
   (3.2), `.sdmount` file type, `DEFAULTPROFILES` = a folder of `.ini` profiles copied to
@@ -1829,8 +2244,15 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
   event; Administrators and SYSTEM are in the event DACL. It then waits up to 15 s per agent and falls back to
   Restart Manager (Vista+) or a "close ShellDrive" message. Setup never connects to agent pipes (their DACL admits
   only the user, 2.2). The service is stopped through the SCM.
-- Uninstall also removes registry entries we create, runs `user-cleanup` for the invoking user, unregisters the
-  sparse package, optionally removes user data (asked), and removes service secrets.
+- Uninstall also removes registry entries we create, runs `user-cleanup` for the invoking user (with `--secrets`
+  when user data removal was chosen), unregisters the sparse package, optionally removes user data (asked), removes
+  service secrets and keys **by default** (`REMOVESECRETS=1`, TM-R28, 4.7), deletes every cache directory, and lists
+  what was kept in its summary.
+- Setup checks the owner of `%ProgramData%\ShellDrive` before use and renames a foreign-owned folder aside
+  (TM-R34, 04 §6.4); 03 §3.2 gives the service-side behaviour and `service repair-data`.
+- Hooks run as SYSTEM obey 6.1 "Hooks running as SYSTEM" (TM-R35); repair conditions are 04's.
+- The updater stores `last_serial.<channel>`, `last_verified.<channel>`, `keyset` and the cached `dokany-deny`
+  list in `state\` (3.2, 3.4, TM-R36, TM-R37) and raises `update.stale` after 14 days without a verified manifest.
 - Portable ZIP contains `shelldrive.portable`.
 
 ---
@@ -1849,10 +2271,13 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
    shared-memory-only design. x86 DLL on x64 must not be forgotten.
 5. **Credential Manager limits on XP/Home SKUs**: handled by DPAPI fallback, but two stores means two code paths to
    test.
-6. **Named pipe squatting on XP** is detected only by owner check; a malicious process running as the same user can
-   always impersonate the agent — accepted (same-user code is inside the trust boundary).
+6. **Named pipe and named object squatting on XP** is detected only by owner checks (2.2, TM-R26); a malicious
+   process running as the same user can always impersonate the agent — accepted (same-user code is inside the trust
+   boundary). Squatting by another user or a low-IL process degrades to a warning and missing Explorer menus (DoS
+   only).
 7. **In-memory secret cache for reconnection** (owned by `sd_ssh`, C20) extends secret lifetime; mitigated by
-   encrypted memory and the per-profile `cache_secrets_for_reconnect = no` option (then reconnect prompts).
+   encrypted memory, the caching rules of 4.6 (TM-R05: never after fresh trust, bound to the verified host key) and
+   the per-profile `cache_secrets_for_reconnect = no` option (then reconnect prompts).
 8. **Code-generated dialogs** cost an initial layout engine (~1500 lines) but remove six-fold DIALOG maintenance.
 9. **Windows 11 modern context menu** depends on the certificate arriving in time (D27); without it 1.0 users must
    use "Show more options".
@@ -1863,9 +2288,19 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
 12. **Network location entries** (8.7) rely on the folder-shortcut format, which is not formally documented; the
     format has been stable since Windows 2000 but needs the lab checks in 13.3.
 13. **Service enabled by default** (D6) adds an always-running LocalSystem process on per-machine installs; mitigated
-    by the idle mode (1.3: no network, no listener without service profiles) and the threat-model review in M5.
+    by the idle mode (1.3: no network, no listener without service profiles) and the service pipe quotas and
+    filtering of 2.2 (TM-R25; 05 TM-Q04 keeps the decision on that condition).
 14. **Proxy credentials in clear** to HTTP Basic / SOCKS5 proxies; mitigated by the warning in 3.8 and by preferring
-    Negotiate when the proxy offers it.
+    Negotiate when the proxy offers it (Kerberos only unless `proxy_auth = negotiate`, TM-R10).
+15. **Global drives need an explicit access list** (D35): deployments that relied on "all users" must now say so in
+    the profile; a file-deployed profile without `service_access` is not mounted (Event 3100). Admin guide and the
+    MSI `DEFAULTPROFILES` documentation (04) must state it.
+16. **Strict owner checks can refuse legitimate setups** (TM-R06, TM-R07, TM-R27, TM-R34): Cygwin/MSYS-created
+    `.ssh` folders with POSIX-style ACLs, redirected folders on shares whose ACLs we cannot read, admin-created data
+    folders owned by a specific admin account (accepted: Administrators members are allowed owners). Each refusal
+    names the path and the reason in the UI or Event Log; TST-14, TST-25 and TST-29 cover the common cases.
+17. **Legacy algorithms on by default** (D33) remain the weakest default against legacy-only servers (05 T-02); the
+    warning UX of 7.6 is the only mitigation by decision.
 
 ### 13.2 Open questions
 
@@ -1894,6 +2329,11 @@ plurals (D26, 9.4); `CryptProtectMemory` on XP is moot because `sd_ssh` owns the
 | `CRED_PERSIST_LOCAL_MACHINE` on Home SKUs → fallback path taken | Home: test | n/a | test | test |
 | Credential blob 512 vs 2560 bytes | test | test | — | — |
 | Owner check rejects pipe squatted by another user | test | test | test | test |
+| Low-IL process creating `Local\ShellDrive.state.<SID>` first gets a Low label; AppContainer creation is redirected (TM-R26) | n/a | test | test | test |
+| `GetWindowThreadProcessId` + token check of a `WM_COPYDATA` sender from another user (`runas`) in the same desktop | test | test | test | test |
+| `MiniDumpWriteDump` callback excludes threads and strips the faulting thread's stack with the XP dbghelp | test | test | test | test |
+| `SEC_WINNT_AUTH_IDENTITY_EX` package list `Kerberos` (no NTLM) honored by Negotiate to an HTTP proxy | test | test | test | test |
+| `:Zone.Identifier` readable on a downloaded `.sdmount` (NTFS; absent on FAT) | test | test | test | test |
 | PMv2 + generated dialogs at 100/150/200% mixed monitors | — | — | test | test |
 | x86 shell DLL appears in 32-bit file dialogs on x64/ARM64 | — | test | test | test |
 
@@ -1922,6 +2362,35 @@ APIs stated as XP+ without a link above (`CredGetSessionTypes`, `CryptProtectDat
 (`PIPE_REJECT_REMOTE_CLIENTS`, `TokenElevationType`, `TokenLinkedToken`, `EventRegister`,
 `SERVICE_CONTROL_PRESHUTDOWN`, `LoadIconWithScaleDown`) are resolved at runtime or used only when the OS version
 allows.
+
+### 13.5 Security tests for this layer (05 §7)
+
+The tests are defined in 05 §7 with milestone and priority; this table lists the ones that exercise 03 and what
+they must show here. P1 blocks the milestone demo.
+
+| Test | M | P | What it checks in 03 | TM-R |
+|---|---|---|---|---|
+| TST-02 | M1 (importers M2) | P1 | fuzzing of `sd_json` + agent/service dispatch, `sd_ini` (profiles, settings, overrides), the shell DLL snapshot and `menu.cache` readers, the `.sdmount` parser, `ssh_config`/PuTTY importers | R25, R26, R32 |
+| TST-10 | M1 | P1 | agent killed with a mapped WebDAV drive: mapping cancelled by the crash filter or the UI/CLI watcher within 5 s; stale mappings removed at the next agent start; elevated watcher removes the elevated view | R17 |
+| TST-11 | M0/M2 | P1 | known host without the offered type → `host_key_type_unavailable`, no dialog; TOFU dialog without default button and CLI default "no"; after "remove old key + TOFU" no saved password is sent and nothing is cached | R03, R04, R05 |
+| TST-14 | M2 | P2 | live source writable by another user ignored with `hostkey_source_insecure`; wildcard-only lines never MATCH; mismatch still blocks | R06 |
+| TST-17 | M2 | P2 | `sd_pipe_verify_server` refuses a squatted `openssh-ssh-agent` pipe | R08 |
+| TST-18 | M2 | P1 | no SSPI token to a WPAD/system proxy or to an NTLM-only `407` with `proxy_auth = auto` | R10 |
+| TST-20/21 | M3 | P1/P2 | `shell_active_files = block` for default (`untrusted`) profiles, `show` for `trusted`; `mark_of_the_web` on/off | R14, R15 (D41) |
+| TST-23 | M5 | P1 | service pipe: per-SID quota, 2 reserved admin instances under exhaustion, 64 KiB cap and rate limit for non-admins, low-IL/AppContainer/anonymous refused, `prompt`/`log`/`hostkeys` and `status` details refused to non-admins, filtered `list`, `attention` content-free | R25 |
+| TST-24 | M3 | P1 | foreign-owned or Low-labelled snapshot, ready event, mutex and UI mutex: agent warns and runs without them, shell DLL ignores them; `WM_COPYDATA` from another user's window rejected | R26 |
+| TST-25 | M5 | P1 | service key file swapped through a junction, user-writable key file or folder, `~\`/user variables in machine profiles → refused, Event 3102 | R27 |
+| TST-26 | M5 | P1 | `service_access` required at save and for deployed files; non-admins read-only unless in `service_access_write`; Event 1200 per change | R24 (D35) |
+| TST-27 | M4 | P2 | uninstall residue: service secrets/keys and caches gone by default; summary lists what was kept | R28 |
+| TST-28 | M3 | P2 | dumps taken during a password prompt, KEX and KDF contain neither the test password nor key bytes; WER not invoked | R30 |
+| TST-29 | M4 | P1 | foreign-owned `%ProgramData%\ShellDrive`: service stays idle, `service repair-data` recovers; hooks as SYSTEM touch no user-writable path | R34, R35 |
+| (03-local) | M1 | P2 | log privacy: no remote path at info in `standard`; no host/user/path in `strict`; bundle anonymized by default | R31 |
+| (03-local) | M2 | P2 | portable mode on FAT: disk cache refused, one-time warning | R29 |
+| (03-local) | M2 | P2 | prompts with bidi/zero-width characters in kbdint text and host names render stripped; hop host outside the server box | R09 |
+
+Milestone placement follows 00 §6 and 05 §7: R17, R25's fuzzing part, R31 land with M1 (agent, WebDAV, logging);
+R03–R06, R08–R10, R29 with M2 (SSH stack and importers); R14/R15 UX, R26, R30, R32 with M3 (Explorer
+integration, UI); R28, R34, R35 with M4 (installer); R24/D35, R25 quotas, R27 with M5 (service and global drives).
 
 ---
 
@@ -1953,3 +2422,72 @@ Applied on 2026-10-24 from `decisions.md` and `00-integration-review.md`.
   registration aligned with 04 §10.1 (per-user agent registration on per-machine installs, 8.6); 12.1/12.2 now
   record where 01/02 meet each requirement (known_hosts D7, UpdateHostKeys event, pool, exec probe, proxies,
   `service_access`).
+
+## Changelog: threat-model integration 2026-10-24
+
+Applied from `05-threat-model.md` §8 as adjusted by `decisions.md` D33–D39 (D39: all TM-R accepted except as
+changed by D33).
+
+- **TM-R01 / D34:** Terrapin handled by cipher choice after the server's KEXINIT; `warning terrapin_exposed`, UX in
+  7.6; `refuse_terrapin_exposed` stays `no` (3.4.1, 12.1).
+- **TM-R03:** no default button in the TOFU dialog, CLI default "no", "Reached through jump host" for inner hops
+  (2.5, 5.2, 5.3; accessibility exception in 11).
+- **TM-R04:** stored key types restrict the offered host-key algorithms; `host_key_type_unavailable` (exit 6)
+  instead of a NEW_TYPE prompt; explicit "add key" through `hostkey add --from-server` inside a verified connection;
+  type changes always shown (5.2, 5.6, 6.1, 6.2, 12.1). Coordinated with 01 §4.3/§7.1.
+- **TM-R05 / TM-Q08:** `hostkey_just_accepted` connections never auto-answer server-bound secrets; reconnect secret caching
+  rules (2.5, 4.6, 5.4, 12.1).
+- **TM-R06 / D7:** live-source DACL/owner checks on every read, wildcard-only lines never MATCH,
+  `warning hostkey_source_insecure` (5.1, 7.5, 10.5).
+- **TM-R07:** protected per-user DACL on all of `%APPDATA%\ShellDrive` and `%LOCALAPPDATA%\ShellDrive` (3.2).
+- **TM-R08:** shared `sd_pipe_verify_server` helper for 01's agent pipe checks (2.2, 12.1).
+- **TM-R09:** bidi/zero-width stripping; hop host outside the server-text box (2.5).
+- **TM-R10:** Kerberos-only Negotiate for `proxy_auth = auto`, no SSPI to discovered proxies, policy
+  `AllowSystemProxySspi` (3.4.1, 3.5, 3.8, 12.1).
+- **TM-R13, TM-R14, TM-R15:** profile keys `symlinks = follow_inside`, `shell_active_files`, `mark_of_the_web`,
+  `security.trust` with defaults and editor UX (3.4, 3.4.1, 7.5, 12.2).
+- **TM-R17 (b–e):** crash filter cancels mappings, UI/CLI agent watch, stale-mapping cleanup at agent start,
+  elevated-view watcher (1.2, 1.4, 1.7.2, 10.4); (a) is 02's (12.2).
+- **TM-R19 (03 part):** policy `AllowWebDavTokenOnly`, per-time confirmation dialog (3.5, 7.5).
+- **TM-R21:** WebClient never started for Dokany profiles; `diag` security note on domain machines (10.5).
+- **TM-R23 (03 part):** `dokany_denied` warning and `diag` report (2.4, 10.5).
+- **TM-R24 / D35:** `service_access` required with no default, `service_access_write` (non-admins read-only by
+  default), Event 1200 attribution (3.4.1, 7.5, 10.3, 12.2); replaces the `BUILTIN\Users` default.
+- **TM-R25:** service pipe per-SID quota 4, two reserved admin instances, non-admin request cap/rate limit/idle
+  timeout, low-IL/AppContainer/anonymous refusal, admin-only topics and details, filtered `list`, `attention` topic
+  (2.2, 2.4, 2.6, 6.2, 10.3).
+- **TM-R26:** explicit DACL/label on mutex, ready event, snapshot section and UI mutex, squatting handling, owner and
+  label checks plus bounds checks in the shell DLL, `WM_COPYDATA` sender and verb validation (1.2, 1.4, 1.6, 2.2,
+  8.2).
+- **TM-R27:** service key files and machine inputs opened without reparse points and checked on the handle; no user
+  paths or variables (2.6, 3.3).
+- **TM-R28:** service secrets and keys removed by default at per-machine uninstall, caches always, summary of kept
+  data (4.5, 4.7, 6.1, 12.3).
+- **TM-R29:** no disk cache on volumes without persistent ACLs; portable-media warning (1.9).
+- **TM-R30:** dump callback drops sensitive stacks (no `--include-secret-stacks`, decisions.md D43), no WER after our dump (10.4, 12.1).
+- **TM-R31:** remote paths at debug only, `[log] privacy = strict` / policy `LogPrivacy`, `diag --bundle`
+  anonymizes by default (`--no-anonymize`), full-disk-encryption note in the first-run wizard (3.4, 3.5, 6.1, 7.5,
+  10.1, 10.5).
+- **TM-R32:** strict `.sdmount` grammar and Mark-of-the-Web confirmation (8.1, 8.7).
+- **TM-R34 (03 part):** service checks the data-folder owner, stays idle on a foreign owner, `service repair-data`
+  (3.2, 6.1, 12.3).
+- **TM-R35 (03 part):** behaviour of hooks running as SYSTEM (6.1).
+- **TM-R36, TM-R37 (03 part):** `update.stale` notification, `last_serial.<channel>`, `last_verified.<channel>`, `keyset` and the cached
+  `dokany-deny` list in `state\` (2.4, 3.2, 3.4, 7.7, 12.3).
+- **D33:** legacy algorithms stay enabled with `warn` (TM-Q01 rejected, 7.6). **D36:** Dokany as a pre-checked
+  explicit setup option (12.3). **D37:** `identities_only` defaults to `yes` when an identity is configured (key unset),
+  `agent_keys`, `IdentitiesOnly` import (3.4, 3.4.1, 3.7, 12.1).
+- New strings listed in 9.6 (all six locales required); new verification rows in 13.3; risks 6, 7, 13–17 in 13.1;
+  security test mapping and milestones in 13.5.
+- Not applicable to 03 (owned elsewhere): TM-R02, R11, R12, R16, R18, R20, R22, R33, R38, R39, and the 02/04 parts
+  of R17, R19, R23, R34–R37.
+- Final reconciliation (threat model) 2026-10-24: `trust_fresh` renamed `hostkey_just_accepted` (01's name;
+  2.5, 3.4.1, 4.6, 5.4, 5.6, 9.6, 12.1); `identities_only = yes|no`, unset = D37 default (`auto` removed; 3.4,
+  3.4.1, 3.7); `security.trust = untrusted|trusted`, default `untrusted` (D41), gating `shell_active_files` for every
+  process; `mark_of_the_web` default `off`, no longer derived from trust; `symlinks` default `follow_inside` for
+  every profile (D40); editor texts and strings `editor.trust_trusted`, `editor.symlinks_inside`,
+  `warn.agent_untrusted`; `warning agent_untrusted` (2.4); `--include-secret-stacks` removed (D43, 10.4);
+  `programdata-secure` hook and repair note (6.1); setup creates/resets `%ProgramData%\ShellDrive` (3.2); updater
+  state files `last_serial.<channel>`, `last_verified.<channel>`, `keyset`, cached `dokany-deny` list, machine
+  updater state in `%ProgramData%\ShellDrive\state\` (3.2, 3.4, 12.3); `[backend] dokany` (3.4); Dokany option
+  names `DOKANY`, `/dokany=` (12.3).

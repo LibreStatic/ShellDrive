@@ -1,13 +1,14 @@
 # 04 — Build, packaging, installation, updates, CI and test infrastructure
 
-Status: draft, updated with the accepted decisions (`decisions.md`, 2026-10-24) and the conflict resolutions
-of `00-integration-review.md`. Scope: everything between "source code" and "a running, updatable ShellDrive on
+Status: draft, updated with the accepted decisions (`decisions.md`, 2026-10-24), the conflict resolutions
+of `00-integration-review.md` and the threat-model recommendations of `05-threat-model.md` that target this
+document (TM-R23, R28, R29, R33–R39, TM-Q06/Q09 as decided by D36/D38; §16). Scope: everything between "source code" and "a running, updatable ShellDrive on
 the user's machine", plus the test infrastructure that proves it works on every supported OS, architecture and
 build flavour.
 
 Companion documents: `01-ssh-sftp-crypto.md` (SSH/crypto core), `02-filesystem.md` (WebDAV + Dokany adapter),
-`03-apps-platform.md` (host agent/service, CLI, UI, shell extension, configuration schema, localization).
-Where this document imposes a rule on them, it is listed in §14 "Contracts with other teams". Where
+`03-apps-platform.md` (host agent/service, CLI, UI, shell extension, configuration schema, localization),
+`05-threat-model.md` (threats `T-xx`, recommendations `TM-Rxx` and tests `TST-xx` cited here). Where this document imposes a rule on them, it is listed in §14 "Contracts with other teams". Where
 `decisions.md` and this document differ, `decisions.md` wins; §16 lists the decisions and conflict ids applied
 here.
 
@@ -38,9 +39,11 @@ test lab (§11.4) before release 1.0.
 | Payload container | **CAB** (built with `makecab`, extracted with `cabinet.dll` FDI — native on XP+) |
 | MSI authoring | **WiX 3.14.1** now (on GitHub runners, XP-proven, no WiX custom actions used); migrate later |
 | MSI packages | One per flavour, including **ARM32** (D31); flavours of one architecture share an UpgradeCode |
-| Dokany | Pinned version **2.3.1.1000**; offline setup EXEs embed upstream `Dokan_<arch>.msi` or the upstream `DokanSetup.exe` bundle, depending on the VC++ dependency check (D32, §7.3); universal EXE downloads on demand; SHA-256 pinned; never modified |
+| Dokany | Pinned version **2.3.1.1000**; offline setup EXEs embed upstream `Dokan_<arch>.msi` or the upstream `DokanSetup.exe` bundle, depending on the VC++ dependency check (D32, §7.3); universal EXE downloads on demand; SHA-256 and upstream signer pinned and checked at embed and at install (TM-R23); never modified. Installing it is an **explicit, pre-checked option** on the per-machine options page (7 SP1+), mirrored by the MSI property `DOKANY` (D36, §6.3) |
 | Localization | PO is the only source; `tools/sdl10n` generates C tables, STRINGTABLEs, `.wxl` and ADML with full CLDR plural categories (D26) |
-| Updates | Signed text manifest (ed25519, `sd_crypto`); HTTPS first, **plain-HTTP mirror on static object storage** (D30) for XP/Vista/unpatched 7; consent required; settings in `settings.ini [update]` |
+| Updates | Signed text manifest (ed25519, `sd_crypto`); offline **root** keys certify per-channel release keys in a signed `keyset` (rotation, revocation), per-channel anti-rollback, `expires` ≤ 30/14 days (TM-R36, TM-R37, §9.2–§9.3); HTTPS first, **plain-HTTP mirror on static object storage** (D30) for XP/Vista/unpatched 7; consent required; settings in `settings.ini [update]` |
+| Installer elevation | Setup stub and `uninstall.exe` import only KnownDLLs and restrict the DLL search path; the elevated instance never runs its work from `Downloads` but from a copy in a fresh admin-only directory; `%ProgramData%\ShellDrive` ownership checked and reset; no SYSTEM custom action runs during repair except idempotent ones (TM-R33–R35, §6.4, §8.3) |
+| Release gates | No public download links until Authenticode exists (TM-R38); no public beta before crypto review pass 1, 1.0 only after pass 2 (D38); stable signing only after an independent rebuild by the maintainer outside GitHub Actions (TM-R39, §12.3) |
 | Authenticode | Pipeline designed, disabled until a certificate exists (SignPath Foundation, else Certum OSS, before a public 1.0 — D29); PE dual-signed SHA-1 + SHA-256; MSI single SHA-256 |
 | Windows 11 modern menu (D27) | Signed sparse MSIX package in 1.0 **only if** the certificate exists in time; otherwise classic menu only |
 | CI | GitHub Actions, **`windows-2022`** runners (pinned), install the WinXP component per job; six-flavour build matrix |
@@ -134,6 +137,13 @@ Rules (enforced by building every module with both v141_xp and v143 `/std:c11 /W
   (ARM64) — export lists captured from clean lab VMs, names only, no Microsoft binaries in the repo.
   Same tool checks the PE `MajorSubsystemVersion`, the absence of a TLS directory in DLLs, and the
   `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT` / `GUARD_CF` bits expected for the flavour.
+- **Setup stub and `uninstall.exe` import only KnownDLLs (TM-R33, T-62).** `sd-importcheck --stub` fails if
+  any static import of the stub or `uninstall.exe` (every architecture) is not in
+  `tests/os-imports/knowndlls.txt` — the intersection of the `KnownDLLs` registry lists captured from the XP SP3,
+  XP x64, 7, 10 and 11 lab VMs (kernel32, user32, gdi32, advapi32, shell32, ole32 and similar) — or if the image
+  has a delay-load directory. Every other module (`cabinet.dll`, `msi.dll`, `wintrust.dll`, `crypt32.dll`,
+  `comctl32.dll`, `winhttp.dll`…) is loaded at run time by full System32 path after the search path is
+  restricted (§6.4). This list is part of TST-30.
 - **ISA audit (`x86-ia32`)** `tools/sd-isacheck` disassembles the code sections of every `x86-ia32` PE (and of
   the setup stub) with `dumpbin /disasm` and fails on any SSE/SSE2 instruction outside an allowlist of static
   CRT routines that dispatch on `__isa_available` at run time. The lab VM without SSE2 (§11.4) is the
@@ -236,6 +246,11 @@ Linker (all): `/DEBUG:FULL /PDBALTPATH:%_PDB% /OPT:REF /OPT:ICF /DYNAMICBASE /NX
 | `arm32` (v143) | `/guard:cf` | `,6.02` |
 | `arm64` (v143) | `/guard:cf` | `,6.02` (linker default; actual floor Windows 10) |
 
+- Setup stub and `uninstall.exe` (TM-R33): v143 builds (native ARM32/ARM64 stubs) link with
+  `/DEPENDENTLOADFLAG:0x800` (`LOAD_LIBRARY_SEARCH_SYSTEM32` for the dependencies the loader resolves; honored
+  by Windows 10 1607+ loaders). The `x86-ia32` stub uses it too if the v141 14.16 linker accepts the switch
+  **[verify]**; otherwise the run-time measures of §6.4 are the only protection, which is why the stub's
+  elevated work never runs from the download directory.
 - DEP/ASLR flags are ignored by XP's loader and honored on Vista+ — harmless.
 - `/guard:cf` on v141_xp: CFG metadata is ignored by pre-8.1 loaders in principle, but the XP x86 loader is
   picky about the load-config directory layout used by SafeSEH. **Not enabled on the v141_xp flavours**;
@@ -285,12 +300,16 @@ One template `res/manifest/app.manifest.in`, instantiated per binary:
   wix/                   Product.wxs, Files.wxs (generated), Registry.wxs (generated); *.wxl generated by sdl10n
   registry/              declarative registration tables (context-menu handler, Approved, `.sdmount` ProgID,
                          App Paths, Run keys, Event Log source) — single source for MSI and per-user setup (§6.6)
-  dokany/dokany.lock     pinned Dokany version, file names, sizes, SHA-256, source URLs, VC++ dependency result
+  dokany/dokany.lock     pinned Dokany version, file names, sizes, SHA-256, source URLs, VC++ dependency result,
+                         expected upstream Authenticode signer name (TM-R23)
+  keys/                  update trust anchors (§9.3): root-a.pub, root-b.pub, the current signed keyset.txt
+                         compiled into every binary and stub (public keys only; private keys never in the repo)
   msix/                  sparse package manifest template (D27, §10.1)
   payload/               CAB directive files (.ddf) per flavour
 /tools/                  build-time tools, written in C against our own modules:
   sd-importcheck/        PE import/TLS/subsystem/CFG/CET audit (§2.4)
   sd-isacheck/           no-SSE2 audit of x86-ia32 code (§2.4)
+  sd-ctcheck/            constant-time disassembly check (01 §2.7.5, TM-R02, TST-03)
   sd-release/            manifest build/sign/verify, SHA256SUMS (links sd_crypto)
   sd-regtable/           generates Registry.wxs + C tables from installer/registry/
   sdl10n/                PO validation + generation of C tables, STRINGTABLEs, .wxl, ADML, LCID lists (§8.6)
@@ -303,10 +322,11 @@ One template `res/manifest/app.manifest.in`, instantiated per binary:
   integration/           CTest-driven tests + fixtures/ (sshd_config variants, WSL setup scripts)
   smoke/                 smoke.cmd (runs on XP..11, cmd.exe only) + expected outputs
   lab/                   Hyper-V/QEMU orchestration (PowerShell on the host), VM inventory
-  os-imports/            export-name lists for the import audit, one per flavour floor
+  os-imports/            export-name lists for the import audit, one per flavour floor, plus knowndlls.txt (§2.4)
 /third_party/            test-only material, see policy below (nothing in it is compiled into shipped binaries)
 /docs/  design/  ...
-/.github/workflows/      ci.yml, release.yml, fuzz.yml, lab.yml
+/.github/workflows/      ci.yml, release.yml, fuzz.yml, ct.yml, lab.yml, resign.yml
+/.github/CODEOWNERS      maintainer review required for .github/, installer/, cmake/SdSign.cmake, tools/sd-release/ (TM-R39)
 ```
 
 **Third-party policy**
@@ -345,6 +365,7 @@ Per release `X.Y.Z` (examples for 1.0.0):
 | `ShellDrive-1.0.0-sparse-<x64|arm64>.msix` | Signed sparse package for the Windows 11 modern context menu; embedded in the payloads, also published for admins. **Only when a certificate exists** (D27, §10.1) | Windows 11 |
 | `ShellDrive-1.0.0-symbols.zip` | PDBs of all flavours | Crash analysis |
 | `manifest.txt` | Signed release manifest (§9) | Updater |
+| `keyset.txt` | Root-signed list of release keys per channel, with validity and revocations (§9.3, TM-R37) | Updater, setup stub |
 | `SHA256SUMS`, `SHA256SUMS.sig` | Hashes + ed25519 signature | Humans, scripts |
 | `dokany-2.3.1.1000-source.zip` | Mirror of upstream source of the pinned tag (LGPL compliance, §7.3) | Compliance |
 
@@ -393,8 +414,11 @@ or pre-Windows 10 x64 machines; the MSI launch conditions (§8.2) refuse the wro
   native on XP, good ratio, no decompressor of our own. The CAB contains the per-user file set **and** the
   per-arch MSI for per-machine installs.
 - A signed **payload table** resource lists every embedded blob with its SHA-256; the stub verifies hashes
-  before extracting (catches truncated downloads before any file is written) and the table itself is covered
-  by Authenticode once we sign.
+  before extracting (catches truncated downloads before any file is written). The table carries an ed25519
+  signature (`PAYLOAD_SIG` resource) by a release key that the keyset compiled into the stub authorizes for the
+  build's channel (§9.3); the stub **refuses to run** on a missing or invalid signature (TM-R38, T-71). Once
+  we sign, Authenticode covers the whole EXE as well, and the elevated instance additionally checks
+  `WinVerifyTrust` with the expected publisher name before executing its staged copy (§6.4).
 
 ### 6.2 Native architecture detection (universal stub)
 
@@ -442,7 +466,7 @@ SSE2); on ARM64 we install ARM64 + `x86-sse2` (and `x64-modern` on Windows 11, f
 | Admin | No | Yes | No |
 | Registration | HKCU: Uninstall key, Run keys, COM (HKCU\Software\Classes), context-menu handlers, `.sdmount`, App Paths | HKLM via MSI | **None** |
 | Service | **Never** (D6) | **Yes, installed and enabled by default** (D6; `ServiceInstall` table; `SERVICE=0` turns it off) | No |
-| Dokany install | No (can use an already-installed Dokany) | Yes, optional | No (uses it if already installed) |
+| Dokany install | No (can use an already-installed Dokany) | Yes: explicit option, pre-checked, 7 SP1+ only (D36); unchecked = WebDAV only | No (uses it if already installed) |
 | Shell extension | Yes (HKCU COM) **[lab-verify]** XP honors HKCU classes for shell extensions | Yes | No |
 | Sparse MSIX (Win11, D27) | Registered for the user by setup, if shipped | Registered per user by the agent at first start, if shipped (§10.1) | No |
 | Network Shortcuts (D14) | Created at run time by the host/UI; removed by uninstall (§6.7) | Same, per user | Not created |
@@ -452,29 +476,106 @@ Mode selection UI (first page): "Install for me" / "Install for all users (requi
 "Portable (extract to a folder)". The per-machine options page shows "Install the ShellDrive service (global
 drives, before sign-in)" **checked by default** (D6), "Start ShellDrive when users sign in" (checked) and
 "Allow elevated programs to see mapped drives (`EnableLinkedConnections`)" (unchecked, explained; D24, §8.4).
-Per-user and per-machine installs of the same version are mutually exclusive on one account: setup detects the
+
+**Dokany option (D36, TM-Q06, T-42).** On Windows 7 SP1 / Server 2008 R2 SP1 and later the per-machine
+options page also shows "Install the Dokany file system driver (recommended)", **checked by default**, with a
+short explanation: Dokany is a signed third-party kernel-mode driver from the Dokany project, it is installed
+for the whole computer and stays available to every local user, it is not removed automatically with
+ShellDrive (§6.7), and unchecking it leaves ShellDrive on the WebDAV backend only (no Dokany global drives;
+the service falls back to D11 global WebDAV or per-user attach). Variants of the same row:
+
+- Dokany already present at an acceptable version (§7.3 table): the checkbox is replaced by "Dokany
+  <version> is already installed and will be used"; an upgrade offer follows the decision table.
+- Driver install not possible (below 7 SP1, ARM32, SHA-2 support missing, memory integrity incompatibility,
+  version on the `dokany-deny` list without an upgrade path; §7.2, §7.3): the row is shown disabled and unchecked
+  with the localized reason.
+- The checkbox maps to `/dokany=auto` (checked) or `/dokany=skip` (unchecked) and to the MSI property
+  `DOKANY=1|0` (§8.4), so GUI, command line and MSI deployments express the same choice. Silent installs use
+  `/dokany=auto` (= checked) unless the admin passes `/dokany=skip` or `DOKANY=0`.
+
+Per-user setup never installs Dokany and shows no such option. Per-user and per-machine installs of the same version are mutually exclusive on one account: setup detects the
 other mode (HKCU/HKLM Uninstall keys) and offers to remove it.
 
 ### 6.4 Elevation
 
 - Setup always starts `asInvoker`. For per-machine it relaunches itself with
-  `ShellExecuteExW(lpVerb=L"runas", "/elevated-child <pipe-name> …")`.
+  `ShellExecuteExW(lpVerb=L"runas", "/elevated-stage1 <pipe-name> …")` (two elevated stages, below).
 - Vista+: UAC prompt. **XP: no UAC**; `runas` shows the "Run As" credential dialog when the user is limited;
-  if the user is an administrator (the common XP case) `IsUserAnAdmin()` is already TRUE and no relaunch
-  happens.
+  if the user is an administrator (the common XP case) `IsUserAnAdmin()` is already TRUE and no `runas`
+  relaunch happens, but the process still goes through stage 1 (it re-executes itself from the protected
+  copy before creating any window), as does any instance that finds itself with an administrator token
+  (UAC disabled, admin running a per-user install).
 - The unelevated parent keeps the UI; the elevated child reports progress over a named pipe whose DACL
   allows only the launching user's SID. No arguments from the pipe are trusted for paths — the child
   re-derives everything from its own image and re-verifies payload hashes.
-- **Never execute from a user-writable location while elevated:** the child extracts into
-  `%ProgramData%\ShellDrive\setup\<random>` (XP: `CSIDL_COMMON_APPDATA`), a directory it creates with an
-  Administrators/SYSTEM-only DACL, and verifies hashes *after* extraction with files opened
-  `FILE_SHARE_READ` only.
+
+**DLL search hardening (TM-R33, T-62).** The loader resolves static imports, and DLLs that system DLLs load on
+our behalf (`cryptbase.dll`, `version.dll`, `uxtheme.dll`, `dwmapi.dll`…), from the application directory
+first unless they are KnownDLLs; the application directory of a downloaded setup is usually `Downloads`. Rules
+for the setup stub, every elevated stage and `uninstall.exe`:
+
+1. Static imports are KnownDLLs only, no delay-load (§2.4, enforced by `sd-importcheck --stub`); v143 stubs set
+   `/DEPENDENTLOADFLAG:0x800` (§3.2).
+2. The first statement of the entry point calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`
+   (resolved with `GetProcAddress` from kernel32; present on Windows 8+ and on Vista/7 with KB2533623). If it is
+   missing (XP, Vista and 7 without that update) the stub calls `SetDllDirectoryW(L"")` (XP SP1+; removes the
+   current directory from the search order) and relies on rule 3 and on stage 1 creating no window.
+3. Every non-KnownDLL module is loaded by full path built from `GetSystemDirectoryW` with
+   `LOAD_LIBRARY_SEARCH_SYSTEM32` where supported, else `LOAD_WITH_ALTERED_SEARCH_PATH` (so the module's own
+   dependencies are searched in System32 first). `comctl32.dll` v6 comes from WinSxS through the manifest's
+   activation context.
+4. On XP/Vista/7 without KB2533623, the app directory still comes first for DLLs loaded implicitly by system
+   code (for example `uxtheme.dll` when the first window is created). This is why the **unelevated** parent
+   is the only instance that ever creates UI from the download directory: a planted DLL there runs with the
+   user's own rights, which the planter already had (residual noted in §15 R16).
+
+**Two-stage elevation: never run elevated work from a user-writable directory (TM-R33, TM-R34, T-62, T-63).**
+
+1. **Stage 1** (`/elevated-stage1`, started by `runas` from wherever the user ran setup) creates no window and
+   loads no module beyond its KnownDLL imports. It (a) applies the DLL rules above; (b) secures
+   `%ProgramData%\ShellDrive` (XP: `CSIDL_COMMON_APPDATA`) as described below; (c) creates a **new**
+   directory `%ProgramData%\ShellDrive\setup\<random 128-bit hex>` with `CreateDirectoryW` and an explicit
+   security descriptor in the same call (owner Administrators, protected DACL: SYSTEM and Administrators full
+   control, nothing else; the call fails if the name exists, and stage 1 then picks a new name); (d) copies its
+   own image into it, reading the source opened with `FILE_SHARE_READ` only (no write or delete sharing, so it
+   cannot be swapped during the copy); (e) starts the copy with `CreateProcessW` (inherits the elevated token,
+   no second prompt) and `/elevated-child <pipe-name>`, waits for it and returns its exit code. Stage 1 never
+   extracts payloads, never parses the pipe and never reads anything from the download directory except its own
+   image.
+2. **Stage 2** (`/elevated-child`, running from the admin-only directory) verifies its payload table signature
+   (§6.1; and, once signed, `WinVerifyTrust` of its own image with the expected publisher), extracts into the
+   same directory, re-verifies hashes *after* extraction with files opened `FILE_SHARE_READ` only, and only then
+   does the install work (MSI, Dokany). Its application directory is admin-only, so DLL planting there needs
+   admin rights.
+3. A same-user attacker that is already running could still race the image between the UAC prompt and the copy
+   (UAC is not a security boundary, T-60). Authenticode verification in stage 2 closes this once a certificate
+   exists; until then the payload-table signature limits it to swapping in another genuine, signed-table build.
+4. The update path (§9.6) and `setup /uninstall` for per-machine installs use the same two stages.
+
+**Securing `%ProgramData%\ShellDrive` before use (TM-R34, T-63).** Standard users can create subfolders of
+`%ProgramData%`; whoever creates `ShellDrive` first owns it. Before stage 1 (or the MSI hook
+`programdata-secure`, §8.3, for direct `msiexec` installs) touches the folder:
+
+- Each path component is opened with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`; a reparse
+  point anywhere in `%ProgramData%\ShellDrive\…` makes the tree untrusted. Owner and DACL are read **on the
+  opened handle** (`GetSecurityInfo`).
+- Trusted means: owner is Administrators or SYSTEM, the DACL grants write, `WRITE_DAC`, `WRITE_OWNER`, `DELETE`
+  or `FILE_DELETE_CHILD` to nobody else, and the same holds for every existing first-level child (`setup\`,
+  `updates\`, `profiles\`, `service\`, `state\`, `logs\`, `settings.ini`).
+- Untrusted: the folder is renamed aside to `%ProgramData%\ShellDrive.untrusted-<n>` (never followed, never
+  read, never imported; `setup.programdata_untrusted` is logged with the previous owner SID), and a fresh
+  folder is created with `CreateDirectoryW` and the 03 §3.2 security descriptor in the same call. If the
+  rename fails (for example an attacker holds a handle without delete sharing) or the create races with a
+  re-creation, setup aborts with a localized error instead of continuing.
+- Trusted: the 03 §3.2 DACL is re-applied (protected, no inheritance from `%ProgramData%`).
+- Only then are `settings.ini`, `profiles\` (`DEFAULTPROFILES`), `state\`, `updates\` and `logs\` written.
 
 ### 6.5 Command line (setup EXE)
 
 ```
 ShellDrive-<ver>-setup.exe [/quiet | /passive] [/peruser | /permachine | /portable=<dir>]
                            [/dokany=auto|install|skip] [/norestart] [/log=<file>]
+                           (auto = the pre-checked D36 option; skip = WebDAV only; install = also upgrade, §7.3)
                            [/lang=<en|es|fr|pt-BR|it|de>]   (pt accepted as an alias of pt-BR, C42)
                            [/flavour=<x86-ia32|x86-sse2|x64-xp|x64-modern|arm64>] [/extract=<dir>]
                            [/uninstall] [/update]
@@ -513,12 +614,29 @@ by installers.
   `DisplayVersion`, `Publisher`, `DisplayIcon`, `InstallLocation`, `UninstallString` = `"<root>\uninstall.exe"
   /uninstall`, `QuietUninstallString`, `EstimatedSize`, `NoModify=1`, `NoRepair=1`. **[lab-verify]** that XP
   ARP lists HKCU entries.
-- `uninstall.exe` is the stub without payload. It copies itself to `%TEMP%`, relaunches from there, removes the
-  installation, and the temp copy is deleted by `MoveFileEx(…, MOVEFILE_DELAY_UNTIL_REBOOT)` if admin,
-  otherwise left in `%TEMP%` (documented).
+- `uninstall.exe` is the stub without payload and follows the DLL rules of §6.4 (TM-R33).
+  - **Per-user installs** (never elevated): it creates a new directory `%TEMP%\ShellDrive-uninstall-<random>`
+    with `CreateDirectoryW` and an explicit DACL (user and SYSTEM only; fails if it exists), copies itself
+    there, relaunches from there, removes the installation, and leaves the copy for the next `%TEMP%` cleanup
+    (documented). It never elevates from `%TEMP%`; if it finds itself with an administrator token it does not
+    proceed from `%TEMP%` but asks the user to run it unelevated.
+  - **Per-machine installs:** uninstall goes through the MSI (ARP, `msiexec /x`) or `setup /uninstall`, which
+    uses the two elevated stages of §6.4. `uninstall.exe`, if invoked on a per-machine install, runs only from
+    `%ProgramFiles%\ShellDrive` (admin-only) and hands over to `MsiConfigureProductExW`; it never copies itself
+    to `%TEMP%`, and Windows Installer removes the file itself.
 - User data (profiles, `known_hosts`, logs under `%APPDATA%\ShellDrive`) is kept by default; "Also remove my
   settings" checkbox; Credential Manager entries removed only with that checkbox (enumerated by our target
   name prefix, owned by the credentials design).
+- **Caches are always removed (TM-R28, T-54):** every uninstall deletes the uninstalling user's disk cache
+  (`%LOCALAPPDATA%\ShellDrive\cache\`, by `uninstall.exe` per user and by the impersonated `user-cleanup` hook
+  per machine) and, per machine, the service's cache under `%ProgramData%\ShellDrive\`. Other users' caches
+  cannot be reached safely (the SYSTEM context never walks user-writable profile paths, TM-R35); the host
+  deletes a cache whose profile no longer exists at its next start, and the limit is documented next to the
+  Network Shortcuts one.
+- **Uninstall summary (TM-R28):** the last page of the uninstall UI (and the uninstall log, for silent and
+  `msiexec` uninstalls) lists what was kept: user settings, profiles and `known_hosts` when not removed,
+  saved credentials of the current user when not removed, other users' data, caches and Network Shortcuts,
+  machine profiles and settings (`REMOVEDATA=0`), service secrets and keys if `REMOVESECRETS=0`, and Dokany.
 - Dokany is **never removed automatically** (shared component). If ShellDrive installed it
   (`HKLM\Software\ShellDrive\DokanyInstalledBySetup=1`) the uninstaller offers removal, default unchecked.
 - **Network Shortcuts (D14, design in 03 §8.7).** Each entry the agent creates is a read-only folder with
@@ -538,8 +656,14 @@ by installers.
   uninstall calls the hook `modern-menu --revert` (elevated), which uses `PackageManager.RemovePackageAsync` with
   `RemovalOptions.RemoveForAllUsers` (Windows 10 1809+, elevated) so no other user keeps a package pointing at
   the deleted install directory (§10.1).
-- **Service secrets and machine data** (`%ProgramData%\ShellDrive\`, 03 §3.2) are removed only when the admin
-  checks "Also remove settings" (MSI property `REMOVEDATA=1`).
+- **Service secrets and keys are removed by default (TM-R28, T-54):** a per-machine uninstall deletes
+  `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\` (SYSTEM-DPAPI-protected passwords and private
+  keys of global mounts) unless the admin unchecks "Remove the service's saved passwords and keys" (checked by
+  default) or passes `REMOVESECRETS=0`. Implementation: MSI `RemoveFile`/`RemoveFolder` entries in a component
+  conditioned on `REMOVESECRETS=1 AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` (no custom action; upgrades keep
+  them).
+- **Machine profiles and settings** (`%ProgramData%\ShellDrive\`, 03 §3.2) are removed only when the admin
+  checks "Also remove settings" (MSI property `REMOVEDATA=1`, which implies `REMOVESECRETS=1`).
 
 ### 6.8 Portable mode
 
@@ -551,6 +675,11 @@ by installers.
   installed. Credentials: Credential Manager is still used (it is per-user and machine-bound — a
   portable copy on another PC simply prompts again); this is a deliberate exception, see credentials design.
 - `setup.exe /portable=<dir>` extracts the flavour chosen by §6.2; the per-flavour zip is equivalent.
+- **Volumes without persistent ACLs (TM-R29, T-55, T-59):** if `<exe dir>\data\` is on a volume whose
+  `GetVolumeInformationW` flags lack `FILE_PERSISTENT_ACLS` (FAT, exFAT, most USB sticks), the host refuses the
+  disk cache (02 §4.2) and shows a one-time warning that host keys and profiles on this medium can be changed
+  by anyone who has it (03 §1.9). `setup /portable=<dir>` shows the same warning before extracting to such a
+  volume; extraction still proceeds.
 
 ### 6.9 Upgrade in place with running processes
 
@@ -665,12 +794,29 @@ Per-machine mode (MSI does the file work):
   | no VC++ runtime | upstream `Dokan_<arch>.msi` | deploy upstream `Dokan_<arch>.msi` before ShellDrive |
   | `vcruntime140*.dll` | upstream **`DokanSetup.exe` bundle, unmodified** (≈ 19 MB, all arches inside; the x64 offline EXE grows accordingly) | deploy the upstream MSI **and** the VC++ 2015–2022 redistributable as a documented prerequisite; we do not ship the VC++ redistributable ourselves |
 
-  The setup EXE verifies after a Dokany install that `dokan2.dll` loads (`LoadLibraryExW` with
-  `LOAD_LIBRARY_SEARCH_SYSTEM32` where available, then `DokanDriverVersion() != 0`); if it does not load
-  because the VC++ runtime is missing, setup reports it and continues with WebDAV only.
+  After a Dokany install, setup verifies that `dokan2.dll` loads and the driver answers
+  (`DokanDriverVersion() != 0`). The check runs in the installed **native-architecture**
+  `shelldrive-host.exe --selftest` (the `x86-ia32` stub cannot load the x64/ARM64 DLL under WOW64), which loads
+  `dokan2.dll` only by full System32 path: `LoadLibraryExW(<System32>\dokan2.dll, NULL,
+  LOAD_LIBRARY_SEARCH_SYSTEM32)` where the flag is supported, else the same full path with
+  `LOAD_WITH_ALTERED_SEARCH_PATH` (Windows 7 SP1 without KB2533623), so its own imports, including a VC++
+  runtime, also resolve from System32 and never from our or the current directory (02 §6.2). If it does not
+  load because the VC++ runtime is missing, setup reports it and continues with WebDAV only.
 - **Embed** in per-arch setup EXEs (MSI form: x64 adds ≈ 9 MB, x86/ARM64 ≈ 5 MB). **Download on demand** in the
   universal EXE (keeps it small): upstream GitHub URL first (needs TLS 1.2), then our HTTP mirror carrying
   the byte-identical file. Integrity is the pinned SHA-256 in both cases; transport security is irrelevant.
+- **Integrity is checked when used, not only when fetched (TM-R23, T-65):** the `package` job verifies size and
+  SHA-256 of every Dokany file against `dokany.lock` **at embed time**, whether it came from the CI cache or a
+  fresh download (a poisoned cache entry fails the build); setup verifies size and SHA-256 again **at install
+  time**, on the copy in its admin-only stage-2 directory opened `FILE_SHARE_READ` only, immediately before
+  `msiexec`/the bundle runs, and checks the file's Authenticode signature with `WinVerifyTrust` plus the signer
+  subject name recorded in `dokany.lock` (`signer = …`, extracted once from the pinned release **[lab-verify]**).
+  Any mismatch refuses the Dokany install and continues with WebDAV only. On Windows 7 without SHA-2 support
+  the install is skipped earlier (§7.2), so the signer check never has to be weakened.
+- **Deny list (TM-R23, T-42):** the signed update manifest may carry `dokany-deny <min>-<max> <reason-id>`
+  lines (§9.2). Setup applies the list compiled into it plus the one from the last verified manifest it can
+  read; the host (02 §6.3) warns and disables the Dokany backend for listed versions. The bundled version is
+  never on the list at release time (release check).
 - Never modified, never re-signed, never repacked; we ship the upstream file as-is. A self-built Dokany fork
   was rejected (D12): it would need our own EV certificate and attestation signing, load only on Windows 10+,
   and conflict with an existing official Dokany install.
@@ -685,7 +831,8 @@ Per-machine mode (MSI does the file work):
 
 | Found | Action |
 |---|---|
-| Nothing | Install bundled/downloaded MSI (if mode/OS allow and user did not opt out) |
+| Nothing | Install bundled/downloaded MSI if mode/OS allow and the D36 option is checked (`/dokany=auto` or `install`, `DOKANY=1`); unchecked → WebDAV only |
+| Any version on the `dokany-deny` list | Offer upgrade with bundled MSI (default on; silent: upgrade unless `/dokany=skip`); otherwise Dokany backend disabled |
 | 2.x ≥ min API and ≥ bundled | Use it, do nothing |
 | 2.x ≥ min API but < bundled | Use it; offer upgrade (default off; silent mode: no upgrade unless `/dokany=install`) |
 | 2.x < min API (MSI-installed) | Offer upgrade with bundled MSI (default on); otherwise Dokany backend disabled |
@@ -774,7 +921,10 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
 - Our own deferred EXE custom actions are allowed only if they run our own binaries
   (`shelldrive-host.exe --installer-hook <name> --apply|--revert`, the hidden command of 03 §6.1, C7;
   GUI-subsystem, so no console window), are idempotent, and have a rollback counterpart. The hook names are
-  03's: `webdav-tune`, `user-cleanup`, `modern-menu`, `signal-shutdown`. Uses:
+  03's: `webdav-tune`, `user-cleanup`, `modern-menu`, `signal-shutdown`, plus `programdata-secure` (TM-R34, 03 §6.1). Uses:
+  - `programdata-secure` (deferred, `NoImpersonate`, before `CreateFolders`, `WriteIniValues` and `MoveFiles`,
+    install/upgrade/repair): the `%ProgramData%\ShellDrive` check and reset of §6.4 for installs that do not go
+    through our setup EXE (GPO, Intune, `msiexec /i`). It reads no file content, only owners and DACLs.
   - `webdav-tune` (C28): sets only `FileSizeLimitInBytes=0xFFFFFFFF` and
     `FileAttributesLimitInBytes=100000000` under the WebClient parameters, records the original values and
     restores them on uninstall. `BasicAuthLevel` is never touched (A2). Exposed as `WEBDAV_TUNING=1|0`.
@@ -785,10 +935,33 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
   - `signal-shutdown` (deferred, `NoImpersonate`, before `StopServices`, upgrade and uninstall): signals the
     shutdown events of all running agents (§6.9 step 1) when the MSI runs without our setup EXE (ARP, GPO,
     Intune); files still held afterwards fall to the MSI's own Restart Manager/FilesInUse handling.
+- **SYSTEM custom actions and repair (TM-R35, T-64).** A standard user can run `msiexec /fa` (or `/fu`, `/fm`)
+  on the cached package, and deferred `NoImpersonate` actions then run as SYSTEM. Rules:
+  - Conditions (normative; `REINSTALL` is set by every repair):
+
+    | Hook | Context | Condition |
+    |---|---|---|
+    | `programdata-secure --apply` | deferred, SYSTEM | `NOT REMOVE~="ALL"` — runs during repair too: it is itself the protection and reads no content |
+    | `webdav-tune --apply` / `--revert` | deferred, SYSTEM | apply: `WEBDAV_TUNING=1 AND NOT REMOVE~="ALL"` (idempotent, so repair is allowed; the recorded originals in `%ProgramData%\ShellDrive\service\state\webdav-tune.ini` (03 §6.1) are never overwritten by a repeat run); revert: `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` |
+    | `signal-shutdown` | deferred, SYSTEM | `NOT REINSTALL AND (REMOVE~="ALL" OR WIX_UPGRADE_DETECTED)` |
+    | `modern-menu --revert` | deferred, SYSTEM | `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND NOT REINSTALL` |
+    | `user-cleanup --apply` | deferred, **impersonated** | `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE` |
+
+    Each rollback counterpart carries the same condition. No other action of ours runs as SYSTEM.
+  - While its token is SYSTEM, the hook host loads no user configuration (no HKCU, no `%APPDATA%`, no
+    `settings.ini` of a user, no policy beyond HKLM), resolves no environment-relative path (paths come from its
+    own module path, which must be under an admin-owned `[INSTALLDIR]`, and from known-folder APIs for common
+    folders; `CustomActionData` is treated as untrusted and carries only the hook name and fixed flags), opens no
+    window, starts no child process, and applies the DLL rules of §6.4 (`SetDefaultDllDirectories` /
+    full System32 paths). Files it touches are opened with `FILE_FLAG_OPEN_REPARSE_POINT` and owner checks.
+  - CI check (TST-29 support): `tools/sd-msilang --dump-sequences` prints the `InstallExecuteSequence` and
+    `CustomAction` rows of all six MSIs; the `package` job fails if any `NoImpersonate` action lacks the
+    condition above or a new one appears without an entry in this table.
 - `EnableLinkedConnections` (D24): see `ENABLELINKEDCONNECTIONS` in §8.4. Plain `Registry` table component,
   no custom action.
 - Machine settings: `UPDATECHECK`, `UPDATEURL` and `UPDATECHANNEL` are written to
-  `[CommonAppDataFolder]ShellDrive\settings.ini` `[update]` with the native `IniFile` table (MSI 3.1, C8).
+  `[CommonAppDataFolder]ShellDrive\settings.ini` `[update]` with the native `IniFile` table (MSI 3.1, C8),
+  sequenced after `programdata-secure`.
   `HKLM\Software\ShellDrive\Version` is written by the MSI only, for Intune detection.
 - Localization: §8.6.
 
@@ -807,7 +980,9 @@ on). The ARM32 MSI has `Core` (CLI + host only) and `Autostart` only (§5.1).
 | `AUTOSTART` | `1` | Agent autostart for all users (HKLM Run, §8.3) |
 | `WEBDAV_TUNING` | `1` | See §8.3 |
 | `ENABLELINKEDCONNECTIONS` | `0` | D24. `1` writes `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableLinkedConnections = 1` (DWORD) on Vista+ (`VersionNT >= 600`) so elevated processes see per-user mapped drives; takes effect after a reboot (setup returns 3010). An `AppSearch` detects a pre-existing value; if the admin had already set it, the MSI neither writes nor removes it, otherwise uninstall removes the value it wrote. Per-user setup never sets it |
-| `REMOVEDATA` | `0` | Uninstall only: `1` removes `%ProgramData%\ShellDrive\` (machine profiles, settings, service secrets) |
+| `DOKANY` | `1` | D36: mirrors the setup option. The MSI never installs Dokany itself (§8.5); setup passes `DOKANY=0` for `/dokany=skip` or an unchecked box, and `DOKANY=0` writes the machine default `settings.ini [backend] dokany = no` (key owned by 03 §3.4) so ShellDrive stays on WebDAV even if Dokany is present or installed later. `1` writes nothing |
+| `REMOVESECRETS` | `1` | Uninstall only (TM-R28): `1` removes `%ProgramData%\ShellDrive\service\secrets\` and `service\keys\`; `0` keeps them. Not applied during upgrades |
+| `REMOVEDATA` | `0` | Uninstall only: `1` removes `%ProgramData%\ShellDrive\` (machine profiles, settings, state, and — implied — service secrets and keys) |
 
 Policies live in one key, `HKLM|HKCU\Software\Policies\ShellDrive` (HKLM wins; the list and semantics are
 owned by 03 §3.5), override these at run time and are documented in an ADMX/ADML pair shipped in the release
@@ -838,7 +1013,10 @@ MSI cannot nest MSI installs. Options documented for administrators:
 - **GPO Software Installation:** deploy `Dokan_<arch>.msi` (upstream, signed) as its own package ordered before
   ShellDrive (and, if the lock file says `vcruntime = required`, the VC++ 2015–2022 redistributable before
   Dokany, §7.3); properties are passed with an `.mst` (GPO cannot pass properties) — we document creating one
-  with Orca and ship `ShellDrive-defaults.mst` examples (including `SERVICE=0` and `ENABLELINKEDCONNECTIONS`).
+  with Orca and ship `ShellDrive-defaults.mst` examples (including `SERVICE=0`, `DOKANY=0` and
+  `ENABLELINKEDCONNECTIONS`). The admin guide states, as the setup page does (D36), that deploying Dokany installs
+  a signed third-party kernel driver available to every local user; fleets that do not want it deploy
+  ShellDrive alone with `DOKANY=0`.
 - **Intune Win32 app:** two apps (Dokany, ShellDrive) with a *dependency* relationship; detection rule by
   `HKLM\Software\ShellDrive\Version` ≥ X (ProductCode changes every release, so not by ProductCode).
 - **Setup EXE as chainer:** `ShellDrive-<ver>-setup-x64.exe /quiet /permachine /dokany=install
@@ -888,7 +1066,8 @@ MSI cannot nest MSI installs. Options documented for administrators:
   24 h + random 0–6 h jitter, and on demand from the UI/CLI `shelldrive update check|apply [--manifest
   <path>]`, IPC `update.check`/`update.apply`, event `update.available`, C7). The service never downloads
   anything.
-- Flow: fetch manifest → verify signature → compare version → **ask the user** (tray notification + dialog with
+- Flow: fetch manifest (and `keyset.txt` when the manifest names a newer keyset, §9.3) → verify keyset and
+  manifest signature, channel and expiry → compare version → **ask the user** (tray notification + dialog with
   release notes link, "Install now / Later / Skip this version") → download artifact for the current install
   mode and **target flavour** → verify SHA-256 from the manifest → stage → apply → health check → cleanup or
   rollback.
@@ -912,10 +1091,11 @@ the file bytes).
 ```
 shelldrive-manifest 1
 channel stable
+keyset 1
 serial 2026102401
 version 1.0.0
 released 2026-10-24T12:00:00Z
-expires 2027-01-22T00:00:00Z
+expires 2026-11-23T00:00:00Z
 min-os x86-ia32 5.1
 min-os x86-sse2 5.1
 min-os x64-xp 5.2
@@ -937,6 +1117,7 @@ file msi-arm64 ShellDrive-1.0.0-arm64.msi ...
 file portable-x86-ia32 ShellDrive-1.0.0-portable-x86-ia32.zip ...
 file portable-x64-modern ShellDrive-1.0.0-portable-x64-modern.zip ...
 dokany 2.3.1.1000 x64 Dokan_x64.msi 9269248 sha256:69ff8cb37bfec3a75921c85ffd1c6370b50a9ec4ecef2cf3a009d488dcbf5465
+dokany-deny <min-version>-<max-version> <reason-id>        (zero or more lines, TM-R23)
 base https://github.com/<org>/shelldrive/releases/download/v1.0.0/
 base http://dl.<our-domain>/releases/1.0.0/
 sig ed25519 <key-id-16hex> <signature-base64>
@@ -946,23 +1127,69 @@ sig ed25519 <key-id-16hex> <signature-base64>
   the sig line>`. Verification code is in `sd_crypto` (shared with SSH ed25519); `tools/sd-release` signs.
 - Unknown keys are ignored (forward compatible); unknown `shelldrive-manifest` major version → "update the
   application manually".
-- **Anti-rollback:** `serial` must be > last accepted serial, stored as `last_serial` in the `state\`
-  directory (C8): per user `<LocalAppData>\ShellDrive\state\last_serial` (written by the agent), per machine
-  `%ProgramData%\ShellDrive\state\last_serial` (written by the elevated setup after a per-machine update; users
-  can read but not write it), portable `<exe dir>\data\state\last_serial`. The agent uses the maximum of the
-  values it can read. **Freeze protection:** `expires` in the past → "cannot verify updates" (no install). A
-  stale mirror can therefore delay, but never downgrade or forge.
-- Channels: `stable`, `beta`. Each channel has its own manifest URL.
+- **Channel binding (TM-R37, T-67):** a manifest is accepted only if its `channel` equals the configured channel
+  and its `sig` key is authorized for that channel by the current keyset (§9.3). A beta-signed manifest is
+  therefore never accepted on stable, and a stable key cannot sign beta.
+- **Anti-rollback per channel (TM-R37):** `serial` must be > the last accepted serial **of the same channel**,
+  stored as `last_serial.<channel>` (`last_serial.stable`, `last_serial.beta`) in the `state\` directory (C8):
+  per user `<LocalAppData>\ShellDrive\state\` (written by the agent), per machine `%ProgramData%\ShellDrive\state\`
+  (written by the elevated setup after a per-machine update; users can read but not write it), portable
+  `<exe dir>\data\state\`. The agent uses, per channel, the maximum of the values it can read. A huge beta
+  serial therefore cannot block stable updates. The pre-integration single `last_serial` file is migrated to
+  `last_serial.<configured channel>` once. Switching from beta to stable installs nothing until a stable
+  version greater than the installed one exists (no downgrade, §8.2).
+- **Freshness (TM-R36, T-66):** `expires` is at most **30 days** after `released`/re-signing for `stable` and at
+  most **14 days** for `beta` (`sd-release` refuses longer values); `expires` in the past → "cannot verify
+  updates" (no install). The release process re-signs the current manifest of each channel every two weeks with
+  a new serial (§12.3), so a hostile mirror or network can hide a security fix for at most about a month. The
+  agent records `last_verified.<channel>` (time of the last successful verification) in `state\`; after
+  14 days without a fresh manifest the UI shows the staleness notice (03 §7.7, string `warn.update_stale`,
+  "ShellDrive could not check for updates for {days} days."; text and placement owned by 03). A stale mirror can therefore delay, but never downgrade or forge.
+- `dokany-deny <min>-<max> <reason-id>` (TM-R23): Dokany versions the host must not use (§7.3, 02 §6.3); the
+  host keeps the list from the last verified manifest of its channel in `state\`.
+- Channels: `stable`, `beta`. Each channel has its own manifest URL and its own release key (§9.3).
 
 ### 9.3 Keys
 
-- Two trusted public keys compiled into binaries: `release-primary` and `release-backup` (backup kept offline in
-  a separate location). Key ID = first 8 bytes of SHA-256(public key).
-- Key rotation: a release signed by a currently-trusted key ships binaries with the new key set.
-  Compromise of one key: release with the other key that removes it.
-- Beta channel uses a separate `beta` key that CI may hold (GitHub secret, environment-protected). **Stable
-  manifests are signed offline** by the maintainer with `sd-release sign` (encrypted key file, passphrase,
-  offline machine). Binaries trust the beta key only for `channel beta` manifests.
+TUF-style split of roles (TM-R37, T-67): offline root keys decide which keys may sign; online release keys sign
+manifests and payload tables only and cannot change who is trusted.
+
+| Role | Keys | Held where | Signs |
+|---|---|---|---|
+| **root** | `root-a` (the former `release-backup`) and `root-b`, ed25519 | offline only, on two separate encrypted media in two locations, never on a networked machine and never in CI | `keyset.txt` |
+| **release-stable** | one active ed25519 key (plus at most one overlapping successor during rotation) | the maintainer's offline signing machine, encrypted key file with passphrase | stable `manifest.txt`, stable payload tables (§6.1), `SHA256SUMS.sig` |
+| **release-beta** | one active ed25519 key | GitHub environment secret `beta-signing` (protected, required reviewer = maintainer) | beta manifests, beta payload tables |
+
+- Key ID = first 8 bytes of SHA-256(public key). The two **root public keys** and the keyset current at build
+  time (`installer/keys/`) are compiled into every binary and stub.
+- **Keyset format** (`keyset.txt`, same line syntax and size limit as the manifest):
+
+  ```
+  shelldrive-keyset 1
+  version 3
+  issued 2026-10-24T00:00:00Z
+  key <key-id> stable <pubkey-base64> 2026-10-24 2028-10-24
+  key <key-id> beta <pubkey-base64> 2026-10-24 2027-10-24
+  revoke <key-id> <reason-id>
+  sig ed25519 <root-key-id> <signature-base64>
+  ```
+
+  Signed with the domain string `"ShellDrive keyset v1\n"`. A keyset is valid if signed by **either** root key;
+  a keyset that changes the root keys (`root <key-id> <pubkey>` lines) needs signatures by **both** current
+  roots. Keyset `version` is monotonic: clients store the highest accepted one in `state\keyset` (with the
+  file) and refuse lower versions, so revocations cannot be rolled back; the compiled-in keyset is the floor.
+- **Using it:** the manifest names the keyset version it needs (`keyset <n>`); if that is higher than the stored
+  one the agent fetches `keyset.txt` from the same base URLs, verifies it against the roots, stores it, then
+  verifies the manifest. The `sig` key must be listed for the manifest's channel, inside its validity dates,
+  and not revoked.
+- **Rotation:** the maintainer signs, offline with a root key, a keyset version `n+1` that adds the new release
+  key; releases signed with the new key name `keyset n+1`; a later keyset removes the old key.
+- **Compromise of a release key** (for example the CI-held beta key): a root-signed keyset revokes it and
+  authorizes a replacement; every client that sees any newer manifest fetches the keyset and rejects the old
+  key from then on. The compromised key cannot prevent this because it cannot sign keysets. **Compromise of
+  one root key:** a keyset signed by both roots replaces it. Loss of both roots needs a manual reinstall with
+  new binaries (documented).
+- Re-signing for freshness (TM-R36) uses the release keys only; root keys are touched only for keyset changes.
 
 ### 9.4 Transport
 
@@ -1018,6 +1245,10 @@ do not apply to update traffic.
 - Staging dir: per-user `%LOCALAPPDATA%\ShellDrive\updates\<version>\`; per-machine downloads by the user's
   agent go there too, then the elevated setup **copies them into an admin-only directory and re-verifies
   signature and hash** before execution (no TOCTOU, no execution from user-writable paths while elevated).
+  Concretely the per-machine update runs the two elevated stages of §6.4 (TM-R33, T-70): stage 1 is started from
+  the user's staging folder but creates no window and loads no non-KnownDLL module; it copies the setup EXE into
+  a fresh `%ProgramData%\ShellDrive\setup\<random>` directory and stage 2 re-verifies the manifest signature, the
+  file hash from the manifest and the payload table before doing anything else.
 - Apply: launch `setup.exe /update /passive` (per-machine: via `runas` → UAC; XP limited user: "ask an
   administrator to install this update" and stop).
 - Per-user mode rollback: setup keeps `<root>\.rollback\<oldver>\`; after install it starts
@@ -1069,6 +1300,25 @@ real certificate by adding secrets.
   ([SAC FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)) —
   this is the strongest reason to obtain a certificate before a public 1.0.
 - Windows 11 modern context menu: see §10.1.
+
+**Interim rules while binaries are unsigned (TM-R38, T-71, D38).** Users who learn to click through "Windows
+protected your PC" cannot tell a trojaned look-alike from our build. Until the Authenticode certificate exists:
+
+- **No public download links.** No GitHub release is published as public, no mirror path is linked from the
+  README or a web page, and no manifest on a public URL points at unsigned builds. Builds go to **named
+  testers** only (private repository releases or a private mirror path, §9.5).
+- Each tester build is accompanied by `SHA256SUMS` and its ed25519 `SHA256SUMS.sig`; the fingerprints (key IDs
+  and full public keys) of the root and release keys are published in the repository `README.md`, so they come
+  over an authenticated channel separate from the download. Tester instructions: compare the setup EXE's
+  SHA-256 (`certutil -hashfile <file> SHA256` on Vista+) with `SHA256SUMS` obtained from the repository, never
+  run a ShellDrive EXE from any other source, and expect the SmartScreen warning only for files whose hash
+  matched. Machines with Smart App Control in enforcement mode cannot run tester builds; we do not advise
+  turning it off.
+- The setup stub verifies its own payload table against the compiled-in keyset and refuses on mismatch (§6.1);
+  existing installs update only through the signed manifest (§9).
+- Before crypto review pass 1 (end of M2, D38) tester builds show "pre-release, cryptography not yet externally
+  reviewed" on the first setup page, and tester instructions recommend test servers and test keys.
+- The gates for wider distribution are in §12.3 ("Release gates").
 
 ### 10.1 Sparse MSIX package for the Windows 11 modern context menu (D27)
 
@@ -1140,7 +1390,7 @@ else in the installer changes when it is OFF.
 
 | Job | Runner | Steps |
 |---|---|---|
-| `build` matrix `{x86-ia32, x86-sse2, x64-xp, x64-modern, arm32, arm64}` | windows-2022 | setup-xp-toolset (v141_xp flavours only) → `cmake --preset` → build Release+Debug → `sd-importcheck` (flavour floor list, CFG/CET bits) → `sd-isacheck` (`x86-ia32` only) → upload `bin-<flavour>` artifact. `arm32` is `continue-on-error` only if the maintainer marks ARM32 as dropped (D5) |
+| `build` matrix `{x86-ia32, x86-sse2, x64-xp, x64-modern, arm32, arm64}` | windows-2022 | setup-xp-toolset (v141_xp flavours only) → `cmake --preset` → build Release+Debug → `sd-importcheck` (flavour floor list, CFG/CET bits) → `sd-isacheck` (`x86-ia32` only) → `sd-ctcheck` (all flavours; on `x86-ia32`, `x86-sse2` and `arm32` it also fails on any compiler runtime helper call such as `_allmul`/`_aullmul` from constant-time code, 01 §2.7.5, TM-R02; M0 gate, TST-03) → upload `bin-<flavour>` artifact. `arm32` is `continue-on-error` only if the maintainer marks ARM32 as dropped (D5) |
 | `analysis` | windows-2022 | `x64-analysis` preset: `/std:c11` build of everything, `/analyze`, ASan unit tests |
 | `l10n` | windows-2022 | `sdl10n --check`: completeness in all six locales, placeholder sets, CLDR plural categories per locale, no plural messages in `.wxl`/ADML subsets, register lint (D26, C41) |
 | `unit-x86` matrix `{x86-ia32, x86-sse2}` | windows-2022 | download artifact → run `sd-test-*.exe` under WOW64 (CTest, JUnit XML). The IA32 run covers the scalar crypto paths; the SSE2 run additionally forces each SIMD path off and on (`SD_CPU_MASK`) |
@@ -1148,8 +1398,10 @@ else in the installer changes when it is OFF.
 | `crypto-diff` | windows-2022 | D1/D2: `sd-test-crypto --diff-cng` on `x64-modern` and `x86-sse2`: randomized differential tests of our SHA-2/HMAC, AES-CTR/GCM, ECDH/ECDSA P-256/384/521, RSA, X25519/Ed25519 (where CNG has them) against CNG, plus all Wycheproof and RFC vectors. CNG is a reference only, never linked into shipping code paths for hashes |
 | `unit-arm64` | windows-11-arm | same as `unit-x64` for `arm64` (+ `crypto-diff` on ARM64) |
 | `integration` | windows-2022 | §11.3 (runs `x64-modern`; a reduced auth/transfer set also runs `x64-xp` and `x86-sse2`) |
-| `package` | windows-2022 | needs build: payload CABs (six flavours) → six MSIs (WiX 3.14, ICE validation) → `sd-msilang` transforms → sparse MSIX (only with `SD_SPARSE_MSIX=ON`) → setup EXEs → test-sign → `sd-release manifest --unsigned` → artifacts |
-| `install-smoke` | windows-2022 | silent per-user install/upgrade/uninstall, per-machine MSI install/upgrade/uninstall (service on by default, then `SERVICE=0`); universal EXE (expects `x64-modern` on Server 2022), `/flavour=x64-xp`, `/flavour=x86-sse2`; same-version flavour switch `x64-xp` → `x64-modern` MSI; language transform selection for es-AR (11274) and pt-PT (2070); Dokany install optional step **[verify drivers can be installed on hosted runners]** |
+| `package` | windows-2022 | needs build: Dokany files verified against `dokany.lock` (size, SHA-256, signer; at embed time, also when served from the cache, TM-R23) → payload CABs (six flavours) → six MSIs (WiX 3.14, ICE validation) → `sd-msilang` transforms → `sd-msilang --dump-sequences` custom-action condition check (TM-R35, §8.3) → sparse MSIX (only with `SD_SPARSE_MSIX=ON`) → setup EXEs with a test-key payload-table signature → test-sign → `sd-release manifest --unsigned` → artifacts |
+| `release-checks` | windows-2022 | TST-30 on every Release build: no `none` cipher or test-only flags, no fuzz hooks, no test certificates or test keys (only `installer/keys/` public keys), no `__DATE__`/`__TIME__` strings; `sd-importcheck --stub` (KnownDLLs-only imports, no delay-load, TM-R33) |
+| `workflow-lint` | windows-2022 | TM-R39/TST-32: every `uses:` is a first-party (`actions/*`) or in-repo (`./.github/actions/*`) action pinned by a 40-hex commit SHA; no `pull_request_target`; every workflow declares top-level `permissions: contents: read` and widens only per job; `release.yml` and `resign.yml` contain no `actions/cache` and no restore of other workflows' artifacts; `CODEOWNERS` covers `.github/` and `installer/` |
+| `install-smoke` | windows-2022 | silent per-user install/upgrade/uninstall, per-machine MSI install/upgrade/uninstall (service on by default, then `SERVICE=0`); universal EXE (expects `x64-modern` on Server 2022), `/flavour=x64-xp`, `/flavour=x86-sse2`; same-version flavour switch `x64-xp` → `x64-modern` MSI; language transform selection for es-AR (11274) and pt-PT (2070); `DOKANY=0` / `/dokany=skip` writes the WebDAV-only default; per-machine uninstall removes `service\secrets\`/`service\keys\` by default and keeps them with `REMOVESECRETS=0`, and the uninstall log lists what was kept (TM-R28); `%ProgramData%\ShellDrive` pre-created by a non-admin test account is renamed aside before any file is written (TM-R34, reduced TST-29); Dokany install optional step **[verify drivers can be installed on hosted runners]** |
 
 `ARM32` binaries cannot run on any hosted runner (Windows 11 24H2+ ARM64 images no longer run ARM32), so ARM32
 tests run only in the lab.
@@ -1168,10 +1420,26 @@ comparisons, on `x86-ia32`, `x86-sse2`, `x64-modern` and `arm64` builds. Hosted 
 failure triggers a rerun on the lab's dedicated machine before it is reported; results are trended, and a
 confirmed leak blocks the next release.
 
-`release.yml` (tag `v*`): §12.3. `lab.yml`: dispatched to the self-hosted lab runner (§11.4).
+`release.yml` (tag `v*`): §12.3. `lab.yml`: dispatched to the self-hosted lab runner (§11.4). `resign.yml`
+(scheduled every 14 days, TM-R36): re-signs the current beta manifest with a new serial and `expires` using the
+`beta-signing` environment, and opens a maintainer issue for the stable re-signing (offline key, §12.3) when the
+stable manifest has 16 days or less left.
 
 Caching: no package downloads exist for our own code; caches are used for fuzz corpora, the WSL fixture rootfs
-tarball, Dokany MSIs (key = hash of `dokany.lock`), and CMake build trees for PRs only (never for releases).
+tarball, Dokany MSIs (key = hash of `dokany.lock`; their hash is verified when used, TM-R23), and CMake build
+trees for PRs only. **`release.yml` reads no cache at all** (TM-R39): it downloads Dokany files fresh and checks
+them against `dokany.lock`.
+
+**Workflow hardening (TM-R39, T-72).** Only first-party Actions pinned by commit SHA (updates by reviewed PR
+only); minimal `GITHUB_TOKEN` permissions (`contents: read` by default; only the job that creates the draft
+release gets `contents: write`, only `resign.yml` gets `issues: write`); release tags are signed (`git tag -s`)
+and protected (only the maintainer may create `v*`), and `release.yml` verifies the tag signature against the
+maintainer key in the repository before building; `CODEOWNERS` requires maintainer review for `.github/`,
+`installer/`, `cmake/SdSign.cmake` and `tools/sd-release/`; signing secrets live in protected environments with
+a required reviewer. Integration fixtures (WSL rootfs, `sshd`, litmus) and the lab run in jobs with a read-only
+token whose outputs are test reports only — release artifacts come exclusively from the build and package jobs
+and are never re-uploaded by a test job. The self-hosted lab runner (§11.4) accepts only `lab.yml` on `main`
+and tags (no PR or fork workflows).
 
 ### 11.3 Integration tests
 
@@ -1217,6 +1485,16 @@ in the repository.
 
 Windows RT 8.1 runs only Microsoft-signed desktop code, so it is "not runnable" rather than tested. ARM32
 "best effort" in practice means Windows 10 on ARM64 and Windows 11 up to 23H2 (§5.1).
+
+**Security lab runs (05 §7).** The lab also runs the threat-model tests that need real OS versions:
+
+| Test | Milestone / priority | VMs | What |
+|---|---|---|---|
+| TST-29 installer elevation | M4, P1 | XP SP3, 7 SP1, 10, 11 | Procmon "NAME NOT FOUND" capture in the stub's directory for setup, both elevated stages, `uninstall.exe` and the update path; planted-DLL canaries (`version.dll`, `cryptbase.dll`, `uxtheme.dll`, `dwmapi.dll`, `cabinet.dll`, `msi.dll`…) in `Downloads`, `%TEMP%` and the update staging folder must never load in an elevated process (TM-R33); `%ProgramData%\ShellDrive` pre-created by a standard user (owner, DACL, junctions, pre-seeded `settings.ini`/`profiles\`) before install and before service start (TM-R34); `msiexec /fa` and `/fu` as a standard user under Procmon: no SYSTEM process touches a user-writable path (TM-R35); Dokany MSI with wrong hash or signer refused (TM-R23) |
+| TST-27 uninstall residue | M4, P2 | 7, 10, 11 | per-user and per-machine (setup, ARP, `msiexec /x`, SYSTEM/Intune), with and without "remove data"/`REMOVESECRETS=0`; list every remaining secret, cache and registry value and compare with §6.7 and the uninstall summary (TM-R28) |
+| TST-31 updater | M4, P1 | XP SP3 (HTTP), 7, 11 | against a lab mirror: tampered manifest/file, replayed old manifest, expired manifest, beta-signed manifest on stable, beta serial poisoning, keyset rollback, revoked key, key rotation across two keysets, redirect to a foreign host, oversized responses, interrupted downloads, stale-information warning after 14 days (TM-R36, TM-R37) |
+| TST-32 provenance | M4, P2 | dedicated clean build VM (not a runner) | the maintainer's independent rebuild of the release tag (§12.3) and hash comparison with CI |
+| TST-19/TST-26 | M0/M5 | as listed in 05 §7 | Dokany isolation and global WebDAV criteria (owned by 02, run here) |
 
 **D11 spike (early M5, go/no-go per OS):** on XP SP3, Server 2022 and Windows 11, check whether a WebDAV
 mapping made by the LocalSystem-hosted service can be made visible to all users. The result is recorded per OS
@@ -1272,22 +1550,58 @@ Goal: two clean builds of the same tag on the pinned toolchain produce byte-iden
   `SOURCE_DATE_EPOCH` in a post-step with `MsiSummaryInfoSetProperty`.
 - Toolchain fingerprint (`cl.exe`/`link.exe` versions, SDK versions, WiX version, CMake version) is recorded in
   `build-info.txt` inside the symbols zip.
-- `release.yml` builds twice on two independent runners and compares SHA-256 of all unsigned outputs; signing
-  happens only after the comparison passes. Authenticode signatures are excluded from comparison
-  (`signtool remove /s` for verification by third parties).
+- `release.yml` builds twice on two runners and compares SHA-256 of all unsigned outputs; signing happens only
+  after the comparison passes. Authenticode signatures are excluded from comparison (`signtool remove /s` for
+  verification by third parties).
+- The double CI build proves **determinism, not provenance** (T-72): both runs use the same workflow, Actions,
+  runner image and provider, so a compromise there yields identical malicious outputs. Provenance comes from
+  the **maintainer's independent rebuild** (TM-R39, TST-32): before any stable signing, the maintainer builds
+  the signed tag from a clean checkout on a separate machine that is not a GitHub runner (the lab's dedicated
+  build VM restored from a clean snapshot, or another clean machine), with the toolchain installed from the
+  privately archived VS layout pinned by `.vsconfig` (§15 R1), running the same CMake presets and packaging
+  steps as CI by hand (no GitHub Action involved; the only downloads are the pinned Dokany files, checked
+  against `dokany.lock`), and compares the SHA-256 of every unsigned output and the toolchain
+  fingerprint in `build-info.txt` with the CI draft. Any difference stops the release.
 
 ### 12.3 Release process
 
+**Release gates (D38, TM-R38, D29).** Each gate is a checklist item in the release PR and is checked by
+`release.yml` against a `release-gates.txt` record in the repository (maintainer-edited, CODEOWNERS-protected):
+
+| Distribution | Requires |
+|---|---|
+| Named testers (private) | Lab pass; interim rules of §10 while unsigned; before crypto pass 1, the "not yet externally reviewed" notice |
+| **Public beta** (public links, public beta manifest) | External crypto review **pass 1** (end of M2: all SSH and crypto code, D38) completed and its findings closed; **and** Authenticode signing in place (TM-R38: no public download links for unsigned builds) |
+| **1.0 and later stable** | Crypto review **pass 2** closed (D38, TST-33); certificate (D29); all P3 tests of 05 §7; independent maintainer rebuild (TM-R39) |
+
+**Steps**
+
 1. Bump `VERSION`, update `CHANGELOG.md`, PR, merge to `main`.
-2. Push tag `vX.Y.Z` (protected; only maintainers).
-3. `release.yml`: double build + compare → unit/integration → package → lab smoke (all VMs) → Authenticode
-   signing (when configured, in a protected environment) → `SHA256SUMS`, unsigned `manifest.txt` → **draft**
-   GitHub release with all artifacts + Dokany source mirror.
-4. Maintainer, offline: downloads `manifest.txt`/`SHA256SUMS`, verifies them against the draft assets with
-   `sd-release verify`, signs with the stable key, uploads `manifest.txt` (signed) and `SHA256SUMS.sig`.
-5. Publish the release; the workflow `publish-mirror` copies the identical files to the HTTP mirror.
-   Updating the channel manifest pointer (`stable/manifest.txt`) is the last step.
-6. Beta channel: steps 3–5 automated with the CI-held beta key.
+2. Push a **signed** tag `vX.Y.Z` (protected; only the maintainer).
+3. `release.yml` (pinned Actions, no caches, minimal permissions, §11.2): verify the tag signature → double build
+   + compare → unit/integration → package with **unsigned payload tables** → lab smoke (all VMs) → draft
+   artifacts plus `payload-tables.txt` (the payload table of every setup EXE).
+4. Maintainer, independent rebuild (stable only, TST-32): rebuild the tag outside GitHub as in §12.2 and compare
+   all unsigned outputs with the draft; stop on any difference.
+5. Maintainer, offline signing session 1 of 2 (stable, D42): verify `payload-tables.txt` against the rebuilt payloads with
+   `sd-release verify`, sign them with the `release-stable` key, upload the signatures.
+6. `release.yml` job `finalize` (manually approved environment): insert the `PAYLOAD_SIG` resources →
+   Authenticode signing (when configured, protected environment) → `SHA256SUMS`, unsigned `manifest.txt`
+   (`expires` ≤ 30 days, `keyset` = current) → **draft** GitHub release with all artifacts + Dokany source mirror.
+7. Maintainer, offline signing session 2 of 2 (D42): verify `manifest.txt`/`SHA256SUMS` against the draft assets with
+   `sd-release verify` (which also checks that each setup EXE, after `signtool remove /s` and removal of
+   `PAYLOAD_SIG`, equals the rebuilt one from step 4), sign with the `release-stable` key, upload
+   `manifest.txt` (signed) and `SHA256SUMS.sig`.
+8. Publish the release; the workflow `publish-mirror` copies the identical files to the HTTP mirror.
+   Updating the channel manifest pointer (`stable/manifest.txt`) is the last step. If the keyset changed, the
+   root-signed `keyset.txt` is published to every base before the manifest that names it.
+9. **Re-signing (TM-R36):** every 14 days the current manifest of each channel is re-signed with a new serial and
+   a new `expires`, content otherwise unchanged: beta by `resign.yml`, stable by the maintainer offline
+   (`sd-release resign`, prompted by the `resign.yml` issue), then uploaded to both bases.
+10. Beta channel: steps 3–8 automated with the CI-held `release-beta` key behind the `beta-signing` environment
+    (no independent rebuild required, but public betas still need the gates above).
+11. Key ceremony (rare): keyset changes are signed offline with a root key (both roots for root changes) and
+    committed to `installer/keys/keyset.txt` for future builds.
 
 Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
 
@@ -1301,7 +1615,11 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
   Dokany redistributable form used, and the MSI `TRANSFORMS` passed.
 - Updater log entries go to the agent log (format owned by 03, `sd_log` component `upd`) with stable English
   event IDs (`update.check`, `update.verify_failed`, `update.applied`, `update.rolled_back`,
-  `update.flavour_switch`).
+  `update.flavour_switch`, `update.keyset_updated`, `update.key_revoked`, `update.channel_mismatch`,
+  `update.expired`, `update.stale`).
+- Setup security events (English, setup log and, per machine, the Application Event Log): `setup.programdata_untrusted`
+  (folder renamed aside, previous owner SID), `setup.payload_sig_invalid`, `setup.dokany_verify_failed`
+  (hash or signer), `setup.dokany_denied`, and the uninstall summary of kept items (§6.7).
 - `shelldrive diag --bundle` (03; replaces the earlier `diag collect` name, C7) includes the latest setup/update
   logs.
 
@@ -1327,6 +1645,10 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
 - A CNG differential-test mode in `sd-test-crypto` (`--diff-cng`) and dudect-style timing tests (§11.2, D1/D2).
 - Fuzz entry points (`LLVMFuzzerTestOneInput`) for parsers listed in §11.2 live in `tests/fuzz/`.
 - 01 §12.1 refers to §3.2 for all compiler/linker flags (C36).
+- `sd_ed25519_verify` with domain-separated messages is also used for `keyset.txt` and the payload table
+  (§6.1, §9.3); the code it pulls into `sd_stubcore` stays free of non-KnownDLL imports (TM-R33).
+- External review in two passes (D38): pass 1 at the end of M2 (all SSH and crypto code) gates public betas,
+  pass 2 before 1.0 (§12.3).
 
 **Filesystem team (02)**
 - Declare the minimum Dokany API version in `installer/dokany/dokany.lock`; load `dokan2.dll` dynamically and
@@ -1334,6 +1656,9 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
 - `webdav-tune` sets only the two values in §8.3 (C28); never `BasicAuthLevel`.
 - 02 §6.1/§6.3 refer to §7.2/§7.3 for SHA-2 detection, the upgrade decision table and the redistributable form
   (C31, C32, D32).
+- Honor `dokany-deny` from the last verified manifest (warn, disable the Dokany backend; TM-R23) and the
+  machine default `[backend] dokany = no` written by `DOKANY=0` (D36).
+- Refuse the disk cache on volumes without `FILE_PERSISTENT_ACLS` (TM-R29, §6.8).
 
 **Apps team (03)**
 - Each agent creates and waits on `Global\ShellDrive.agent.shutdown.<SID>.<SessionId>` (manual-reset, DACL in
@@ -1345,8 +1670,17 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
   `shelldrive-host.exe --installer-hook <webdav-tune|user-cleanup|modern-menu|signal-shutdown> --apply|--revert`
   (names and semantics owned by 03 §6.1); `update check|apply`,
   `diag --bundle`, `diag --fix webclient` (C7).
-- Update settings in `settings.ini [update] enabled, channel, manifest_url`, `last_serial` in `state\`,
-  policies in `HKLM\Software\Policies\ShellDrive` (C8, §9.1).
+- Update settings in `settings.ini [update] enabled, channel, manifest_url`; in `state\`:
+  `last_serial.<channel>`, `last_verified.<channel>`, `keyset` and the cached `dokany-deny` list (TM-R36,
+  TM-R37); policies in `HKLM\Software\Policies\ShellDrive` (C8, §9.1). UI notice `warn.update_stale` (03 §9.6)
+  after 14 days (TM-R36).
+- New installer hook `programdata-secure` (TM-R34, §8.3) in 03 §6.1's list; the hook host's SYSTEM-mode rules
+  of §8.3 (no user configuration, no environment-relative paths, no window, no child process; TM-R35); 03 §3.2
+  states that setup creates or resets `%ProgramData%\ShellDrive` with its DACL before use (§6.4).
+- Settings key `[backend] dokany = yes|no` in the machine `settings.ini` (D36, §8.4).
+- Portable mode: one-time warning on volumes without persistent ACLs (TM-R29, 03 §1.9).
+- Per-machine uninstall removes `service\secrets\` and `service\keys\` unless `REMOVESECRETS=0`; caches are
+  always removed; the host deletes caches of deleted profiles at start (TM-R28, §6.7).
 - Portable detection via `sd_platform_is_portable()` and `shelldrive.portable`.
 - Shell extension: DLL may be loaded from `shellext\<version>\`; the `Local\ShellDrive.state.<SID>` layout is
   versioned and architecture-independent and `--action` verbs are additive only (C5); registration is declared
@@ -1366,17 +1700,21 @@ Hotfix: branch `release/X.Y` from the tag, cherry-pick, tag `vX.Y.(Z+1)`.
 | R1 | v141_xp is deprecated; could disappear from the VS installer or the `windows-2022` image could be retired | Pin VS2022 17.14 via `.vsconfig`; offline layout (`vs_buildtools --layout`) archived privately; self-hosted runner switch (§11.1) |
 | R2 | ARM32: SDK 22621 is the last with libs, VS2026 dropped ARM32, Windows 11 24H2+ can't run ARM32, RT runs no third-party code | ARM32 stays "best effort" (D5) with an EXE and an MSI (D31) for Windows 10 on ARM64 / Windows 11 ≤ 23H2; dropped from a release as soon as the toolchain breaks |
 | R3 | Dokany driver signature type and HVCI compatibility unknown | Lab checks §7.2; skip Dokany cleanly when it would not load |
-| R4 | Unsigned binaries blocked by Smart App Control; SmartScreen warnings; the sparse MSIX (D27) cannot exist without a certificate | Certificate from SignPath Foundation, else Certum OSS, obtained before public 1.0 (D29); without it 1.0 ships the classic menu only |
+| R4 | Unsigned binaries blocked by Smart App Control; SmartScreen warnings train users to click through, so look-alike installers are indistinguishable (T-71); the sparse MSIX (D27) cannot exist without a certificate | Certificate from SignPath Foundation, else Certum OSS, obtained before public 1.0 (D29); until then no public links, named testers, signed `SHA256SUMS`, payload-table signature check (TM-R38, §10); without it 1.0 ships the classic menu only |
 | R5 | XP root store and SHA-1 timestamping availability for dual-signing | Verify with the chosen CA; XP users may see "unknown publisher" — acceptable |
 | R6 | WiX 3.14 out of support; ARM64 support in 3.14 had bugs; ARM32 (`Arm` template) support in 3.14 unverified | No WiX custom actions, explicit InstallerVersion, ICE validation; migrate to v6+ (accept EULA/OSMF terms) if 3.14 breaks; MSI-from-`msi.dll` fallback (the same code as `sd-msilang`) |
 | R7 | HTTP mirror long-term cost | Static object storage with plain HTTP (D30); signature makes any provider safe |
 | R8 | Driver installs (Dokany) and WSL may not work on hosted runners | Lab coverage is the fallback; CI marks those jobs optional |
 | R9 | `/Brepro` and WiX determinism on v141 | Verify early; post-processing fallback (§12.2) |
 | R10 | Six flavours roughly double build, test and lab time (D4, D28) | Flavours share all source; CI runs all six on every PR for build + unit, the full integration set only on `x64-modern`; lab rotates second flavours weekly, never for releases |
-| R11 | Own crypto, including field arithmetic, bignum and ML-KEM, with no vendored verified code (D1) | Wycheproof + RFC vectors, CNG differential tests, fuzzing, nightly constant-time tests (§11.2), and an external crypto review before 1.0 as a release gate |
+| R11 | Own crypto, including field arithmetic, bignum and ML-KEM, with no vendored verified code (D1) | Wycheproof + RFC vectors, CNG differential tests, fuzzing, nightly constant-time tests (§11.2), and an external crypto review in two passes as release gates: pass 1 at the end of M2 before any public beta, pass 2 before 1.0 (D38, §12.3) |
 | R12 | `x86-ia32` correctness cannot be proven on hosted runners (all have SSE2, and SDE flags SSE2 inside Windows' own DLLs) | `sd-isacheck` static audit in CI; the QEMU non-SSE2 VM is mandatory in the release lab run |
 | R13 | `dokan2.dll` may need the VC++ runtime (C31) | Lab check in the first week of M4; bundle form in offline EXEs and a documented prerequisite for MSI deployments (§7.3) |
 | R14 | Network Shortcuts of other users survive a per-machine uninstall (D14) | Dead links only; host cleanup at start; documented (§6.7) |
+| R15 | Update key management: stable releases need two offline signing sessions plus a re-signing every 14 days; a single compromised root key can still authorize a release key (keysets need one root signature, TM-R37) | Fixed calendar and `resign.yml` reminders; stable `expires` 30 days leaves 16 days of slack; roots on separate offline media in two locations, touched only for keyset ceremonies; a both-roots keyset replaces a compromised root (§9.3) |
+| R16 | XP, Vista and 7 without KB2533623 have no `SetDefaultDllDirectories`; system code may still load a planted `uxtheme.dll`/`dwmapi.dll` from the download directory into the **unelevated** setup UI | No elevated instance ever creates UI or loads non-KnownDLL modules from there (two-stage elevation, §6.4); residual is same-user code execution only; TST-29 canaries on XP and 7 |
+| R17 | A running same-user attacker can swap the setup image between the UAC prompt and stage 1's copy while binaries are unsigned | Payload-table signature limits it to another genuine build; closed by `WinVerifyTrust` in stage 2 once Authenticode exists (§6.4, D29) |
+| R18 | GitHub Actions/runner-image compromise yields identical outputs in both CI builds (T-72) | Independent maintainer rebuild outside GitHub before stable signing, pinned first-party Actions, no caches in releases, CODEOWNERS, signed tags (TM-R39, §11.2, §12.2) |
 | Q2 | Exact SHA-2 support detection method on Windows 7 for gating Dokany | Lab: compare `ci.dll` versions with and without KB4474419 |
 | Q3 | Do x86 (and x64 on ARM64) shell-extension copies need registering for file dialogs of emulated/32-bit apps? | Lab test on x64 and ARM64; default yes on x64 |
 | Q6 | XP ARP lists HKCU uninstall entries; HKCU COM shell extensions on XP | Lab verify; if not, per-user mode on XP registers only the Start-menu uninstall shortcut and no shell extension |
@@ -1414,3 +1752,36 @@ as `shelldrive-host.exe --installer-hook … --apply|--revert` (§6.7, §8.3, §
 `DisableModernContextMenu`); §8.5 no longer says service global drives need Dokany (C27 is superseded by D11);
 `webdav-tune` hint for per-user installs matches 02; sparse-package item types follow 03 §8.6. §3.2 already had
 the two x86 flavours per D4 (only `x86-sse2` binaries carry the refusing entry thunk).
+
+Threat-model integration 2026-10-24 (`05-threat-model.md` §8, as decided by D33–D39): **TM-R23** (Dokany
+SHA-256 checked at embed and at install time, `WinVerifyTrust` + pinned signer name in `dokany.lock`,
+`dokany-deny` manifest lines and decision-table row; §7.3, §9.2, §11.2), **TM-R28** (`REMOVESECRETS=1` default
+removes `service\secrets\`/`service\keys\`, caches always removed, uninstall summary; §6.7, §8.4), **TM-R29**
+(portable warning and cache refusal on volumes without persistent ACLs; §6.8), **TM-R33** (KnownDLLs-only static
+imports enforced by `sd-importcheck --stub`, no delay-load, `SetDefaultDllDirectories` with `SetDllDirectoryW(L"")`
+fallback on XP/Vista/7, full System32 paths, `/DEPENDENTLOADFLAG:0x800`, two-stage elevation that runs the
+elevated work only from a copy in a fresh admin-only directory, `uninstall.exe` never elevated from `%TEMP%`,
+`dokan2.dll` checked from the native host by full System32 path; §2.4, §3.2, §6.4, §6.7, §7.3, §9.6), **TM-R34**
+(`%ProgramData%\ShellDrive` owner/DACL/reparse check on the handle, rename-aside and fresh creation with an
+explicit SD, also as the new MSI hook `programdata-secure`; §6.4, §8.3), **TM-R35** (normative custom-action
+condition table, no SYSTEM action during repair except idempotent ones, SYSTEM-mode rules for the hook host,
+CI dump of `InstallExecuteSequence`; §8.3), **TM-R36** (`expires` ≤ 30/14 days, re-signing every 14 days via
+`resign.yml` and offline stable re-signing, "N days old" warning; §9.2, §11.2, §12.3), **TM-R37** (offline
+root keys certifying per-channel release keys in a versioned, root-signed `keyset.txt` with rotation and
+revocation, channel binding, `last_serial.<channel>`; §9.2, §9.3), **TM-R38** (no public links while unsigned,
+named testers, signed `SHA256SUMS`, key fingerprints in the README, stub refuses an invalid payload-table
+signature; §6.1, §10), **TM-R39** (first-party Actions pinned by SHA, minimal permissions, no caches in
+releases, signed protected tags, CODEOWNERS, fixtures in read-only jobs, independent maintainer rebuild outside
+GitHub before stable signing; §11.2, §12.2, §12.3). **D36** (TM-Q06): Dokany is an explicit, pre-checked
+option on the per-machine page (7 SP1+) that explains the third-party kernel driver, with `/dokany=skip` and
+the MSI property `DOKANY=0` meaning WebDAV only (§6.3, §6.5, §7.3, §8.4, §8.5). **D38** (TM-Q09): two-pass
+crypto review as release gates, no public beta before pass 1 (§10, §12.3, §15 R11). Tests wired in: TST-27,
+TST-29, TST-30, TST-31, TST-32 (§11.2 `package`, `release-checks`, `workflow-lint`, `install-smoke`; §11.4
+security lab runs). New risks R15–R18. Items for other documents: 03 §6.1 (hook `programdata-secure`, SYSTEM
+rules), 03 §3.2/§3.4 (`%ProgramData%` reset by setup, `[backend] dokany`, `state\` files), 03 UI string for stale
+update information, 02 §6.3 (`dokany-deny`, `DOKANY=0`), 02 §4.2/03 §1.9 (TM-R29).
+
+Final reconciliation (threat model) 2026-10-24: `sd-ctcheck` constant-time disassembly gate in the `build` job
+and `tools/` (01 §2.7.5, TM-R02, TST-03; §4, §11.2); signing sessions labelled D42 (§12.3); staleness text is 03's
+`warn.update_stale` (§9.2, §14); `webdav-tune` originals live in 03's `service\state\webdav-tune.ini`, not HKLM
+(§8.3); `programdata-secure` is now in 03 §6.1. The items listed above for 02 and 03 are present there.

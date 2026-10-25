@@ -6,6 +6,10 @@ crypto review (01 §2.7.6). It does not edit 01–04. Where it finds a gap it st
 test** and collects the design changes as `TM-Rxx` (section 8). Decisions the user should look at again are
 `TM-Qxx` (section 9).
 
+**Outcome (2026-10-24):** the user decided TM-Q01–Q09 and accepted TM-R01–R39 with adjustments in `decisions.md`
+D33–D43; 01–04 applied them. Section 11 records the outcome and where each `TM-R` now lives. Where a `TM-R` text
+below differs from that outcome, `decisions.md` and the owning document win.
+
 Inputs: `docs/requirements.md`, `decisions.md` (authoritative), `00-integration-review.md`, `01`–`04`.
 References like "01 §7.1" point into those documents. Threat ids are `T-xx`, tests are `TST-xx`, assets `A-xx`,
 trust boundaries `TB-xx`, attackers `AT-xx`.
@@ -54,7 +58,7 @@ risk (H/M/L), and what is missing.
 | A-06 | Local caches and state (`cache\`, `state\`, menu cache, snapshot section) | `%LOCALAPPDATA%`, `%ProgramData%\ShellDrive\service\cache` (03 §3.2) | C, I |
 | A-07 | Profiles, settings, policies, machine templates | `%APPDATA%`/`%ProgramData%` INI, `HKLM/HKCU\Software\Policies\ShellDrive` (03 §3.2–§3.5) | I |
 | A-08 | WebDAV per-mount path token, SSPI-authenticated connections | agent/service memory, UNC strings (02 §7.3, §7.4) | C |
-| A-09 | Update signing keys (`release-primary`, `release-backup`, `beta`) and the anti-rollback state | maintainer offline machine, CI secret, `state\last_serial` (04 §9.2, §9.3) | C, I |
+| A-09 | Update signing keys (`release-primary`, `release-backup`, `beta`) and the anti-rollback state | maintainer offline machine, CI secret, `state\last_serial.<channel>`, `state\keyset` (04 §9.2, §9.3) | C, I |
 | A-10 | Release pipeline and artifacts (source, toolchain, CI, Authenticode, mirror) | GitHub, runners, HTTP mirror (04 §11, §12) | I |
 | A-11 | The machine's privilege boundary (installer, service, MSI, Dokany kernel driver) | SYSTEM, kernel (03 §1.3, 04 §6–§8) | I, E |
 | A-12 | Windows logon credentials of the user (NTLM/Kerberos) | used by SSPI towards proxies and our loopback server (01 §5.2, 02 §7.4) | C |
@@ -629,25 +633,25 @@ Priority: P1 blocks the milestone demo, P2 blocks the next milestone, P3 blocks 
 | TST-02 | M1 | P1 | New fuzz targets missing from 01 §12.2 / 04 §11.2: `sd_json` + IPC dispatch (agent and service), `sd_ini` (profiles, settings, overrides), the snapshot reader of the shell DLL, `.sdmount` parser, HTTP request line/headers incl. `If:`, `Range`, `Destination`, `Timeout`, chunked decoder, percent-decoder + name map stage 2; `ssh_config` and PuTTY session importers in M2 | T-37, T-46, T-47, T-61 |
 | TST-03 | M0 | P1 | Constant-time: disassembly check fails on any call to `_allmul`, `_aullmul`, `_alldiv`, `_aulldiv`, `_allrem`, `_aullrem` from `*_ct_*`, field, scalar, ladder, bignum-ct and ML-KEM code on `x86-ia32`, `x86-sse2`, `arm32`; dudect classes include "high word zero" inputs on 32-bit flavours (from M1) | T-03 |
 | TST-04 | M0 | P1 | Crypto KAT/Wycheproof/CNG-differential per primitive as in 01 §2.7, plus negative transcripts: all-zero X25519 output, invalid ECDH points, non-canonical Ed25519 S, Poly1305/GCM tag single-bit flips, decryption output never released before MAC (01 §2.4 rule 7) | T-04 |
-| TST-05 | M0 | P1 | Name mapping property tests: for every UTF-16 string, `from_wide(to_wide(x))` never yields `/`, NUL, or a component `.`/`..`; inverse of U+F000..U+F07F outside the forward set is rejected; mock-server dirents with `/`, NUL, `.`, `..`, empty, duplicates, colliding mappings, 64 KiB names, reserved device names | T-23, T-24, T-27 |
+| TST-05 | M0 | P1 | Name mapping property tests: for every UTF-16 string, `from_wide(to_wide(x))` never yields `/`, NUL, or a component `.`/`..`; code points of U+F000..U+F07F outside the forward set are never decoded by the stage-2 inverse (they pass through unchanged as UTF-8, so U+F000/U+F02F never become NUL or `/`); mock-server dirents with `/`, NUL, `.`, `..`, empty, duplicates, colliding mappings, 64 KiB names, reserved device names | T-23, T-24, T-27 |
 | TST-06 | M1 | P1 | WebDAV path tests: `%2F`, `%5C`, `%00`, `%2e%2e`, overlong UTF-8, mixed-case escapes, `Destination` with another authority/token/port, `..` beyond the prefix; all → 400/403/502, never a remote call outside the root | T-25 |
-| TST-07 | M2 | P2 | Symlink tests on the WSL fixture: links to `/`, `../..`, loops, FIFO, `/dev/zero`; `follow`, `hide` and (after TM-R13) `follow_inside` | T-26 |
+| TST-07 | M2 | P2 | Symlink tests on the WSL fixture: links to `/`, `../..`, loops, FIFO, `/dev/zero`; `follow_inside` (the default, D40), `follow` and `hide` | T-26 |
 | TST-08 | M1 | P2 | Malicious-server DoS corpus in the mock `sd_sftp` and a patched test sshd: READDIR without EOF, 10^7 entries, 10^5 symlinks, 2^64−1 sizes, statvfs overflow values, 25 s drip-fed replies; assert caps, deadlines, bounded memory | T-30 |
 | TST-09 | M1 | P1 | Loopback WebDAV attack suite: second local user (SSPI 403), anonymous/Guest NTLM, wrong token (404 before 401), browser-origin requests from Chrome/Edge/Firefox (fetch `no-cors`, form POST, `<img>`, DNS rebinding to 127.0.0.1, wrong `Host`), 64 idle/slowloris connections from another user while the owner copies a file, body sent before auth; WebClient connection reuse across sessions for per-user servers (lab, M1 on 7/10, XP in M1 lab) | T-31, T-33, T-34, T-36, T-37 |
 | TST-10 | M1 | P1 | Port squat: kill the agent (`TerminateProcess`) with a mapped WebDAV drive; a second user binds the port; assert the drive is unmapped within 5 s (TM-R17) and no request reaches the squatter; on XP, a second user's `SO_REUSEADDR` bind fails | T-32 |
 | TST-11 | M0 | P1 | Host-key negatives: mismatch blocks (M0 demo); NEW_TYPE for a known host fails without prompt after TM-R04 (M0 for ed25519 vs ecdsa as soon as ECDSA exists, M2); after "remove old key + TOFU", stored password is not auto-sent (M2); reconnect with a changed key never prompts without `is_reconnect` UI | T-08, T-09, T-10 |
 | TST-12 | M2 | P1 | Terrapin interop: a test MITM proxy (test-only, never shipped) that performs the published prefix truncation against a non-strict server; with TM-R01 the connection uses a non-affected cipher or fails; with strict KEX the injection is fatal | T-01 |
-| TST-13 | M2 | P1 | Legacy policy matrix on lab servers (3DES/group1/old OpenSSH): `allow/warn/ask/refuse` behave as documented; no legacy algorithm is chosen when a modern one is offered; GEX < 2048 handling per TM-Q01 | T-02 |
+| TST-13 | M2 | P1 | Legacy policy matrix on lab servers (3DES/group1/old OpenSSH): `allow/warn/ask/refuse` behave as documented; no legacy algorithm is chosen when a modern one is offered; group1 and GEX < 2048 stay enabled, ranked last, with the warning (D33; TM-Q01 rejected) | T-02 |
 | TST-14 | M2 | P2 | Live sources: `~/.ssh/known_hosts` writable by another user is ignored with a warning; wildcard-only lines do not yield MATCH; mismatch in a source blocks | T-11 |
 | TST-15 | M2 | P1 | UpdateHostKeys negatives (list in T-12) | T-12 |
 | TST-16 | M2 | P2 | Pool: DNS round robin to two servers with different keys or homes; member dropped, pool disabled, primary unaffected | T-14 |
 | TST-17 | M2 | P2 | Agent squatting: second user creates `\\.\pipe\openssh-ssh-agent`; Pageant window class registered by a low-IL process; client refuses both | T-16, T-17 |
 | TST-18 | M2 | P1 | Proxy NTLM harvesting: a test proxy answering `407 NTLM` without being configured for SSPI, and a WPAD-discovered proxy; no SSPI token leaves unless TM-R10 conditions hold; Squid Kerberos path still works in the lab domain | T-20 |
 | TST-19 | M0/M5 | P2 | Dokany isolation: second user (RDP/FUS) opens `\\?\Z:` and the device of a per-user mount → denied; SYSTEM-context service with another user's request; synthesized DACL contains no `Everyone` ACE for per-user mounts (TM-R22) | T-41 |
-| TST-20 | M3 | P1 | Explorer content lab: remote folder with `.library-ms`, `.searchConnector-ms`, `.url`, `.lnk` whose icons point at `\\<lab-smb>\x`, plus `desktop.ini` in a mode-0555 directory; capture outbound SMB/NTLM on both backends, XP–11; verify TM-R14 behavior | T-28 |
+| TST-20 | M3 | P1 | Explorer content lab: remote folder with `.library-ms`, `.searchConnector-ms`, `.url`, `.lnk` whose icons point at `\\<lab-smb>\x`, plus `desktop.ini` in a mode-0555 directory; capture outbound SMB/NTLM on both backends, XP–11; verify `shell_active_files` (block by default through `security.trust = untrusted`, show for `trusted`; D41) | T-28 |
 | TST-21 | M3 | P2 | Zone and MotW lab: zone of files on each backend; SmartScreen on an unsigned EXE and Office Protected View on a `.docm` opened from the drive; with TM-R15 option on/off | T-29 |
 | TST-22 | M1 | P2 | WebClient cache: location and ACL per OS (XP, 7, 10, 11) with two users | T-39 |
-| TST-23 | M5 | P1 | IPC ACL suite (XP, 7, 10, 11): pipe squat by a second user (agent and service), anonymous/identification clients, non-elevated admin on mutating service methods, low-IL and AppContainer clients refused, 32-instance exhaustion by a non-admin while an elevated admin still connects (TM-R25), `prompt`/`log` topics refused to non-admins, `attach_info` schema and membership | T-44–T-46, T-49 |
+| TST-23 | M5 | P1 | IPC ACL suite (XP, 7, 10, 11): pipe squat by a second user (agent and service), anonymous/identification clients, non-elevated admin on mutating service methods, low-IL and AppContainer clients refused, 32-instance exhaustion by non-admins (per-SID quota of 4 instances) while an elevated admin still connects through the 2 reserved instances, 64 KiB request cap and 10 requests/s rate limit for non-admins (TM-R25, 03 §2.2), `prompt`/`log` topics refused to non-admins, `attach_info` schema and membership | T-44–T-46, T-49 |
 | TST-24 | M3 | P1 | Snapshot squat: second user in the same session (`runas`) and a low-IL process pre-create `Local\ShellDrive.state.<SID>`, the ready event and the mutex; agent refuses, shell DLL ignores foreign-owned sections; fuzzed snapshot never crashes the DLL (run inside a test host and inside Explorer in the lab) | T-47, T-60 |
 | TST-25 | M5 | P1 | Service inputs: service profile key file replaced through a junction between check and use; key file with a user-writable ACL; profile in a user-writable folder → refused | T-51 |
 | TST-26 | M5 | P1 | Global WebDAV G1–G7 per OS (02 §7.7 + TM-R18 G7 negatives) | T-52 |
@@ -681,7 +685,9 @@ Format: id, document § to change, change, rationale.
   offer only the stored key types (plus their cert variants with a matching `@cert-authority`) in the host-key list.
   `SD_HK_NEW_TYPE` then cannot occur through negotiation; if it still does (server lacks every stored type), fail
   with `host_key_type_unavailable` and point to the host key manager. New types are learned through UpdateHostKeys
-  or an explicit "add key" action. *Rationale:* T-09 (matches OpenSSH behavior for known hosts).
+  or an explicit "add key" action. *Rationale:* T-09 (matches OpenSSH behavior for known hosts). *Applied:* the
+  "add key" action obtains the other key type inside a connection verified with a stored key
+  (`sd_ssh_conn_fetch_hostkeys`: `hostkeys-prove-00`, else a re-key restricted to that type; 01 §4.3, 03 §6.1).
 - **TM-R05** — 03 §4.2, §2.5; 01 §6.7. If the host key of any hop was accepted by TOFU or "Connect once" in this
   connection, `sd_mount` does not answer password, passphrase-for-server or kbd-int prompts from stored secrets or
   the reconnect cache for that connection. The prompt is shown with a note ("this server's identity was just
@@ -719,12 +725,14 @@ Format: id, document § to change, change, rationale.
   by `realpath`; targets outside the mount root's realpath are shown as dangling (0-byte `HIDDEN|SYSTEM`) and cannot
   be opened. Default for `scope = service` and `scope = users` profiles with a non-empty `remote_path`; `follow`
   stays the default otherwise. Document that the mount root is not a confinement boundary in `follow` mode.
-  *Rationale:* T-26.
+  *Rationale:* T-26. *Decided (D40):* `follow_inside` is the default for **every** profile.
 - **TM-R14** — 02 §4.1, §6.4; 03 §3.4.1. New profile key `shell_active_files = show | block` (default `block` for
   profiles marked `trust = untrusted`, else `show`): with `block`, `.library-ms`, `.searchConnector-ms`, `.url`,
   `.lnk`, `.scf` and `desktop.ini` are listed but opening them for read from Explorer (`explorer.exe` requestor on
   Dokany; WebDAV GET) returns access denied. Admin guide: recommend "Restrict NTLM: outgoing NTLM traffic to remote
-  servers" where possible. *Rationale:* T-28. (Exact extension list confirmed by TST-20.)
+  servers" where possible. *Rationale:* T-28. (Exact extension list confirmed by TST-20.) *Decided (D41):*
+  `security.trust = untrusted | trusted`, default `untrusted`, which blocks shell-active files for every process
+  (not only `explorer.exe`); `trusted` allows them; `shell_active_files` overrides per profile.
 - **TM-R15** — 02 §1.1, §6.4. After TST-21, add the profile option `mark_of_the_web = off | internet` (Dokany only):
   with `internet`, mount with `DOKAN_OPTION_ALT_STREAM` and expose a synthetic read-only `:Zone.Identifier` stream
   (`ZoneId=3`, `HostUrl=sftp://host/path`) on every regular file; all other stream names stay rejected.
@@ -762,7 +770,8 @@ Format: id, document § to change, change, rationale.
 - **TM-R24** — 03 §3.4.1; 02 §6.4, §7.7. `service_access` has no implicit default: the editor pre-fills
   `BUILTIN\Users` with a warning but saving requires the field; add `service_access_write` (SID list, default
   empty = read-only for non-admins) so the volume SD and the vfs check agree; the Event Log records the user SID of
-  each mutating operation at info level (repudiation). *Rationale:* T-43.
+  each mutating operation at info level (repudiation). *Rationale:* T-43. *Decided (D35):* no pre-filled
+  `BUILTIN\Users`; the admin must choose; Event 1200 (03 §10.3).
 - **TM-R25** — 03 §2.2, §2.4, §2.6. Service pipe: per-SID instance quota of 4 and two instances reserved for elevated
   administrators; topics `prompt`, `log` and `hostkeys` and the `status` details (host, user, proxy legs) only for
   elevated admins, non-admins see letter, label and state of mounts they are in `service_access` for.
@@ -783,7 +792,7 @@ Format: id, document § to change, change, rationale.
   (`FILE_PERSISTENT_ACLS` absent), the disk cache is refused, and portable mode shows a one-time warning that host
   keys and profiles on this medium can be changed by anyone who has it. *Rationale:* T-55, T-59.
 - **TM-R30** — 03 §10.4; 01 §2.4 rule 8. Use a `MiniDumpCallback` that drops the stacks of SSH I/O threads and KDF
-  workers (`IncludeThreadCallback`/`ThreadCallback`), or writes them only with `--include-secret-stacks`; crypto and
+  workers (`IncludeThreadCallback`/`ThreadCallback`) (*decided, D43:* always; there is no `--include-secret-stacks`); crypto and
   prompt-handling functions wipe stack buffers holding secrets before return; after our dump the filter calls
   `TerminateProcess` so WER does not collect a second report. *Rationale:* T-57.
 - **TM-R31** — 03 §10.1, §10.5; admin guide (00 §4 "User documentation"). Remote paths only at debug level except in
@@ -868,3 +877,78 @@ Format: id, document § to change, change, rationale.
 - WER consent and settings: [Microsoft Learn: WER settings](https://learn.microsoft.com/en-us/windows/win32/wer/wer-settings).
 - Facts already cited in 01–04 (WebDAV redirector parameters, intranet credential rules, Dokany versions and
   options, Credential Manager persistence on Home SKUs, SmartScreen and Smart App Control) are not repeated here.
+
+---
+
+## 11. Status (integration of 2026-10-24)
+
+### 11.1 Decisions on `TM-Qxx`
+
+| Id | Outcome |
+|---|---|
+| TM-Q01 | **Rejected** (D33): legacy algorithms, including DH group1 and small GEX groups, stay enabled by default, ranked last, warning only; profiles and policy can still restrict. |
+| TM-Q02 | Not needed (D34): TM-R01 applied; `refuse_terrapin_exposed` stays `no`. |
+| TM-Q03 | Kept (D7, D39) with TM-R06. |
+| TM-Q04 | Kept (D6, D39) with TM-R25. |
+| TM-Q05 | Accepted (D35): no implicit `service_access`; non-admins read-only unless in `service_access_write`. |
+| TM-Q06 | Accepted (D36): Dokany is an explicit, pre-checked setup option explaining the kernel driver; MSI property `DOKANY`. |
+| TM-Q07 | Accepted (D37): `identities_only = yes` by default when a profile configures an identity. |
+| TM-Q08 | Kept (D39) with TM-R05. |
+| TM-Q09 | Accepted (D38): external crypto review pass 1 at the end of M2 (all SSH + crypto), pass 2 before 1.0; no public betas before pass 1. |
+
+Further decisions on the recommendations: D40 (`follow_inside` default for every profile, TM-R13), D41
+(`security.trust`, default `untrusted`, gates shell-active files, TM-R14), D42 (two offline signing sessions for
+stable releases, TM-R37/R39), D43 (03's additions kept, `--include-secret-stacks` removed, TM-R30).
+
+### 11.2 Where each `TM-Rxx` is applied
+
+All are accepted (D39); "adjusted" names the decision that changed the recommendation.
+
+| Id | Applied in | Notes |
+|---|---|---|
+| TM-R01 | 01 §4.2, §4.3; 03 §3.4.1, §7.6 | D34 |
+| TM-R02 | 01 §2.4 rule 3, §2.7.5; 04 §11.2 (`sd-ctcheck`) | M0 gate, TST-03 |
+| TM-R03 | 03 §5.2, §5.3; 01 §7.1 (`via_host`) | |
+| TM-R04 | 01 §4.3, §7.1, §9; 03 §5.2, §6.1, §6.2 | `host_key_type_unavailable` (exit 6); "add key" via `sd_ssh_conn_fetch_hostkeys` |
+| TM-R05 | 01 §6.4, §6.7; 03 §2.5, §4.6 | flag `hostkey_just_accepted` |
+| TM-R06 | 01 §7.2; 03 §5.1 | `warning hostkey_source_insecure` |
+| TM-R07 | 03 §3.2; 01 §7.2 | |
+| TM-R08 | 01 §6.5; 03 §2.2 | `sd_pipe_verify_server`, `warning agent_untrusted` |
+| TM-R09 | 01 §6.1, §10.7; 03 §2.5 | |
+| TM-R10 | 01 §5.2; 03 §3.5, §3.8 | policy `AllowSystemProxySspi` |
+| TM-R11 | 02 §1.2; 01 §10.7 | |
+| TM-R12 | 01 §10.3, §10.5; 02 §1.6, §7.5 | |
+| TM-R13 | 02 §6.9; 03 §3.4.1 | adjusted by D40 |
+| TM-R14 | 02 §4.5; 03 §3.4.1 | adjusted by D41 (all processes, trust default `untrusted`) |
+| TM-R15 | 02 §4.5, §6.4; 03 §3.4.1 | `mark_of_the_web` default `off` pending TST-21 |
+| TM-R16 | 02 §1.4, §6.5, §6.6 | |
+| TM-R17 | 02 §7.3, §7.4; 03 §1.2, §1.4, §10.4 | |
+| TM-R18 | 02 §7.4, §7.7 | |
+| TM-R19 | 02 §7.4; 03 §3.5, §7.5 | policy `AllowWebDavTokenOnly` |
+| TM-R20 | 02 §7.3, §7.5 | |
+| TM-R21 | 02 §7.2, §10.1; 03 §10.5 | |
+| TM-R22 | 02 §3.3 | |
+| TM-R23 | 02 §6.2, §6.3, §10.1; 04 §7.3, §9.2; 03 §10.5 | |
+| TM-R24 | 02 §6.4, §6.7, §7.7; 03 §3.4.1, §10.3 | adjusted by D35; Event 1200 |
+| TM-R25 | 03 §2.2, §2.4, §2.6 | |
+| TM-R26 | 03 §1.2, §1.6, §2.2, §8.2 | |
+| TM-R27 | 03 §2.6, §3.2 | |
+| TM-R28 | 04 §6.7, §8.4; 03 §4.7 | `REMOVESECRETS=1` default |
+| TM-R29 | 02 §4.2; 03 §1.9; 04 §6.8 | |
+| TM-R30 | 03 §10.4; 01 §2.4 rule 8, §12.1 | adjusted by D43; `sd_dump_mark_sensitive()` |
+| TM-R31 | 03 §10.1, §10.5; 01 §12.1 | |
+| TM-R32 | 03 §8.1, §8.7 | |
+| TM-R33 | 04 §2.4, §6.1, §6.4, §6.7 | |
+| TM-R34 | 04 §6.4, §8.3; 03 §3.2, §6.1 | hook `programdata-secure`, `service repair-data` |
+| TM-R35 | 04 §8.3; 03 §6.1 | |
+| TM-R36 | 04 §9.2, §11.2, §12.3; 03 §7.7 | `warn.update_stale` |
+| TM-R37 | 04 §9.2, §9.3; 03 §3.4 | `last_serial.<channel>`, `keyset`; D42 |
+| TM-R38 | 04 §10, §12.3 | with D38 release gates |
+| TM-R39 | 04 §11.2, §12.2, §12.3 | |
+
+## Changelog
+
+- Final reconciliation (threat model) 2026-10-24: outcome note in the header; TST-05 says "never decoded" instead of
+  "rejected"; TST-07, TST-13, TST-20 and TST-23 (per-SID quota, reserved instances, 64 KiB cap) follow D33, D40,
+  D41 and 03 §2.2; decision notes on TM-R04, R13, R14, R24, R30; A-09 per-channel state; new section 11 (Q
+  outcomes, TM-R placement).

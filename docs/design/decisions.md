@@ -16,7 +16,7 @@ Where this file differs from the review's recommendation, this file wins.
 | D9 | **Write mode configurable per profile; default is synchronous (write-through).** Write-behind (16 MiB window, 60 s grace retransmit, always-on `write_failed` notification) is opt-in. | Amendment A5 rewritten: "By default every write is acknowledged by the server before it completes for the application. Profiles may opt into write-behind, in which case …". Performance targets in 02 §11 must state which mode they assume. |
 | D10 | uid/gid without exec: owner of home + first created file; `identity_probe = exec` optional per profile. | |
 | D11 | **Attempt global WebDAV drives.** Investigate in the lab whether a LocalSystem-hosted WebDAV mount can be made visible globally (XP/2003 documented behavior, Vista+ unknown). Dokany global drives remain the primary path. | Lab spike scheduled early in M5 with a go/no-go; if no-go on an OS, that OS falls back to per-user attach at logon. Amendment A4 rewritten accordingly. |
-| D12 | **Symlink reparse points postponed** (no fork, no upstream work for now). v1: `follow` (default) or `hide`. Revisit after 1.0. | Amendment A3. A self-built Dokany fork was rejected: it would need our own EV cert + attestation signing, which only loads on Win10+, and conflicts with an existing official Dokany install. |
+| D12 | **Symlink reparse points postponed** (no fork, no upstream work for now). v1: `follow` or `hide` (default superseded by D40: `follow_inside`). Revisit after 1.0. | Amendment A3. A self-built Dokany fork was rejected: it would need our own EV cert + attestation signing, which only loads on Win10+, and conflicts with an existing official Dokany install. |
 | D13 | Amendments A1–A9 accepted **as adjusted by this file** (A3, A4, A5, A6, A8 changed above). | |
 | D14 | **"Add network location" (Network Shortcuts) in v1.** | Moves from M7 into M3. |
 | D15 | **ML-KEM hybrid KEX (`mlkem768x25519-sha256`) in v1, milestone M2.** No sntrup761. | Own ML-KEM-768 and SHA-3/SHAKE (D1). |
@@ -37,6 +37,18 @@ Where this file differs from the review's recommendation, this file wins.
 | D30 | Update mirror: static plain-HTTP object storage, integrity via ed25519 manifest. | |
 | D31 | **Ship an ARM32 MSI** too. | |
 | D32 | Dokany redistributable: official per-arch MSIs if `dokan2.dll` has no VC++ runtime dependency; otherwise the official `DokanSetup.exe` bundle in offline EXEs. | |
+| D33 | **Legacy algorithms stay as decided (maximum compatibility)**: enabled by default, ranked last, UI warning only. Threat-model Q01 (ask + 2048-bit floor) rejected. | Includes DH group1 and small GEX groups. The UI warning and `legacy_mask` remain; profiles/policy can still restrict. |
+| D34 | **Terrapin: choose the cipher after the server's KEXINIT (TM-R01).** If the server lacks strict KEX, avoid chacha20-poly1305 and CBC+ETM and prefer AES-GCM/CTR; if only affected ciphers exist, connect with the exposure flag and warning. | Q02 not needed. |
+| D35 | **No implicit `service_access` default for global drives**: the admin must choose who can access when creating a service profile; non-admins are read-only unless granted write. | Replaces the `BUILTIN\Users` default. |
+| D36 | **Dokany install is an explicit, pre-checked option** on the setup page (7 SP1+), explaining it installs a signed third-party kernel driver; unchecking leaves WebDAV only. An MSI property mirrors it. | |
+| D37 | **`identities_only = yes` by default when a profile configures an identity**: only that key (and its certificate) is offered. | |
+| D38 | **External crypto review in two passes**: pass 1 at the end of M2 (all SSH + crypto), pass 2 before 1.0. No public betas before pass 1. | |
+| D39 | **All other threat-model recommendations TM-R02..R39 accepted**, adjusted by D33. | |
+| D40 | **Symlinks default to `follow_inside`** (links resolving outside the mount root appear dangling); `follow` and `hide` remain profile options. Supersedes the "follow (default)" part of D12. | |
+| D41 | **Shell-active files (`.library-ms`, `.url`, `.scf`, `.lnk`, remote-icon `desktop.ini`, …) are gated by profile trust**: `security.trust = untrusted` (the default) blocks them for every process; `trusted` allows them. `shell_active_files` can override per profile. | |
+| D42 | **Stable releases use two offline signing sessions** (payload tables first, then the update manifest over the final EXEs). | |
+| D43 | **Keep 03's additions** (`service repair-data`, hidden `--watch-elevated-view`, service-pipe `attention` topic and `reserved_letters`, `security.trust`) **except `--include-secret-stacks`, which is removed**: crash dumps never include secret-bearing stacks. | |
+| D44 | **`mark_of_the_web` defaults to `off`, independent of `security.trust`** (pending user confirmation; set during the threat-model reconciliation). | Tying it to the `untrusted` default (D41) would tag every file on a Dokany drive with Mark-of-the-Web. |
 
 ## Resulting build flavours
 

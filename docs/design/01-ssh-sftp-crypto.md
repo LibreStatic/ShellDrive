@@ -1,7 +1,10 @@
 # 01 - SSH, SFTP and crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`)
 
 Status: design, updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
-where they differ) and to the resolutions of `00-integration-review.md` that concern this module.
+where they differ) and to the resolutions of `00-integration-review.md` that concern this module. Threat-model
+integration 2026-10-24: the recommendations of `05-threat-model.md` §8 that target this module (`TM-Rxx`, as
+accepted by decisions.md D33-D39) are applied in place; each change cites its `TM-R` and threat (`T-xx`) ids, the
+security tests (`TST-xx`, 05 §7) are mapped in section 12.4, and section 17 lists them.
 Scope: the three protocol and crypto modules under the mount backends. The filesystem layer (`sd_vfs`), the
 WebDAV and Dokany backends, the UI, credential storage and the installer are designed elsewhere. They only use the
 public APIs in sections 9 and 10 (`sd_sftp.h`, plus the few `sd_ssh.h` types it re-exports).
@@ -19,16 +22,16 @@ are written `decisions.md D<n>`.
 | D1 | One **I/O thread per connection chain** (target host plus all ProxyJump hops), running an event loop on non-blocking Winsock sockets with `WSAEventSelect` and `WaitForMultipleObjects`. No IOCP. CPU-heavy or blocking work (key decryption KDFs, agent IPC, DNS) runs on short-lived worker threads (`QueueUserWorkItem`, XP+). |
 | D2 | All public APIs are **asynchronous with completion callbacks** that run on the connection's I/O thread. Each callback is invoked exactly once when submission returned `SD_OK`, and never from inside the submitting call. Sync wrappers exist for the CLI and tools. |
 | D3 | Crypto dispatch: **CNG where it implements the exact construction we need and is present on that OS version** (AES, 3DES, ECDSA/ECDH, RSA), otherwise our own constant-time C. XP always uses our own code; CryptoAPI is only used for the RNG on XP. Hashes and HMAC are always our own code, and CNG serves only as a differential-test reference for them (decisions.md D2). X25519, Ed25519, ChaCha20-Poly1305@openssh, finite-field DH, ML-KEM, SHA-3/SHAKE, bcrypt-pbkdf, Argon2, Blowfish and BLAKE2b are always our own code (section 2.2 has the reasons). |
-| D4 | Algorithm preference: modern algorithms first, legacy enabled but always last. Every session exposes a `legacy_mask` bit set for UI warnings, including a Terrapin-exposure bit, and can hold the connection before userauth for a legacy acknowledgement (`SD_PROMPT_LEGACY_ACK`). |
-| D5 | Strict KEX (`kex-strict-c-v00@openssh.com`) and `ext-info-c` are always offered. `mlkem768x25519-sha256` (the OpenSSH 10 default) ships in v1, milestone **M2**, with our own ML-KEM-768 and SHA-3/SHAKE (decisions.md D15). `sntrup761x25519` is not planned. |
+| D4 | Algorithm preference: modern algorithms first, legacy enabled by default but always last, with a UI warning only (decisions.md D33; threat-model TM-Q01 is not adopted). Every session exposes a `legacy_mask` bit set for UI warnings, including a Terrapin-exposure bit, and can hold the connection before userauth for a legacy acknowledgement (`SD_PROMPT_LEGACY_ACK`) when a profile or policy sets `ask`. |
+| D5 | Strict KEX (`kex-strict-c-v00@openssh.com`) and `ext-info-c` are always offered. Our KEXINIT is sent **after the server's KEXINIT has arrived**, so the cipher and MAC lists can avoid the Terrapin-affected combinations when the server lacks strict KEX (decisions.md D34, TM-R01, section 4.3), and the host-key list can be restricted to the key types already stored for the host (TM-R04, section 4.3). `mlkem768x25519-sha256` (the OpenSSH 10 default) ships in v1, milestone **M2**, with our own ML-KEM-768 and SHA-3/SHAKE (decisions.md D15). `sntrup761x25519` is not planned. |
 | D6 | Compression: v1 ships `none` only. `zlib@openssh.com` (delayed, post-auth) comes later with our own inflate/deflate, off by default. Plain pre-auth `zlib` is never offered. |
 | D7 | `sd_sftp` speaks SFTP v3 as OpenSSH implements it, with the listed extensions. Paths are **raw wire bytes** (normally UTF-8, NUL-terminated). Lossless byte<->UTF-16 helpers map invalid bytes into a reserved private-use range (U+F780..U+F7FF). |
 | D8 | Every SSH connection of a session carries **two SFTP channels by default: a "meta" channel (path operations, directories, attribute-only opens) and a "bulk" channel (data handles)**, auto-degrading to one channel with a meta-first scheduler (decisions.md D19). A file handle is bound to one channel. Ordering is guaranteed only per handle (per byte range for striped handles, section 10.9). |
 | D9 | Reconnection: `sd_sftp_session` is a stable object that survives reconnects. It runs the backoff loop itself, using a policy the caller supplies, **per connection** of its pool. Handles become *stale* and are revived explicitly by the VFS with `sd_sftp_file_reopen()`, which uses open parameters stored in the handle. |
-| D10 | Host keys: an **ordered store list**: the machine store (read-only for users), the user store (read-write), plus the live read-only sources `~/.ssh/known_hosts` and the PuTTY registry, on by default (decisions.md D7). A matching key from a live source is copied into the user store with a source comment. Our entries are written plain (decisions.md D8). A mismatch in any source blocks; there is no "accept anyway" path in the protocol layer. `sd_known_hosts` owns all `known_hosts` file I/O and locking. |
+| D10 | Host keys: an **ordered store list**: the machine store (read-only for users), the user store (read-write), plus the live read-only sources `~/.ssh/known_hosts` and the PuTTY registry, on by default (decisions.md D7). A matching key from a live source is copied into the user store with a source comment. Our entries are written plain (decisions.md D8). A mismatch in any source blocks; there is no "accept anyway" path in the protocol layer. Live sources are honored only when no other user can write them, and wildcard-only lines from them never produce a match (TM-R06). `sd_known_hosts` owns all `known_hosts` file I/O and locking. |
 | D11 | Parsers (packets, keys, known_hosts, SFTP replies, agent replies, proxy replies) are portable C with no `windows.h` and use one bounded reader type. They are fuzzed with libFuzzer (clang-cl on Windows; an optional Linux fuzz job is test infrastructure only, decisions.md D21). |
 | D12 | DSA (`ssh-dss`), hostbased auth, agent forwarding, X11/port forwarding (other than the internal direct-tcpip used for ProxyJump), UMAC, Ed448, FIDO `sk-*` key files, SSH-1, SOCKS4 and **ProxyCommand** are out of scope. Agent-held keys of unknown types are passed through opaquely. |
-| D13 | **Zero third-party code, crypto included** (decisions.md D1). Field arithmetic for curve25519 and P-256/384/521, the bignum, ML-KEM, SHA-3 and everything else are ours. Papers, RFCs and specifications may be read; no code is copied or vendored. Correctness and side-channel resistance are established by the verification strategy in section 2.7. |
+| D13 | **Zero third-party code, crypto included** (decisions.md D1). Field arithmetic for curve25519 and P-256/384/521, the bignum, ML-KEM, SHA-3 and everything else are ours. Papers, RFCs and specifications may be read; no code is copied or vendored. Correctness and side-channel resistance are established by the verification strategy in section 2.7, which ends in an external cryptographic review in two passes: pass 1 at the end of M2, pass 2 before 1.0 (decisions.md D38). |
 | D14 | **Connection pool per mount** (decisions.md D18): 1..4 SSH connections, default 1. Extra connections are opened only when every hop authenticated non-interactively. Metadata stays on the primary connection; bulk transfers of opted-in handles are striped across connections. The pool is invisible to callers except through options, statistics and the striping flag (section 10.9). |
 | D15 | **HTTP CONNECT and SOCKS5 proxies** per profile and per ProxyJump hop, with our own minimal clients, optional proxy authentication (HTTP Basic, optional NTLM/Negotiate via SSPI; SOCKS5 username/password) and the system proxy as an opt-in source (decisions.md D20). No ProxyCommand. |
 | D16 | **UpdateHostKeys** (`hostkeys-00@openssh.com` + `hostkeys-prove-00@openssh.com`) in v1: new host keys are learned only when proven over a connection authenticated with an already-trusted key, and never written to the machine store without admin policy (decisions.md D16). |
@@ -130,6 +133,16 @@ CPU features and OS capabilities. CNG probing does not trust the OS version: it 
 chaining mode, and only a success enables the CNG path. Profiles can force `own` (setting `crypto_backend=own`), for
 diagnostics and for tests that want to exercise the own code on modern OSes.
 
+**RNG notes (T-05).** The published analysis of the Windows 2000 generator, which Microsoft acknowledged also applies
+to XP, found per-process state in user mode with weak forward security (ePrint 2007/419); Microsoft is reported to
+have fixed it in XP SP3, our floor, which is a lab verification item (section 15). The design does not depend on that
+fix for long-term keys: Ed25519 signatures are deterministic and ECDSA nonces are RFC 6979 hedged, so a repeated or
+predictable RNG output cannot leak a private key through a signature. Ephemeral KEX keys and padding do depend on the
+RNG. We therefore (a) draw every ephemeral KEX secret, ML-KEM seed and hedging input directly from the OS RNG at the
+moment it is used, never from the per-connection padding buffer or any other pre-filled buffer; (b) refill the padding buffer only from the OS RNG; (c) keep no RNG state of our own that
+could be duplicated. The residual case, restoring a snapshot of a running VM so that a process repeats RNG output, is
+documented in the admin guide (00 §4 "User documentation"); it is not detectable from inside the process.
+
 ### 2.3 CPU feature detection
 
 | Arch | Feature | Detection |
@@ -147,8 +160,10 @@ The `x86-sse2` and x64 builds use `__cpuid`/`_xgetbv` intrinsics, available in t
 for AES-NI/SHA-NI/AVX2 lives in separate translation units, so baseline code never contains newer instructions; MSVC
 compiles intrinsics without arch switches. Those translation units are excluded from the `x86-ia32` build by CMake
 (not by `#ifdef` on the target), and the import/disassembly check of the IA32 build fails if any SSE/SSE2 instruction
-appears in `sd_crypto`. Scalar code must therefore never assume SSE2: 64-bit arithmetic uses `__emulu` and the
-`_allmul`/`_aullshr` helpers (shift counts are always public, rule 2.4.3), and no crypto code uses floating point.
+appears in `sd_crypto`. Scalar code must therefore never assume SSE2, and no crypto code uses floating point. On the
+32-bit targets (`x86-ia32`, `x86-sse2`, ARM32), constant-time code does its 64-bit arithmetic only through our own
+primitives in `sd_ct64.h` and never through the compiler's runtime helpers (rule 2.4.3, TM-R02); code that handles
+only public data may use ordinary 64-bit C arithmetic.
 
 The setup stub's `sd_stubcore` (SHA-256/512 and Ed25519 verify, review C35) is built from the same sources as the
 `x86-ia32` flavour of `sd_crypto`, so there is a single IA32 code path to test.
@@ -163,9 +178,29 @@ AES ordering in the cipher list (section 4.3) depends on the result: with hardwa
 2. Selections use mask arithmetic (`sd_ct_select_u32/u64`, `sd_ct_cswap`). The mask goes through a value barrier
    (inline `volatile` read or an empty `__asm` on x86 MSVC) so MSVC cannot turn it into `cmov`-less branches.
    Reviewers check the disassembly of `ct_*` helpers on all four architectures (CI keeps a `dumpbin /disasm` snapshot).
-3. No division or modulo on secrets (`_aulldiv`/`_alldiv` helpers on x86 are variable time). Use `__emulu` for
-   32x32->64 on x86. 64x64 multiplication on x86 goes through `_allmul`, which is constant time. On x64,
-   `_umul128`/`__umulh` are used; on ARM64, `__umulh`.
+3. **Multiplication, shifts, division and comparisons on 32-bit targets (TM-R02, T-03).** The earlier assumption
+   that MSVC's `_allmul` is constant time is withdrawn: the MSVC helper for 64-bit multiplication on 32-bit x86 takes
+   a shortcut when the high words are zero or all ones (BearSSL constant-time multiplication survey). Rules for
+   every function that touches secrets on `x86-ia32`, `x86-sse2` and ARM32:
+   - Products are built only from 32x32->64 multiplications: `__emulu` on x86, `_arm_umull` (or a 32-bit by 32-bit
+     `(uint64_t)` product that the compiler emits as a single `UMULL`, which the disassembly check confirms) on
+     ARM32. A 64x64 product is assembled from 32x32 pieces in our own `sd_ct64.h` primitives (`sd_mul64_lo`,
+     `sd_mul64_wide`); writing `uint64_t * uint64_t` in constant-time code is forbidden on these targets.
+   - Shifts of 64-bit values: shifts by a compile-time constant (which the compiler inlines as `SHLD`/`SHRD` or
+     `LSL`/`ORR` sequences) are allowed; shifts by a run-time count use our own `sd_shl64_pub`/`sd_shr64_pub`, whose
+     count must be public; shifts by a secret count are forbidden (rule 1).
+   - No division or modulo on secrets at all; reductions use multiply-and-shift or Barrett/Montgomery code.
+   - 64-bit comparisons in constant-time code use the `sd_ct_*` mask functions (borrow of a subtraction), never
+     `<`, `==` or `!= 0` on `uint64_t`, which MSVC compiles into branches on 32-bit targets.
+   - **No call to any compiler runtime helper** from constant-time code: none of `_allmul`, `_alldiv`, `_aulldiv`,
+     `_allrem`, `_aullrem`, `_alldvrm`, `_aulldvrm`, `_allshl`, `_allshr`, `_aullshr` (x86), nor the `__rt_*`
+     division and shift helpers (ARM32). This is stricter than TM-R02's minimum (which tolerates helper shifts by
+     public counts) so that the disassembly check can be a simple "no helper call" rule.
+   - 32x32->64 `MUL` is constant time on the P6 family (Pentium Pro to Pentium III) and AMD K7, the `x86-ia32`
+     floor, and on every SSE2-class x86 CPU; `UMULL` timing on the Cortex-A cores of Windows ARM32 devices is
+     confirmed by dudect on the ARM32 lab device **[verify]**.
+   On x64, `_umul128`/`__umulh` are used; on ARM64, `__umulh` and 64-bit `MUL`, which are constant time on the
+   supported CPUs.
 4. No table lookups indexed by secrets. AES without HW is bitsliced; DES uses the constant-time variant. S-box tables
    are allowed only in non-secret contexts.
 5. Decoding of secret values (base64 of private keys, hex) is constant time with respect to the data. Lengths are
@@ -174,10 +209,17 @@ AES ordering in the cipher list (section 4.3) depends on the result: with hardwa
    name, and the type system keeps them apart (`sd_bn_ct_*` vs `sd_bn_vt_*`).
 7. Tag/MAC checks use `sd_ct_memeq`. Decryption output is not released to callers before verification (AEAD and ETM).
 8. Secrets are zeroized on free (`sd_secure_zero` = `SecureZeroMemory`-equivalent volatile loop, so it does not depend
-   on the CRT).
+   on the CRT). **Stack hygiene (TM-R30, T-57):** functions that hold secrets in locals (key schedules, KDF and hash
+   state over secrets, expanded private scalars, password and passphrase copies, prompt answers being forwarded)
+   wipe those locals with `sd_secure_zero` before every return, including error paths; large secret state lives in
+   `sd_secbuf`, not on the stack. SSH I/O threads and KDF work items mark themselves with `sd_dump_mark_sensitive()`
+   (the `sd_platform` secret-thread registry; I/O threads for their lifetime, pool threads for the duration of the
+   work item), so the crash handler
+   of 03 §10.4 can leave their stacks out of minidumps (section 12.1).
 9. Validation: a dudect-style statistical test (Welch t-test over 10^6-10^7 runs, two input classes) runs in nightly CI
-   on x64, ARM64, `x86-sse2` and `x86-ia32` builds for X25519, Ed25519 sign, ECDSA sign, ECDH, RSA private ops, DH,
-   ML-KEM decapsulation, AES bitsliced, GHASH, Poly1305 and MAC compare (section 2.7.5).
+   on x64, ARM64, `x86-sse2` and `x86-ia32` builds (ARM32 on the lab device) for X25519, Ed25519 sign, ECDSA sign,
+   ECDH, RSA private ops, DH, ML-KEM decapsulation, AES bitsliced, GHASH, Poly1305 and MAC compare (section 2.7.5).
+   On 32-bit flavours the input classes include operands whose high words are zero or all ones (TST-03).
 
 ### 2.5 Code provenance policy (D13, decisions.md D1)
 
@@ -381,23 +423,38 @@ versa), RSA PKCS#1 v1.5 up to 16384 bits, DH up to 4096 bits, X25519 (`BCRYPT_KD
 - dudect-style Welch t-tests (rule 2.4.9) nightly on x64, ARM64, `x86-sse2` and `x86-ia32` (the IA32 build runs on
   the x64 runners).
 - A disassembly check (`dumpbin /disasm` of the release objects, all flavours) asserts that no conditional branch,
-  no `div`/`idiv` and no secret-indexed memory operand appears in functions named `*_ct_*`, in the field and scalar
-  arithmetic, in the Montgomery ladder and in ML-KEM decapsulation. The snapshot is kept in CI and diffs are
-  reviewed.
+  no `div`/`idiv`/`sdiv`/`udiv` and no secret-indexed memory operand appears in functions named `*_ct_*`, in the
+  field and scalar arithmetic, in the Montgomery ladder, in `sd_bn_ct_*`, in the bitsliced AES/DES, GHASH,
+  Poly1305 and Keccak code and in ML-KEM decapsulation. **Since TM-R02 it also follows calls:** on `x86-ia32`,
+  `x86-sse2` and ARM32 it fails on any call from those functions to a compiler runtime helper (the `_all*`/`_aull*`
+  list of rule 2.4.3, `__rt_*` on ARM32) or to any function outside an allow-list of our own constant-time
+  primitives (`sd_ct64.h`, `sd_ct_*`), and it fails if a 64x64 multiply sequence appears where rule 2.4.3 requires
+  32x32 pieces. The check is part of the M0 gate (TST-03) and runs as `tools/sd-ctcheck` in the `build` job of
+  04 §11.2. The snapshot is kept in CI and diffs are reviewed.
 - Every compiler or toolset change (v141_xp, v143) reruns both checks before it is merged.
 
 #### 2.7.6 Interop and external review
 
 - Interop against real servers (section 12.3), including OpenSSH 10 with `mlkem768x25519-sha256`.
 - Every change to `src/sd_crypto/` needs two reviewers.
-- An **external cryptographic review** before 1.0 (milestone M6), budgeted, covering section 2.8, the constant-time
-  helpers, ML-KEM, the RSA/DH bignum, the key-file KDFs and the packet-protection code. Findings block the 1.0
-  release until resolved or explicitly accepted.
+- An **external cryptographic review in two passes** (decisions.md D38, replacing the single M6 review; T-04),
+  budgeted:
+  - **Pass 1, at the end of M2**, covers everything of this module that exists then: all of `sd_crypto` (section
+    2.8 arithmetic, the `sd_ct64.h`/`sd_ct_*` helpers and rule 2.4 compliance on every flavour, ML-KEM, the RSA/DH
+    bignum, the key-file KDFs, packet protection, the RNG use of section 2.2) and all of `sd_ssh` that handles
+    secrets or trust (KEX and the TM-R01 list construction, host-key verification and the TM-R04 restriction,
+    userauth, agent clients, the reconnect cache). Findings rated high or critical are fixed before any build leaves
+    the named testers; **no public beta is published before pass 1 is complete** and its blocking findings are
+    closed (release gating is 04's, together with TM-R38).
+  - **Pass 2, before 1.0** (M6), covers every change to those areas since pass 1, the fast paths added later
+    (AES-NI, SHA-NI, AVX2, NEON, ARMv8 crypto), the ARM32/ARM64 paths and the open findings of pass 1. Findings block
+    the 1.0 release until resolved or explicitly accepted (TST-33).
 
 ### 2.8 Own field, group and big-number arithmetic (D13)
 
 All arithmetic is written from the papers and standards cited in each file. Limb sizes depend on the target: 32-bit
-limbs with 64-bit products (`__emulu`) on `x86-ia32`, `x86-sse2` and ARM32; 64-bit limbs with 128-bit products
+limbs with 64-bit products (`__emulu` / `_arm_umull` through `sd_ct64.h`, rule 2.4.3) on `x86-ia32`, `x86-sse2`
+and ARM32; 64-bit limbs with 128-bit products
 (`_umul128`/`__umulh` on x64, `__umulh` on ARM64) on 64-bit targets. Both variants share the API and are both built
 and tested on x64 runners (the 32-bit variant in a test configuration). No variable-length arrays: every limb
 count is a compile-time constant per field or a fixed maximum for the bignum.
@@ -480,7 +537,8 @@ count is a compile-time constant per field or a fixed maximum for the bignum.
   - DNS resolution (`GetAddrInfoW`)
   - private key file loading + KDF (bcrypt-pbkdf, Argon2 up to seconds)
   - agent IPC (Pageant `SendMessage` can block indefinitely while Pageant asks for a passphrase; named pipe I/O)
-  - known_hosts file I/O and lookups (review §4.1 rule 7; never on an I/O thread)
+  - known_hosts file I/O and lookups (review §4.1 rule 7; never on an I/O thread), including the stored-key-type
+    lookup that shapes the host-key list (section 4.3, TM-R04), which starts in parallel with the TCP connect
   - system proxy discovery (WinHTTP, section 5.2), SSPI proxy-authentication token generation
   - RSA private-key operations > 4096 bits on slow CPUs (only if measured to exceed 50 ms)
 - Prompt callbacks (host key, passwords) are **asynchronous** (section 6.7). The I/O thread keeps servicing keepalives
@@ -521,6 +579,8 @@ count is a compile-time constant per field or a fixed maximum for the bignum.
   `GetTickCount` with wrap tracking on XP).
 - Service context: name resolution and connects in the system service run without impersonation (global mounts are
   machine-level). User mounts run in the user's process.
+- No listening sockets: `sd_ssh` only makes outbound connections (no port forwarding, D12), so the
+  `SO_EXCLUSIVEADDRUSE` rule of TM-R17 (a) has nothing to apply to in this module; it binds 02's loopback listener.
 
 ### 3.3 Transport abstraction (enables ProxyJump)
 
@@ -556,7 +616,9 @@ consumes an `sd_stream` and does not know which one it has.
                                                          v
             +-----------------------------------------------------------+
             | KEX (initial)                                             |
-            |  KEXINIT_SENT -> KEXINIT_BOTH -> KEX_METHOD_RUNNING       |
+            |  KEXINIT_WAIT (server's KEXINIT + stored key types;       |
+            |  TM-R01/R04) -> build lists -> KEXINIT_SENT/BOTH          |
+            |  -> KEX_METHOD_RUNNING                                    |
             |  -> NEWKEYS_SENT/RECV -> keys active, (strict: seq=0)     |
             +-----------------------------------------------------------+
                                                          |
@@ -608,6 +670,19 @@ Rules:
 
 ### 4.2 Key exchange
 
+- **KEXINIT order (TM-R01, decisions.md D34; TM-R04).** For the initial KEX we send our KEXINIT only after the
+  server's KEXINIT has arrived and the stored-key-type lookup (section 4.3) has completed. RFC 4253 allows either
+  order, and servers send theirs right after the identification line (usually in the same segment), so the cost is
+  at most half an RTT. Our lists are then built for this connection from the server's lists (section 4.3). If no
+  server KEXINIT arrives within 3 s of the server's identification line (a server that waits for the client first),
+  we send our KEXINIT with the **fallback lists**: the stored-key-type restriction applies as usual, the AES-GCM and
+  AES-CTR ciphers are ranked above `chacha20-poly1305@openssh.com`, and the exposure is evaluated after negotiation
+  as in section 4.3; the event is logged once (`kexinit_wait_timeout`). The wait counts against
+  `connect_timeout_ms`. Rekeys send KEXINIT at once with the lists fixed at the initial KEX (strict status does not
+  change within a connection).
+- The server's KEXINIT, including its `kex-strict-s-v00@openssh.com` marker, is part of the exchange hash H that
+  the host key signs, so an active attacker without the host key cannot strip the marker to steer our list
+  construction: any change to either KEXINIT makes the signature check fail.
 - We never set `first_kex_packet_follows`. If the server sets it and its guess was wrong, we discard its next KEX
   method packet (RFC 4253 section 7).
 - We always offer `ext-info-c` and `kex-strict-c-v00@openssh.com`, **only in the first KEXINIT** (OpenSSH semantics).
@@ -627,7 +702,9 @@ Rules:
   - ecdh-sha2-nistp*: validate the peer point (on curve, not infinity, coordinates < p).
   - diffie-hellman-groupN: fixed groups from RFC 2409/3526.
   - diffie-hellman-group-exchange-*: request `min=2048, n=4096, max=8192`. If the profile allows legacy and the server
-    answers with 1024..2047 bits, we accept and set `SD_LEGACY_DH_SMALL`; below 1024 we always fail. Check that p is
+    answers with 1024..2047 bits, we accept and set `SD_LEGACY_DH_SMALL` (the default policy `warn` allows it,
+    decisions.md D33; the 2048-bit floor proposed by TM-Q01 is not adopted, T-02 stays a documented residual
+    risk); below 1024 we always fail. Check that p is
     odd and has the advertised size, and that `1 < g < p-1`. No primality test, which matches common clients; this is
     an accepted risk because the host key signature authenticates the group.
 - The host key signature over H is verified with the negotiated host key algorithm. For RSA, `rsa-sha2-256/512` vs
@@ -661,13 +738,57 @@ mac:      hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha
 comp:     none            (later: none, zlib@openssh.com when the profile enables compression)
 ```
 
-- **Host key ordering by known keys:** if `known_hosts` already holds keys for this host, the algorithms of those key
-  types (and their cert variants if a matching `@cert-authority` exists) move to the front, keeping their relative
-  order. Without this, adding a new algorithm would cause a spurious "new key" prompt, or a mismatch, for hosts that
-  are already trusted. This is OpenSSH behaviour.
+The lists above are the static preference order. For each connection the transport derives the lists it actually
+sends from them, after the server's KEXINIT (section 4.2), with the host-key and Terrapin rules below.
+
+- **Host key list restricted to stored key types (TM-R04, T-09).** Before KEXINIT, `sd_known_hosts_stored_types()`
+  (section 7.2) reports which key types are stored for `lookup_name` in any store or enabled live source, counting
+  only entries that could produce `SD_HK_MATCH` (not `@revoked` lines, not wildcard-only lines from live sources,
+  TM-R06), and whether a matching `@cert-authority` line exists.
+  - If any plain key is stored, our host-key list contains **only** the algorithms of those key types (an `ssh-rsa`
+    key maps to `rsa-sha2-512`, `rsa-sha2-256` and, as legacy and last, `ssh-rsa`), plus their
+    `-cert-v01@openssh.com` variants when a matching `@cert-authority` exists, in the static order.
+  - If only `@cert-authority` lines match, the list contains only the `-cert-v01@openssh.com` algorithms.
+  - If nothing is stored, the full list is sent (first contact, `SD_HK_NEW`).
+  A man in the middle without the host key can therefore no longer turn a known host into a TOFU-style "new key
+  type" prompt by offering only an unstored type: if the server shares none of the stored types, negotiation fails
+  and the connection ends with `SD_E_HOSTKEY_TYPE_UNAVAILABLE` (`host_key_type_unavailable`), which points the user
+  to the host key manager instead of prompting. This applies equally to automatic reconnects (section 8) and pool
+  members (section 10.9). New key types for a known host are learned only through UpdateHostKeys (section 7.5) or
+  an explicit "add a key of another type" action in the host key manager (03 §5.2, §6.1 `hostkey add
+  --from-server`). That action connects normally (stored types only, so the server is verified as `SD_HK_MATCH`
+  against a stored key; a mismatch fails as usual) and then calls `sd_ssh_conn_fetch_hostkeys()` (section 9)
+  **inside that verified connection**: keys the server announced with `hostkeys-00@openssh.com` are proven with
+  `hostkeys-prove-00@openssh.com` (section 7.5, regardless of `update_host_keys`); for a requested type that was
+  not announced, `sd_ssh` starts a re-key whose host-key list contains only that type, so the server signs the
+  exchange hash with the new key inside the already authenticated transport. The proven keys are returned to the
+  host for confirmation; nothing is stored by `sd_ssh`. A full, unrestricted host-key list is sent only when no
+  key of any type is stored (`SD_HK_NEW`, plain TOFU). The host never calls it for reconnects, pool members or
+  the service; the re-key variant is a lab item for servers that refuse a host-key algorithm change on re-key
+  (section 15).
 - Profiles can remove algorithms (for example "disable legacy") but cannot reorder legacy above modern. If the profile
   disables legacy and negotiation fails, the error says which category had no overlap, so the UI can offer to
   re-enable legacy for this profile.
+- **Cipher and MAC selection after the server's KEXINIT (Terrapin, TM-R01, decisions.md D34, T-01).** Terrapin breaks
+  `chacha20-poly1305@openssh.com` on every connection without strict KEX, exploits CBC with an `-etm` MAC with a
+  limited success rate, and affects CTR with an `-etm` MAC only in theory (the attack fails at the application
+  layer). The practical damage for us is a dropped `EXT_INFO`, which loses `server-sig-algs` (section 4.5). So:
+  1. If the server's KEXINIT lists `kex-strict-s-v00@openssh.com`, strict mode is active and the static lists are
+     sent unchanged (including the hardware-AES ordering).
+  2. Otherwise, for each direction, the transport computes which cipher/MAC pairs the server's lists allow and
+     treats chacha20-poly1305 and CBC with an `-etm` MAC as affected. If an unaffected pair exists,
+     `chacha20-poly1305@openssh.com` is removed from our cipher list, which makes AES-GCM, then AES-CTR, the choice
+     (first match in our list); and if the resulting cipher is CBC (legacy, only when the server offers neither GCM
+     nor CTR), the `-etm` MACs are removed from our MAC list for that direction, so CBC runs with a non-ETM MAC and
+     the Albrecht countermeasure of section 4.1. Legacy algorithms stay ranked last throughout (D4, TST-13).
+  3. If no unaffected pair exists (the server offers only chacha20-poly1305, or only CBC together with only `-etm`
+     MACs), the static lists are sent, the connection proceeds and `SD_LEGACY_TERRAPIN_EXPOSED` is set, which the UI
+     shows with its own warning (decisions.md D34). With `refuse_terrapin_exposed = yes` (default `no`, 03 §3.4.1)
+     the transport instead disconnects before sending KEXINIT, with `SD_E_KEX_FAILED` and the reason
+     `terrapin_exposed` in the log.
+  Because the decision is made before our KEXINIT is sent, there is no reconnect dance and no user action. With the
+  fallback lists of section 4.2 (no server KEXINIT within 3 s), the same exposure evaluation runs on the negotiated
+  result.
 - **`legacy_mask`** (exposed in `sd_ssh_negotiated`, section 9):
 
 ```c
@@ -687,10 +808,11 @@ enum {
 };
 ```
 
-  The UI warns when any bit except `MAC_NON_ETM` is set. `TERRAPIN_EXPOSED` has its own message. A profile option
-  `refuse_terrapin_exposed` makes us drop the connection and reconnect once with chacha20-poly1305 and the CBC/ETM
-  combinations removed from our KEXINIT. That is the only way to avoid the vulnerable combination, because negotiation
-  is deterministic once both KEXINITs are sent.
+  The UI warns when any bit except `MAC_NON_ETM` is set (warning only by default, decisions.md D33).
+  `TERRAPIN_EXPOSED` has its own message; since TM-R01 it is set only when the server offers no unaffected
+  cipher/MAC pair (rule 3 above) or when the fallback lists negotiated an affected pair. The earlier "drop and
+  reconnect once without the exposed ciphers" behaviour of `refuse_terrapin_exposed` is replaced by the pre-KEXINIT
+  decision above (with the fallback lists, `refuse_terrapin_exposed` disconnects right after negotiation).
 
 ### 4.4 Rekeying
 
@@ -836,7 +958,25 @@ then the corporate proxy inside the bastion's network, then the target".
   from `SD_PROMPT_PROXY_PASSWORD`, UTF-8), and optionally **Negotiate/NTLM through SSPI** (`secur32.dll`, XP+,
   resolved through `sd_platform_resolve`; `AcquireCredentialsHandleW` with the current logon credentials,
   `InitializeSecurityContextW` rounds on a worker thread). If the proxy closes the connection between rounds
-  (`Connection: close`), the TCP connection is reopened for the next round. At most 3 authentication rounds.
+  (`Connection: close`), the TCP connection is reopened for the next round. At most 3 authentication rounds. SSPI
+  is restricted by the rules below (TM-R10).
+- **SSPI restrictions (TM-R10, T-20, T-22).** The proxy connection is plain TCP, so whoever answers `407` (an
+  on-path attacker, or a proxy found through WPAD/PAC) could otherwise collect a NetNTLMv2 response for offline
+  cracking or relay. Therefore:
+  - SSPI is used only towards a proxy whose host was configured explicitly: in the profile (`proxy` / `proxy.K`),
+    by machine policy (`ProxyServer`, 03 §3.5), or as a static entry of the system proxy configuration. It is never
+    used towards a proxy obtained through automatic detection (WPAD) or a PAC script (the resolved proxy's origin
+    is `SD_PROXY_ORIGIN_DISCOVERED`) unless machine policy `AllowSystemProxySspi = 1` is set (03 §3.5, §3.8;
+    passed as `sd_proxy_cfg.allow_discovered_sspi`). Without it, a `407` that offers only Negotiate/NTLM fails with
+    `SD_E_PROXY_AUTH` and a log hint naming the policy.
+  - `SD_PROXY_AUTH_SSPI_KERBEROS` (profile `proxy_auth = auto`) uses the Negotiate package restricted to Kerberos:
+    `AcquireCredentialsHandleW("Negotiate")` with a `SEC_WINNT_AUTH_IDENTITY_EX` whose `PackageList` is `"!ntlm"`
+    (current logon credentials, no explicit user). A proxy that offers only `NTLM`, or a Negotiate exchange that
+    would fall back to NTLM, is not answered. NTLM (bare `NTLM` scheme or Negotiate with NTLM fallback) is used only
+    with `SD_PROXY_AUTH_SSPI` (profile `proxy_auth = negotiate`).
+  - The SSPI target name is `HTTP/<proxy host>` as configured, never a name taken from the proxy's reply.
+  - Whether the `PackageList` restriction works through Negotiate on XP SP3 is a lab item (section 15); if it does
+    not, `auto` on XP offers no SSPI at all and `negotiate` is required.
 - Other status codes fail with `SD_E_PROXY` (status code and reason text in the log, sanitized).
 - Basic credentials cross the network in clear text to the proxy; the host warns (`warning proxy_cleartext`,
   03 §3.8), and a profile can exclude Basic with `proxy_auth = negotiate|none`.
@@ -862,7 +1002,11 @@ WinHTTP (`winhttp.dll` through `sd_platform_resolve`) `WinHttpGetIEProxyConfigFo
 otherwise the `https=` or generic entry selects HTTP CONNECT; the bypass list (including `<local>`) is honored. If the
 configuration uses automatic detection or a PAC URL, `WinHttpGetProxyForUrl` is called with the synthetic URL
 `https://<host>:<port>/`. Discovery failure falls back to a direct connection only when the profile says
-`proxy_fallback_direct = yes` (default no). The resolved proxy is logged at info level.
+`proxy_fallback_direct = yes` (default no). The resolved proxy is logged at info level together with its origin:
+a static entry of the configuration counts as configured, a result of automatic detection or a PAC script is
+marked `SD_PROXY_ORIGIN_DISCOVERED`, which disables SSPI towards it per the TM-R10 rules above. A discovered proxy
+cannot read or alter the SSH session (host-key verification still applies), so the remaining exposure is metadata
+and denial of service (T-22).
 
 **Errors and timeouts.** The handshake counts against `connect_timeout_ms`. Errors carry the hop index; proxy
 failures are not retried within one connect attempt, and reconnect backoff applies as usual.
@@ -874,8 +1018,18 @@ failures are not retried within one connect attempt, and reconnect backoff appli
 ### 6.1 Flow
 
 1. `SERVICE_REQUEST ssh-userauth`, then `USERAUTH_REQUEST method "none"`. This learns the allowed methods and may
-   succeed outright. Any `USERAUTH_BANNER` (UTF-8, sanitized: control characters except CR/LF/TAB stripped, max 16
-   KiB) is delivered to the banner callback.
+   succeed outright. Any `USERAUTH_BANNER` (UTF-8, sanitized as below, max 16 KiB) is delivered to the banner
+   callback.
+
+   **Server-text sanitization (TM-R09, T-18).** Every string that comes from a server, hop or proxy and can reach a
+   user (banner, kbd-interactive name, instruction and prompt texts, `DEBUG` messages, disconnect and proxy reason
+   texts, SFTP `server_message`) goes through one function, `sd_text_sanitize_server()` in `sd_utf.h`: invalid UTF-8
+   becomes U+FFFD; C0 controls except CR/LF/TAB, DEL and C1 controls are removed; **bidi controls** (U+202A-U+202E,
+   U+2066-U+2069, U+200E, U+200F, U+061C) and **zero-width and invisible characters** (U+200B-U+200D, U+2060,
+   U+FEFF, U+180E) are removed. Host names that sd_ssh puts into prompts and events (`host`, `via_host`, proxy
+   host) are passed through `sd_text_sanitize_host()`, which applies the same removals and, for names that are not
+   ASCII, also supplies the punycode form so the UI can show both. Rendering the hop host outside the server-text
+   area is the UI's part (03 §2.5).
 2. Method order, filtered by the server's "can continue" list and by the profile:
    **publickey** (section 6.2 order), then **keyboard-interactive**, then **password**. `hostbased` is not implemented
    (D12).
@@ -895,6 +1049,11 @@ failures are not retried within one connect attempt, and reconnect backoff appli
      plain key.
   2. If the profile does not set `identities_only`: remaining agent keys, Pageant first, then the Windows OpenSSH
      agent, deduplicated by public blob.
+  - **`identities_only` default (decisions.md D37, TM-Q07, T-15).** When a hop's profile configures at least one
+    identity, the host passes `identities_only = 1` for that hop unless the profile explicitly sets
+    `identities_only = no`; only the configured keys (and their certificates) are offered, and agent keys are used
+    only when selected by fingerprint (`SD_ID_AGENT_KEY`). Hops without a configured identity keep offering agent
+    keys. This stops every hop and server from learning all public keys held in Pageant or ssh-agent.
   - The limit is 6 attempts per connection by default (OpenSSH MaxAuthTries). With many agent keys, servers otherwise
     disconnect with "Too many authentication failures". The UI suggests `identities_only` when this happens.
 - For every candidate: send the query without signature first (`PK_OK` expected), then the signed request. This avoids
@@ -925,8 +1084,21 @@ failures are not retried within one connect attempt, and reconnect backoff appli
 - keyboard-interactive: `USERAUTH_INFO_REQUEST` gives name, instruction, and N prompts with an echo flag. That is
   turned into one async `SD_PROMPT_KBDINT` callback carrying all prompts. Zero-prompt rounds are answered immediately
   (common for "press enter"). Prompts with "OTP"-like texts are not special-cased: the UI decides whether it may
-  auto-fill from Credential Manager. The prompt flag `may_autofill = (nprompts == 1 && !echo && round == 0)` hints that
-  the stored password may be used. OTP rounds never auto-fill.
+  auto-fill from Credential Manager. The prompt flag `may_autofill = (nprompts == 1 && !echo && round == 0 &&
+  !hostkey_just_accepted)` hints that the stored password may be used. OTP rounds never auto-fill. All texts are
+  sanitized (section 6.1).
+- **No stored secrets right after a fresh host-key acceptance (TM-R05, T-10).** If the host key of any hop of this
+  connection was accepted by TOFU (`ACCEPT_AND_STORE`) or `ACCEPT_ONCE` during this connection (including the
+  "remove old key and reconnect" flow of 03 §5.4, which is exactly what a MITM provokes), then for every prompt raised
+  after that acceptance on this connection, whatever its hop: password, new-password and kbd-interactive prompts (and
+  `SD_PROMPT_PROXY_PASSWORD` prompts of legs tunneled through that hop) carry `hostkey_just_accepted = 1` and
+  `may_autofill = 0`; the reconnect secret cache (section 7.4) is neither read nor written for them; and
+  `sd_prompt_answer_ex` rejects answers flagged `SD_ANSWER_FROM_STORE` for those prompts with `SD_E_INVALID_PARAM`,
+  so a host bug cannot send a stored secret. The UI shows the prompt with a note that this server's identity was
+  just accepted (03 §2.5, §4.2). Key-file passphrase prompts are unaffected (the passphrase never leaves the
+  machine, and a public-key signature is bound to the session id). The next connection, verified as `SD_HK_MATCH`
+  against the now-stored key, behaves normally. Because such a connection is interactive, it never admits pool
+  members (section 10.9).
 - password: one prompt. All strings are UTF-8 on the wire. Responses are UTF-8, held in secret buffers, zeroized after
   sending.
 
@@ -940,8 +1112,19 @@ need to understand a signature to forward it.
 
 All agent I/O runs on worker threads. Requests time out after 120 s, because agents may wait for user confirmation.
 
+**Agent authenticity checks (TM-R08, T-16, T-17).** Before the first request of a connection to either agent, the
+client verifies that the agent runs as the right principal; a failed check means "agent unavailable" for this
+connection, logged once with `warning agent_untrusted` (agent kind, owner SID found), and no request is sent. The
+token and owner checks use the same helper as 03 §2.2 uses for our own pipes, `sd_pipe_verify_server()` in
+`sd_platform`.
+
 **Pageant (XP+):**
-1. `hwnd = FindWindowW(L"Pageant", L"Pageant")`. No window means no Pageant.
+1. `hwnd = FindWindowW(L"Pageant", L"Pageant")`. No window means no Pageant. **Check (TM-R08):**
+   `GetWindowThreadProcessId(hwnd)` gives the owning process; `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+   (Vista+; `PROCESS_QUERY_INFORMATION` on XP) and `OpenProcessToken(TOKEN_QUERY)` must succeed, the token user SID
+   must equal ours, and on Vista+ its integrity level must be at least ours (`TokenIntegrityLevel`). A window
+   registered by a lower-integrity process, by another user's process started with `runas`, or by a process we
+   cannot open is refused. The check runs again whenever `FindWindowW` returns a different `hwnd`.
 2. Mapping name `"PageantRequest%08x"` (current thread id, ANSI). `CreateFileMappingA(INVALID_HANDLE_VALUE, &sa,
    PAGE_READWRITE, 0, AGENT_MAX_MSGLEN, name)` with a security descriptor whose **owner is the current user SID**
    (from the process token). Pageant checks the owner, and refuses otherwise. `AGENT_MAX_MSGLEN` = 256 KiB. Old
@@ -961,6 +1144,11 @@ All agent I/O runs on worker threads. Requests time out after 120 s, because age
   `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` so the agent cannot impersonate us. Messages are `uint32 len ||
   body`. Overlapped I/O with a timeout. `ERROR_FILE_NOT_FOUND` / `ERROR_PIPE_BUSY` mean the agent is unavailable or
   busy (one retry after `WaitNamedPipeW(2 s)`).
+- **Check (TM-R08, `sd_pipe_verify_server`):** after `CreateFileW` and before writing anything, `GetSecurityInfo(SE_KERNEL_OBJECT,
+  OWNER_SECURITY_INFORMATION)` on the pipe handle must report owner `S-1-5-18` (LocalSystem, the `ssh-agent`
+  service) for the default pipe name, or our own user SID when `SSH_AUTH_SOCK` names a different pipe; in addition
+  `GetNamedPipeServerProcessId` gives the server process, whose token user must be SYSTEM (default pipe) or ours
+  (user pipe). This defeats pipe squatting by another local user while the `ssh-agent` service is stopped (T-17).
 - On XP/Vista/7 this agent is not probed.
 
 ### 6.6 Private key file parsers (in sd_ssh, `src/sd_ssh/keyfile_*.c`)
@@ -1075,7 +1263,9 @@ typedef struct sd_auth_prompt_info {
   const char *name, *instruction;                               /* kbd-int; may be "" */
   const sd_prompt_item *items; uint32_t item_count;
   uint32_t round;            /* 0-based count of rounds of this kind */
-  int may_autofill;          /* hint: a stored secret is plausible for this prompt */
+  int may_autofill;          /* hint: a stored secret is plausible for this prompt; 0 if hostkey_just_accepted */
+  int hostkey_just_accepted; /* TM-R05: a hop key was TOFU/once-accepted in this connection; stored secrets and the
+                                reconnect cache must not answer; SD_ANSWER_FROM_STORE answers are rejected */
   int is_reconnect;          /* prompt raised during automatic reconnection */
   int is_pool_member;        /* raised by a secondary pool connection: answer from stored secrets or cancel,
                                 never show UI (section 10.9) */
@@ -1087,7 +1277,8 @@ typedef struct sd_auth_prompt_info {
 
 /* Answer from ANY thread, exactly once; or cancel. Responses are copied into secret buffers.
    SD_ANSWER_FROM_STORE tells sd_ssh the answer came from Credential Manager/DPAPI/the reconnect cache without user
-   interaction; it is what makes an authentication "non-interactive" for the pool rule (section 10.9). */
+   interaction; it is what makes an authentication "non-interactive" for the pool rule (section 10.9). It is refused
+   with SD_E_INVALID_PARAM on prompts with hostkey_just_accepted = 1 (section 6.4, TM-R05). */
 enum { SD_ANSWER_FROM_STORE = 1u<<0 };
 sd_err sd_prompt_answer(sd_prompt *p, uint32_t n, const char *const *utf8_responses);
 sd_err sd_prompt_answer_ex(sd_prompt *p, uint32_t n, const char *const *utf8_responses, uint32_t answer_flags);
@@ -1115,7 +1306,7 @@ thread) for `(lookup_name, host_key_blob)`:
 | `SD_HK_MATCH` | Exact key in one of our stores, or in a live read-only source (which is then copied into the user store) | proceed; `on_hostkey_ok` event (no prompt). The result records which store matched (needed by section 7.5) |
 | `SD_HK_MATCH_CA` | Host certificate valid and signed by an `@cert-authority` for the name | proceed |
 | `SD_HK_NEW` | No key of any type for this name | `SD_PROMPT_HOSTKEY` with fingerprints. Decisions: `REJECT`, `ACCEPT_ONCE`, `ACCEPT_AND_STORE` |
-| `SD_HK_NEW_TYPE` | Name known, but only with other key types we did not negotiate | prompt as NEW, but the UI text differs ("a new key type"); our algorithm reordering makes this rare |
+| `SD_HK_NEW_TYPE` | Name known, but only with other key types we did not negotiate | **fail without a prompt** with `SD_E_HOSTKEY_TYPE_UNAVAILABLE` (TM-R04, T-09). With the host-key list restricted to stored types (section 4.3) this cannot result from negotiation; it can only occur through a race with a concurrent store change, and is treated the same way. It never becomes a prompt; new types are added only through `sd_ssh_conn_fetch_hostkeys()` inside a verified connection (section 4.3) or UpdateHostKeys (section 7.5) |
 | `SD_HK_MISMATCH` | A key of the same type exists and differs | **fail** with `SD_E_HOSTKEY_MISMATCH`. An informational callback carries old and new fingerprints and the file/line of the old entry. No accept path. The UI may offer a separate "remove old key" action outside the connection |
 | `SD_HK_REVOKED` | Key or signing CA appears under `@revoked` | fail `SD_E_HOSTKEY_REVOKED` |
 
@@ -1136,7 +1327,12 @@ Host certificate validation for `SD_HK_MATCH_CA`:
 If cert validation fails but the plain key embedded in the cert is known, the result is `MATCH`, as in OpenSSH.
 
 Fingerprints shown: `SHA256:<base64 no padding>` (primary), and `MD5:xx:xx:...` (secondary, for users comparing with
-old PuTTY output). Key type and bit size are shown too.
+old PuTTY output). Key type and bit size are shown too. For hop i >= 1 the host-key prompt also carries `via_host`,
+the sanitized host name of hop i-1, so the dialog can say "reached through jump host <hop i-1>" (TM-R03, T-08,
+T-19; dialog behaviour is 03 §5.2).
+
+Answering `ACCEPT_ONCE` or `ACCEPT_AND_STORE` marks the connection as `hostkey_just_accepted` for the rest of its
+lifetime (TM-R05, section 6.4).
 
 ### 7.2 known_hosts stores (D10, review C19)
 
@@ -1169,6 +1365,14 @@ sd_err sd_known_hosts_remove(sd_known_hosts *kh, sd_kh_store_kind target, const 
                              const char *key_type /* NULL=all */);
 sd_err sd_known_hosts_import(sd_known_hosts *kh, sd_kh_store_kind source, sd_kh_store_kind target,
                              sd_kh_import_report *rep);              /* one-shot copy (wizard, "import to machine") */
+/* TM-R04: key types that could MATCH for lookup_name (no @revoked lines, no wildcard-only lines from live sources),
+   plus whether a matching @cert-authority exists. Worker thread; used before KEXINIT (section 4.3). */
+typedef struct sd_kh_types { uint32_t count; char type[8][48]; int has_ca; } sd_kh_types;
+sd_err sd_known_hosts_stored_types(sd_known_hosts *kh, const char *lookup_name, sd_kh_types *out);
+/* TM-R06: per live source, whether it is in use or skipped (and why), for the host's warnings and diagnostics. */
+typedef enum { SD_KH_SRC_OK, SD_KH_SRC_ABSENT, SD_KH_SRC_DISABLED, SD_KH_SRC_INSECURE } sd_kh_src_state;
+sd_err sd_known_hosts_source_state(sd_known_hosts *kh, sd_kh_store_kind source, sd_kh_src_state *state,
+                                   wchar_t *detail_sid, size_t detail_cap);   /* INSECURE: a SID that may write */
 void   sd_known_hosts_close(sd_known_hosts *kh);
 ```
 
@@ -1181,6 +1385,21 @@ void   sd_known_hosts_close(sd_known_hosts *kh);
   blocks (decisions.md D7): every store and enabled source is consulted, and an exact match in one store never
   overrides a mismatching key of the same type in another. `res` reports the mismatching store and line so the UI
   can offer removal (our stores) or "stop using this source" (live sources, 03 §5.4).
+- **Live-source integrity (TM-R06, T-11).** A live source is read only if nobody but the user, SYSTEM and
+  Administrators can change it. For `.ssh\known_hosts` (and `known_hosts2`) the file is opened with
+  `FILE_FLAG_OPEN_REPARSE_POINT` (a reparse point is refused) and `GetSecurityInfo` on **the opened handle** must
+  show an owner among those three and a DACL that grants `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `WRITE_DAC`,
+  `WRITE_OWNER` or `DELETE` to no other SID; the `.ssh` directory gets the same check for `FILE_ADD_FILE`,
+  `FILE_DELETE_CHILD`, `WRITE_DAC` and `WRITE_OWNER`, since a writable directory allows replacing the file. A
+  volume without persistent ACLs (`FILE_PERSISTENT_ACLS` absent, for example FAT on a stick) fails the check. For
+  the PuTTY source the same rule applies to the DACL of the `SshHostKeys` registry key (`KEY_SET_VALUE`,
+  `KEY_CREATE_SUB_KEY`, `WRITE_DAC`, `WRITE_OWNER`). A source that fails is skipped entirely (it yields neither
+  MATCH nor MISMATCH) and reported as `SD_KH_SRC_INSECURE`, which the host shows as `warning hostkey_source_insecure`
+  (03 §5.1). The check is repeated whenever the source is reloaded.
+- **Wildcard-only lines (TM-R06).** In live sources, a line whose positive host patterns consist only of `*`, `?`
+  and `.` (for example `*`, `*.*`, `?*`), with or without a `[...]:port` wrapper, is ignored for MATCH and for the
+  stored-type list of section 4.3; it still counts for MISMATCH and `@revoked`. Such lines in our own stores are
+  honored (only an administrator or the user can write them).
 - **Parsing** (each line, max 64 KiB; invalid lines are skipped, logged with file:line, and kept verbatim on rewrite):
   - optional marker `@cert-authority` | `@revoked`
   - host patterns, comma-separated: literal names; `*` and `?` wildcards; `!` negation (a negated match vetoes the
@@ -1194,6 +1413,11 @@ void   sd_known_hosts_close(sd_known_hosts *kh);
   `Local\ShellDrive.known_hosts.<hash of path>` (`Global\` for the ProgramData file). The in-memory cache is reloaded
   when the file's last-write time changes. Entries are always written **plain** (decisions.md D8; the files are
   ACL-protected). Hashed entries from other tools are still read and matched.
+- **ACLs on write (TM-R07, T-13).** Because `MoveFileExW` keeps the security descriptor of the temp file, the temp
+  file is created with an explicit protected DACL in the same `CreateFileW` call: for the user store the user and
+  SYSTEM only (TM-R07; the folder ACLs are 03 §3.2's), for the machine store SYSTEM and Administrators full control
+  and Users read. A store file found with a DACL that lets other users write it is still read (it is ours) but logged
+  as a warning and rewritten with the correct DACL on the next write.
 
 ### 7.3 PuTTY `SshHostKeys` import
 
@@ -1221,13 +1445,17 @@ into machine store" for administrators.
 - Argon2 memory <= 1 GiB and passes <= 1000. bcrypt-pbkdf rounds <= 1024. PBKDF2 iterations <= 10^7.
 - KDFs run on a worker thread, with a cancel flag checked between blocks.
 - Decrypted private key material lives in `sd_secbuf` (heap, zeroized on free, `VirtualLock` best-effort for buffers
-  >= 4 KiB).
+  >= 4 KiB). Memory hygiene limits (T-56): `VirtualLock` keeps pages out of the pagefile only while the process runs
+  and does not keep them out of `hiberfil.sys`; session keys and decrypted private keys necessarily stay in plain
+  process memory for the session lifetime. The admin guide therefore recommends full-disk encryption where keys are
+  kept (TM-R31, owned by 03 §10 and the user documentation). Secrets on stacks follow rule 2.4.8 (TM-R30).
 - **Reconnect secret cache (review C20): `sd_ssh` is its only owner.** When the profile sets
   `cache_secrets_for_reconnect`, decrypted keys, the password and proxy passwords are kept per session (shared by
   the pool members of that session) for the session lifetime. The cache is protected with
   `CryptProtectMemory(SAME_PROCESS)` on Vista+ (through `sd_platform_resolve`), and with `RtlEncryptMemory` (advapi32
   `SystemFunction040`) on XP. The host does not keep a second cache: when the cache cannot answer, it answers
-  `is_reconnect` prompts from Credential Manager/DPAPI with `SD_ANSWER_FROM_STORE`.
+  `is_reconnect` prompts from Credential Manager/DPAPI with `SD_ANSWER_FROM_STORE`. The cache is not used on a
+  connection marked `hostkey_just_accepted` (TM-R05, section 6.4).
 
 ### 7.5 UpdateHostKeys (`hostkeys-00@openssh.com`, D16)
 
@@ -1291,7 +1519,10 @@ typedef struct sd_hostkey_event {
 
 The SSH layer is stateless across reconnects except for:
 - the **verified host key blob per hop**. A changed key on reconnect goes through the full verification again; a
-  mismatch makes the session FAILED (no silent acceptance);
+  mismatch makes the session FAILED (no silent acceptance). The host-key list of a reconnect is restricted to the
+  stored types like any connection (TM-R04), so a reconnect never raises a "new key type" prompt; `NEW_TYPE` and
+  `SD_E_HOSTKEY_TYPE_UNAVAILABLE` make the session FAILED. A plain `SD_HK_NEW` during a reconnect is possible only if
+  the key was removed from every store meanwhile, and its prompt carries `is_reconnect = 1` (TST-11);
 - **cached secrets**, only if the profile allows (section 7.4): the password, proxy passwords and decrypted keys.
   Keyboard-interactive answers are never cached. A server that requires an OTP on every login therefore needs user
   interaction on reconnect. The prompt carries `is_reconnect = 1`, and the session state becomes `AUTH_REQUIRED`
@@ -1323,16 +1554,23 @@ typedef struct sd_ssh_auth_cfg {
   const sd_ssh_identity *identities; uint32_t identity_count;
   uint32_t methods;        /* SD_AUTH_PUBLICKEY|SD_AUTH_KBDINT|SD_AUTH_PASSWORD */
   uint32_t agents;         /* SD_AGENT_PAGEANT|SD_AGENT_OPENSSH; must be 0 in the service context (D17) */
-  int identities_only;
+  int identities_only;     /* host passes 1 when the hop configures an identity, unless the profile says no
+                              (decisions.md D37, section 6.2) */
   int cache_secrets_for_reconnect;
 } sd_ssh_auth_cfg;
 
 typedef enum sd_proxy_kind { SD_PROXY_NONE, SD_PROXY_HTTP, SD_PROXY_SOCKS5, SD_PROXY_SYSTEM } sd_proxy_kind;
-enum { SD_PROXY_AUTH_BASIC = 1u<<0, SD_PROXY_AUTH_SSPI = 1u<<1, SD_PROXY_AUTH_USERPASS = 1u<<2 };
+enum { SD_PROXY_AUTH_BASIC = 1u<<0,
+       SD_PROXY_AUTH_SSPI = 1u<<1,               /* Negotiate incl. NTLM fallback, and bare NTLM */
+       SD_PROXY_AUTH_USERPASS = 1u<<2,
+       SD_PROXY_AUTH_SSPI_KERBEROS = 1u<<3 };    /* Negotiate restricted to Kerberos (TM-R10) */
+typedef enum sd_proxy_origin { SD_PROXY_ORIGIN_CONFIGURED,   /* profile, policy ProxyServer, static system entry */
+                               SD_PROXY_ORIGIN_DISCOVERED    /* WPAD / PAC result (set by sd_ssh) */ } sd_proxy_origin;
 typedef struct sd_proxy_cfg {                    /* section 5.2 */
   sd_proxy_kind kind;
   const wchar_t *host; uint16_t port;            /* HTTP / SOCKS5 */
   uint32_t auth;                                 /* allowed schemes; 0 = none */
+  int allow_discovered_sspi;                     /* machine policy AllowSystemProxySspi = 1 (TM-R10); default 0 */
   const char *user;                              /* UTF-8; password via SD_PROMPT_PROXY_PASSWORD */
   int remote_dns;                                /* SOCKS5: send the name (default 1) */
   int fallback_direct;                           /* SD_PROXY_SYSTEM: connect directly if discovery fails (0) */
@@ -1352,7 +1590,8 @@ typedef struct sd_ssh_hop {
 
 typedef struct sd_ssh_algo_cfg {
   sd_legacy_policy legacy_policy;    /* default SD_LEGACY_WARN; REFUSE removes legacy algorithms */
-  int refuse_terrapin_exposed;       /* default 0 */
+  int refuse_terrapin_exposed;       /* default 0: connect with TERRAPIN_EXPOSED when the server offers no unaffected
+                                        cipher/MAC pair; 1: fail before KEXINIT instead (section 4.3, TM-R01) */
   const char *disabled;              /* comma list of algorithm names to remove; may be NULL */
   int crypto_backend;                /* 0 auto, 1 own */
 } sd_ssh_algo_cfg;
@@ -1414,6 +1653,15 @@ sd_err sd_ssh_conn_auth_info(const sd_ssh_conn *c, sd_ssh_auth_info *out);
 /* Liveness probe and RTT (sections 4.6, 10.4); I/O thread only. */
 void   sd_ssh_conn_probe(sd_ssh_conn *c);
 void   sd_ssh_conn_rtt(const sd_ssh_conn *c, uint32_t *srtt_ms, uint32_t *rttvar_ms);
+
+/* TM-R04 explicit "add a key of another type" (section 4.3): only on a connection whose hop key verified as
+   SD_HK_MATCH against a key trusted before this connection. types = NULL fetches every announced key. Announced
+   keys are proven with hostkeys-prove-00; a requested type that was not announced is obtained by a re-key
+   restricted to that type. done receives the proven keys (sd_hk_key array, valid during the callback); fails with
+   SD_E_HOSTKEY_TYPE_UNAVAILABLE when the server has no such key. Never writes a store. */
+typedef void (*sd_ssh_hostkeys_cb)(void *ctx, sd_err e, const sd_hk_key *keys, uint32_t count);
+sd_err sd_ssh_conn_fetch_hostkeys(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
+                                  sd_ssh_hostkeys_cb done, void *ctx);
 
 /* Channels (used by sd_sftp; consumer callbacks run on the I/O thread). */
 typedef struct sd_ssh_channel_sink {
@@ -1493,7 +1741,8 @@ typedef enum sd_err {
   SD_E_DISCONNECTED,      SD_E_STALE_HANDLE,      SD_E_TIMEOUT,          SD_E_CANCELLED,
   SD_E_PROTOCOL,          SD_E_BUSY,              SD_E_WOULD_DEADLOCK,   SD_E_SHUTDOWN,
   SD_E_DNS,               SD_E_CONN_REFUSED,      SD_E_NET_UNREACHABLE,  SD_E_KEX_FAILED,
-  SD_E_HOSTKEY_REJECTED,  SD_E_HOSTKEY_MISMATCH,  SD_E_HOSTKEY_REVOKED,  SD_E_AUTH_FAILED,
+  SD_E_HOSTKEY_REJECTED,  SD_E_HOSTKEY_MISMATCH,  SD_E_HOSTKEY_REVOKED,  SD_E_HOSTKEY_TYPE_UNAVAILABLE, /* TM-R04 */
+  SD_E_AUTH_FAILED,
   SD_E_AUTH_REQUIRED,     /* reconnect needs user input */
   SD_E_LEGACY_REJECTED,   /* legacy acknowledgement refused (section 4.1) */
   SD_E_PROXY,             SD_E_PROXY_AUTH,        /* section 5.2 */
@@ -1505,7 +1754,8 @@ const char *sd_err_name(sd_err e);   /* stable English identifier for logs/JSON,
 ```
 
 `sd_err_name` produces the IPC spellings of 03 (review C25): `SD_E_HOSTKEY_*` -> `host_key_rejected`,
-`host_key_mismatch`, `host_key_revoked`; `SD_E_DNS` -> `dns_failed`; `SD_E_AUTH_REQUIRED` -> `prompt_required`;
+`host_key_mismatch`, `host_key_revoked`, `host_key_type_unavailable` (new with TM-R04; 03 still has to add it to its
+IPC error and exit-code tables); `SD_E_DNS` -> `dns_failed`; `SD_E_AUTH_REQUIRED` -> `prompt_required`;
 `SD_E_PROXY` -> `proxy_connect_failed`; `SD_E_PROXY_AUTH` -> `proxy_auth_failed`; `SD_E_LEGACY_REJECTED` ->
 `legacy_refused` (03 §6.2 exit codes 16 and 15); all others are the lowercase enum name without the `SD_E_` prefix.
 
@@ -1578,7 +1828,8 @@ typedef struct sd_sftp_attrs {
 #define SD_SFTP_IS_REG(a)  (((a)->valid & SD_SFTP_ATTR_PERM) && (((a)->perm & 0170000u) == 0100000u))
 
 typedef struct sd_sftp_dirent {
-  const char *name;       uint32_t name_len;      /* raw bytes, NUL-terminated copy; never contains '/' or NUL */
+  const char *name;       uint32_t name_len;      /* raw bytes, NUL-terminated copy; enforced by sd_sftp (TM-R12):
+                                                     never empty, never contains '/' or NUL, never "." or ".." */
   const char *longname;   uint32_t longname_len;  /* ls -l style; may be "" */
   sd_sftp_attrs attrs;
 } sd_sftp_dirent;
@@ -1721,6 +1972,13 @@ Common rules:
   paths resolve against the server's default directory. sd_sftp does no normalization except refusing embedded NULs
   (impossible in C strings anyway) and paths > 64 KiB.
 - `sd_sftp_reqopt` (optional, may be NULL): `{ uint32_t flags; uint32_t timeout_ms; sd_sftp_req **token_out; }`.
+- **Directory entries from the server are untrusted (TM-R12, T-24).** `readdir` drops, before the completion,
+  every entry whose name is empty, contains `/` or NUL, or is the server's own `.` or `..` (`sd_vfs` adds its own,
+  02 §6.5); `dropped` in the completion counts them and sd_sftp logs the first occurrence per directory handle at
+  warning level (name escaped, path at debug level only, TM-R31). The `rmdir` refinement probe (section 10.2) applies
+  the same rule. Duplicate raw names across batches and names that collide after stage 2 are handled by `sd_vfs`
+  (keep the first; `~cN` rule, 02 §1.3, §6.5), because only it holds the whole listing. Names returned by
+  `realpath`, `readlink`, `expand-path` and `home-directory` are paths, not components, and are passed through.
 - **Deadlines (D17, 02 R15):** every request has one, set by the caller. `timeout_ms = 0` means
   `default_timeout_ms` (30 s; CLI and tools). `sd_vfs` always passes its own: 25 s for the Dokany backend and 50 s
   for WebDAV (below the redirector's 60 s), split across the round trips of one vfs operation (02 §5.7). The deadline covers queueing
@@ -1751,7 +2009,8 @@ typedef struct sd_sftp_completion {
     struct { uint32_t bytes; int eof; } read;                   /* contiguous bytes from offset */
     struct { uint32_t bytes; } write;                           /* contiguous bytes acknowledged */
     struct { sd_sftp_attrs attrs; } stat;
-    struct { const sd_sftp_dirent *ents; uint32_t count; int eof; } readdir;
+    struct { const sd_sftp_dirent *ents; uint32_t count; int eof;
+             uint32_t dropped; } readdir;                       /* entries removed by the TM-R12 rules */
     struct { const char *path; uint32_t len; sd_sftp_attrs attrs; } name;  /* realpath/readlink/expand/home */
     struct { sd_sftp_statvfs v; } statvfs;
     struct { const char *const *users; const char *const *groups; uint32_t nu, ng; } ids;
@@ -1912,11 +2171,19 @@ sd_err sd_name_from_wide(const wchar_t *w, uint32_t len, char *out, uint32_t cap
 
 - The round trip is exact for every byte string, and the output is always well-formed UTF-16. That matters for
   WebDAV/HTTP, which cannot carry lone surrogates.
+- **Component invariant (TM-R11, T-23).** Both helpers work on one path component. The composed mapping (02's stage
+  2 inverse, then `sd_name_from_wide`) must never produce a component that contains the byte `/` (0x2F) or NUL, or
+  that equals `.` or `..`. Stage 1 enforces its share: `sd_name_from_wide` fails with `SD_E_INVALID_NAME` if its
+  output would contain 0x00 or 0x2F (input U+0000 or U+002F; the escape range U+F780..U+F7FF only produces bytes
+  0x80..0xFF), and `sd_name_component_check()` (same header) rejects empty, `.` and `..` components. 02's stage-2
+  inverse maps back only the code points its forward map produces (TM-R11 in 02 §1.2), so U+F000 and U+F02F can no
+  longer become NUL or `/`; `sd_vfs` calls the component check after both stages.
 - The range U+F780..U+F7FF does not collide with stage 2's U+F000+c range for Windows-reserved ASCII characters
   (`\ : * ? " < > |`, controls), so the two stages compose without ambiguity.
 - No Unicode normalization (NFC/NFD) is applied. Names from macOS servers keep their NFD form.
 - Text that is not a filename (server messages, banners, `longname`) is decoded as UTF-8, with invalid bytes replaced
-  by U+FFFD, and sanitized (control characters removed).
+  by U+FFFD, and sanitized with `sd_text_sanitize_server()` (control, bidi and zero-width characters removed,
+  section 6.1, TM-R09).
 
 ### 10.8 Threading guarantees (summary)
 
@@ -1966,7 +2233,8 @@ created with `SD_SSH_CFG_POOL_MEMBER`, which makes `sd_ssh`:
 - use the session's reconnect secret cache first;
 - raise password/passphrase/proxy prompts with `is_pool_member = 1`, which the host must answer from stored secrets
   or cancel, never with UI; keyboard-interactive rounds with `may_autofill = 0` are cancelled without a callback;
-- accept the host key only as `SD_HK_MATCH`/`SD_HK_MATCH_CA` without a prompt. `NEW`/`NEW_TYPE` drops the member.
+- accept the host key only as `SD_HK_MATCH`/`SD_HK_MATCH_CA` without a prompt, with the host-key list restricted to
+  the stored types (section 4.3, TM-R04). `NEW`/`NEW_TYPE`/`SD_E_HOSTKEY_TYPE_UNAVAILABLE` drops the member.
   `MISMATCH`/`REVOKED` drops the member, raises the normal host-key event and disables the pool for the session
   lifetime (it never fails the already-verified primary);
 - skip banners, the legacy acknowledgement (the primary already passed it; a member negotiating a different legacy
@@ -2071,7 +2339,8 @@ Rules:
   KiB, mpint 2050 bytes (16384-bit RSA + sign), SFTP names 64 KiB, handles 256 bytes, extension count 64.
 - Checked size arithmetic helpers (`sd_add_ovf`, `sd_mul_ovf`). Allocation sizes are computed only through them.
 - Strings from the network are never used as format strings, and are length-bounded before logging (512 bytes,
-  escaped).
+  escaped, with the TM-R09 removals of section 6.1). Remote paths and file names are logged at debug level only,
+  except inside error records (TM-R31, T-58; the log policy itself is 03 §10.1's).
 - Allocations go through `sd_alloc` (`sd_platform`), with a failure-injection hook for tests. Every allocation
   failure is `SD_E_NO_MEMORY`, never a crash. Memory is never freed across a public API boundary: every API that
   returns memory has its own free function. Large buffers (Argon2) use `VirtualAlloc`.
@@ -2085,7 +2354,12 @@ Rules:
   `x64-modern` (no inline assembly on x64, no non-standard returns). `/analyze` runs in CI with SAL annotations on the
   public APIs.
 - Secret handling: `sd_secbuf` for passwords, passphrases, private keys and session keys. Zeroized on free; never
-  logged. Debug logs print fingerprints, never key material.
+  logged. Debug logs print fingerprints, never key material. Stack locals holding secrets are wiped before return
+  (rule 2.4.8). **Crash dumps (TM-R30, T-57):** every chain I/O thread registers itself for its lifetime, and every
+  KDF, key-loading and agent work item for its duration, through `sd_dump_mark_sensitive()` (the `sd_platform`
+  secret-thread registry); the host's `MiniDumpCallback` (03 §10.4) always omits the stacks of registered threads
+  (there is no option to include them, decisions.md D43).
+  sd_* modules never write dumps themselves.
 
 ### 12.2 Fuzzing plan
 
@@ -2107,7 +2381,8 @@ with clang + ASan/UBSan/MSan (decisions.md D21: test infrastructure only, nothin
 | `fuzz_known_hosts` | known_hosts lines + lookup |
 | `fuzz_putty_hostkey` | PuTTY registry value names + data |
 | `fuzz_agent_reply` | agent IDENTITIES_ANSWER / SIGN_RESPONSE |
-| `fuzz_utf_names` | byte <-> UTF-16 round trip (asserts bijection) |
+| `fuzz_utf_names` | byte <-> UTF-16 round trip (asserts bijection, and that `sd_name_from_wide` never emits `/` or NUL, TM-R11) |
+| `fuzz_text_sanitize` | `sd_text_sanitize_server`/`_host`: output never contains controls, bidi or zero-width characters (TM-R09) |
 | `fuzz_proxy_http`, `fuzz_proxy_socks5` | proxy handshake replies (status line, headers, 407 rounds, SOCKS5 method/auth/connect replies) |
 | `fuzz_hostkeys` | `hostkeys-00` announcements and `hostkeys-prove-00` replies |
 | `fuzz_mlkem` | ML-KEM ciphertexts and encapsulation keys (decaps never crashes; implicit rejection holds) |
@@ -2117,14 +2392,16 @@ with clang + ASan/UBSan/MSan (decisions.md D21: test infrastructure only, nothin
 - Seed corpora: captures from interop runs (with keys from fixtures), plus the fixtures directory.
 - CI: each target runs 5 minutes on every PR touching `src/sd_ssh|sd_sftp|sd_crypto`, and 1 hour nightly. The corpus is kept
   in a separate repository branch. Crashes become regression tests under `tests/regress/`.
-- WinAFL (DynamoRIO instrumentation) runs as a nightly black-box fuzzer of the **real binaries** on x86 (both the
-  `x86-ia32` and `x86-sse2` v141_xp builds), using a test-mode driver that feeds a socket replay file. This catches issues that only appear with
+- WinAFL (DynamoRIO instrumentation) runs as a nightly black-box fuzzer of the **real binaries**: the `x64-xp`
+  build from M0 and both x86 v141_xp builds (`x86-ia32`, `x86-sse2`) from M1 (TST-01), using a test-mode driver
+  that feeds a socket replay file. This catches issues that only appear with
   the shipping compiler/toolset.
 - Differential fuzzing of crypto: own vs CNG (section 2.7.3) and own arithmetic vs the independent test-only reference
   (section 2.7.4). No third-party crypto library is built, even for tests (D13).
 - Stateful protocol fuzzing: an in-process mock SSH server (test-only, uses our own crypto) mutates messages
   mid-session (after KEX), with the encryption layer set to `none` in a fuzz build flag. That flag is compiled out of
-  release builds.
+  release builds, and the release-binary check (TST-30) fails if the `none` cipher, fuzz hooks or test-only MITM
+  code appear in any shipped binary (T-06).
 
 ### 12.3 Interop test matrix
 
@@ -2139,6 +2416,32 @@ without username/password), and the WinHTTP system-proxy paths (static, PAC, WPA
 CI infrastructure (decisions.md D21): a WSL sshd fixture on the Windows runners plus Win32-OpenSSH sshd locally;
 exotic servers in the self-hosted lab; an optional Linux fuzz job. All of it is test infrastructure and never ships.
 
+### 12.4 Security tests from the threat model
+
+The tests of 05 §7 that exercise this module, with the milestone that must pass them (P1 blocks the milestone demo,
+P2 the next milestone, P3 1.0). They are test-only code; the Terrapin MITM proxy and the mock servers never ship
+(TST-30).
+
+| Test | M | P | What it checks here | Design refs |
+|------|---|---|---------------------|-------------|
+| TST-01 | M0 | P1 | every 12.2 fuzz target of the M0 parsers present on day one (5 min per PR); WinAFL on `x64-xp` from M0, x86 from M1 | T-06; 12.2 |
+| TST-02 | M1 | P1 | fuzzing of shared parsers this module feeds (stage-1 name helpers, `fuzz_text_sanitize`) | T-37; 10.7, 6.1 |
+| TST-03 | M0 | P1 | disassembly check: no `_all*`/`_aull*`/`__rt_*` helper call, no 64x64 multiply, no branch or `div` in constant-time code on `x86-ia32`, `x86-sse2`, ARM32; dudect with high-word-zero/all-ones classes on 32-bit flavours (from M1) | T-03; TM-R02, 2.4, 2.7.5 |
+| TST-04 | M0 | P1 | KAT/Wycheproof/CNG differential per primitive plus negative transcripts: all-zero X25519 output, invalid ECDH points, non-canonical Ed25519 S, Poly1305/GCM tag bit flips, no decryption output before MAC | T-04; 2.7 |
+| TST-05 | M0 | P1 | stage-1 part: `sd_name_from_wide` never yields `/` or NUL; `sd_name_component_check` rejects empty, `.`, `..`; mock-server dirents with `/`, NUL, `.`, `..`, empty names and 64 KiB names are dropped and counted | T-23, T-24; TM-R11, TM-R12, 10.5, 10.7 |
+| TST-08 | M1 | P2 | mock-server DoS corpus at the sd_sftp level (READDIR without EOF, huge counts, 2^64-1 sizes, drip-fed replies): deadlines fire, memory stays bounded by the packet and queue caps; the per-listing caps are 02's (TM-R16) | T-30; 10.5, 12.1 |
+| TST-11 | M0 | P1 | mismatch blocks (M0); NEW_TYPE for a known host fails with `host_key_type_unavailable` and no prompt, including on reconnect and for pool members (M0 for the types that exist, ed25519 vs ecdsa in M2); after "remove old key + TOFU" no stored password, kbd-int answer or cache entry is sent and `SD_ANSWER_FROM_STORE` is rejected (M2) | T-08, T-09, T-10; TM-R04, TM-R05, 4.3, 6.4, 7.1, 8 |
+| TST-12 | M2 | P1 | Terrapin interop with a test-only prefix-truncation MITM against a non-strict server: with TM-R01 the connection uses GCM/CTR (or CBC with a non-ETM MAC) and survives the attack attempt, or reports `TERRAPIN_EXPOSED` when only affected pairs exist, or fails with `refuse_terrapin_exposed`; with strict KEX the injection is fatal; the 3 s fallback path is covered with a server that waits for the client KEXINIT | T-01; TM-R01, 4.2, 4.3 |
+| TST-13 | M2 | P1 | legacy matrix on lab servers (3DES, group1, small GEX, old OpenSSH): `allow`/`warn`/`ask`/`refuse` behave as documented, `warn` is the default and never holds (D33), no legacy algorithm is chosen when a modern one is offered in that category, also with the TM-R01 per-connection lists; GEX 1024-2047 is accepted with `SD_LEGACY_DH_SMALL` (TM-Q01 floor not adopted) | T-02; 4.2, 4.3 |
+| TST-14 | M2 | P2 | live sources: a `known_hosts` (or `.ssh` folder, or PuTTY key) writable by another user, a reparse point and a FAT copy are skipped with `SD_KH_SRC_INSECURE`; wildcard-only lines yield no MATCH and no stored type but still MISMATCH; a mismatch in a source blocks | T-11; TM-R06, 7.2 |
+| TST-15 | M2 | P1 | UpdateHostKeys negatives: unproven key, proof over another session id, `ssh-rsa` proof with legacy refused, announcement after TOFU/once, wildcard entry, secondary pool member | T-12; 7.5 |
+| TST-16 | M2 | P2 | pool: DNS round robin to two servers with different keys or homes; member dropped, pool disabled, primary unaffected | T-14; 10.9 |
+| TST-17 | M2 | P2 | agent squatting: a second user creates `\\.\pipe\openssh-ssh-agent`; a `Pageant` window class registered by a low-IL process and by another user's `runas` process; the client sends nothing to either and logs `agent_untrusted` | T-16, T-17; TM-R08, 6.5 |
+| TST-18 | M2 | P1 | proxy NTLM harvesting: a test proxy answering `407 NTLM` and `407 Negotiate` (NTLM fallback) with `proxy_auth = auto`; a WPAD/PAC-discovered proxy without `AllowSystemProxySspi`; no SSPI token leaves in either case; Squid Kerberos in the lab domain still works with `auto`, NTLM with `negotiate`; XP `PackageList` behaviour recorded | T-20, T-22; TM-R10, 5.2 |
+| TST-28 | M3 | P2 | dump hygiene: crash during a password prompt, during KEX and during a KDF with a known test password and key; the dump contains neither (registered thread stacks omitted, stack locals wiped) | T-57; TM-R30, 2.4.8, 12.1 |
+| TST-30 | M0 | P2 | release binaries contain no `none` cipher, no fuzz hooks, no test MITM or mock-server code | T-06; 12.2 |
+| TST-33 | M2 / M6 | P1 | external crypto review: pass 1 findings closed before any public beta (end of M2), pass 2 before 1.0 (decisions.md D38) | T-04; 2.7.6 |
+
 ---
 
 ## 13. Milestones (mapped onto the project milestones of review §6)
@@ -2147,11 +2450,11 @@ This module no longer has its own M1-M3; its work is scheduled inside the cross-
 
 | Milestone | Content for sd_crypto / sd_ssh / sd_sftp |
 |-----------|-------------------------------------------|
-| M0 - x64 Win10 vertical slice | `sd_base`/`sd_platform` consumers, RNG, SHA-2/HMAC, AES (own + CNG), ChaCha20-Poly1305@openssh, **own GF(2^255-19) arithmetic**, X25519, Ed25519. KAT + Wycheproof + CNG differential harness (section 2.7) from day one. Transport with curve25519, strict KEX, ext-info; password and Ed25519 key files (unencrypted and bcrypt); `known_hosts` TOFU (user store). SFTP core ops, pipelining, one channel. Fuzz targets for all of the above. |
-| M1 - Resilience and WebDAV | Reconnect (sections 8, 10.6), per-request deadlines + liveness probe (D17), meta/bulk channels and the meta-first scheduler (D8), `max_queued_reqs`, R10 extended attributes, R12 server identity, R13 identity hooks (home owner; `identity_probe = exec`), R16 statistics. `x86-ia32` and `x86-sse2` builds green (D18), dudect on all x86 flavours. |
-| M2 - Authentication breadth | Own Montgomery field engine and `sd_bn` (section 2.8); ECDSA/ECDH P-256/384/521, RSA, DH/GEX; **SHA-3/SHAKE, ML-KEM-768 and `mlkem768x25519-sha256`** (decisions.md D15); legacy algorithms, `legacy_mask`, `SD_PROMPT_LEGACY_ACK`, Terrapin policy; kbd-interactive/OTP, password change; PEM/PKCS#8, PPK v2/v3 (Argon2); certificates (user + host CA); Pageant + OpenSSH agent; ProxyJump N hops; **HTTP CONNECT / SOCKS5 proxies, proxy auth, system proxy** (D15); `SD_ID_BLOB`, key probe/serializer; `known_hosts` store list + live sources (D10); **UpdateHostKeys** (D16); **connection pool and striping** (D14), which needs the stored-secret paths of this milestone. Interop matrix job incl. proxies and OpenSSH 10. |
-| M3-M5 | No new protocol scope. Support for the UI (prompt kinds, events), service context (machine store, DPAPI service keys, no agents), and fixes from interop and lab runs. |
-| M6 - Architectures, performance, 1.0 RC | SHA-NI / AES-NI / ARMv8 fast paths tuned, ARM64 and ARM32 (best effort) crypto paths, striping and pool performance against 02 §11 targets, nightly fuzzing at scale, **external crypto review** (section 2.7.6) with findings closed before 1.0. |
+| M0 - x64 Win10 vertical slice | `sd_base`/`sd_platform` consumers, RNG, SHA-2/HMAC, AES (own + CNG), ChaCha20-Poly1305@openssh, **own GF(2^255-19) arithmetic**, X25519, Ed25519. KAT + Wycheproof + CNG differential harness (section 2.7) from day one. Transport with curve25519, strict KEX, ext-info; password and Ed25519 key files (unencrypted and bcrypt); `known_hosts` TOFU (user store). SFTP core ops, pipelining, one channel. Fuzz targets for all of the above. Threat-model items: KEXINIT after the server's KEXINIT with the TM-R01 list construction and the 3 s fallback, host-key list restricted to stored types (TM-R04) with `SD_E_HOSTKEY_TYPE_UNAVAILABLE`, `sd_ct64.h` and the call-following disassembly check (TM-R02), stack wiping (rule 2.4.8), `sd_text_sanitize_*` (TM-R09), stage-1 component invariant and dirent dropping (TM-R11, TM-R12), user-store DACL on write (TM-R07); TST-01, -03, -04, -05, -11 (mismatch, NEW_TYPE), -30. |
+| M1 - Resilience and WebDAV | Reconnect (sections 8, 10.6), per-request deadlines + liveness probe (D17), meta/bulk channels and the meta-first scheduler (D8), `max_queued_reqs`, R10 extended attributes, R12 server identity, R13 identity hooks (home owner; `identity_probe = exec`), R16 statistics. `x86-ia32` and `x86-sse2` builds green (D18), dudect on all x86 flavours with the TM-R02 input classes (TST-03); WinAFL on both x86 builds (TST-01); TST-02 (sanitizer, names), TST-08. |
+| M2 - Authentication breadth | Own Montgomery field engine and `sd_bn` (section 2.8); ECDSA/ECDH P-256/384/521, RSA, DH/GEX; **SHA-3/SHAKE, ML-KEM-768 and `mlkem768x25519-sha256`** (decisions.md D15); legacy algorithms, `legacy_mask`, `SD_PROMPT_LEGACY_ACK`, Terrapin policy; kbd-interactive/OTP, password change; PEM/PKCS#8, PPK v2/v3 (Argon2); certificates (user + host CA); Pageant + OpenSSH agent; ProxyJump N hops; **HTTP CONNECT / SOCKS5 proxies, proxy auth, system proxy** (D15); `SD_ID_BLOB`, key probe/serializer; `known_hosts` store list + live sources (D10); **UpdateHostKeys** (D16); **connection pool and striping** (D14), which needs the stored-secret paths of this milestone. Interop matrix job incl. proxies and OpenSSH 10. Threat-model items: no stored secrets after a fresh host-key acceptance (TM-R05), live-source ACL and wildcard rules (TM-R06), agent authenticity checks (TM-R08), proxy SSPI restrictions (TM-R10), `identities_only` default (decisions.md D37), `via_host` in host-key prompts (TM-R03 support), `sd_ssh_conn_fetch_hostkeys` (TM-R04 "add key"); TST-11 (re-TOFU), -12 to -18. **External crypto review pass 1 at the end of M2** (decisions.md D38, section 2.7.6); no public beta before its blocking findings are closed. |
+| M3-M5 | No new protocol scope. Support for the UI (prompt kinds, events), service context (machine store, DPAPI service keys, no agents), and fixes from interop and lab runs, including fixes from review pass 1. M3: secret-thread registry hooks for the host's minidump callback (TM-R30) and TST-28. |
+| M6 - Architectures, performance, 1.0 RC | SHA-NI / AES-NI / ARMv8 fast paths tuned, ARM64 and ARM32 (best effort) crypto paths (dudect and disassembly checks on ARM32 included, TM-R02), striping and pool performance against 02 §11 targets, nightly fuzzing at scale, **external crypto review pass 2** (section 2.7.6, decisions.md D38) with findings closed before 1.0 (TST-33). |
 | M7 - Post-1.0 | `zlib@openssh.com`, adaptive channel windows, Solinas-specialized NIST reductions, optional bit-interleaved Keccak for 32-bit targets. |
 
 ---
@@ -2160,8 +2463,12 @@ This module no longer has its own M1-M3; its work is scheduled inside the cross-
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Bugs in our own crypto, including field and bignum arithmetic, with no verified third-party code to lean on (D13) | security | the six verification layers of section 2.7 (KATs, Wycheproof, CNG differential, independent reference arithmetic + fuzz-differential, dudect + disassembly checks, interop) gated per primitive; two-person review; external review before 1.0 (budgeted) |
-| Side channels in own code (MSVC optimizes masks into branches; IA32 helper routines) | key leakage | value barriers, disassembly checks on every flavour incl. `x86-ia32`, dudect on x64/ARM64/x86; prefer CNG on Vista+ for long-term keys where section 2.2 allows |
+| Bugs in our own crypto, including field and bignum arithmetic, with no verified third-party code to lean on (D13) | security | the six verification layers of section 2.7 (KATs, Wycheproof, CNG differential, independent reference arithmetic + fuzz-differential, dudect + disassembly checks, interop) gated per primitive; two-person review; external review in two passes, end of M2 and before 1.0, no public beta before pass 1 (decisions.md D38, T-04) |
+| Side channels in own code (MSVC optimizes masks into branches; compiler runtime helpers such as `_allmul` are variable time on 32-bit targets, T-03) | key leakage | value barriers; own `sd_ct64.h` 32x32-based primitives and a ban on runtime-helper calls in constant-time code (TM-R02); call-following disassembly checks on every flavour incl. `x86-ia32` and ARM32; dudect on x64/ARM64/x86 (ARM32 in the lab) with high-word-zero classes; prefer CNG on Vista+ for long-term keys where section 2.2 allows |
+| Terrapin on servers without strict KEX (T-01) | dropped `EXT_INFO`, SHA-1 user signatures | cipher/MAC lists built after the server's KEXINIT (TM-R01, decisions.md D34); exposure flag and warning only when the server offers nothing unaffected |
+| Host-key downgrade to a prompt or auto-sent secrets (T-09, T-10) | MITM gains a password | host-key list restricted to stored types, `NEW_TYPE` fails without a prompt (TM-R04); no stored secrets after a fresh acceptance (TM-R05) |
+| Spoofed agents, harvested proxy credentials (T-16, T-17, T-20) | stalled or observed signing, NetNTLMv2 leak | owner/SID/integrity checks before any agent request (TM-R08); SSPI only to configured proxies and Kerberos-only by default (TM-R10) |
+| Waiting for the server's KEXINIT stalls with servers that wait for the client first | connect delay | 3 s fallback with Terrapin-aware ordering (section 4.2); interop matrix covers it |
 | Schedule: writing P-curve, RSA and ML-KEM arithmetic ourselves moves work into M2 | delay | generic Montgomery engine shared by P-curves, scalar fields and `sd_bn`; specialized reductions deferred to M7 |
 | XP performance (no AES-NI, x86 bignum; `x86-ia32` without any vector path): RSA-4096 sign ~100-200 ms, Argon2 on 2006-era CPUs takes seconds | UX | work runs on worker threads; prefer ed25519; ChaCha20 first without hardware AES; cache decrypted keys per session when allowed |
 | CNG behaviour differences across versions (GCM on Vista SP1, raw secret 8.1+, blob formats) | interop failures on specific OS builds | capability probing instead of version checks; CI on Win7/8.1/10/11 VMs; fallback to own code on any CNG error during probe |
@@ -2189,6 +2496,17 @@ lab verifications and details for the implementers:
    to confirm the acceptance rule of section 7.5.
 4. **Measurement:** default `stripe_bytes` (1 MiB) and the gain of pool sizes 2-4 on the 02 §11 setups, before M6
    fixes the recommended values in the UI.
+5. **Lab (T-05):** confirm that XP SP3's `RtlGenRandom` contains the fix for the generator weaknesses published for
+   Windows 2000/XP (ePrint 2007/419); record the result in the admin guide.
+6. **Lab (TM-R10):** whether a Negotiate `PackageList` of `"!ntlm"` restricts SSPI to Kerberos on XP SP3, Vista and
+   7 (section 5.2).
+7. **Lab (TM-R02):** dudect of `UMULL`-based field code on the ARM32 lab device, to confirm constant-time 32x32
+   multiplication on the Cortex-A cores of Windows ARM32 hardware.
+8. **Interop (TM-R01):** whether any server in the matrix waits for the client's KEXINIT before sending its own, and
+   whether 3 s is the right fallback delay.
+9. **Interop (TM-R04 "add key"):** which servers (OpenSSH 7.x-10.x, Dropbear, Bitvise, ProFTPD mod_sftp) accept a
+   client-initiated re-key whose host-key list differs from the first KEX, for the not-announced case of
+   `sd_ssh_conn_fetch_hostkeys()` (section 4.3); servers that refuse it are covered only through `hostkeys-00`.
 
 ---
 
@@ -2209,6 +2527,10 @@ lab verifications and details for the implementers:
     WebDAV workers (review C33).
   - Callbacks run on I/O threads: keep them short, never block.
   - Paths are raw bytes; use `sd_name_to_wide`/`sd_name_from_wide` (stage 1) and apply your stage 2 per component.
+    Your stage-2 inverse must map back only the code points the forward map produces, and every component must pass
+    `sd_name_component_check` after both stages (TM-R11).
+  - `readdir` already drops empty, `/`/NUL-containing and `.`/`..` names (`dropped` counts them); duplicates and
+    stage-2 collisions are yours (TM-R12).
   - Ordering is guaranteed only per handle (per byte range when striped).
   - Handles go stale on reconnect: call `sd_sftp_file_reopen()`, compare the returned attrs, and honor
     `maybe_executed`.
@@ -2224,6 +2546,16 @@ lab verifications and details for the implementers:
   - Host key mismatch has no accept path. UpdateHostKeys arrives as the event `SD_HKEV_ANNOUNCED` (proven additions,
     removal candidates, target store); the host applies it with `sd_known_hosts_add`/`_remove` (03 §5.6,
     IPC `hostkeys.announced`).
+  - Threat-model changes that need 03 (TM-R03/R04/R05/R06/R08/R09/R10, decisions.md D37): the new error
+    `host_key_type_unavailable` (IPC code, exit code, message pointing to the host key manager); an "add a key of
+    another type" action in the host key manager that calls `sd_ssh_conn_fetch_hostkeys()` inside a verified
+    connection (03 §6.1 `hostkey add --from-server`); prompts with
+    `hostkey_just_accepted = 1` are never answered from Credential Manager and show the "identity was just accepted"
+    note; the host-key dialog uses `via_host` ("reached through jump host ..."); warnings
+    `hostkey_source_insecure` (from `sd_known_hosts_source_state`) and `agent_untrusted`; server text arrives
+    sanitized but the hop host must still be rendered outside the server-text area; `identities_only` defaults to
+    yes when a hop configures an identity; machine policy `AllowSystemProxySspi` (default 0) feeds
+    `sd_proxy_cfg.allow_discovered_sspi`.
   - `legacy_mask` bits drive the warnings (TERRAPIN has its own text); derive per-algorithm flags from the
     negotiated names plus the mask.
   - Prompts carry `hop_index` for ProxyJump.
@@ -2237,8 +2569,8 @@ lab verifications and details for the implementers:
     `SD_SFTP_OPT_IDENTITY_EXEC`), `keepalive`, `connect_timeout`. Proxies use 03's per-leg keys (03 §3.8): `proxy` /
     `proxy.K` (spec `none|system|http://[user@]host[:port]|socks5://[user@]host[:port]`) for leg K, which is
     `hops[K-1].proxy`; `sd_mount` parses the spec into `sd_proxy_cfg` (kind, host, port, user; `remote_dns` always
-    1, 03 uses socks5h semantics). `proxy_auth` maps `auto` -> `BASIC|SSPI`, `basic` -> `BASIC`, `negotiate` ->
-    `SSPI`, `none` -> 0; SOCKS5 sets `USERPASS` when a user is given. `proxy_fallback_direct` (`no`) applies to
+    1, 03 uses socks5h semantics). `proxy_auth` maps `auto` -> `BASIC|SSPI_KERBEROS` (TM-R10: Negotiate restricted
+    to Kerberos), `basic` -> `BASIC`, `negotiate` -> `SSPI` (Kerberos with NTLM fallback, bare NTLM), `none` -> 0; SOCKS5 sets `USERPASS` when a user is given. `proxy_fallback_direct` (`no`) applies to
     `system`. Plus the known_hosts live-source switches (`[hostkeys] openssh_source`, `putty_source`; default on;
     policy `DisableKnownHostsSources`) and the policy `UpdateHostKeys` (03 §3.5; `2` lets the service update the
     machine store).
@@ -2253,7 +2585,11 @@ lab verifications and details for the implementers:
   the service is the WinHTTP machine setting.
 - **Build (04):** two x86 crypto flavours (`x86-ia32` without any vector code, `x86-sse2`), `x64-modern` with CFG/CET,
   flags per 04 §3.2. `sd_stubcore` reuses the `x86-ia32` sources for SHA-2 and Ed25519 verify. No `third_party/`
-  for these modules.
+  for these modules. CI runs the call-following disassembly check of section 2.7.5 on `x86-ia32`, `x86-sse2` and
+  ARM32 objects as an M0 gate (TM-R02, TST-03), WinAFL on `x64-xp` from M0 (TST-01), and the release-binary check
+  (TST-30). Release gating: no public beta before external review pass 1 is closed (decisions.md D38).
+- **Crash handling (03 §10.4):** the `MiniDumpCallback` consults the `sd_platform` secret-thread registry
+  (`sd_dump_mark_sensitive()`) and always omits registered threads' stacks (TM-R30, decisions.md D43).
 - **Updater:** reuse `sd_ed25519_verify` + SHA-512 from sd_crypto for release signatures.
 
 ---
@@ -2295,3 +2631,55 @@ Applied on 2026-10-24 from `decisions.md` and `00-integration-review.md`:
   the caller (30 s default only for callers passing none); pool members must match the primary's host key and
   home and open a bulk channel only (D19); section 16 maps 03's profile keys (`identity_probe = owner|exec`,
   per-leg `proxy`/`proxy.K`, `proxy_auth`, `proxy_fallback_direct`, `legacy_algorithms` -> `legacy_policy`).
+
+### Threat-model integration 2026-10-24
+
+Applied from `05-threat-model.md` §8 as accepted by decisions.md D33-D39:
+
+- **TM-R01** (decisions.md D34; T-01): KEXINIT sent after the server's KEXINIT; per-connection cipher/MAC lists
+  avoid chacha20-poly1305 and CBC+ETM without strict KEX, preferring AES-GCM then AES-CTR; exposure flag and warning
+  only when nothing unaffected is offered; `refuse_terrapin_exposed` now fails before KEXINIT instead of
+  reconnecting; 3 s fallback lists (0 D5, 4.1, 4.2, 4.3, 9, 13, 14).
+- **TM-R02** (T-03): `_allmul` assumption withdrawn; `sd_ct64.h` 32x32-based multiplication and own 64-bit shift
+  and comparison primitives; no compiler runtime helper calls in constant-time code on 32-bit targets; call-following
+  disassembly check; dudect high-word classes (2.3, 2.4 rule 3, 2.4 rule 9, 2.7.5, 2.8, 14).
+- **TM-R03** (support only; T-08, T-19): `via_host` in host-key prompts (7.1); the dialog itself is 03's.
+- **TM-R04** (T-09): host-key list restricted to stored types, `SD_HK_NEW_TYPE` fails with
+  `SD_E_HOSTKEY_TYPE_UNAVAILABLE`, `sd_known_hosts_stored_types`, `sd_ssh_conn_fetch_hostkeys` (0 D5, 3.1, 4.3,
+  7.1, 7.2, 8, 9, 10.2, 10.9).
+- **TM-R05** (T-10): `hostkey_just_accepted`, no autofill, no reconnect cache, `SD_ANSWER_FROM_STORE` rejected (6.4,
+  6.7, 7.1, 7.4).
+- **TM-R06** (T-11): live-source ACL checks on the opened handle and wildcard-only lines ignored for MATCH;
+  `sd_known_hosts_source_state` (0 D10, 7.2).
+- **TM-R07** (part that needs 01; T-13): store temp files created with the protected DACL so `MoveFileExW` keeps
+  it (7.2).
+- **TM-R08** (T-16, T-17): Pageant process SID/integrity check, OpenSSH agent pipe owner and server-process check
+  (6.5).
+- **TM-R09** (T-18): `sd_text_sanitize_server`/`_host` remove bidi and zero-width characters (6.1, 6.4, 10.7, 12.1,
+  12.2).
+- **TM-R10** (T-20, T-22): SSPI only to configured proxies, never to WPAD/PAC results without
+  `AllowSystemProxySspi`; `auto` is Kerberos-only; NTLM only with `negotiate` (5.2, 9, 16).
+- **TM-R11** (part in 01; T-23): stage-1 component invariant and `sd_name_component_check` (10.7).
+- **TM-R12** (part in 01; T-24): `readdir` drops invalid and dot entries and counts them (10.3, 10.5).
+- **TM-R30** (part in 01; T-57): stack wiping of secrets and the secret-thread registry for minidumps (2.4 rule 8,
+  12.1).
+- **TM-R31** (part in 01; T-56, T-58): remote paths logged at debug level only except in error records; memory
+  limits documented (7.4, 12.1).
+- **decisions.md D33** (T-02): legacy stays enabled by default, ranked last, warning only; TM-Q01 (ask, 2048-bit GEX
+  floor) not adopted (0 D4, 4.2, 4.3).
+- **decisions.md D37** (TM-Q07, T-15): `identities_only = yes` by default when a hop configures an identity (6.2, 9).
+- **decisions.md D38** (TM-Q09, T-04): external crypto review in two passes, no public beta before pass 1 (0 D13,
+  2.7.6, 13, 14).
+- T-05 (RNG on XP, no TM-R): ephemeral secrets drawn from the OS RNG at use, lab item for the XP SP3 fix (2.2, 15).
+- TM-R17 (a) checked: this module has no listening sockets (3.2).
+- Security tests TST-01 to -05, -08, -11 to -18, -28, -30 and -33 mapped in section 12.4 and the milestones of
+  section 13; open lab items 5-8 added to section 15.
+- Not applied here (owned by other documents): TM-R03 dialog and CLI defaults, TM-R07 folder ACLs, TM-R11 stage-2
+  inverse, TM-R12 duplicates/collisions and WebDAV decoding, TM-R13 to TM-R29, TM-R30 dump callback, TM-R31 log
+  policy and admin guide, TM-R32 to TM-R39.
+- Final reconciliation (threat model) 2026-10-24: TM-R04 "add key" now works inside a verified connection through
+  `sd_ssh_conn_fetch_hostkeys()` (`hostkeys-prove-00` for announced keys, else a re-key restricted to the requested
+  type; 4.3, 7.1, 9; `SD_SSH_CFG_HOSTKEY_ANY_TYPE` removed; lab item 9 in 15); `hostkey_just_accepted` is the one
+  name for TM-R05 (03 uses it too) and also covers proxy-password prompts of tunneled legs (6.4); dump hooks named
+  `sd_dump_mark_sensitive()` and stacks are always omitted (D43, no `--include-secret-stacks`; 2.4, 12.1, 16);
+  agent checks use `sd_pipe_verify_server()` (6.5); disassembly check runs as `tools/sd-ctcheck` (2.7.5).

@@ -10,7 +10,8 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
 - **Zero third-party code, crypto included** (no fiat-crypto, Monocypher, BearSSL or similar). Field arithmetic,
   bignum, ML-KEM, SHA-3 and every other primitive are written by us. Papers, RFCs and specs may be read; no code
   is copied. Assurance comes from Wycheproof and RFC vectors, differential tests against CNG in CI, fuzzing,
-  constant-time timing tests and an external crypto review before 1.0.
+  constant-time timing tests and an external crypto review in two passes: pass 1 at the end of M2 (all SSH and
+  crypto code), pass 2 before 1.0. No public betas before pass 1 (D38).
 - Never break Windows signing policy: no test-signing, no unsigned drivers. The only allowed kernel component is
   an existing, already-signed, open-source driver: **Dokany** (redistributed as published upstream, never forked).
 - Self-installing. Also runs portable.
@@ -68,6 +69,8 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
   private key format (encrypted with bcrypt-pbkdf too), PEM/PKCS#8 and PuTTY `.ppk` (v2 and v3).
 - SSH agents: Pageant (WM_COPYDATA, XP+) and the Windows OpenSSH agent named pipe (Windows 10+). Not used in the
   service context; the service uses its own DPAPI-protected keys.
+- When a profile configures an identity, only that key (and its certificate) is offered by default
+  (`identities_only = yes`, D37); profiles can turn it off.
 - OpenSSH user certificates.
 
 ## Host key verification
@@ -81,7 +84,11 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
 ## Crypto policy
 - Maximum compatibility: modern algorithms preferred (curve25519, ed25519, chacha20-poly1305, AES-GCM, AES-CTR,
   ETM MACs), and legacy algorithms (3DES-CBC, AES-CBC, DH group1/group14-sha1, ssh-rsa SHA-1, hmac-sha1) enabled
-  by default but always ranked last. The UI warns when a session negotiates a legacy algorithm.
+  by default but always ranked last. The UI warns when a session negotiates a legacy algorithm. This stays as
+  decided for maximum compatibility (D33), including DH group1 and small GEX groups; profiles and policy can
+  restrict it.
+- Terrapin: the cipher is chosen after the server's KEXINIT; without strict KEX, chacha20-poly1305 and CBC+ETM are
+  avoided in favour of AES-GCM/CTR; if only affected ciphers exist, the connection proceeds with a warning (D34).
 - Post-quantum hybrid key exchange `mlkem768x25519-sha256` in v1 (own ML-KEM-768 and SHA-3/SHAKE). No sntrup761.
 - The full algorithm set exists in our own constant-time code (XP has no CNG). Hashes and HMAC always use our code;
   CNG serves as a differential-test reference.
@@ -106,6 +113,8 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
   go/no-go per OS; where it is a no-go, that OS falls back to per-user attach at logon.
 - The service is enabled by default on per-machine installs (the MSI has a property to turn it off). Per-user
   installs never install a service.
+- Global drives have no implicit audience: the admin chooses who can access when creating a service profile;
+  non-admins are read-only unless granted write (D35).
 - Multiple simultaneous mounts.
 
 ## Resilience
@@ -119,19 +128,34 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
 ## Mount options
 - Read-only per profile.
 - Map POSIX permissions and uid/gid to Windows attributes and ACLs (read-only, hidden for dot-files, +x hint).
-- Symlinks: follow them (default) or hide them (both backends). Exposing them as reparse points is postponed until
-  after 1.0 (no Dokany fork).
+- Symlinks: `follow_inside` by default (links resolving outside the mount root appear dangling), `follow` or
+  `hide` per profile (both backends, D40). Exposing them as reparse points is postponed until after 1.0 (no Dokany
+  fork).
+- Shell-active files (`.library-ms`, `.url`, `.scf`, `.lnk`, remote-icon `desktop.ini`, …) are gated by profile
+  trust: `untrusted` (the default) blocks opening them for every process, `trusted` allows them; a per-profile
+  setting can override (D41).
 - Mount on an NTFS folder in addition to drive letters (Dokany backend only).
 
 ## Distribution and updates
 - Self-installing EXE (per architecture, or universal with an x86 stub), which can embed the signed Dokany installer.
+  Installing Dokany is an explicit, pre-checked setup option (7 SP1+) that says it installs a signed third-party
+  kernel driver; unchecking it leaves WebDAV only. An MSI property mirrors it (D36).
 - An MSI for corporate deployment (GPO/Intune), including ARM32. XP needs Windows Installer 3.1+.
 - Update check that asks before applying. Releases are verified with our own ed25519 signature (not relying on XP's
   old TLS stack). The update mirror is static plain-HTTP object storage; integrity comes from an ed25519-signed
   manifest.
+- Update trust model: two offline root keys sign a key set that authorizes per-channel release keys (stable, beta)
+  and records rotations and revocations; release keys sign only manifests of their channel. Clients keep an
+  anti-rollback serial per channel, refuse expired manifests (at most 30 days stable, 14 days beta; re-signed every
+  two weeks) and warn when update information is stale. Stable releases use two offline signing sessions (payload
+  tables, then the manifest over the final EXEs, D42). No public download links before Authenticode signing.
 - Code signing via SignPath Foundation, else Certum OSS, obtained before a public 1.0.
 
 ## Project
 - Private GitHub repository for now, GitHub Actions CI building every flavour listed under "Build flavours".
 - Localization rules: see `AGENTS.md` (en/es/fr/pt/it/de). Plural messages support the full CLDR plural
   categories (zero/one/two/few/many/other) for every locale.
+
+## Changelog
+- Final reconciliation (threat model) 2026-10-24: added D33 (legacy policy unchanged), D34, D35, D36, D37, D38,
+  D40, D41, D42 and the update trust model summary.

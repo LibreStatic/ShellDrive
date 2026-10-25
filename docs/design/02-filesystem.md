@@ -1,8 +1,9 @@
 # 02 — Filesystem layer: `sd_vfs`, `sd_webdav`, `sd_dokan`
 
 Status: design, updated with the accepted decisions in `decisions.md` (D1–D32) and the resolutions of
-`00-integration-review.md` (C1–C46, R1–R18, threading rules §4.1). Where this document and `decisions.md`
-differ, `decisions.md` wins. Scope: the backend-agnostic filesystem core (`sd_vfs`), the local WebDAV server
+`00-integration-review.md` (C1–C46, R1–R18, threading rules §4.1), and with the threat model's design
+changes for this layer (`05-threat-model.md` §8: TM-R11–R24, TM-R29, as accepted by D35 and D39; see the
+changelog). Where this document and `decisions.md` differ, `decisions.md` wins. Scope: the backend-agnostic filesystem core (`sd_vfs`), the local WebDAV server
 for the built-in Windows redirector (`sd_webdav`), and the Dokany adapter (`sd_dokan`). The SFTP client
 (`sd_sftp`, document 01) is designed elsewhere; section 9 lists what this layer needs from it and how each
 item was resolved. The host-side orchestration (profile → connections → `sd_vfs` → backend) is `sd_mount`
@@ -18,21 +19,20 @@ Names of `sd_sftp` types, errors and states (`sd_err`, `SD_E_*`, `SD_SFTP_ST_*`)
 
 ## 0. Summary of decisions
 
-| # | Decision |
-|---|----------|
 Local decision ids (FS-n) are this document's own; `D<n>` without prefix refers to `decisions.md`.
+`T-xx`, `TST-xx` and `TM-Rxx` refer to `05-threat-model.md`.
 
 | # | Decision |
 |---|----------|
 | FS-1 | One `sd_vfs` instance per mount. It owns path mapping, node/handle tables, caches, read-ahead, write modes, reconnect, connection-pool scheduling and error mapping. Backends are thin protocol adapters. |
 | FS-2 | Internal status codes are a small `sd_vfs_status` enum. `sd_err` (01) maps to it through one table in `sd_vfs` (C13); each backend has one mapping table (to NTSTATUS for Dokany, to HTTP for WebDAV). This document's NTSTATUS/HTTP tables are normative (C24). |
 | FS-3 | Case-insensitive, case-preserving view by default. Exact-case match wins; case collisions on case-sensitive remotes are disambiguated with a deterministic `~cN` suffix (section 1.3). |
-| FS-4 | Remote names are bytes. Stage 1 is 01's lossless `sd_name_to_wide`/`sd_name_from_wide` (invalid UTF-8 → U+F780..U+F7FF, bijective). Stage 2, per component, maps characters illegal on Windows and a trailing dot/space to U+F000+ch (Cygwin convention) (C23). |
+| FS-4 | Remote names are bytes. Stage 1 is 01's lossless `sd_name_to_wide`/`sd_name_from_wide` (invalid UTF-8 → U+F780..U+F7FF, bijective). Stage 2, per component, maps characters illegal on Windows and a trailing dot/space to U+F000+ch (Cygwin convention) (C23). The inverse decodes **only** the code points the forward map produces (TM-R11, section 1.2). |
 | FS-5 | Close-to-open consistency (NFS model): attributes are revalidated on open-for-data if older than 1 s; data cache is keyed by (size, mtime) validators. |
 | FS-6 | **Write mode per profile (D9). Default `write_mode = through`**: every write is acknowledged by the server before it completes for the application. `write_mode = behind` is opt-in: bounded window (16 MiB per node, 64 MiB per mount), sticky errors, 60 s grace retransmit, and an always-on `write_failed` notification (C45). In both modes cleanup drains synchronously and `FlushFileBuffers` drains and sends `fsync@openssh.com` (section 4.4). |
 | FS-7 | Writes fail fast while disconnected (`SD_VFS_E_DISCONNECTED` → `STATUS_CONNECTION_DISCONNECTED` / HTTP 503). Reads are served from cache when valid. No offline write queue. Only in write-behind mode are accepted-but-unacknowledged writes retransmitted, if the connection returns within the grace window and the remote file is unchanged. |
-| FS-8 | Symlinks: `follow` (default) or `hide` (D12, amendment A3). Reparse-point exposure is **postponed** until after 1.0 (unmodified Dokany 2.x has no FSCTL callback; a self-built Dokany fork was rejected). The profile value `reparse` is reserved and rejected (section 6.9). |
-| FS-9 | WebDAV security: bind 127.0.0.1 and ::1 only, random port, 130-bit path token per mount, **plus** Negotiate/NTLM verification over loopback via SSPI of the caller's SID (owner for per-user servers, allowed group for the service server). No Basic, no `BasicAuthLevel` change (C26, amendment A2). |
+| FS-8 | Symlinks: `follow_inside` (**default**: links are followed only when their target resolves inside the mount root; TM-R13), `follow` (unrestricted, opt-in) or `hide` (D12, amendment A3). Reparse-point exposure is **postponed** until after 1.0 (unmodified Dokany 2.x has no FSCTL callback; a self-built Dokany fork was rejected). The profile value `reparse` is reserved and rejected (section 6.9). |
+| FS-9 | WebDAV security: bind 127.0.0.1 and ::1 only with `SO_EXCLUSIVEADDRUSE`, random port, 130-bit path token per mount, **plus** Negotiate/NTLM verification over loopback via SSPI of the caller's SID (owner for per-user servers, `service_access` for the service server). No Basic, no `BasicAuthLevel` change (C26, amendment A2). Pre-authentication surface is bounded: header limits, slowloris deadlines, an unauthenticated-connection quota, browser-origin requests refused, nothing parsed before auth (TM-R17, TM-R20; section 7.3). |
 | FS-10 | WebDAV is addressed as `localhost` (dotless name, so WinHTTP treats it as intranet and sends default credentials automatically; [KB 943280](https://support.microsoft.com/kb/943280/)). |
 | FS-11 | Dokany: `dokan2.dll` loaded dynamically from `%SystemRoot%\System32` by full path; minimum library and driver version **2.1.0** (option flag values were renumbered in 2.1.0), bundled/recommended **2.3.1**. Redistributed unmodified per D32 / 04 §7 (section 6.1). Volume FS name `NTFS` by default, configurable (D23). |
 | FS-12 | Dokany per-user mounts use `DOKAN_OPTION_CURRENT_SESSION` and `DOKAN_OPTION_NETWORK` (when the Dokany network provider is installed); global mounts come from the service without `CURRENT_SESSION`. Every create checks the requestor token. |
@@ -41,6 +41,9 @@ Local decision ids (FS-n) are this document's own; `D<n>` without prefix refers 
 | FS-15 | Connections (D18, D19): a mount uses **one `sd_sftp_session`** whose pool holds 1–4 SSH connections (default 1). The primary connection carries a metadata and a bulk SFTP channel (auto-degrade to one); extra connections open one bulk channel only. Metadata stays on the primary; `sd_vfs` opts large sequential handles into striping with `SD_SFTP_O_STRIPED`, and `sd_sftp` routes, stripes and reconnects per connection (01 §10.9; section 5.6). |
 | FS-16 | Remote identity (D10): no exec by default. Our uid comes from the owner of the home directory, confirmed by the first file we create; `identity_probe = exec` is an opt-in (section 3.4). |
 | FS-17 | `sd_sftp` refines `SSH_FX_FAILURE` (01 `SD_SFTP_OPT_REFINE_ERRORS`); `sd_vfs` does no extra probes (C14). Every vfs operation runs under a deadline below the backend's own timeout, and `sd_sftp` checks liveness on any request timeout (C16, section 5.7). |
+| FS-18 | **Remote content is untrusted input** (TB-04, TB-10). Name mapping never produces `/`, NUL or a `.`/`..` component on the wire; malformed directory entries are dropped, not repaired; WebDAV URLs are split before decoding and rejected rather than guessed (TM-R11, TM-R12; sections 1.2, 1.6, 7.5). Listings are capped in entries, bytes and time (TM-R16, section 1.4). |
+| FS-19 | **Shell-active files** (`.library-ms`, `.searchConnector-ms`, `.url`, `.lnk`, `.scf`, `desktop.ini`) are listed but their data cannot be read by default (`shell_active_files = block`, the default for `security.trust = untrusted`, which is the profile default, D41), so browsing a folder cannot make Windows authenticate to a host the server chose (CVE-2025-24054 class; TM-R14, section 4.5). Optional synthetic Mark-of-the-Web on Dokany (`mark_of_the_web = internet`, TM-R15). |
+| FS-20 | **Global mounts have no implicit audience** (D35, TM-R24): `service_access` must be set by the admin; non-admin members are read-only unless listed in `service_access_write`; the volume SD, the synthesized DACL and the vfs check agree; every mutating operation is attributed to the requesting user's SID (sections 3.3, 6.4, 6.7, 7.7). |
 
 ---
 
@@ -53,10 +56,19 @@ Local decision ids (FS-n) are this document's own; `D<n>` without prefix refers 
 - **Internal path** (`vpath`): UTF-8 bytes relative to the mount root, `/`-separated, no `.`/`..`,
   no leading or trailing `/`. The root is the empty string. Remote path = `root + "/" + vpath`.
 - **Windows path**: UTF-16, `\`-separated, as given by Dokany (`\dir\file`) or decoded from a WebDAV URL
-  (percent-decoded UTF-8, then converted to UTF-16 to go through the same mapping).
+  (split on `/` first, then each segment percent-decoded as UTF-8 and converted to UTF-16 to go through the
+  same mapping; 7.5 has the URL rules, TM-R12).
 - `..` in Windows input is resolved lexically and may not climb above the root (`SD_VFS_E_INVALID_NAME`).
-- Stream syntax (`file:stream`) is rejected (`SD_VFS_E_INVALID_NAME`). We do not set `DOKAN_OPTION_ALT_STREAM`.
-  Browsers that write `Zone.Identifier` streams tolerate failure, as they do on FAT32.
+  This check runs **before** the name mapping; the wire invariant below, checked after the mapping (1.2),
+  is what keeps a mapped name from re-introducing `/`, NUL or `..` after it (T-23).
+- **Wire invariant (normative, TM-R11).** Every remote path `sd_vfs` submits is `root` + components where no
+  component is empty, `.` or `..`, or contains `/` or NUL. `sd_vfs` asserts it in the single function that
+  builds remote paths; a violation fails the operation with `SD_VFS_E_INVALID_NAME` and is logged as a bug,
+  it is never "repaired".
+- Stream syntax (`file:stream`) is rejected (`SD_VFS_E_INVALID_NAME`). By default we do not set
+  `DOKAN_OPTION_ALT_STREAM`; browsers that write `Zone.Identifier` streams tolerate failure, as they do on
+  FAT32. The only exception is the optional synthetic, read-only `:Zone.Identifier` stream of
+  `mark_of_the_web = internet` (Dokany only, 4.5, TM-R15); every other stream name stays rejected.
 
 ### 1.2 Name encoding (remote bytes ↔ Windows UTF-16)
 
@@ -69,13 +81,41 @@ Two stages (C23). Remote → Windows, per component:
 2. **Stage 2 (`sd_vfs`)**: characters illegal in Win32 names `\ : * ? " < > |` and control characters
    U+0001..U+001F map to U+F000+ch. This is the Cygwin/MSYS convention, so files shared with those tools
    keep the same names. A trailing space or dot maps to U+F020 / U+F02E.
+   Only the **last** character of a component is mapped this way (Win32 strips only trailing dots and
+   spaces, so `a..` becomes `a.` + U+F02E).
 3. Reserved device names (`CON`, `NUL`, `COM1`...) are left as is. They are reachable via `\\?\` paths
-   only; this is a documented limitation.
+   only; this is a documented limitation. Through ordinary Win32 paths `Z:\dir\COM1` opens the **local**
+   device, not the remote file, so a script may hang or read the wrong data (T-27). Look-alike names are
+   also documented, not changed: NFC/NFD twins (no normalization) and `README` / `readme~c2` pairs (1.3).
 
-Windows → remote is the exact inverse (stage 2 inverse, then `sd_name_from_wide`). A Windows name that
-contains a character in U+F000..U+F07F is decoded back to the original ASCII character; there is no escape
-for a real PUA character in that range in a remote name (rare; documented). The U+F780..U+F7FF range is
-lossless thanks to stage 1.
+**Windows → remote (normative, TM-R11).** Stage 2 inverse, then `sd_name_from_wide`. The stage-2 inverse
+decodes **only** the code points the forward map produces:
+
+| Windows code point | Decoded to | Where |
+|---|---|---|
+| U+F001–U+F01F | U+0001–U+001F | anywhere |
+| U+F022, U+F02A, U+F03A, U+F03C, U+F03E, U+F03F, U+F05C, U+F07C | `"` `*` `:` `<` `>` `?` `\` `\|` | anywhere |
+| U+F020, U+F02E | space, `.` | last character of the component only |
+
+- Every other code point in U+F000..U+F07F (in particular **U+F000**, which would be NUL, and **U+F02F**,
+  which would be `/`), and U+F020/U+F02E anywhere but the last position, **pass through unchanged** and
+  are encoded as their own UTF-8 bytes. They are never decoded to an ASCII character. (TST-05's "rejected"
+  means exactly this: never decoded.)
+- After the inverse, the component is checked against the wire invariant of 1.1: it must not be empty,
+  `.` or `..`, and must not contain `/` or NUL. A Windows name of `U+F02E` or `.U+F02E` therefore fails
+  with `SD_VFS_E_INVALID_NAME` instead of becoming `.` or `..`. The check is on the final bytes, so it also
+  covers stage 1 and `remote_charset` (a code page that maps some character to `/` or `\0` is caught here).
+  01 §10.7 states the same invariant for the composed mapping (sentence to be added there, TM-R11).
+- Reject, never guess: there is no "best effort" decoding of a name that fails these rules.
+- A remote name that really contains a PUA character of that range shows up in Windows with that
+  character unchanged (stage 2 leaves it alone). If it collides with the mapped form of another remote
+  name (remote `a:` and remote `a` + U+F03A), the 1.3 collision rule applies to both (TM-R12). Opening such
+  a name resolves through the parent listing (the listing maps the displayed name to the exact remote
+  bytes): whenever the Windows component contains a code point in U+F000..U+F07F and the direct `lstat` of
+  the inverse fails, the lookup fetches the parent listing before concluding `NOT_FOUND`, on both
+  case-sensitive and case-insensitive remotes.
+
+The U+F780..U+F7FF range is lossless thanks to stage 1.
 
 Optional per-profile `remote_charset` (a Windows code page, e.g. 1252) for legacy servers. When set, it
 replaces **stage 1 only** (`MultiByteToWideChar` / `WideCharToMultiByte` with that code page); stage 2 is
@@ -122,7 +162,10 @@ corrupt each other. Policy:
 - The mangled-to-real mapping lives in the directory node and is rebuilt on every listing refresh.
   Mangled names are stable while the directory's colliding set is unchanged.
 - Mangled entries carry no special attribute. A log line is written once per directory.
-- In `sensitive` view mode no mangling happens.
+- In `sensitive` view mode no case mangling happens.
+- The same rule handles entries whose Windows names are **identical** after stage 2 (remote `a:` and
+  remote `a` + U+F03A, 1.2) in every view mode, including `sensitive` (TM-R12): byte order picks the one
+  that keeps its name.
 
 ### 1.4 Nodes and the node table
 
@@ -159,6 +202,20 @@ typedef struct sd_node {
 - `file_id` is a 64-bit counter. It is reported as the file index (Dokany) and is stable while the node
   is cached. It is not stable across restarts; Windows tools only rely on it within a session.
 
+**Per-listing caps (normative, TM-R16, T-30).** A malicious or broken server can send a READDIR stream
+that never reaches EOF, millions of entries or huge names. One directory listing is bounded by:
+- `max_list_entries` = 1,000,000 entries **or** `max_list_bytes` = 256 MiB of raw names, whichever comes
+  first;
+- a total listing deadline `list_deadline_ms` = 120 s on Dokany. `DokanResetTimeout` is called on progress
+  (6.6) only until this deadline; after it, no further extension is granted. On WebDAV the 50 s request
+  budget (5.7) is the bound;
+- the symlink `stat` batch of 6.9: at most `max_link_stats` = 4,096 per listing; links beyond it are shown
+  as links of unknown type (0-byte file, `SYSTEM`) until opened, when they are resolved individually.
+
+Exceeding a cap fails the listing with `SD_VFS_E_TOO_LARGE` (logged with the directory and the cap hit),
+discards the partial listing (no partial cache), and closes the remote directory handle. Node memory stays
+bounded by `max_nodes` above; listing entries that are not nodes are freed with the listing.
+
 ### 1.5 Attributes
 
 `sd_vfs_attr` is backend-neutral:
@@ -174,6 +231,32 @@ typedef struct sd_vfs_attr {
     UINT32  win_attrs;     /* derived, see 3.1 */
 } sd_vfs_attr;
 ```
+
+Sizes and times from the server are taken as given but never trusted for arithmetic: products and sums
+(allocation size, statvfs totals, cache block counts) use checked 64-bit operations that saturate at
+`UINT64_MAX` / `INT64_MAX` (TM-R16; 6.5 `GetDiskFreeSpace`).
+
+### 1.6 Directory entries from the server (normative, TM-R12, T-24)
+
+01 §10.3 states that a returned name "never contains '/' or NUL"; this section states what `sd_vfs` does
+when a server breaks that or sends other malformed entries. 01 delivers the raw bytes; the rules apply in
+`sd_vfs` before stage 1 and to every listing source (READDIR, and `readlink`/`realpath` results used as
+names).
+
+| Entry | Action |
+|---|---|
+| name contains `/` or NUL | dropped |
+| empty name | dropped |
+| the server's own `.` and `..` | dropped (Dokany's `.`/`..` are added by `sd_dokan`, 6.5) |
+| name longer than 4,096 bytes | dropped (names over 255 UTF-16 units but within this limit are listed and cannot be opened, 1.2) |
+| the same raw name twice in one listing | the first is kept, later ones dropped |
+| two raw names whose Windows names collide after stage 2 or case folding | the `~cN` rule of 1.3 |
+| attributes missing or inconsistent (no `S_IFMT`, size without the flag) | listed with what is known; type unknown → regular 0-byte file; the attributes are fetched by `lstat` on open |
+
+Dropped entries are logged **once per directory per listing generation** (count and reason, never the full
+names at info level; log levels are 03 §10.1's, TM-R31) and raised as `SD_VFS_EV_NOTICE` (`code =
+"dirent_dropped"`). They are invisible from Windows: lookups of a Windows name that could only map to a
+dropped entry fail `NOT_FOUND`. Nothing is renamed or repaired on the server.
 
 ---
 
@@ -306,8 +389,9 @@ NT semantics: deletion takes effect when the last handle closes. Until then new 
 | name starts with `.` and option `hide_dotfiles` (default on), except the root | `FILE_ATTRIBUTE_HIDDEN` |
 | not writable by us (rule below) and option `map_readonly` (default on) | `FILE_ATTRIBUTE_READONLY` (files only; for directories NTFS's RO bit means "customized folder", so never set) |
 | read-only mount | `FILE_ATTRIBUTE_READONLY` on files |
-| symlink in `follow` mode | attributes of the target. A dangling link is a 0-byte file with `HIDDEN\|SYSTEM`. |
+| symlink in `follow_inside` (default) or `follow` mode | attributes of the target. A dangling link, and in `follow_inside` a link whose target is outside the mount root (6.9), is a 0-byte file with `HIDDEN\|SYSTEM`. |
 | FIFO, socket, device | hidden from listings unless `show_special`. Shown as 0-byte `SYSTEM` files; opening for data → `STATUS_ACCESS_DENIED`. |
+| directories | never `READONLY` (above) and never `SYSTEM`, so Explorer never treats a remote folder as customized and does not process its `desktop.ini` (T-28) |
 
 **"Writable by us" rule.** We know our remote uid and primary gid once discovered (section 3.4), and the
 supplementary group list only with `identity_probe = exec`.
@@ -354,7 +438,14 @@ DACL (Dokany only, 3.3). There is no attribute for it. Mode is preserved across 
 |---|---|
 | Owner | the mount owner's SID if `uid == our uid`; else `S-1-22-1-<uid>` (Unix user SID authority, as used by Samba and the Windows NFS client) |
 | Group | `S-1-22-2-<gid>` |
-| DACL | protected (no inheritance). ACE 1: Owner, rights from `u` bits. ACE 2: Group, from `g` bits. ACE 3: Everyone (`S-1-1-0`), from `o` bits. Plus `SYSTEM` full control if the profile option `allow_system` is on (default on). |
+| DACL, **per-user mounts** (TM-R22) | protected (no inheritance). ACE 1: the mount owner's SID, rights from `u` bits. ACE 2: `Administrators` (`S-1-5-32-544`), the same rights. ACE 3: `SYSTEM`, full control, only if `allow_system` is on (default on). **No** Group, Everyone or other ACE: the `g`/`o` bits are not reported. |
+| DACL, **global mounts** (TM-R22, TM-R24) | protected. ACE 1: Owner (`S-1-22-1-<uid>`, the service's remote identity), from `u` bits. ACE 2: Group, from `g` bits. ACE 3: one ACE per `service_access` SID, from `o` bits. All three carry **read/execute rights only**. ACE 4: one ACE per `service_access_write` SID plus `Administrators`, read/execute from the bits plus the write rights of `u`. ACE 5: `SYSTEM` full control if `allow_system` is on. No `Everyone` ACE. |
+
+Why per-user DACLs omit `g`/`o` (T-41): SYSTEM services that act for other users (search indexer, backup,
+AV, print spooler) pass the 6.7 check with `allow_system` and use the DACL for **security trimming**; an
+`Everyone` ACE would tell them that every local user may read the mount's content. On global mounts the
+DACL describes the audience the admin chose (`service_access`) and agrees with the vfs write check (6.7),
+so tools that read the DACL see the same answer the vfs gives.
 
 Bit → rights: `r` → `FILE_GENERIC_READ` (dirs: + `FILE_LIST_DIRECTORY|FILE_TRAVERSE`); `w` →
 `FILE_GENERIC_WRITE|DELETE` (dirs: + `FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY|FILE_DELETE_CHILD`); `x` →
@@ -365,7 +456,10 @@ isolation (6.7).
 
 `SetFileSecurity`:
 - If the new DACL consists only of allow ACEs for owner/group/Everyone (or their S-1-22 / mount-owner
-  equivalents), compute the mode and `chmod`.
+  equivalents, and the `Administrators`/`SYSTEM` ACEs we synthesize, which are ignored), compute the mode
+  and `chmod`. Bits whose class has no ACE in the new DACL keep their current value (per-user mounts never
+  show `g`/`o` ACEs, so editing the owner ACE leaves `g`/`o` unchanged). On global mounts only callers
+  allowed to write (6.7) may `chmod`.
 - Otherwise return success without change (option `strict_acl` → `STATUS_ACCESS_DENIED`). Robocopy
   `/COPYALL` and installers then work.
 - Owner and group changes are ignored. `chown` is generally root-only and the SID cannot be mapped back.
@@ -428,7 +522,8 @@ drops the cached security descriptors and `win_attrs` of all nodes.
 - Explicit refresh: `shelldrive refresh <drive>[\path]` and a tray action. These drop TTLs for a subtree.
 - **Explorer probe suppression**: names that Explorer and shell extensions probe constantly
   (`desktop.ini`, `Thumbs.db`, `folder.jpg`, `folder.gif`, `AutoRun.inf`, `$RECYCLE.BIN`,
-  `System Volume Information`) get a 300 s negative TTL when absent.
+  `System Volume Information`) get a 300 s negative TTL when absent. When present, `desktop.ini` is also a
+  shell-active file (4.5).
 
 ### 4.2 Data cache
 
@@ -453,8 +548,22 @@ Block-based. Block size 256 KiB, aligned. Two tiers.
 - Writes to cache files are best effort; I/O errors disable the disk tier for the session.
 - Cache files are written with `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`.
 - The disk cache holds plaintext copies of remote files in the user's profile. The UI states this, and
-  "Clear cache" deletes it. There is no DPAPI encryption (cost/benefit; the profile ACL already restricts
-  it to the user).
+  "Clear cache" deletes it. There is no DPAPI encryption (cost/benefit; the directory ACL restricts it to
+  the user).
+- **Cache directory and file ACLs (TM-R29, T-55, T-59).** The host creates `disk_cache_dir` with a
+  protected DACL (per-user: the user + SYSTEM; service: SYSTEM + Administrators; 03 §3.2, TM-R07). Before
+  enabling the disk tier, `sd_vfs`:
+  - opens the directory with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS` and refuses it if
+    it is a reparse point (a junction could redirect plaintext copies to a shared location);
+  - checks on the opened handle (`GetSecurityInfo`) that the owner is the expected one (the mount owner, or
+    SYSTEM/Administrators for the service) and that the DACL grants no write or read to any other SID;
+  - checks that the volume reports `FILE_PERSISTENT_ACLS` (`GetVolumeInformationW` on the volume root). FAT,
+    exFAT and most USB media (portable mode) do not: there the disk tier is **refused**, and the memory
+    tier alone is used.
+
+  Any failed check disables the disk tier for the mount with `SD_VFS_EV_NOTICE` (`code =
+  "disk_cache_refused"`, reason). Cache files are created without an explicit security descriptor, so they
+  inherit the directory's protected DACL; `sd_vfs` never writes cache files outside that directory.
 
 **Coherency.**
 - Cached data is valid only while the node's current validator (size, mtime) equals the validator recorded
@@ -574,6 +683,59 @@ may opt into write-behind, in which case …"). Policy may lock the key (03 sche
 | `FlushFileBuffers` | waits for in-flight writes + fsync | drains window + fsync, returns sticky error |
 | last close (`Cleanup`) | nothing to drain (other handles only) | synchronous drain; failure → `write_failed` |
 | data at risk if the app ignores `FlushFileBuffers` | none beyond a kernel cache (verify above) | up to 16 MiB per node / 64 MiB per mount |
+
+### 4.5 Shell-active files and Mark-of-the-Web (TM-R14, TM-R15)
+
+Before ShellDrive a remote SFTP server could not put files into Explorer's view; with a mount it can.
+Explorer, common file dialogs in **every** process, the thumbnail cache and preview/property handlers parse
+some files as soon as a folder is shown. Files whose icon or target points at `\\attacker\share` make
+Windows authenticate over SMB (or WebDAV) and leak the user's NetNTLMv2 response just by browsing the
+folder (T-28; CVE-2025-24054, exploited in the wild).
+
+**`shell_active_files = block | show`** (profile key; the default follows the profile's `security.trust`
+(decisions.md D41, 03 §3.4.1): `untrusted`, the default, gives **`block`**, `trusted` gives `show`; an explicit
+`shell_active_files` overrides it; policy may lock it, 03 schema).
+
+- The shell-active set, compiled in and confirmed or extended by TST-20: extensions `.library-ms`,
+  `.searchConnector-ms`, `.url`, `.lnk`, `.scf`, and the name `desktop.ini` (case-insensitive match on the
+  Windows name after 1.2/1.3, so `x.LNK` and a mangled `x~c2.lnk` both match).
+- With `block`, these entries are **listed** normally (attributes, size, times), and attribute-only opens,
+  delete, rename and write-only opens work, but every open that requests `FILE_READ_DATA`,
+  `FILE_EXECUTE` or `GENERIC_READ`/`GENERIC_ALL` fails with `SD_VFS_E_ACCESS_DENIED`
+  (`STATUS_ACCESS_DENIED`; WebDAV `GET`/`COPY` source → `403`). Shell parsers then see an unreadable file
+  and make no outbound connection.
+- The rule applies to **all requestors**, not only `explorer.exe`: file dialogs inside any application
+  parse the same files, the redirector reads them as the WebClient service (no requestor process is
+  visible on WebDAV), and requestor PIDs are not a reliable discriminator. This is stricter than the
+  wording of TM-R14, on purpose.
+- The first block per mount raises `SD_VFS_EV_NOTICE` (`code = "shell_active_blocked"`, name); the host
+  shows one tray notice per mount and session explaining the setting (03).
+- `show` restores normal reads (for trusted servers where users keep shortcuts on the remote).
+- Why `untrusted` (and so `block`) is the default rather than an opt-in as TM-R14 proposed (D41): the attack
+  needs only one hostile or compromised account able to write into a folder the user browses, and legitimate
+  `.lnk`/`.url`/`.library-ms` files on SFTP servers are rare. Marking a profile `trusted` is the user's
+  explicit choice.
+- Admin guide (00 §4 "User documentation"): recommend the policy "Network security: Restrict NTLM:
+  Outgoing NTLM traffic to remote servers" (audit or deny with exceptions) where possible; it covers every
+  other parser this list cannot.
+
+**`mark_of_the_web = off | internet`** (profile key, Dokany only, **default `off`**; TM-R15, T-29).
+Executables and Office documents opened from the drive carry no `Zone.Identifier`, so SmartScreen and
+Office Protected View may not apply. The zone the shell assigns per backend (a Dokany drive letter or
+`\\shelldrive\` UNC; WebDAV's `\\localhost@port\DavWWWRoot`, which is Local intranet because `localhost` is
+dotless, FS-10) is measured by TST-21 and recorded here.
+- With `internet`, the mount sets `DOKAN_OPTION_ALT_STREAM` and exposes on every **regular file** one
+  synthetic, read-only stream `:Zone.Identifier` with the content
+  `[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=sftp://<host>/<percent-encoded remote path>\r\n`. Directories and
+  special files get no stream.
+- `FindStreams` returns `::$DATA` and `:Zone.Identifier:$DATA`. Opening `:Zone.Identifier` for read
+  returns the synthesized bytes (generated, never sent to the server); write, delete or rename of it →
+  `STATUS_ACCESS_DENIED` (browsers tolerate a failed `Zone.Identifier` write). Every other stream name
+  stays `SD_VFS_E_INVALID_NAME`. `GetVolumeInformation` then also reports `FILE_NAMED_STREAMS`.
+- WebDAV has no stream support in the redirector; the option is rejected at profile validation for
+  `backend = webdav` and ignored with a log line when `auto` resolves to WebDAV.
+- TST-21 decides whether the option stays `off` by default after measurement; the default can only move
+  to `internet`, never to anything weaker.
 
 ---
 
@@ -846,10 +1008,12 @@ typedef enum sd_dokan_avail {
     SD_DOKAN_OK, SD_DOKAN_OS_UNSUPPORTED, SD_DOKAN_NOT_INSTALLED,
     SD_DOKAN_TOO_OLD,          /* < 2.1.0 (incl. 2.0.x) */
     SD_DOKAN_DRIVER_MISSING,   /* DokanDriverVersion() == 0 */
-    SD_DOKAN_WOW64             /* our process arch != OS arch */
+    SD_DOKAN_WOW64,            /* our process arch != OS arch */
+    SD_DOKAN_DENIED            /* installed version on the signed deny list (TM-R23, 6.3) */
 } sd_dokan_avail;
 
-sd_dokan_avail sd_dokan_probe(sd_dokan_api *api);  /* never loads anything outside System32 */
+/* deny: version ranges from the last verified update manifest (`dokany-deny`, 04 §9.2); NULL = none */
+sd_dokan_avail sd_dokan_probe(sd_dokan_api *api, const sd_dokan_deny *deny);  /* never loads anything outside System32 */
 ```
 
 - Load with `LoadLibraryExW(L"<GetSystemDirectoryW()>\\dokan2.dll", NULL, 0)`, always a full path,
@@ -881,6 +1045,13 @@ sd_dokan_avail sd_dokan_probe(sd_dokan_api *api);  /* never loads anything outsi
     marker) and no other mounts are live.
 - The driver API is backward compatible from `DOKAN_MINIMUM_COMPATIBLE_VERSION` (200), so other apps
   built against older 2.x keep working when the system has 2.3.1.
+- **Deny list (TM-R23, T-42).** An existing 2.x is otherwise kept forever, including one with a known
+  kernel vulnerability (Dokan 1.x had CVE-2018-5410). The signed update manifest carries `dokany-deny
+  <version-range> <reason>` entries (format and signing: 04 §9.2); the host passes the last verified list
+  to `sd_dokan_probe`. A listed library or driver version yields `SD_DOKAN_DENIED`: the Dokany backend is
+  disabled (forced `dokany` profiles fail with the reason, `auto` resolves to WebDAV where possible), and
+  the host warns with the reason and the upgrade path of 04's decision table. Nothing is uninstalled.
+  Setup-side checks (SHA-256 at embed and install time, MSI signer against `dokany.lock`) are 04 §7.3's.
 
 ### 6.4 Mount options
 
@@ -891,8 +1062,9 @@ sd_dokan_avail sd_dokan_probe(sd_dokan_api *api);  /* never loads anything outsi
 | folder mount point (`C:\mnt\host`, empty NTFS dir) | `MOUNT_MANAGER`, no `NETWORK` (network drives cannot be folder mounts). Verify that a folder mount works with `CURRENT_SESSION` for per-user use; otherwise folder mounts are global-only. |
 | read-only | `WRITE_PROTECT` (plus vfs enforcement) |
 | case-sensitive view | `CASE_SENSITIVE` |
-| always | `Timeout = 30000` ms; `AllocationUnitSize = 4096`; `SectorSize = 512`; `SingleThread = FALSE`; not `REMOVABLE` (header doc: it can cause the app to be denied access and the drive to unmount unexpectedly); not `ALT_STREAM`; not `FILELOCK_USER_MODE`; `ENABLE_UNMOUNT_NETWORK_DRIVE` so Explorer's "Disconnect" works (we observe `Unmounted`) |
-| global mounts | `VolumeSecurityDescriptor` granting the profile's `service_access` SIDs (03 §3.4.1; default `BUILTIN\Users`, `S-1-5-32-545`) read/execute, `Administrators`/`SYSTEM` full) |
+| always | `Timeout = 30000` ms; `AllocationUnitSize = 4096`; `SectorSize = 512`; `SingleThread = FALSE`; not `REMOVABLE` (header doc: it can cause the app to be denied access and the drive to unmount unexpectedly); not `ALT_STREAM` (except below); not `FILELOCK_USER_MODE`; `ENABLE_UNMOUNT_NETWORK_DRIVE` so Explorer's "Disconnect" works (we observe `Unmounted`) |
+| `mark_of_the_web = internet` | `ALT_STREAM`, serving only the synthetic `:Zone.Identifier` (4.5, TM-R15) |
+| global mounts | `VolumeSecurityDescriptor` (D35, TM-R24): the profile's `service_access` SIDs read/execute; `service_access_write` SIDs and `Administrators` read/write/delete; `SYSTEM` full. **There is no default audience**: a `scope = service` profile without an explicit `service_access` list is invalid (03 §3.4.1 validates at save and load; `sd_dokan` and `sd_webdav` also refuse to mount one with `SD_VFS_E_ACCESS_DENIED` and a log line, so a hand-edited file cannot fall back to `BUILTIN\Users`). `service_access_write` defaults to empty: non-admin members are read-only. |
 
 Why the network drive type is the default: Explorer deletes permanently on network drives instead of
 creating `$RECYCLE.BIN` on the remote, the indexer leaves it alone by default, and users see "Disconnect"
@@ -905,14 +1077,14 @@ with a prompt. Dokany 2.2.0 isolates network drives between users browsing UNC p
 
 | Callback | `sd_vfs` call | Notes |
 |---|---|---|
-| `ZwCreateFile` | `sd_vfs_create(path, access, share, disposition, options, attrs, &h)` | Requestor check first (6.7). Use the kernel dispositions/options directly (table 2.2). `DokanFileInfo->IsDirectory` set/read. Return `STATUS_OBJECT_NAME_COLLISION` for opened-existing with `OPEN_IF`/`OVERWRITE_IF`. Store `h` in `Context`. |
+| `ZwCreateFile` | `sd_vfs_create(path, &caller, access, share, disposition, options, attrs, &h)` | Requestor check first (6.7); `caller` carries the requestor SID and its write right. Shell-active read block (4.5). Use the kernel dispositions/options directly (table 2.2). `DokanFileInfo->IsDirectory` set/read. Return `STATUS_OBJECT_NAME_COLLISION` for opened-existing with `OPEN_IF`/`OVERWRITE_IF`. Store `h` in `Context`. |
 | `Cleanup` | `sd_vfs_cleanup(h, DeletePending)` | flush (4.4), deferred times, delete if pending (2.4) |
 | `CloseFile` | `sd_vfs_close(h)` | free handle; release remote handle refs |
 | `ReadFile` | `sd_vfs_read(h, off, buf, len, &got)` | `PagingIo`/`Nocache` ignored for caching (4.2); EOF → `STATUS_END_OF_FILE` only if off ≥ size, else short read |
 | `WriteFile` | `sd_vfs_write(h, off or EOF if WriteToEndOfFile, buf, len, &done)` | `PagingIo` writes must not extend the file past the cached size (truncate the request; NT rule) |
 | `FlushFileBuffers` | `sd_vfs_flush(h)` | drain + fsync |
 | `GetFileInformation` | `sd_vfs_getattr(h)` | fills `BY_HANDLE_FILE_INFORMATION`: attrs (3.1), times (3.2), `nFileIndex` = `file_id`, `nNumberOfLinks` = 1, volume serial |
-| `FindFiles` | `sd_vfs_readdir(h, cb)` | snapshot; `.` and `..` added for non-root dirs; mangled names (1.3) |
+| `FindFiles` | `sd_vfs_readdir(h, cb)` | snapshot; the server's `.`/`..` and malformed entries dropped (1.6), our own `.` and `..` added for non-root dirs; mangled names (1.3); listing caps (1.4) |
 | `FindFilesWithPattern` | NULL | Dokany then calls `FindFiles` and filters with `DokanIsNameInExpression` in the library |
 | `SetFileAttributes` | `sd_vfs_set_winattrs` | 3.1 |
 | `SetFileTime` | `sd_vfs_set_times(h, c, a, w)` | deferred if dirty (3.2) |
@@ -921,17 +1093,19 @@ with a prompt. Dokany 2.2.0 isolates network drives between users browsing UNC p
 | `SetEndOfFile` | `sd_vfs_truncate(h, size)` | 4.4 |
 | `SetAllocationSize` | if `alloc < size` → truncate, else no-op | |
 | `LockFile` / `UnlockFile` | NULL | kernel handles locks |
-| `GetDiskFreeSpace` | `sd_vfs_statfs` | `statvfs@openssh.com` on the root: avail = `f_bavail×f_frsize`, total = `f_blocks×f_frsize`, free = `f_bfree×f_frsize`. Without the extension: 1 PiB free of 2 PiB, so Explorer never blocks copies on a guess (shown as "unknown" in our UI). |
-| `GetVolumeInformation` | static | Label = profile name (+ the host-supplied localized offline suffix, 5.2). FS name `NTFS` by default (D23; profile option `volume_fs_name`, e.g. `ShellDrive`; some apps refuse names other than NTFS, so the compatibility list in 13 decides which apps to document). Flags: `FILE_CASE_PRESERVED_NAMES \| FILE_UNICODE_ON_DISK \| FILE_PERSISTENT_ACLS \| FILE_SUPPORTS_REMOTE_STORAGE`, `+FILE_CASE_SENSITIVE_SEARCH` in sensitive mode, `+FILE_READ_ONLY_VOLUME` if RO. No streams, reparse, hard links, object IDs. MaxComponentLength 255. |
+| `GetDiskFreeSpace` | `sd_vfs_statfs` | `statvfs@openssh.com` on the root: avail = `f_bavail×f_frsize`, total = `f_blocks×f_frsize`, free = `f_bfree×f_frsize`, each product checked and saturating at `UINT64_MAX`, and `avail`/`free` clamped to `total` (TM-R16). Without the extension: 1 PiB free of 2 PiB, so Explorer never blocks copies on a guess (shown as "unknown" in our UI). |
+| `GetVolumeInformation` | static | Label = profile name (+ the host-supplied localized offline suffix, 5.2). FS name `NTFS` by default (D23; profile option `volume_fs_name`, e.g. `ShellDrive`; some apps refuse names other than NTFS, so the compatibility list in 13 decides which apps to document). Flags: `FILE_CASE_PRESERVED_NAMES \| FILE_UNICODE_ON_DISK \| FILE_PERSISTENT_ACLS \| FILE_SUPPORTS_REMOTE_STORAGE`, `+FILE_CASE_SENSITIVE_SEARCH` in sensitive mode, `+FILE_READ_ONLY_VOLUME` if RO, `+FILE_NAMED_STREAMS` only with `mark_of_the_web = internet` (4.5). No other streams, reparse, hard links, object IDs. MaxComponentLength 255. |
 | `Mounted` / `Unmounted` | mount manager state | `Unmounted` (e.g. Explorer "Disconnect") **only posts a message** to the host control thread (C33) and returns at once. The control thread then runs `sd_vfs_quiesce` → `sd_sftp_session_close` (which closes every pool member) → destroy (6.6). Calling `DokanCloseHandle`, `sd_vfs_unmount` or `sd_sftp_session_destroy` inside the callback would deadlock: Dokany waits for its callbacks, and destroy waits for the I/O thread. |
 | `GetFileSecurity` / `SetFileSecurity` | `sd_vfs_get_sd` / `sd_vfs_set_sd` | 3.3; return `STATUS_BUFFER_OVERFLOW` with `LengthNeeded` when too small |
-| `FindStreams` | NULL / `STATUS_NOT_IMPLEMENTED` | only the unnamed stream exists |
+| `FindStreams` | NULL / `STATUS_NOT_IMPLEMENTED`; with `mark_of_the_web = internet`: `::$DATA` + `:Zone.Identifier:$DATA` (4.5) | otherwise only the unnamed stream exists |
 
 ### 6.6 Timeouts and unmount
 
 - Dokany's default per-request timeout is 15 s (dokan.h; verify). We set `Timeout = 30000` and call
   `DokanResetTimeout(30000)` only from operations that keep making progress: write backpressure, cleanup
-  drain, listing a huge directory, waiting for reconnect within `offline_wait`.
+  drain, listing a huge directory, waiting for reconnect within `offline_wait`. A listing stops extending
+  at its 120 s total deadline (1.4, TM-R16), so a server that drip-feeds READDIR batches cannot hold a
+  Dokany thread indefinitely.
 - Every vfs operation has a hard deadline of 25 s, below the Dokany timeout (5.7, C16). A reply that
   arrives after the deadline is discarded, and the state stays consistent.
 - Unmount, always on the host control thread (C33, 5.4): `sd_vfs_quiesce` (block new opens → drain all
@@ -955,7 +1129,24 @@ A device object is reachable from other sessions even when the drive letter is s
 - the user is `LocalSystem` and `allow_system` is on (Defender, the indexer).
 
 Otherwise return `STATUS_ACCESS_DENIED`. The result is cached per (token LUID, SID) for 60 s to avoid
-per-open token queries.
+per-open token queries; a change of `service_access` or `service_access_write` flushes the cache, so a
+removed user loses access within 60 s at most (G7, 7.7).
+
+**Write right on global mounts (D35, TM-R24, T-43).** Membership alone grants **read** access. A create
+that requests any write-class access (`FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`,
+`FILE_WRITE_EA`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE`/`GENERIC_ALL`, or a disposition that
+may create or truncate) is allowed only if the token is a member of `service_access_write` or of
+`Administrators` (`CheckTokenMembership`, so a UAC-filtered admin token, where Administrators is
+deny-only, counts as non-admin: admins write from an elevated process or are listed explicitly), or is
+`LocalSystem` with `allow_system`. Otherwise `STATUS_ACCESS_DENIED`; rename and delete are covered because
+they need `DELETE` at create. The backend passes the result to `sd_vfs` as `sd_vfs_caller.can_write`, and
+the vfs enforces it like a read-only mount for that caller (2.2).
+
+**Attribution (repudiation, TM-R24).** On global mounts every mutating operation (create or open with
+write access, delete, rename, setattr, `SetFileSecurity`, mkdir) raises `SD_VFS_EV_AUDIT` with the
+requestor SID, the operation and the path; one event per open, not per write. The service writes them to
+the Event Log at info level as Event 1200 (03 §10.3). Per-user mounts raise no audit events (the owner is
+the only user).
 
 ### 6.8 Folder mounts
 
@@ -978,16 +1169,40 @@ attestation signing (which only loads on Windows 10+) and would conflict with an
 installation. The requirement reads (A3): "Symlinks: follow them or hide them (both backends). Exposing
 them as reparse points is deferred until Dokany ships an FSCTL callback in an official signed release."
 
-Profile key `symlinks = follow | hide` (C29). The value `reparse` is reserved: profile validation
-rejects it at save and at load with a clear, localized error (03), and `sd_vfs_options.symlinks` has no
-value for it.
+Profile key `symlinks = follow_inside | follow | hide` (C29, TM-R13). The value `reparse` is reserved:
+profile validation rejects it at save and at load with a clear, localized error (03), and
+`sd_vfs_options.symlinks` has no value for it.
 
 Supported symlink policies (both backends):
-- `follow` (default). Listings use `lstat` attributes from READDIR. Entries with `S_IFLNK` get a
-  pipelined `stat` to learn the target's type and size (single batch per listing; cached). Dangling or
-  looping links → 0-byte `HIDDEN|SYSTEM` file; opening it for data → `STATUS_OBJECT_NAME_NOT_FOUND`;
-  delete and rename act on the link itself (`REMOVE` / `RENAME` do not follow).
+- `follow_inside` (**default**, TM-R13, T-26). As `follow` below, but the pipelined `stat` of each link
+  is followed by a pipelined `realpath` of the link. A link is followed only when its resolved target
+  equals the mount root's realpath (1.1) or lies below it (byte prefix `root + "/"`). Otherwise it is shown
+  like a dangling link (0-byte `HIDDEN|SYSTEM`), cannot be opened for data (`STATUS_OBJECT_NAME_NOT_FOUND`),
+  and its directory cannot be entered; `SD_VFS_EV_NOTICE` (`code = "symlink_outside_root"`) is raised
+  once per directory so the UI can explain it. For links that pass, the vfs records the resolved target
+  in the node and builds every remote path below it from that resolved prefix, not from the link path, so
+  a request never traverses a link that was not checked. A link changed on the server is re-checked when
+  its node is revalidated (attr TTL, 4.1). Delete and rename act on the link itself.
+- `follow` (opt-in). Listings use `lstat` attributes from READDIR. Entries with `S_IFLNK` get a
+  pipelined `stat` to learn the target's type and size (single batch per listing, capped at 4,096, 1.4;
+  cached). Dangling or looping links → 0-byte `HIDDEN|SYSTEM` file; opening it for data →
+  `STATUS_OBJECT_NAME_NOT_FOUND`; delete and rename act on the link itself (`REMOVE` / `RENAME` do not
+  follow). **In `follow` mode the mount root is not a confinement boundary**: the server resolves links,
+  and whatever the remote account can read is reachable through a link someone created on the server.
 - `hide`: `S_IFLNK` entries are omitted from listings and lookups fail `NOT_FOUND`.
+
+**Why `follow_inside` is the default for every profile** (stricter than TM-R13, which made it the default
+only for `scope = service`/`users` profiles with a non-empty `remote_path`): it is the only mode in which
+the mount root means what the user and the admin expect, and for global mounts a link created by any
+other account on the server would otherwise expose everything the shared service identity can read (T-26,
+residual M). The cost is one pipelined `realpath` per link (within the same batch) and a compatibility
+change for homes that link to outside data (`~/data -> /mnt/data`): those links appear as dangling until
+the profile sets `symlinks = follow`. The profile editor (03) offers that choice with the explanation.
+
+**Limits of `follow_inside`.** It is a client-side check against links, not a sandbox: an account with
+write access inside the root can race a check (replace a checked directory with a link between `realpath`
+and use). Real confinement needs a server-side `ChrootDirectory` or permissions; the admin guide says so.
+`realpath` failures (server without `realpath` on links, permission denied) count as "outside".
 
 Creating symlinks from Windows (`mklink`) is not supported (it needs FSCTL; the Dokany kernel driver
 fails the FSCTL itself. Verify the status `mklink` reports, for the documentation).
@@ -1101,6 +1316,14 @@ Windows 7 SP1+); authentication on loopback is Negotiate/NTLM via SSPI plus a pe
 4. Running → OK. Mapping itself (`WNetAddConnection2`) also triggers it on 7+; step 3 just makes errors
    explicit and fast.
 
+**Never for Dokany profiles (TM-R21, T-38).** A running WebClient turns NTLM coercion into HTTP and lets
+attackers relay it to LDAP even where SMB relay is blocked. `sd_webdav_ensure_client()` is therefore called
+only for a mount whose backend **resolved** to WebDAV (10.1); backend selection itself only queries the
+service (step 1–2 read-only queries, no start, no trigger event). Probing, `diag` and the UI never start
+WebClient either. `diag` reports "WebClient running" as a security note on domain-joined machines, and the
+admin guide recommends `AllowedBackends = dokany` and a disabled WebClient on servers and domain machines
+that have Dokany (03 §10.5).
+
 ### 7.3 Listener
 
 - One server per ShellDrive process (per-user agent); a separate one in the service for global WebDAV
@@ -1111,14 +1334,61 @@ Windows 7 SP1+); authentication on loopback is Negotiate/NTLM via SSPI plus a pe
   if IPv6 is present (Vista+ may resolve `localhost` to ::1 first). If ::1 cannot take the same port,
   rebind both on a new port. Loopback-only listeners do not create Windows Firewall prompts (verify on
   XP SP3's firewall).
+- **Exclusive bind (TM-R17 a, T-32).** Every listening socket sets `SO_EXCLUSIVEADDRUSE` **before**
+  `bind` (XP+). Without it, XP and 2000 (which lack the "enhanced socket security" of Server 2003+) let a
+  second socket of another user bind a port in use with `SO_REUSEADDR` and receive the victim's
+  connections. If `setsockopt` fails, the listener does not start (`SD_WD_E_EXCLUSIVE_BIND`, logged); there
+  is no fallback to a shared bind. Verify on XP SP3 that a standard user can set the option (TST-10).
 - **The mapping is not persistent** (`CONNECT_UPDATE_PROFILE` is not set). Ports change per start; the
   agent maps at logon. Stale `MountPoints2` entries from previous ports are cleaned.
-- Host header MUST be `localhost:PORT`, `127.0.0.1:PORT` or `[::1]:PORT`, otherwise 400. This blocks DNS
-  rebinding from browsers.
-- No CORS headers are ever sent. Cross-origin PUT/DELETE/PROPFIND need a preflight, which fails; simple
-  GETs from a web page cannot know the token.
-- HTTP/1.1 persistent connections are required (connection-based NTLM). Idle timeout 120 s; max 64
-  connections per server.
+- **Stale and orphaned mappings (TM-R17 b–e, T-32, T-40).** After a crash or kill of the agent the drive
+  letter stays mapped in the user's logon session while the port is free; another local user can bind it
+  and receive the victim's writes, Office lock sequences and NTLM authentication. Therefore:
+  - **(d) at start**, before binding, the agent enumerates its logon session's connections
+    (`WNetOpenEnum(RESOURCE_CONNECTED)`) and cancels every `\\localhost@<port>\DavWWWRoot\s-<26 base32>`
+    (and XP `http://localhost:<port>/s-…`) mapping recorded as ours in its state, plus any such mapping
+    whose port is not its own live listener, with `WNetCancelConnection2W(…, 0, TRUE)`, and removes the
+    matching `MountPoints2` entries;
+  - **(b) crash filter**: after writing the dump, the agent's unhandled-exception filter cancels this
+    process's WebDAV mappings (`WNetCancelConnection2W(…, TRUE)`) before `TerminateProcess` (03 §10.4);
+  - **(c) watchers**: the tray UI and every long-running CLI hold a `SYNCHRONIZE` handle to the agent
+    process; when it exits without the orderly shutdown sequence (03 §1.2), they cancel that agent's
+    `\\localhost@<port>` mappings in their logon session within 5 s and notify the user (03 §1.4). This
+    covers `TerminateProcess`, where (b) cannot run;
+  - **(e) elevated-view mappings** (C26, 03 §1.7.2) live in the elevated logon session; the elevated
+    process that made them watches the agent the same way and removes them.
+  - Service-hosted servers (7.7) apply (b) and (d) in the service; per-user attaches of them (7.7
+    fallback) are watched by the agent through the break of its subscribed service-pipe connection (a
+    standard user cannot open the service process), and cancelled the same way.
+  - Residual: a kill with no UI or CLI running leaves the mapping until the next agent start or logoff;
+    `TerminateProcess` of the service leaves system-wide mappings (7.7 mechanisms A/B) until SCM recovery
+    restarts it. TST-10 measures both.
+- **Host header (DNS rebinding, T-33).** The `Host` header MUST be exactly `localhost:PORT`,
+  `127.0.0.1:PORT` or `[::1]:PORT` with our port (case-insensitive host, no trailing dot, exactly one `Host`
+  header), otherwise `400` and close. This blocks DNS rebinding from browsers.
+- **Browser-origin requests (T-33).** No CORS headers are ever sent. Cross-origin PUT/DELETE/PROPFIND need
+  a preflight, which fails. In addition, any request carrying an `Origin` header or any `Sec-Fetch-*`
+  header (the redirector sends neither; verify with a capture on each OS, TST-09) gets `403` with no
+  authentication challenge, **before** the token check, so a web page can never trigger an SSPI exchange
+  with the user's credentials and learns nothing about which prefixes exist. Simple GETs from a web page
+  cannot know the token. A page can still detect that something listens on the port (privacy; accepted).
+- **Pre-authentication limits (TM-R20, T-36, T-37).** HTTP/1.1 persistent connections are required
+  (connection-based NTLM).
+  - Request line ≤ 8 KiB, header block ≤ 32 KiB (including `Authorization` tokens), ≤ 64 header fields,
+    no obsolete line folding; otherwise `431`/`400` and close.
+  - An unauthenticated connection must deliver complete request headers within **10 s** of accept (or of
+    the previous response) and complete authentication within **30 s**, else it is closed (slowloris).
+  - At most **8** unauthenticated connections per server, and at most **4** per client process (owner PID
+    of the loopback peer from `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_CONNECTIONS)`, XP SP2+; the IPv6
+    table on Vista+). Connections from the WebClient service's own process (PID from
+    `QueryServiceStatusEx`) are exempt from the per-process quota and are never evicted; when the global
+    unauthenticated limit is reached, the oldest non-WebClient unauthenticated connection is closed.
+  - Authenticated connections share the remaining slots of the overall 64; idle timeout 120 s.
+  - Before the token prefix **and** the SSPI check pass, the server parses only the request line, `Host`,
+    `Origin`/`Sec-Fetch-*`, `Authorization`, `Content-Length`/`Transfer-Encoding` and `Connection`. Request
+    bodies, `If:`, `Destination`, `Lock-Token`, `Timeout`, `Range` and XML are **not parsed**. It never sends
+    `100 Continue` before authentication. An announced body on an unauthenticated request is drained
+    unparsed up to 64 KiB; anything larger closes the connection after the `401`.
 - Mapping (Vista+): `WNetAddConnection2W` with `lpRemoteName = L"\\\\localhost@PORT\\DavWWWRoot\\s-<token>"`,
   `dwType = RESOURCETYPE_DISK`, and the drive letter. XP: the http form (7.1).
 - Drive label: write `_LabelFromReg` = profile name under
@@ -1142,35 +1412,72 @@ Design:
   connection. After success the connection stays authenticated (no per-request re-auth; this is the IIS
   `authPersistNonNTLM`-style behavior).
 - Allowed: the mount owner SID (per-user servers); for the service server, members of the profile's
-  allowed group (7.7). Anything else → 403.
+  `service_access` list, with writes limited to `service_access_write` and Administrators (7.7). Anything
+  else → 403.
 - **Elevated attach (C26)**: an elevated process of the same user (`--elevated-view`, 03 §1.7.2) maps the
   agent's server in its own logon session. The linked elevated token carries the **same user SID**, so
   the Negotiate SID check passes unchanged; the path token remains the per-mount secret. No Basic and no
-  separate credential: `mount.attach_info` returns only the UNC with the token.
+  separate credential: `mount.attach_info` returns only the UNC with the token. The elevated mapping is
+  removed by the watchers of 7.3 (e) when the agent dies (T-40).
 - Token prefix check happens **before** auth on unknown prefixes (404, no challenge), so nothing reveals
   which prefixes exist. `PROPFIND /` (depth 0/1) returns the root collection with **no members**.
 - **Fallback when SSPI auth is not possible**. Example: policy "Restrict NTLM: Incoming NTLM traffic =
   Deny all" while Kerberos is unavailable for `HTTP/localhost`. Detect it with a self-test at mount time:
-  a WinHTTP request with `WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW` to our own server. If it fails, a
-  per-user mount may run **token-only** after a one-time warning ("other local users who obtain this
-  address could access the drive"). Global WebDAV mounts refuse token-only.
-- If the redirector ever prompts for credentials, the profile is flagged and switched to token-only on
-  the next start, with a notice. A prompt means autologon is disabled by policy.
+  a WinHTTP request with `WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW` to our own server. If it fails, the mount
+  fails with `SD_WD_E_AUTH_UNAVAILABLE` and the host explains the cause. **Token-only mode (TM-R19,
+  T-35)** is then possible for a per-user mount only under all of these conditions:
+  - the user confirms it explicitly **each time it is enabled**; `sd_webdav` only reports
+    `SD_WD_E_AUTH_UNAVAILABLE` and the host asks (03 §7.5, string `webdav.token_only_ask`; a dialog naming the risk: "other local
+    users who obtain this address could access the drive"; the address appears in `net use` output, MRU
+    lists, `.lnk` targets and Office recent files); it is never switched on automatically;
+  - the machine does not have the Remote Desktop Session Host role and has no more than one active
+    interactive session at enable time and at each mount (`WTSEnumerateSessionsW`); otherwise it is refused;
+  - policy `AllowWebDavTokenOnly` is not `0` (03 policy schema).
+  Global WebDAV mounts refuse token-only always.
+- If the redirector ever prompts for credentials, the mount is unmapped, the profile is flagged, and the
+  host notifies the user with the cause (autologon disabled by policy) and the token-only option above. It
+  is **not** switched to token-only on the next start.
+- Per-user servers are also subject to the G2 identity criterion of 7.7 (TM-R18, T-34): the SSPI check, not
+  the token, is the barrier only as long as WebClient never reuses a connection authenticated as user A
+  for user B.
+  The M1 lab (TST-09) runs two users mapping each other's port with the correct token, which must fail SSPI.
+  If an OS fails it, per-user servers on that OS use `Connection: close` per response like 7.7.
 - Verify on each OS: no credential prompt, `TokenUser` equals the interactive user, and behavior under a
   configured system proxy (WinHTTP proxy bypass for `<local>`).
 
 ### 7.5 Methods
 
-All paths are percent-decoded as UTF-8, mapped via 1.2, and resolved under the mount prefix. Responses
-use `Content-Length` (multistatus bodies are built in memory, bounded by `FileAttributesLimitInBytes`
-headroom). Request bodies with `Transfer-Encoding: chunked` and `Expect: 100-continue` are supported.
+**Request-target decoding (normative, TM-R12, T-25).** Reject, never guess:
+1. The request-target must be origin-form (`/…`); a query (`?`) or fragment (`#`) → `400`. Absolute-form
+   is accepted only in `Destination` (below).
+2. Split the raw path on `/` **before** percent-decoding. Empty segments (`//`) → `400`, except a single
+   trailing `/` on collections.
+3. Percent-decode each segment. `%2F`, `%5C` and `%00` (any case) → `400`; so is any decoded `\`, NUL or
+   control character U+0001..U+001F, a malformed escape (`%4`, `%zz`), or a decoded byte sequence that is
+   not valid, shortest-form UTF-8 (overlong forms, surrogates, > U+10FFFF). The redirector sends valid
+   UTF-8 only, so there is no stage-1 escape on this path.
+4. A decoded segment equal to `.` or `..` (including `%2e`, `%2E%2e`) → `400`; WebDAV paths are not
+   resolved lexically (the redirector never sends dot segments).
+5. The first segment must be a live `s-<token>` prefix (constant-time compare), else `404` before auth
+   (7.4). The remaining segments are converted to UTF-16 and go through 1.2 and the wire invariant of 1.1.
+
+**`Destination` (MOVE, COPY)** is parsed only after authentication (7.3) and must be an absolute
+`http://` URI whose authority equals the request's `Host` (same host form and port), with no userinfo,
+query or fragment; its path goes through the same five steps and must carry the **same** token prefix.
+Malformed → `400`; another authority, port or token → `502` (RFC 4918 §9.9.4).
+
+Responses use `Content-Length` (multistatus bodies are built in memory, bounded by
+`FileAttributesLimitInBytes` headroom). Request bodies with `Transfer-Encoding: chunked` and `Expect:
+100-continue` are supported after authentication (7.3: nothing of a body is parsed before). XML bodies:
+no DTD, depth ≤ 32, ≤ 1 MiB (00 §4); chunk-size lines ≤ 32 bytes; `Timeout` and `Range` values are parsed
+with checked arithmetic.
 
 | Method | Implementation |
 |---|---|
 | `OPTIONS` (any path, unauth OK) | `200`, `DAV: 1, 2`, `MS-Author-Via: DAV`, `Allow: OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK` (write methods omitted on read-only mounts), `Content-Length: 0`. |
 | `PROPFIND` | Depth `0` or `1` (missing header = infinity → `403` with `<D:propfind-finite-depth/>`). Bodies: allprop (also an empty body), `prop`, `propname`. Live props: `resourcetype`, `getcontentlength`, `getlastmodified` (RFC 1123), `creationdate` (RFC 3339), `getetag` (`"<mtime hex>-<size hex>"`), `getcontenttype` (`application/octet-stream`; `httpd/unix-directory` not sent), `supportedlock`, `lockdiscovery`, `displayname` only when requested. MS props (namespace `urn:schemas-microsoft-com:`): `Win32FileAttributes` (8 hex digits), `Win32CreationTime`, `Win32LastAccessTime`, `Win32LastModifiedTime` (RFC 1123). On the mount root: `quota-available-bytes` / `quota-used-bytes` (RFC 4331) from statvfs, which Explorer uses for free space. Unknown requested props → `404` propstat. Entries are compact (no pretty printing, single namespace prefixes `D:` and `Z:`), to stay within `FileAttributesLimitInBytes`. |
 | `PROPPATCH` | `Win32CreationTime` (ignored), `Win32LastAccessTime` / `Win32LastModifiedTime` → `sd_vfs_set_times`, `Win32FileAttributes` → `sd_vfs_set_winattrs`. Any other property → reported `200` and discarded (no dead-property store; failing breaks the redirector's create sequence). Read-only mount → `403`. |
-| `GET` / `HEAD` | Open with `FILE_OPEN`, read through vfs read-ahead, stream. `Range: bytes=a-b` (single range) → `206` + `Content-Range`. Multi-range → `200` full. Unsatisfiable → `416`. `If-Range` / `If-None-Match` / `If-Modified-Since` use the ETag and mtime. Response headers are sent as soon as the attrs are known, so the 60 s `SendReceiveTimeoutInSec` never trips on large files. GET on a collection → `200` with a minimal HTML index (helps debugging only). |
+| `GET` / `HEAD` | Open with `FILE_OPEN`, read through vfs read-ahead, stream. Shell-active files with `shell_active_files = block` → `403` (4.5). `Range: bytes=a-b` (single range) → `206` + `Content-Range`. Multi-range → `200` full. Unsatisfiable → `416`. `If-Range` / `If-None-Match` / `If-Modified-Since` use the ETag and mtime. Response headers are sent as soon as the attrs are known, so the 60 s `SendReceiveTimeoutInSec` never trips on large files. GET on a collection → `200` with a minimal HTML index (helps debugging only). |
 | `PUT` | `FILE_OVERWRITE_IF` (`If-None-Match: *` → `FILE_CREATE`). The **body is streamed into vfs writes** as it arrives, with TCP backpressure from a bounded window (16 MiB, in both write modes: the PUT response is the point where the redirector learns the outcome, 4.4). The final drain and fsync happen right after the last byte, so the response follows within at most one window (≤ 16 MiB) of acknowledgements, well inside the 60 s timeout. `201` if created, `204` if replaced. Lock token enforcement (below). Content length > 0xFFFFFFFF is impossible from the redirector. Option `atomic_put` (default off): write to `.<name>.sd-<rand>` and `posix-rename` over the target, with the original mode copied. |
 | `DELETE` | 2.4. Files: remove. Collections: recursive, `207` on partial failure. |
 | `MKCOL` | `mkdir`. Body present → `415`. Parent missing → `409`. Exists → `405`. |
@@ -1179,6 +1486,7 @@ headroom). Request bodies with `Transfer-Encoding: chunked` and `Expect: 100-con
 | `LOCK` | Exclusive and shared write locks, `Timeout: Second-n` capped at 3600, `Infinite` → 3600. Lock token `opaquelocktoken:<uuid>`. LOCK on an unmapped URL creates an empty file (RFC 4918 locked empty resource) → `201`. Refresh via `If` header with no body. Depth 0 only for files; depth infinity on collections is accepted and recorded. Read-only mount → `403` (Office then opens read-only). |
 | `UNLOCK` | `Lock-Token` header → `204`; unknown → `409`. |
 | others (`POST`, `PATCH`, `SEARCH`, `REPORT`, ...) | `405` / `501` |
+| any mutating method on a global mount by a caller without the write right (7.7) | `403`; `LOCK` → `403` as on a read-only mount, so Office opens read-only |
 
 **Lock manager**: in memory per server. Locks are keyed by vfs node, so renames carry them. While a
 resource is locked, mutating requests without a matching token in `If:` → `423 Locked`. Locks are
@@ -1201,7 +1509,11 @@ other 500. This table and the NTSTATUS table in 8 are normative; 01 §10.9's hin
     is impractical;
   - a 1-byte change uploads the full file;
   - the system drive temporarily holds a copy. Verify the location (believed to be the LocalService
-    profile's `TfsStore`) and whether it is per-user protected;
+    profile's `TfsStore`) and whether it is per-user protected (T-39, TST-22, M1). Until measured, the
+    risk is that whole-file copies of every user's WebDAV files sit in one LocalService cache. If TST-22
+    shows that other users can read it on an OS, the UI (at WebDAV mount on a machine with more than one
+    user profile) and the admin guide state it, and Dokany is recommended on multi-user machines; 10.1
+    `auto` already prefers Dokany wherever it is available;
   - the 4 GiB − 1 hard cap (7.1).
 
   These make WebDAV the compatibility backend, not the performance backend.
@@ -1235,14 +1547,21 @@ This replaces C27's "reject service profiles with `backend = webdav`".
 - The service (`shelldrive-host.exe service`, LocalSystem) hosts one WebDAV server (7.3) and the SFTP
   pool for each such profile: one remote identity shared by all users, shown in the UI.
 - The listener port is chosen once per service start and kept for its lifetime; the service records it
-  in its state so that stale mappings from a previous start can be removed.
+  in its state so that stale mappings from a previous start can be removed **before** it binds (TM-R17 d).
+  Its crash filter removes the system-wide mapping or global link (`WNetCancelConnection2W`,
+  `DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_RAW_TARGET_PATH | DDD_EXACT_MATCH_ON_REMOVE, …)`) before
+  `TerminateProcess` (TM-R17 b). The listener uses `SO_EXCLUSIVEADDRUSE` like every other (7.3).
 - **Access control: SSPI with the service as the server.** The service calls `AcceptSecurityContext`
   ("Negotiate") under LocalSystem, then `QuerySecurityContextToken`. The resulting token is used only
-  for identification (`TokenUser`, `CheckTokenMembership` against the profile's `service_access` SID list, 03 §3.4.1; default
-  `BUILTIN\Users` (`S-1-5-32-545`), configurable to any users or groups); the service never impersonates it. Rejected always:
+  for identification (`TokenUser`, `CheckTokenMembership` against the profile's `service_access` SID list,
+  03 §3.4.1; **no default**: the admin chooses the users or groups when creating the profile, D35, and a
+  profile without the list does not mount, 6.4); the service never impersonates it. Members get read access;
+  mutating methods (`PUT`, `DELETE`, `MKCOL`, `MOVE`, `COPY` to a destination, `PROPPATCH`, `LOCK`) also
+  need membership in `service_access_write` or `Administrators` with the same rules as 6.7 (TM-R24), else
+  `403`; each one raises `SD_VFS_EV_AUDIT` with the SID (6.7). Rejected always:
   anonymous and `Guest` tokens, `NT AUTHORITY\NETWORK SERVICE`/`LOCAL SERVICE` unless listed in the
-  allowed group, and `SYSTEM` unless `allow_system` is on. Results are cached per (logon LUID, SID) for
-  60 s, like 6.7.
+  `service_access` list, and `SYSTEM` unless `allow_system` is on (any other session-0 process is refused,
+  G7). Results are cached per (logon LUID, SID) for 60 s, like 6.7, and flushed when the lists change.
 - **The path token is not a secret here.** A global mapping exposes the UNC (with the token) to every
   user (`net use`, `QueryDosDevice`). Security rests entirely on the SSPI check; token-only is never
   allowed for service servers (7.4), and the token only keeps browsers and drive-by requests out.
@@ -1279,13 +1598,17 @@ standard users, one admin, RDP and fast user switching. For each OS and mechanis
 | # | Criterion | Go requires |
 |---|---|---|
 | G1 | Visibility | The drive appears in every interactive session (console, RDP, FUS) in Explorer and `cmd` without any per-user action, and survives logoff/logon of other users. |
-| G2 | Identity | The server sees each accessing user's own SID (not SYSTEM, machine account or anonymous), without a credential prompt, and two concurrent users never share an authenticated TCP connection (or the per-request fallback keeps PROPFIND depth 1 of 1,000 entries ≤ 2× the per-user figure in 11). A user outside the allowed group gets "access denied", not data. |
+| G2 | Identity | The server sees each accessing user's own SID (not SYSTEM, machine account or anonymous), without a credential prompt, and two concurrent users never share an authenticated TCP connection (or the per-request fallback keeps PROPFIND depth 1 of 1,000 entries ≤ 2× the per-user figure in 11). A user outside `service_access` gets "access denied", not data (G7 extends this). |
 | G3 | Robustness | WebClient restart, service restart (mapping recreated, stale one removed) and sleep/resume leave a working drive within 30 s; no orphaned drive letter blocks the letter afterwards. |
 | G4 | No settings | No change to `BasicAuthLevel`, `AuthForwardServerList` or other security settings; no per-user elevation. |
 | G5 | Function | Copy in/out (1 GiB with matching SHA-256), rename, delete, Office save with locks, as two users concurrently; large-folder PROPFIND within the `FileAttributesLimitInBytes` the installer set. |
 | G6 | Before logon (reported, not required) | Access from a LocalSystem / NetworkService process before any interactive logon. Recorded as a capability flag per OS; the UI states "available before logon" only where G6 passes. |
+| G7 | Negative access (TM-R18, T-52) | A user outside `service_access` sees no file data or listing through any session, mechanism or cached connection (console, RDP, FUS, elevated); a member without the write right gets `403` on every mutating method; removing a user from `service_access` takes effect within 60 s, including on already-authenticated connections; a session-0 process other than SYSTEM with `allow_system` is refused. |
 
-Go for an OS = G1–G5 pass for at least one mechanism; the passing mechanism (A preferred on XP/2003,
+G2 is also run against **per-user** servers (TM-R18, T-34; 7.4): two users mapping each other's port with
+the correct token must fail SSPI on every OS, from M1 on.
+
+Go for an OS = G1–G5 and G7 pass for at least one mechanism; the passing mechanism (A preferred on XP/2003,
 B elsewhere) is recorded in a table compiled into `sd_webdav` keyed by OS version. The host's setting
 `settings.ini [service] webdav_global_mode = auto | system | link | attach` (03 §1.3) names the same
 choices: `system` = mechanism A, `link` = mechanism B, `attach` = the per-user fallback below; `auto` uses
@@ -1298,7 +1621,8 @@ uses the per-user attach below. The spike result is recorded in this section bef
   `mount.attach_info` for service mounts; this is an attach, not a data proxy, so it does not contradict
   03 §2.6's "agent does not proxy"; 03 adds the call).
 - The agent maps the returned UNC with `WNetAddConnection2W` in the user's logon session and writes the
-  label (7.3). The SSPI group check on the service server is the access control.
+  label (7.3). The SSPI `service_access` check on the service server is the access control. The agent
+  cancels these mappings when its service-pipe connection breaks (7.3, TM-R17).
 - Elevated sessions attach the same way (C26).
 - Not available before logon and not to session-0 processes other than through the UNC path.
 
@@ -1327,7 +1651,12 @@ typedef struct sd_vfs_options {
     const char *remote_root;            /* bytes; NULL = home */
     BOOL  read_only, hide_dotfiles, map_readonly, case_sensitive_view, show_special, allow_system;
     int   remote_case;                  /* AUTO/SENSITIVE/INSENSITIVE */
-    int   symlinks;                     /* SD_SYMLINK_FOLLOW / SD_SYMLINK_HIDE (no reparse value, 6.9) */
+    int   symlinks;                     /* SD_SYMLINK_FOLLOW_INSIDE (default) / _FOLLOW / _HIDE (no reparse value, 6.9) */
+    BOOL  block_shell_active;           /* shell_active_files = block; resolved by the host from security.trust
+                                           (TRUE for untrusted, the default; D41, 4.5) */
+    BOOL  mark_of_the_web;              /* Dokany only; synthetic :Zone.Identifier (4.5) */
+    const char *motw_host_url;          /* "sftp://host" prefix for HostUrl, from sd_mount */
+    UINT  max_list_entries, max_list_mb, list_deadline_ms, max_link_stats;  /* 1.4; 0 = defaults */
     UINT  umask, remote_codepage;       /* 0 = UTF-8 (stage 1 of 1.2) */
     UINT  attr_ttl_ms, dir_ttl_ms, neg_ttl_ms; int open_revalidate_ms;
     UINT  max_readahead;
@@ -1342,7 +1671,16 @@ typedef struct sd_vfs_options {
     const WCHAR *volume_fs_name;        /* Dokany; NULL = L"NTFS" (D23) */
     const WCHAR *volume_label, *offline_label_suffix;  /* localized by the host (C45) */
     PSID  owner_sid;                    /* mount owner, for SD synthesis and isolation */
+    BOOL  global_mount;                 /* scope = service: DACL form of 3.3, audit events (6.7) */
+    const PSID *access_sids;  UINT n_access;   /* service_access (required when global_mount, D35) */
+    const PSID *write_sids;   UINT n_write;    /* service_access_write (may be empty) */
 } sd_vfs_options;
+
+/* Per-request caller, filled by the backend after its own check (6.7, 7.7). */
+typedef struct sd_vfs_caller {
+    PSID sid;                           /* requestor / SSPI token user */
+    BOOL can_write;                     /* FALSE: enforced like a read-only mount for this caller */
+} sd_vfs_caller;
 
 typedef struct sd_vfs_identity {        /* section 3.4; internal state, filled from server_info.identity
                                            and confirmed by the first created object */
@@ -1359,11 +1697,14 @@ typedef enum {
     SD_VFS_EV_DELETE_FAILED,    /* path, status (2.4) */
     SD_VFS_EV_STATE,            /* connected / disconnected / failed (session = primary connection) */
     SD_VFS_EV_IDENTITY,         /* uid learned or changed (3.4) */
-    SD_VFS_EV_NOTICE            /* case collisions, pool shrink, ...: English log text + code */
+    SD_VFS_EV_AUDIT,            /* global mounts: requestor SID, operation, path (6.7, TM-R24) */
+    SD_VFS_EV_NOTICE            /* case collisions, dirent_dropped, symlink_outside_root, shell_active_blocked,
+                                   disk_cache_refused, pool shrink, ...: English log text + code */
 } sd_vfs_event_kind;
 typedef struct sd_vfs_event {
     sd_vfs_event_kind kind; int change_kind; const WCHAR *path, *new_path; BOOL is_dir;
     UINT64 bytes; sd_vfs_status status; UINT32 conn_index /* NOTICE about a pool member */; const char *code;
+    PSID caller_sid /* AUDIT only */; const char *op /* AUDIT only: "create", "write_open", "delete", ... */;
 } sd_vfs_event;
 typedef void (*sd_vfs_event_cb)(void *ctx, const sd_vfs_event *ev);  /* called on vfs threads, no vfs lock held */
 
@@ -1376,7 +1717,8 @@ void          sd_vfs_quiesce(sd_vfs *v, DWORD budget_ms);  /* block new opens, d
 void          sd_vfs_unmount(sd_vfs *v);
 
 /* create/open; kernel-style disposition and options (FILE_* from ntifs.h, duplicated in our header) */
-sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, UINT32 access, UINT32 share,
+sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *caller,
+                            UINT32 access, UINT32 share,
                             UINT32 disposition, UINT32 create_options, UINT32 win_attrs,
                             sd_vfs_handle **h, BOOL *existed, BOOL *is_dir);
 sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending);
@@ -1401,10 +1743,13 @@ typedef BOOL (*sd_vfs_dirent_cb)(void *ctx, const WCHAR *name, const sd_vfs_info
 sd_vfs_status sd_vfs_readdir(sd_vfs_handle *h, sd_vfs_dirent_cb cb, void *ctx);
 
 sd_vfs_status sd_vfs_can_delete(sd_vfs_handle *h);
-sd_vfs_status sd_vfs_delete_path(sd_vfs *v, const WCHAR *path, BOOL recursive);   /* WebDAV */
+/* WebDAV path operations take the authenticated caller too (7.7) */
+sd_vfs_status sd_vfs_delete_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR *path, BOOL recursive);
 sd_vfs_status sd_vfs_rename(sd_vfs_handle *h, const WCHAR *new_path, BOOL replace);
-sd_vfs_status sd_vfs_rename_path(sd_vfs *v, const WCHAR *from, const WCHAR *to, BOOL replace);
-sd_vfs_status sd_vfs_copy_path(sd_vfs *v, const WCHAR *from, const WCHAR *to, BOOL replace, BOOL recursive);
+sd_vfs_status sd_vfs_rename_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR *from, const WCHAR *to,
+                                 BOOL replace);
+sd_vfs_status sd_vfs_copy_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR *from, const WCHAR *to,
+                               BOOL replace, BOOL recursive);
 
 typedef struct sd_vfs_statfs { UINT64 total, free, avail; BOOL known; } sd_vfs_statfs;
 sd_vfs_status sd_vfs_statfs_get(sd_vfs *v, sd_vfs_statfs *out);
@@ -1514,7 +1859,12 @@ auto:
        and Dokany available          -> dokany
   if scope = service and Dokany available -> dokany          (global drives: Dokany is primary, D11)
   if OS >= Win7 SP1 and native arch in {x86, x64, ARM64} and sd_dokan_probe() == OK -> dokany
+  (sd_dokan_probe() == SD_DOKAN_DENIED counts as unavailable, 6.3; so does the machine setting
+   [backend] dokany = no, written by the MSI property DOKANY=0 when the D36 setup option was unchecked,
+   03 §3.4, 04 §8.4: auto never picks Dokany then, a forced dokany fails with backend_unavailable)
   else if WebClient present and not disabled (or can be started) -> webdav
+       (presence is a read-only SCM query; WebClient is started only after this branch is taken,
+        never for a profile that resolved to Dokany, 7.2, TM-R21)
        (scope = service: system-wide mapping where the D11 spike passed for this OS,
         else per-user attach at logon, 7.7)
   else -> error with remediation:
@@ -1553,7 +1903,9 @@ webdav (forced): ensure_client must be OK, else fail (no fallback)
 | Share modes across local apps | kernel + vfs | redirector local + vfs per request |
 | Office editing with locks | yes (local byte locks) | yes (DAV LOCK) |
 | Change notifications to Explorer | yes (`DokanNotify*`) | no |
-| Symlinks | follow/hide | follow/hide |
+| Symlinks | `follow_inside` (default) / `follow` / `hide` | `follow_inside` (default) / `follow` / `hide` |
+| Shell-active files blocked (`shell_active_files`, 4.5) | yes (default `block`) | yes (default `block`, `GET` → 403) |
+| Synthetic Mark-of-the-Web (`mark_of_the_web`, 4.5) | option, default off | no (zone: Local intranet; TST-21) |
 | Reparse points | postponed after 1.0 (D12) | no |
 | Thumbnail suppression (`OFFLINE` hint) | not needed | option, default off (D22) |
 | Free space | statvfs | statvfs via quota props |
@@ -1651,12 +2003,20 @@ only. Rows marked *behind* assume `write_mode = behind`.
 | Dokany kernel cache delays writes (verify, 4.4) | write-through guarantee holds only at flush/close | documented in A5; Windows reports "Delayed Write Failed" |
 | Pool members reach different servers (DNS round robin, load balancer) | incoherent data | host key and home equality check per member (5.6) |
 | Server limits on sessions/connections (`MaxStartups`, `MaxSessions`) | extra connections refused | pool shrinks silently to what the server allows; default 1 |
-| Global WebDAV mapping behaves differently per OS or shares connections across users | users see each other's access or no drive | lab go/no-go G1–G6 per OS, per-request auth fallback, per-user attach fallback (7.7) |
+| Global WebDAV mapping behaves differently per OS or shares connections across users | users see each other's access or no drive | lab go/no-go G1–G7 per OS, per-request auth fallback, per-user attach fallback (7.7) |
 | 1-second mtime + same size hides remote rewrite | stale cached reads | hot-block rule, TTL, close-to-open revalidation, refresh command |
 | Case collisions on case-sensitive servers | confusing names | deterministic `~cN` mangling, logged |
 | Dokany kernel request timeout during long ops | app sees errors | 25 s vfs deadline, liveness probe (C16), `DokanResetTimeout` on progress, bounded windows |
 | Unknown uid at mount (no exec, home owned by another account) | wrong read-only attributes until the first create | "any `w` bit" rule errs toward writable (3.1, 3.4); `identity_probe = exec` opt-in |
 | AV/indexer reading whole remote files | bandwidth storms | network drive type, `allow_system` toggle, docs |
+| Malicious server: traversal through names, malformed dirents, URL tricks (T-23–T-25) | writes outside the mount root on the server | strict stage-2 inverse and wire invariant (1.1, 1.2), dirent rules (1.6), URL rules (7.5); TST-05, TST-06 |
+| Malicious server: shell-active files (T-28) | NTLM hash leak by browsing a folder | `shell_active_files = block` default (4.5); TST-20 |
+| Malicious server: resource exhaustion (T-30) | hung Dokany threads, memory growth | listing caps and deadline (1.4), saturating arithmetic; TST-08 |
+| Symlinks to outside the mount root (T-26) | confinement expected by admins is void | `follow_inside` default (6.9); real confinement only server-side |
+| WebDAV port squatting after agent death (T-32) | another user receives data and NTLM auth | `SO_EXCLUSIVEADDRUSE`, crash-filter unmapping, watchers, stale-mapping cleanup (7.3); TST-10 |
+| Local DoS of the loopback server (T-36) | user's drive times out | pre-auth limits and per-process quota (7.3); TST-09 |
+| Global drives give every member the service identity (T-43) | confused deputy, no attribution | no default audience, read-only unless granted write, audit events (6.4, 6.7, 7.7) |
+| WebClient cache readable across users (T-39, until TST-22) | other users read cached copies | measure; UI and admin-guide statement; prefer Dokany on multi-user machines (7.6) |
 | XP port handling / UNC syntax unverified | XP WebDAV mount fails | http-URL mapping form, port-80 fallback, early test on XP SP3 |
 
 ---
@@ -1674,12 +2034,48 @@ Product decisions are closed (decisions.md). What remains are platform facts to 
 5. Does Windows Firewall on XP SP3 prompt for loopback-only listeners?
 6. Does Dokany 2.3.1 route cached application writes through the Cache Manager (4.4)? The answer goes
    into the wording of amendment A5's documentation.
-7. D11 spike (7.7): G1–G6 per OS and mechanism, including whether WebClient ever reuses an
+7. D11 spike (7.7): G1–G7 per OS and mechanism, including whether WebClient ever reuses an
    authenticated TCP connection across logon sessions.
 8. D23 compatibility list: Office, Visual Studio, Git for Windows and backup tools against `NTFS` and a
    custom `volume_fs_name`, to document which apps need `NTFS`.
 9. Dokany's default request timeout value in 2.3.1 (15 s per the header) and the status `mklink` reports
    on a Dokany volume.
+10. XP SP3: can a standard user set `SO_EXCLUSIVEADDRUSE`, and does a second user's `SO_REUSEADDR` bind
+    then fail (7.3, TST-10)?
+11. Does the redirector ever send `Origin` or `Sec-Fetch-*` headers on any OS (7.3, TST-09)?
+12. Shell-active set: which further file types make Explorer or file dialogs connect out when a folder is
+    shown, on XP–11 and both backends (4.5, TST-20)?
+13. Zone assigned to files on each backend, and SmartScreen / Office Protected View behavior with and
+    without `mark_of_the_web = internet` (4.5, TST-21).
+14. `GetExtendedTcpTable` owner PID for loopback peers on XP SP3 and the IPv6 table on Vista+ (7.3).
+
+---
+
+## 14. Security tests for this layer (from 05 §7)
+
+05 §7 owns the test definitions; this table lists the ones that exercise 02, with the milestone and
+priority given there (P1 blocks the milestone demo) and the sections they verify.
+
+| Test | M | P | Verifies here |
+|---|---|---|---|
+| TST-02 (HTTP request line/headers, `If:`, `Range`, `Destination`, `Timeout`, chunked decoder, percent-decoder + stage 2 fuzzing) | M1 | P1 | 1.2, 7.3 limits, 7.5 |
+| TST-05 (name mapping properties, malformed dirents, reserved names) | M0 | P1 | 1.1 wire invariant, 1.2 strict inverse, 1.3 collisions, 1.6 |
+| TST-06 (WebDAV path and `Destination` tricks) | M1 | P1 | 7.5 request-target rules |
+| TST-07 (symlinks to `/`, `../..`, loops, FIFO, `/dev/zero`; `follow_inside`, `follow`, `hide`) | M2 | P2 | 6.9 |
+| TST-08 (malicious-server DoS corpus, statvfs overflow) | M1 | P2 | 1.4 caps, 1.5 arithmetic, 6.5, 6.6 |
+| TST-09 (loopback attack suite, browser-origin requests, slowloris, body before auth, per-user G2) | M1 | P1 | 7.3, 7.4 |
+| TST-10 (port squat after agent kill, XP `SO_REUSEADDR`) | M1 | P1 | 7.3 exclusive bind and stale-mapping removal; drive unmapped within 5 s |
+| TST-19 (Dokany isolation; no `Everyone` ACE on per-user mounts) | M0/M5 | P2 | 3.3, 6.7 |
+| TST-20 (shell-active files lab, outbound SMB/NTLM capture) | M3 | P1 | 4.5 `shell_active_files` |
+| TST-21 (zone and MotW lab) | M3 | P2 | 4.5 `mark_of_the_web` |
+| TST-22 (WebClient cache location and ACL) | M1 | P2 | 7.6 |
+| TST-26 (global WebDAV G1–G7) | M5 | P1 | 7.7, plus 6.4/6.7 write right and audit events for Dokany global mounts |
+
+Milestone consequences for this layer: the strict name mapping and dirent rules are M0 work (the first
+mount); the loopback hardening (exclusive bind, stale-mapping cleanup, pre-auth limits, browser-origin
+rule, token-only conditions) is part of the M1 WebDAV backend; `follow_inside` is due by M2 (TST-07);
+`shell_active_files` and `mark_of_the_web` land in M3 with the Explorer integration; the global-mount
+audience rules (D35) and G7 are M5.
 
 ---
 
@@ -1720,5 +2116,61 @@ Applied in this revision (2026-10-24):
   `session_ready = 1`, primary loss closes all members (5.6, 1.4, 2.1, 4.3, 4.4, 5.1, 5.3, 6.6); the
   `exec` identity probe runs inside `sd_sftp` and arrives in `server_info.identity` (3.4); R-table in 9
   updated to "met" where 01 now delivers (R1, R3, R10, R12, R13, R16, R19); global-mount access uses 03's
-  `service_access` key (default `BUILTIN\Users`) instead of "allowed group, default Authenticated Users"
+  `service_access` key (then defaulting to `BUILTIN\Users`, a default removed by D35) instead of "allowed group, default Authenticated Users"
   (6.4, 6.7, 7.7); 7.7 names the 03 setting values `system` / `link` / `attach`.
+
+## Changelog: threat-model integration 2026-10-24
+
+Applied the design changes of `05-threat-model.md` §8 whose target is this document, as accepted by D39
+and adjusted by D35:
+
+- **TM-R11** (T-23): stage-2 inverse decodes only the forward set; U+F000/U+F02F and every other code point
+  pass through; normative wire invariant (no `/`, NUL, empty, `.`, `..` component) checked on the final
+  bytes (1.1, 1.2, FS-4, FS-18).
+- **TM-R12** (T-24, T-25): dirent rules (new 1.6), stage-2 collisions through `~cN` in every view mode
+  (1.3), PUA-named remote files resolved via the listing (1.2); WebDAV request-target and `Destination`
+  rules: split before decoding, `%2F`/`%5C`/`%00`, dot segments and invalid UTF-8 rejected (7.5).
+- **TM-R13** (T-26): `symlinks = follow_inside` added and made the **default for every profile** (stricter
+  than TM-R13's service/users-only default); `follow` opt-in and documented as no confinement (6.9, 3.1,
+  FS-8, 8, 10.2).
+- **TM-R14** (T-28): `shell_active_files = block | show`, default `block` for every profile and all
+  requestors (stricter than TM-R14's "untrusted profiles, explorer.exe only"); directories never `SYSTEM`
+  (new 4.5, 3.1, 4.1, 6.5, 7.5, FS-19).
+- **TM-R15** (T-29): `mark_of_the_web = off | internet` (Dokany only, default off pending TST-21),
+  synthetic read-only `:Zone.Identifier` (1.1, 4.5, 6.4, 6.5).
+- **TM-R16** (T-30): listing caps (entries, bytes, 120 s deadline, 4,096 link stats), saturating
+  statvfs/size arithmetic (1.4, 1.5, 6.5, 6.6).
+- **TM-R17** (T-32, T-40): `SO_EXCLUSIVEADDRUSE` with no fallback; stale-mapping removal at start, crash
+  filter unmapping, process/pipe watchers, elevated-view and service-hosted cases; residuals stated (7.3,
+  7.4, 7.7).
+- **TM-R18** (T-34, T-52): G2 also for per-user servers; new criterion G7 (7.4, 7.7).
+- **TM-R19** (T-35): token-only never automatic; per-enable confirmation, refused on RDSH or with several
+  sessions, policy `AllowWebDavTokenOnly` (7.4).
+- **TM-R20** (T-36, T-37): header limits, 10 s/30 s deadlines, 8 unauthenticated connections and 4 per
+  client process with WebClient exempt, nothing parsed before auth (7.3, 7.5). Also from T-33: requests
+  with `Origin`/`Sec-Fetch-*` refused before any challenge; stricter `Host` rule.
+- **TM-R21** (T-38): WebClient never started for Dokany profiles or by probing (7.2, 10.1).
+- **TM-R22** (T-41): per-user DACL = owner, Administrators, SYSTEM; `g`/`o` only on global mounts (3.3).
+- **TM-R23** (T-42): `dokany-deny` list → `SD_DOKAN_DENIED` (6.2, 6.3, 10.1).
+- **TM-R24 as adjusted by D35** (T-43): no implicit `service_access` (profile without it does not mount),
+  `service_access_write` (default empty = read-only for non-admins), volume SD, DACL and vfs check agree,
+  `SD_VFS_EV_AUDIT` per mutating operation (3.3, 6.4, 6.7, 7.7, 8, FS-20).
+- **TM-R29** (T-55, T-59): disk cache refused on volumes without persistent ACLs, on reparse-point
+  directories, or with a foreign owner/DACL; cache files inherit the protected directory DACL (4.2).
+- Documented: T-27 (reserved and look-alike names, 1.2), T-39 (WebClient cache, 7.6), T-40 (7.4).
+- New section 14 maps TST-02, -05–-10, -19–-22, -26 to sections and milestones; risks (12) and lab
+  questions 10–14 (13) added. Removed the duplicated header row of the summary table.
+- Needs other documents: 01 §10.7 invariant sentence (TM-R11) and §10.3/§10.5 dirent wording (TM-R12);
+  03 §3.4.1 schema (`symlinks` value and new default, `shell_active_files`, `mark_of_the_web`,
+  `service_access` required, `service_access_write`, policy `AllowWebDavTokenOnly`), 03 §1.2/§1.4/§10.4
+  (TM-R17 b, c), 03 §10.5 `diag` note (TM-R21), Event Log of audit events; 04 §9.2/§7.3 (`dokany-deny`,
+  TM-R23); `decisions.md` D12 still says "`follow` (default)"; TST-05's wording "rejected" for
+  non-forward-set code points.
+
+## Changelog: final reconciliation (threat model) 2026-10-24
+
+- Final reconciliation (threat model) 2026-10-24: `shell_active_files` default now follows `security.trust`
+  (decisions.md D41: `untrusted`, the default, blocks for every process; `trusted` shows; FS-19, 4.5, 8);
+  `follow_inside` default confirmed by D40 (decisions.md now records it); `[backend] dokany = no` / `DOKANY=0` makes
+  Dokany unavailable to `auto` (10.1); audit events are Event 1200 (6.7); token-only confirmation is asked by the
+  host (7.4). The items listed above as needed from 01, 03 and 04 are now present there.
