@@ -1,0 +1,40 @@
+# Message catalog generation (03 §9). PO sources live in l10n/<domain>/<lang>.po.
+#
+#   sd_add_l10n_catalog(<name> DOMAINS <domain>...)
+#
+# Runs tools/sdl10n at build time and creates the static library sd_l10n_catalog_<name> holding the
+# generated tables, plus the generated header <sd_l10n_<name>_ids.h> with one SD_MSG_* id per entry.
+# The build FAILS when any locale is missing a string, has a placeholder mismatch, lacks a CLDR
+# plural form or has a non-canonical Plural-Forms header (03 §9.2), unless the developer configures
+# with -DSD_L10N_ALLOW_INCOMPLETE=ON (missing strings then fall back to English at run time).
+
+set(SD_LANGS en es fr pt-BR it de)
+
+function(sd_add_l10n_catalog name)
+  cmake_parse_arguments(L "" "" "DOMAINS" ${ARGN})
+  set(_outdir "${SD_GENERATED_DIR}/l10n")
+  set(_c "${_outdir}/sd_l10n_${name}.c")
+  set(_h "${_outdir}/sd_l10n_${name}_ids.h")
+  set(_args --name "${name}" --out-c "${_c}" --out-h "${_h}")
+  set(_deps "")
+  foreach(_d IN LISTS L_DOMAINS)
+    list(APPEND _args --domain "${CMAKE_SOURCE_DIR}/l10n/${_d}")
+    foreach(_lang IN LISTS SD_LANGS)
+      list(APPEND _deps "${CMAKE_SOURCE_DIR}/l10n/${_d}/${_lang}.po")
+    endforeach()
+  endforeach()
+  if(SD_L10N_ALLOW_INCOMPLETE)
+    list(APPEND _args --allow-incomplete)
+  endif()
+  add_custom_command(
+    OUTPUT "${_c}" "${_h}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_outdir}"
+    COMMAND "$<TARGET_FILE:sdl10n>" ${_args}
+    DEPENDS sdl10n ${_deps}
+    COMMENT "sdl10n: catalog '${name}' (${L_DOMAINS})"
+    VERBATIM)
+  add_library(sd_l10n_catalog_${name} STATIC "${_c}" "${_h}")
+  target_include_directories(sd_l10n_catalog_${name} PUBLIC "${_outdir}")
+  target_link_libraries(sd_l10n_catalog_${name} PUBLIC sd_l10n)
+  set_target_properties(sd_l10n_catalog_${name} PROPERTIES FOLDER "l10n")
+endfunction()

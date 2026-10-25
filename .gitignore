@@ -1,0 +1,19 @@
+# Build trees (CMake presets put everything under build/<preset>)
+/build/
+/out/
+CMakeUserPresets.json
+
+# IDE state
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Build outputs that may land in the source tree by accident
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp

@@ -1,0 +1,132 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "x64-modern",
+      "displayName": "x64 modern (v143, Windows 10+, CFG + CET)",
+      "inherits": "base",
+      "toolset": {
+        "value": "v143",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "SD_FLAVOUR": "x64-modern",
+        "CMAKE_SYSTEM_VERSION": "10.0.26100.0"
+      }
+    },
+    {
+      "name": "x64-xp",
+      "displayName": "x64 XP (v141_xp, SDK 7.1A, subsystem 5.02)",
+      "inherits": "base",
+      "toolset": {
+        "value": "v141_xp",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "SD_FLAVOUR": "x64-xp"
+      }
+    },
+    {
+      "name": "x64-analysis",
+      "displayName": "x64 analysis (v143, /analyze; -DSD_ENABLE_ASAN=ON for ASan)",
+      "inherits": "base",
+      "toolset": {
+        "value": "v143",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "SD_FLAVOUR": "x64-analysis",
+        "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
+        "SD_ENABLE_ANALYZE": "ON",
+        "SD_ENABLE_ASAN": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "x64-modern",
+      "configurePreset": "x64-modern",
+      "configuration": "Release"
+    },
+    {
+      "name": "x64-modern-debug",
+      "configurePreset": "x64-modern",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x64-xp",
+      "configurePreset": "x64-xp",
+      "configuration": "Release"
+    },
+    {
+      "name": "x64-xp-debug",
+      "configurePreset": "x64-xp",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x64-analysis",
+      "configurePreset": "x64-analysis",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "x64-modern",
+      "inherits": "base",
+      "configurePreset": "x64-modern",
+      "configuration": "Release"
+    },
+    {
+      "name": "x64-modern-debug",
+      "inherits": "base",
+      "configurePreset": "x64-modern",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x64-xp",
+      "inherits": "base",
+      "configurePreset": "x64-xp",
+      "configuration": "Release"
+    },
+    {
+      "name": "x64-xp-debug",
+      "inherits": "base",
+      "configurePreset": "x64-xp",
+      "configuration": "Debug"
+    },
+    {
+      "name": "x64-analysis",
+      "inherits": "base",
+      "configurePreset": "x64-analysis",
+      "configuration": "Debug"
+    }
+  ]
+}

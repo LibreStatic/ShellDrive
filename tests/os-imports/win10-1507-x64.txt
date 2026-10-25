@@ -1,0 +1,30 @@
+# OS import floor for the x64-modern flavour: Windows 10 1507 x64.
+#
+# BOOTSTRAP LIST (M0): whole system DLLs present on every Windows 10 1507 x64 install. It still
+# catches the important mistakes for this flavour: a dynamic CRT (vcruntime140.dll, ucrtbase.dll,
+# api-ms-win-crt-*), third-party or non-system DLLs, and new DLLs linked without review. Replace
+# with the per-function export capture from the Windows 10 1507 lab VM (04 section 2.4, 11.4).
+#
+# Format: dll!function | dll!#ordinal | dll!* (whole DLL); '#' starts a comment.
+
+advapi32.dll!*
+bcrypt.dll!*
+comctl32.dll!*
+crypt32.dll!*
+gdi32.dll!*
+iphlpapi.dll!*
+kernel32.dll!*
+mpr.dll!*
+ole32.dll!*
+oleaut32.dll!*
+rpcrt4.dll!*
+secur32.dll!*
+shell32.dll!*
+shlwapi.dll!*
+user32.dll!*
+userenv.dll!*
+uxtheme.dll!*
+winhttp.dll!*
+wintrust.dll!*
+ws2_32.dll!*
+wtsapi32.dll!*

@@ -1,0 +1,27 @@
+# ShellDrive CLI strings, Italian (informal imperative).
+msgid ""
+msgstr ""
+"Language: it\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "cli.version"
+msgid "ShellDrive {version}"
+msgstr "ShellDrive {version}"
+
+msgctxt "cli.usage"
+msgid "Usage: shelldrive <command> [options]"
+msgstr "Uso: shelldrive <comando> [opzioni]"
+
+msgctxt "cli.unknown_command"
+msgid "Unknown command: {command}. Run \"shelldrive --help\" for help."
+msgstr "Comando sconosciuto: {command}. Esegui \"shelldrive --help\" per visualizzare la guida."
+
+msgctxt "cli.mounted_count"
+msgid "{count} drive mounted."
+msgid_plural "{count} drives mounted."
+msgstr[0] "{count} unità montata."
+msgstr[1] "{count} di unità montate."
+msgstr[2] "{count} unità montate."

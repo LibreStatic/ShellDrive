@@ -1,0 +1,34 @@
+# Installs the VS2017 v141 / v141_xp toolset into the runner's VS2022 (04 §11.1). The windows-2022
+# image does not ship the WinXP components; this takes several minutes per job.
+name: Set up v141_xp toolset
+description: Adds Microsoft.VisualStudio.Component.WinXP and VC.v141.x86.x64 to the installed VS2022.
+runs:
+  using: composite
+  steps:
+    - name: Install WinXP and v141 components
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsPath = & $vswhere -latest -version '[17.0,18.0)' -products * -property installationPath
+        if (-not $vsPath) { throw 'Visual Studio 2022 not found' }
+        $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+        # Start-Process joins arguments with spaces, so the path needs explicit quotes.
+        $vsArgs = "modify --installPath `"$vsPath`" " +
+                  "--add Microsoft.VisualStudio.Component.WinXP " +
+                  "--add Microsoft.VisualStudio.Component.VC.v141.x86.x64 " +
+                  "--quiet --norestart --nocache"
+        $p = Start-Process -FilePath $installer -ArgumentList $vsArgs -Wait -PassThru
+        # 3010 = success, reboot required (not needed for the toolset)
+        if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "vs_installer exited with $($p.ExitCode)" }
+    - name: Verify the toolset is present
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsPath = & $vswhere -latest -version '[17.0,18.0)' -products * -property installationPath
+        $packages = Get-ChildItem "${env:ProgramData}\Microsoft\VisualStudio\Packages" -Directory -Filter 'Microsoft.Windows.XPSupport.*' -ErrorAction SilentlyContinue
+        if (-not $packages) { throw 'Microsoft.Windows.XPSupport.* packages not found' }
+        $toolset = Join-Path $vsPath 'MSBuild\Microsoft\VC\v150\Platforms\x64\PlatformToolsets\v141_xp'
+        if (-not (Test-Path $toolset)) { throw "v141_xp platform toolset not found at $toolset" }
+        Write-Host "v141_xp toolset: $toolset"

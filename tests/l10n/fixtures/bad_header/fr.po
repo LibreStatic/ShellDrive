@@ -1,0 +1,27 @@
+# ShellDrive CLI strings, French ("vous").
+msgid ""
+msgstr ""
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=((n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+msgctxt "cli.version"
+msgid "ShellDrive {version}"
+msgstr "ShellDrive {version}"
+
+msgctxt "cli.usage"
+msgid "Usage: shelldrive <command> [options]"
+msgstr "Utilisation : shelldrive <commande> [options]"
+
+msgctxt "cli.unknown_command"
+msgid "Unknown command: {command}. Run \"shelldrive --help\" for help."
+msgstr "Commande inconnue : {command}. Exécutez « shelldrive --help » pour obtenir de l'aide."
+
+msgctxt "cli.mounted_count"
+msgid "{count} drive mounted."
+msgid_plural "{count} drives mounted."
+msgstr[0] "{count} lecteur monté."
+msgstr[1] "{count} de lecteurs montés."
+msgstr[2] "{count} lecteurs montés."

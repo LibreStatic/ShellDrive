@@ -1,0 +1,40 @@
+/* Version resource template, instantiated per binary by sd_add_app (cmake/SdModule.cmake).
+   Identity strings per decisions.md D45. ASCII only: rc.exe of SDK 7.1A reads it as ANSI. */
+#include <winver.h>
+
+#define SD_RC_VER     @SD_VERSION_MAJOR@,@SD_VERSION_MINOR@,@SD_VERSION_PATCH@,@SD_BUILD_NUMBER@
+#define SD_RC_VER_STR "@SD_VERSION_MAJOR@.@SD_VERSION_MINOR@.@SD_VERSION_PATCH@.@SD_BUILD_NUMBER@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    SD_RC_VER
+ PRODUCTVERSION SD_RC_VER
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef SD_DEBUG
+ FILEFLAGS      VS_FF_DEBUG
+#else
+ FILEFLAGS      0
+#endif
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "LibreStatic"
+      VALUE "FileDescription",  "@SD_RC_DESCRIPTION@"
+      VALUE "FileVersion",      SD_RC_VER_STR
+      VALUE "InternalName",     "@SD_RC_INTERNAL_NAME@"
+      VALUE "LegalCopyright",   "Copyright (C) LibreStatic"
+      VALUE "OriginalFilename", "@SD_RC_ORIGINAL_FILENAME@"
+      VALUE "ProductName",      "ShellDrive"
+      VALUE "ProductVersion",   "@SD_VERSION_FULL@"
+      VALUE "Comments",         "@SD_FLAVOUR@ @SD_GIT_COMMIT@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

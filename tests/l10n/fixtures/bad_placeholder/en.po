@@ -1,0 +1,31 @@
+# ShellDrive CLI strings (English source of truth; 03 §9.1).
+# msgctxt is the stable symbolic id; msgstr stays empty in en.po.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Printed by "shelldrive --version".
+msgctxt "cli.version"
+msgid "ShellDrive {version}"
+msgstr ""
+
+#. First line of "shelldrive --help". <command> and [options] are literal syntax.
+msgctxt "cli.usage"
+msgid "Usage: shelldrive <command> [options]"
+msgstr ""
+
+msgctxt "cli.unknown_command"
+msgid "Unknown command: {command}. Run \"shelldrive --help\" for help."
+msgstr ""
+
+#. Summary after "shelldrive list".
+#, plural-arg=count
+msgctxt "cli.mounted_count"
+msgid "{count} drive mounted."
+msgid_plural "{count} drives mounted."
+msgstr[0] ""
+msgstr[1] ""

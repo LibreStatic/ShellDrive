@@ -1,0 +1,89 @@
+/* known_hosts stores and host-key verification results (01 §7.1, §7.2; D7, D8; TM-R04, R06, R07).
+ *
+ * sd_known_hosts is the ONLY component that reads, writes and locks known_hosts files. It has no
+ * transport dependency: the CLI and UI link it (and the key-file parsers) without the SSH stack.
+ * M0 scope: the user store (plain entries, TOFU add) and MATCH / NEW / NEW_TYPE / MISMATCH; machine
+ * store, live OpenSSH/PuTTY sources, @cert-authority and @revoked follow in M2 (types are final).
+ *
+ * Threading: an sd_known_hosts object is thread-safe and shared by all connections of a process.
+ * Every call does file I/O: run it on worker items, never on an SSH I/O thread or a Dokany thread.
+ * Cross-process writes are serialized with Local\com.librestatic.shelldrive.known_hosts.<hash>
+ * (Global\ for the machine store). Result structs are plain data owned by the caller. */
+#ifndef SD_KNOWN_HOSTS_H
+#define SD_KNOWN_HOSTS_H
+
+#include "sd/base.h"
+#include "sd_base/sd_err.h"
+
+typedef enum sd_kh_store_kind {
+  SD_KH_STORE_MACHINE,     /* %ProgramData%\LibreStatic\ShellDrive\known_hosts */
+  SD_KH_STORE_USER,        /* %APPDATA%\LibreStatic\ShellDrive\known_hosts */
+  SD_KH_SRC_OPENSSH,       /* live read-only source: %USERPROFILE%\.ssh\known_hosts (+ known_hosts2) */
+  SD_KH_SRC_PUTTY          /* live read-only source: HKCU\...\PuTTY\SshHostKeys */
+} sd_kh_store_kind;
+
+typedef struct sd_kh_store {
+  sd_kh_store_kind kind;
+  const wchar_t *path;     /* files; NULL = default path for the kind */
+  int writable;            /* 0 for live sources always; machine store writable only in the service/admin */
+} sd_kh_store;
+
+typedef enum sd_hk_status {
+  SD_HK_MATCH,             /* exact key in a store or live source */
+  SD_HK_MATCH_CA,          /* valid host certificate from a matching @cert-authority */
+  SD_HK_NEW,               /* no key of any type for this name: TOFU prompt */
+  SD_HK_NEW_TYPE,          /* name known only with other key types: fail, never a prompt (TM-R04) */
+  SD_HK_MISMATCH,          /* same type, different key: fail, no accept path */
+  SD_HK_REVOKED            /* key or CA under @revoked: fail */
+} sd_hk_status;
+
+/* A host key as reported in events and fetch results. Pointers valid during the callback only. */
+typedef struct sd_hk_key { const uint8_t *blob; size_t len; const char *type, *fp_sha256; } sd_hk_key;
+
+typedef struct sd_hk_result {
+  sd_hk_status status;
+  sd_kh_store_kind store;  /* store that decided (MATCH: first match; MISMATCH/REVOKED: offending entry) */
+  wchar_t  path[260];      /* file of the deciding entry ("" for the PuTTY registry) */
+  uint32_t line;           /* 1-based line of the deciding entry; 0 if not applicable */
+  char     stored_type[48];      /* MISMATCH: type of the stored key */
+  char     stored_fp_sha256[64]; /* MISMATCH: "SHA256:..." of the stored key */
+  int      trusted_before;       /* MATCH from a store entry that existed before this call (7.5) */
+  int      wildcard_only;        /* matched only through a wildcard-only pattern line (7.2, 7.5) */
+} sd_hk_result;
+
+typedef struct sd_kh_import_report {
+  uint32_t imported, already_present, conflicts, invalid_lines;
+} sd_kh_import_report;
+
+typedef struct sd_known_hosts sd_known_hosts;
+
+/* stores[] order: machine -> user -> live sources. @revoked in any store wins; otherwise any
+   MISMATCH wins over MATCH (D7); MATCH records the first store that matched. Deep-copies stores. */
+sd_err sd_known_hosts_open(const sd_kh_store *stores, uint32_t count, sd_known_hosts **out);
+void   sd_known_hosts_close(sd_known_hosts *kh);
+
+/* lookup_name: lowercase host, "[host]:port" when port != 22, or the host_key_alias (01 §7.1). */
+sd_err sd_known_hosts_check(sd_known_hosts *kh, const char *lookup_name, const uint8_t *blob, size_t len,
+                            uint64_t now_unix, sd_hk_result *res);
+/* Appends a plain entry (D8) to a writable store, creating the file with the TM-R07 DACL. */
+sd_err sd_known_hosts_add(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                          const uint8_t *blob, size_t len, const char *comment);
+sd_err sd_known_hosts_remove(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
+                             const char *key_type /* NULL = all */);
+sd_err sd_known_hosts_import(sd_known_hosts *kh, sd_kh_store_kind source, sd_kh_store_kind target,
+                             sd_kh_import_report *rep);
+
+/* TM-R04: key types that could MATCH for lookup_name, used to restrict the host-key algorithm list
+   before KEXINIT (01 §4.3). */
+typedef struct sd_kh_types { uint32_t count; char type[8][48]; int has_ca; } sd_kh_types;
+sd_err sd_known_hosts_stored_types(sd_known_hosts *kh, const char *lookup_name, sd_kh_types *out);
+
+/* TM-R06: state of a live source. INSECURE: detail_sid receives a SID that may write it. */
+typedef enum sd_kh_src_state { SD_KH_SRC_OK, SD_KH_SRC_ABSENT, SD_KH_SRC_DISABLED, SD_KH_SRC_INSECURE } sd_kh_src_state;
+sd_err sd_known_hosts_source_state(sd_known_hosts *kh, sd_kh_store_kind source, sd_kh_src_state *state,
+                                   wchar_t *detail_sid, size_t detail_cap);
+
+/* "SHA256:<base64 without padding>" of a public key blob; out must hold 64 bytes. */
+sd_err sd_hostkey_fingerprint_sha256(const uint8_t *blob, size_t len, char out[64]);
+
+#endif /* SD_KNOWN_HOSTS_H */
