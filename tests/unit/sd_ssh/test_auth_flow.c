@@ -40,6 +40,7 @@ typedef struct fake {
   size_t pkt_len;
 } fake;
 
+
 static void on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *a, const sd_hostkey_prompt_info *h)
 {
   fake *f = (fake *)ctx;
@@ -147,6 +148,21 @@ static int pump(fake *f, int want_packet)
     run_queue(f->c);
     if (want_packet && take_packet(f)) return 1;
     if (!want_packet && f->prompts != prompts) return 1;
+    if (f->c->failing || f->done) return 0;
+    WaitForSingleObject(f->c->cmd_ev, 50);
+  }
+  return 0;
+}
+
+/* Waits for the n-th prompt of this connection. Prompts are raised synchronously while a srv_*
+   helper delivers its message (this thread plays the I/O thread), so a pump() taken after the
+   call would wait for a further prompt that never comes. */
+static int pump_prompts(fake *f, int n)
+{
+  uint64_t end = GetTickCount64() + 20000;
+  while (GetTickCount64() < end) {
+    run_queue(f->c);
+    if ((int)f->prompts >= n) return 1;
     if (f->c->failing || f->done) return 0;
     WaitForSingleObject(f->c->cmd_ev, 50);
   }
@@ -330,7 +346,7 @@ SD_TEST(ssh_auth_password_change)
   const char *good[3] = { "old-pw", "new-pw", "new-pw" };
   SD_REQUIRE(fake_new(&f, SD_AUTH_PASSWORD, NULL));
   start_auth(&f, "password");
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 1));
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_PASSWORD);
   SD_CHECK_EQ_INT(sd_prompt_answer(f.prompt, 1, ans1), SD_OK);
   SD_REQUIRE(pump(&f, 1));
@@ -342,14 +358,14 @@ SD_TEST(ssh_auth_password_change)
     sd_wr_cstring(&w, "");
     srv(&f, &w);
   }
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 2));
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_NEW_PASSWORD);
   SD_CHECK_EQ_INT(f.nitems, 3);
   SD_CHECK(strstr(f.instruction, "expired") != NULL && strchr(f.instruction, 0x1b) == NULL);   /* sanitized */
   SD_CHECK(!f.item_echo[0] && !f.item_echo[1] && !f.item_echo[2]);
   SD_CHECK(!f.info.may_autofill);
   SD_CHECK_EQ_INT(sd_prompt_answer(f.prompt, 3, mismatch), SD_OK);
-  SD_REQUIRE(pump(&f, 0));                       /* asked again, nothing sent */
+  SD_REQUIRE(pump_prompts(&f, 3));               /* asked again, nothing sent */
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_NEW_PASSWORD);
   SD_CHECK(strstr(f.instruction, "do not match") != NULL);
   SD_CHECK_EQ_INT(f.c->out.len, 0);
@@ -392,7 +408,7 @@ SD_TEST(ssh_auth_kbdint_otp_rounds)
     sd_wr_bool(&w, 0);
     srv(&f, &w);
   }
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 1));
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_KBDINT);
   SD_CHECK_EQ_INT(f.info.round, 0);
   SD_CHECK(f.info.may_autofill);
@@ -412,7 +428,7 @@ SD_TEST(ssh_auth_kbdint_otp_rounds)
     sd_wr_bool(&w, 1);
     srv(&f, &w);
   }
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 2));
   SD_CHECK_EQ_INT(f.info.round, 1);
   SD_CHECK(!f.info.may_autofill);
   SD_CHECK(f.item_echo[0]);
@@ -499,43 +515,68 @@ SD_TEST(ssh_auth_rsa_algorithms)
   id.path = fixture_path("ossh_rsa2048");
   acfg.identities = &id;
   acfg.identity_count = 1;
-  /* no server-sig-algs, OpenSSH >= 7.2: rsa-sha2-512, then -256 after a refusal; the signature is
-     made with the algorithm that got PK_OK */
-  SD_REQUIRE(fake_new(&f, SD_AUTH_PUBLICKEY, &acfg));
-  start_auth(&f, "publickey");
-  SD_REQUIRE(pump(&f, 1));
-  SD_REQUIRE(parse_pk(&f, &q));
-  SD_CHECK_STR(q.alg, "rsa-sha2-512");
-  srv_failure(&f, "publickey", 0);
-  SD_REQUIRE(pump(&f, 1));
-  SD_REQUIRE(parse_pk(&f, &q));
-  SD_CHECK_STR(q.alg, "rsa-sha2-256");
-  srv_pk_ok(&f, &q);
-  SD_REQUIRE(pump(&f, 1));
-  SD_REQUIRE(parse_pk(&f, &q));
-  SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_rsa2048"));
-  SD_CHECK(!(f.c->legacy_mask & SD_LEGACY_USERAUTH_SHA1));
-  srv_failure(&f, "publickey", 0);              /* signature refused: last fallback is ssh-rsa */
-  SD_REQUIRE(pump(&f, 1));
-  SD_REQUIRE(parse_pk(&f, &q));
-  SD_CHECK_STR(q.alg, "ssh-rsa");
-  srv_pk_ok(&f, &q);
-  SD_REQUIRE(pump(&f, 1));
-  SD_REQUIRE(parse_pk(&f, &q));
-  SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_rsa2048"));
-  SD_CHECK(f.c->legacy_mask & SD_LEGACY_USERAUTH_SHA1);
-  srv_success(&f);
-  SD_CHECK(f.done && f.done_err == SD_OK);
-  fake_free(&f);
+  /* no server-sig-algs, OpenSSH >= 7.2: the <file>-cert.pub certificate goes first (01 §6.2) and
+     walks the same rsa-sha2-512 > -256 > ssh-rsa ladder (§4.5), then the plain key; the signature
+     is made with the algorithm that got PK_OK */
+  {
+    uint8_t cert[2048], pub[1024];
+    size_t cl = 0, pl = 0;
+    SD_REQUIRE(pub_of("ossh_rsa2048-cert.pub", cert, sizeof(cert), &cl));
+    SD_REQUIRE(pub_of("ossh_rsa2048.pub", pub, sizeof(pub), &pl));
+    SD_REQUIRE(fake_new(&f, SD_AUTH_PUBLICKEY, &acfg));
+    start_auth(&f, "publickey");
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "rsa-sha2-512-cert-v01@openssh.com");
+    SD_CHECK(!q.has_sig && q.blob.n == cl && memcmp(q.blob.p, cert, cl) == 0);
+    srv_failure(&f, "publickey", 0);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "rsa-sha2-256-cert-v01@openssh.com");
+    srv_failure(&f, "publickey", 0);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "ssh-rsa-cert-v01@openssh.com");
+    srv_failure(&f, "publickey", 0);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "rsa-sha2-512");
+    SD_CHECK(q.blob.n == pl && memcmp(q.blob.p, pub, pl) == 0);
+    srv_failure(&f, "publickey", 0);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "rsa-sha2-256");
+    srv_pk_ok(&f, &q);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_rsa2048"));
+    SD_CHECK(!(f.c->legacy_mask & SD_LEGACY_USERAUTH_SHA1));
+    srv_failure(&f, "publickey", 0);              /* signature refused: last fallback is ssh-rsa */
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "ssh-rsa");
+    srv_pk_ok(&f, &q);
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_rsa2048"));
+    SD_CHECK(f.c->legacy_mask & SD_LEGACY_USERAUTH_SHA1);
+    srv_success(&f);
+    SD_CHECK(f.done && f.done_err == SD_OK);
+    fake_free(&f);
+  }
   /* server-sig-algs: only what the server lists, no fallback */
   SD_REQUIRE(fake_new(&f, SD_AUTH_PUBLICKEY | SD_AUTH_PASSWORD, &acfg));
   memcpy(f.c->server_sig_algs, "ssh-ed25519,rsa-sha2-256", 25);
   start_auth(&f, "publickey,password");
   SD_REQUIRE(pump(&f, 1));
   SD_REQUIRE(parse_pk(&f, &q));
+  SD_CHECK_STR(q.alg, "rsa-sha2-256-cert-v01@openssh.com");
+  srv_failure(&f, "publickey,password", 0);       /* certificate refused: plain key, same ladder */
+  SD_REQUIRE(pump(&f, 1));
+  SD_REQUIRE(parse_pk(&f, &q));
   SD_CHECK_STR(q.alg, "rsa-sha2-256");
   srv_failure(&f, "password", 0);
-  SD_REQUIRE(pump(&f, 0));                       /* next method: password prompt */
+  SD_REQUIRE(pump_prompts(&f, 1));               /* next method: password prompt */
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_PASSWORD);
   sd_prompt_cancel(f.prompt);
   run_queue(f.c);
@@ -564,12 +605,12 @@ SD_TEST(ssh_auth_passphrase_after_pk_ok)
   SD_REQUIRE(parse_pk(&f, &q));
   SD_CHECK_EQ_INT(f.prompts, 0);
   srv_pk_ok(&f, &q);
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 1));
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_KEY_PASSPHRASE);
   SD_CHECK(f.info.key_fingerprint && !strncmp(f.info.key_fingerprint, "SHA256:", 7));
   SD_CHECK(f.info.key_path && strstr(f.info.key_path, "ppk3_ed25519_enc") != NULL);
   SD_CHECK_EQ_INT(sd_prompt_answer(f.prompt, 1, wrong), SD_OK);
-  SD_REQUIRE(pump(&f, 0));
+  SD_REQUIRE(pump_prompts(&f, 2));
   SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_KEY_PASSPHRASE);
   SD_CHECK_EQ_INT(f.info.round, 1);
   SD_CHECK_EQ_INT(sd_prompt_answer(f.prompt, 1, right), SD_OK);
@@ -674,7 +715,12 @@ SD_TEST(ssh_auth_agent_keys)
     SD_REQUIRE(parse_pk(&f, &q));
     SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_rsa2048"));
     SD_CHECK_EQ_INT(pa.agent.last_flags, SD_AGENT_SIGN_RSA_SHA2_512);
-    srv_failure(&f, "publickey,password", 0);
+    srv_failure(&f, "publickey,password", 0);     /* refused: same key retried with rsa-sha2-256 (§4.5) */
+    SD_REQUIRE(pump(&f, 1));
+    SD_REQUIRE(parse_pk(&f, &q));
+    SD_CHECK_STR(q.alg, "rsa-sha2-256");
+    SD_CHECK(q.blob.n == bl && memcmp(q.blob.p, b, bl) == 0);
+    srv_failure(&f, "publickey,password", 0);     /* ladder exhausted: next identity */
     SD_REQUIRE(pump(&f, 1));
     SD_REQUIRE(parse_pk(&f, &q));
     SD_CHECK_STR(q.alg, "ecdsa-sha2-nistp384");
@@ -686,7 +732,7 @@ SD_TEST(ssh_auth_agent_keys)
     SD_CHECK(q.has_sig && verify_pk_sig(&f, &q, "ossh_p384_enc"));
     SD_CHECK_EQ_INT(f.prompts, 0);
     srv_failure(&f, "password", 0);              /* no other agent key is offered */
-    SD_REQUIRE(pump(&f, 0));
+    SD_REQUIRE(pump_prompts(&f, 1));
     SD_CHECK_EQ_INT(f.info.kind, SD_PROMPT_PASSWORD);
     sd_prompt_cancel(f.prompt);
     run_queue(f.c);

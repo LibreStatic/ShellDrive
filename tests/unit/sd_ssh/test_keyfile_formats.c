@@ -232,11 +232,13 @@ SD_TEST(ssh_keyfmt_unsupported)
 }
 
 /* Every truncation and a sweep of single-byte corruptions fail cleanly (no crash, no success with a
-   different key). */
+   different key). For formats that store the public part, a load that succeeds must keep the key;
+   p8_ed25519 carries only the seed, so a corrupted seed is a different valid key by construction. */
 SD_TEST(ssh_keyfmt_truncation_and_corruption)
 {
   static const char *const names[] = { "ossh_p256", "ossh_rsa2048", "pem_p256", "p8_rsa", "ppk3_p256", "ppk2_ed25519",
                                        "p8_ed25519" };
+  static const int pub_stored[] = { 1, 1, 1, 1, 1, 1, 0 };
   size_t i, j;
   if (!tu_crypto_or_skip("ssh_keyfmt_truncation_and_corruption")) return;
   for (i = 0; i < SD_COUNTOF(names); i++) {
@@ -254,8 +256,10 @@ SD_TEST(ssh_keyfmt_truncation_and_corruption)
       if (sd_ssh_key_load(f, n, NULL, 0, &k) == SD_OK) {
         size_t l1, l2;
         const uint8_t *p1 = sd_ssh_key_public_blob(k, &l1), *p2 = sd_ssh_key_public_blob(ref, &l2);
-        /* base64 padding/comment bytes may change without effect; the key must stay the same */
-        SD_CHECK(l1 == l2 && memcmp(p1, p2, l1) == 0);
+        /* base64 padding/comment bytes may change without effect */
+        if (pub_stored[i] && (l1 != l2 || memcmp(p1, p2, l1) != 0))
+          printf("corruption changed the key: %s byte %zu\n", names[i], j);
+        if (pub_stored[i]) SD_CHECK(l1 == l2 && memcmp(p1, p2, l1) == 0);
         sd_ssh_key_free(k);
         k = NULL;
       }

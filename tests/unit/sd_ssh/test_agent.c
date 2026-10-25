@@ -115,15 +115,30 @@ static void agent_answer(ta_agent *a, const uint8_t *req, size_t n, sd_wr *out)
 static unsigned __stdcall pipe_main(void *arg)
 {
   ta_pipe_agent *pa = (ta_pipe_agent *)arg;
-  while (!pa->stop) {
-    HANDLE h = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
-                                65536, 0, NULL);
+  HANDLE listen = INVALID_HANDLE_VALUE;
+  for (;;) {
+    HANDLE h;
     uint8_t hdr[4], *body;
     DWORD got, len;
-    if (h == INVALID_HANDLE_VALUE) break;
-    SetEvent(pa->ready);
-    if (!ConnectNamedPipe(h, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(h); continue; }
+    if (listen == INVALID_HANDLE_VALUE) {
+      if (pa->stop) break;
+      /* a client that connected and left before ConnectNamedPipe fails with ERROR_NO_DATA: retry */
+      listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
+                                65536, 0, NULL);
+      SetEvent(pa->ready);
+    }
+    if (!ConnectNamedPipe(listen, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
+      CloseHandle(listen);
+      listen = INVALID_HANDLE_VALUE;
+      continue;
+    }
+    h = listen;
+    listen = INVALID_HANDLE_VALUE;
     if (pa->stop) { CloseHandle(h); break; }
+    /* A real agent always has a listening instance: create the next one before serving this
+       connection, so a client that reconnects right away never sees the pipe gone. */
+    listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
+                              65536, 0, NULL);
     for (;;) {
       sd_wr w;
       uint8_t lb[4];
@@ -147,7 +162,9 @@ static unsigned __stdcall pipe_main(void *arg)
     }
     DisconnectNamedPipe(h);
     CloseHandle(h);
+    if (listen == INVALID_HANDLE_VALUE && pa->stop) break;
   }
+  if (listen != INVALID_HANDLE_VALUE) CloseHandle(listen);
   return 0;
 }
 
@@ -158,7 +175,7 @@ sd_err ta_pipe_start(ta_pipe_agent *pa)
   pa->ready = CreateEventW(NULL, FALSE, FALSE, NULL);
   pa->stop = 0;
   if (!pa->ready) return SD_E_INTERNAL;
-  if (sd_thread_create(&pa->thread, pipe_main, pa, 256u * 1024u, L"fake agent") != SD_OK) return SD_E_INTERNAL;
+  if (sd_thread_create(&pa->thread, pipe_main, pa, 256u * 1024, L"fake agent") != SD_OK) return SD_E_INTERNAL;
   WaitForSingleObject(pa->ready, 5000);
   SetEnvironmentVariableW(L"SSH_AUTH_SOCK", pa->name);
   return SD_OK;
