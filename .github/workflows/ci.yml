@@ -37,7 +37,7 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset ${{ matrix.preset }} -DSD_BUILD_NUMBER=$env:SD_BUILD_NUMBER
+        run: cmake --preset ${{ matrix.preset }} "-DSD_BUILD_NUMBER=${{ github.run_number }}"
 
       # Release and Debug both run the post-build import audit (sd-importcheck) and the sdl10n
       # completeness check; either failure fails the build.

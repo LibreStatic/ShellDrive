@@ -407,7 +407,8 @@ SD_TEST(ipc_instance_quota_and_rate_limit)
   SD_REQUIRE(start_server(&ctx, 0, 1, 3, &s) == SD_OK);
   SD_REQUIRE(connect_client(0, 2000, &c1) == SD_OK);
   SD_CHECK(connect_client(0, 2000, &c2) != SD_OK);
-  for (i = 0; i < 6; i++) {
+  /* 30 calls against 3/s: the limit trips in every 1 s window even on a slow runner */
+  for (i = 0; i < 30; i++) {
     if (sd_ipc_call_raw(c1, "echo", NULL, 0, 5000, &res, &err) != SD_OK && strcmp(err.code, "rate_limited") == 0)
       limited++;
     sd_json_free(res);
