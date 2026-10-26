@@ -8,6 +8,13 @@ sd_add_unit_test(crypto_pk
           ../sd_crypto/tutil.c
   DEPS sd_crypto sd_platform sd_base)
 
+# Debug limbs on the 32-bit flavours run the suite in ~25-30 minutes by hand (bench_pk_throughput at
+# ~3.5 ops/s), past the 300 s default: only the x86 ceiling is raised (Release finishes in ~83 s and
+# x64 Debug in ~2 min, both inside the default; coverage is identical in every configuration).
+if(SD_X86)
+  set_tests_properties(unit.crypto_pk PROPERTIES TIMEOUT 3600)
+endif()
+
 target_include_directories(sd-test-crypto_pk PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/sd_crypto"
   "${CMAKE_CURRENT_SOURCE_DIR}/../sd_crypto")

@@ -2486,7 +2486,14 @@ static sd_err req_submit(sd_sftp_session *s, sftp_req *r, const sd_sftp_reqopt *
     int waitable = (r->flags & SD_SFTP_REQ_WAIT_READY) && o && o->timeout_ms > 0 &&
                    (st == SD_SFTP_ST_IDLE || st == SD_SFTP_ST_CONNECTING || st == SD_SFTP_ST_DISCONNECTED ||
                     st == SD_SFTP_ST_RECONNECT_WAIT || st == SD_SFTP_ST_AUTH_REQUIRED);
-    if (!waitable) { req_free(r); return SD_E_DISCONNECTED; }
+    if (!waitable) {
+      req_free(r);
+      /* Handles only exist once the session was READY, and every path out of READY marks them stale
+         (01 §10.4 step 3, §10.6). The I/O thread may still be inside do_lost() between the state
+         change and mark_files_stale() when the caller reads the state here, so decide by state, not
+         by the flag: a handle op submitted while not READY fails with SD_E_STALE_HANDLE either way. */
+      return r->f || r->f2 ? SD_E_STALE_HANDLE : SD_E_DISCONNECTED;
+    }
   }
   if ((uint32_t)InterlockedIncrement(&s->live) > s->opt.max_queued_reqs) {
     InterlockedDecrement(&s->live);
