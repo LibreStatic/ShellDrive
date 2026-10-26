@@ -67,8 +67,9 @@ typedef struct sd_sftp_transport {
   /* Called on the I/O thread after the primary reported READY. realpath_dot is the primary's
      realpath(".") (the pool admission check, 01 §10.9); NULL when the session never learned it. */
   void   (*notify_ready)(void *ctx, const char *realpath_dot);
-  /* Per-member statistics, members 1..3 ([0] of out is unused; the primary is the session's own);
-     any thread. *count receives the number of ADMITTED members. */
+  /* Per-member statistics, members 1..3, written to out[idx - 1] (member 1 is out[0]; the primary
+     is the session's own conn[0]). Only admitted members are written; *count receives their number.
+     Any thread. */
   void   (*member_stats)(void *ctx, sd_sftp_conn_stats out[3], uint32_t *count);
 } sd_sftp_transport;
 

@@ -2251,26 +2251,51 @@ failures.
 only (decisions.md D19), since metadata never goes there; its startup is INIT, VERSION, `limits` and the
 `realpath(".")` check above.
 
+**Transport view.** A pool transport reports `SD_SFTP_TP_POOL` and exposes every channel through the
+`sd_sftp_transport` stream vtable: idx 0 is the meta channel, idx 1 the primary's bulk channel, idx 2..4 are pool
+members 1..3. `open_stream`/`write_stream`/`consumed_stream` delegate idx 0..1 to the plain implementation and
+serve idx 2..4 through per-member queues (received bytes are credited back to the member only once the session has
+consumed them; writes queue bounded and are pumped on the member's own thread). `notify_ready` starts the
+admissions of a generation and re-admits every member after a reconnect; `member_stats` writes `out[idx - 1]` for
+every admitted member (member 1 is `out[0]`; the primary's own statistics are the session's `conn[0]`) and reports
+their number in `*count`.
+
 **Striping.** A striped handle is opened on the primary's bulk channel first (with the caller's flags, so `CREAT`,
-`TRUNC` and `EXCL` take effect exactly once). Sub-handles on the secondaries are opened lazily, on first use, with
-`oflags & ~(CREAT|TRUNC|EXCL)`. `APPEND` handles are never striped (the flag is ignored). Routing:
-- the file is divided into `stripe_bytes` units (default 1 MiB); unit `k` always goes to member
-  `k mod live_members`, recomputed only at a quiescent point (no requests in flight on the handle), so **requests that
-  touch the same byte range always travel on the same connection, in submission order**;
-- requests crossing a unit boundary are split at the boundary;
-- `fstat`, `fsetstat` (including truncate), `fsync` and `close` are **barriers**: they wait for every in-flight part
-  on every member, then run on the primary sub-handle (`fsync` and `close` are then sent to every sub-handle that was
-  opened, and complete when all are done);
+`TRUNC` and `EXCL` take effect exactly once). `APPEND` handles, directories and meta handles are never striped (the
+flag is ignored); with no live member the handle is simply served by the primary. Sub-handles on the secondaries
+are opened lazily, on first use of a unit routed to that member, with
+`oflags & ~(CREAT|TRUNC|EXCL|APPEND|STRIPED)`: the primary's OPEN already did the create/truncate, and the last two
+bits are ours (wire pflags are masked to the protocol's 6 bits anyway). A member whose sub-open cannot be sent or
+is refused falls back to the primary; the next barrier drops it from the routing. Striped requests run in their own
+queue class `Q_STRIPE` beside the meta/bulk queues of section 10.5, and barrier wires carry the dedicated phase
+`PH_STRIPED`, so their replies settle the barrier instead of the data path (both are internal, section 11). Routing:
+- the file is divided into `stripe_bytes` units (option `stripe_bytes`, default 1 MiB, normalised at open time to
+  the smaller of the negotiated `max_read`/`max_write` limits with a 512-byte floor, so one unit never exceeds what
+  a single request may carry); unit `k = offset / stripe_bytes` goes to `route_map[k % route_n]`, a per-handle table
+  listing the primary and every member whose sub-handle is open. The table is recomputed only at quiescent points -
+  the FSTAT that completes the open and every completed barrier - so **requests that touch the same byte range
+  always travel on the same connection, in submission order**;
+- requests crossing a unit boundary are split at the boundary; every piece parks behind the member channel's limits
+  (`max_inflight_reqs`, the channel output high water, `max_inflight_bytes`), never the whole request queue;
+- `fstat`, `fsetstat` (including truncate), `fsync`, `fstatvfs` and `close` are **barriers**: they wait until the
+  handle has no data wire in flight and no sub-open pending, then run on the primary handle and on every open
+  sub-handle (`fstat`/`fsetstat`/`fstatvfs` need only the primary; `fsync` and `close` also go to every sub-handle
+  that was opened). The barrier completes when all its wires have settled, first error wins, and its completion is
+  the route-table recompute of the first bullet;
 - `copy-data` is never striped (it uses the primary handle); `same_channel_as` refers to the primary sub-handle;
 - `max-open-handles` is tracked per member, since each member is its own server process.
 
 **Per-connection reconnect.** Each member has its own backoff loop (`reconnect` policy, at most once per 5 s per
 member) that runs only while the session is READY.
-- Losing a **secondary**: the session stays READY. Its in-flight **reads** are reissued on the primary sub-handle
+- Losing a **secondary**: the session stays READY. Its in-flight **reads** are reissued on the primary handle
   transparently (reads are idempotent). Its in-flight **writes** complete with `SD_E_DISCONNECTED`,
   `maybe_executed = 1` and `session_ready = 1`, and are never replayed: the VFS may resubmit them at once on the
-  same handle (it remains valid), in line with its write-mode rules. Until the handle's next quiescent point, the
-  lost member's units go to the primary; then routing is recomputed over the live members.
+  same handle (it remains valid), in line with its write-mode rules; the write's wires on the surviving channels
+  stay in the table, so their late acknowledgements are discarded instead of surfacing as protocol errors. Its
+  sub-handles are released without a CLOSE (they died with the connection), a sub-open still on its wire fails with
+  `SD_E_DISCONNECTED`, and a barrier wire it already carried counts as settled (the handle died with it). Until the
+  handle's next quiescent point, the lost member's units go to the primary; then routing is recomputed over the live
+  members.
 - Losing the **primary**: this is the session-level disconnect of section 10.6. All secondaries are closed with it,
   all handles (including sub-handles) go stale, and after the next READY the members are re-admitted under the rule
   above.

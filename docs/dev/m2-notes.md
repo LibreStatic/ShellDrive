@@ -175,6 +175,52 @@ Tests: `m2_pool_admits_members` (3 members admitted, stats/events checked) and
 `m2_pool_interactive_stays_at_one` (a key passphrase answered by the "user" keeps the pool at 1)
 in `tests/unit/sd_sftp/test_ssh_interop.c` against the modern fixture.
 
+## Pool striping, increment 2: striped handles (backend, M2 order step 4)
+
+Implements the striping contract of 01 §10.9 (as documented there; this section records what
+landed and how to exercise it). Session side (`src/sd_sftp/sftp_session.c`, the "pool striping"
+block): a handle opened with `SD_SFTP_O_STRIPED` (never directories, meta handles or `APPEND`)
+is served by the primary bulk channel plus one lazily opened sub-handle per member (`oflags`
+masked of `CREAT|TRUNC|EXCL|APPEND|STRIPED`; a refused sub-open falls back to the primary).
+Unit `k = offset / stripe_bytes` routes to `route_map[k % route_n]`; `stripe_bytes` is clamped to the
+smaller of the negotiated `max_read`/`max_write` (512-byte floor), so one unit always fits one
+request. The table is recomputed only at quiescent points - the open FSTAT and every completed
+barrier - so a byte range always travels on the same connection in submission order.
+`FSTAT`/`FSETSTAT`/`FSYNC`/`FSTATVFS`/`CLOSE` are barriers: drain the handle's data wires and
+pending sub-opens, then run on the primary handle (and on every open sub-handle for
+`FSYNC`/`CLOSE`), first error wins, completion recomputes the routing. Member loss: in-flight
+reads are re-issued on the primary, in-flight writes complete `SD_E_DISCONNECTED` with
+`maybe_executed = 1` and `session_ready = 1` (the write's wires on the surviving channels stay
+matched so their late acks are discarded, not "unknown id" protocol errors), sub-handles are
+released without a CLOSE, and the session stays READY. Transport side (`src/sd_sftp/sftp_ssh.c`):
+streams 2..4 are the members behind `open_stream`/`write_stream`/`consumed_stream` (`SD_SFTP_TP_POOL`),
+`notify_ready` admits per generation, `member_stats` writes `out[idx - 1]`. Events are guarded by
+a per-member generation on both sides, so a stale posted close or a double-reported drop acts once.
+
+Tests (all names are `SD_TEST` entries):
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `tests/unit/sd_sftp/test_striping.c` (`unit.sftp`, fake transport) | `striping_units_route_by_member_in_order`, `striping_write_units_route_and_place_bytes`, `striping_sub_handles_open_lazily`, `striping_refused_sub_open_falls_back_to_primary`, `striping_barrier_waits_for_data_wires`, `striping_fsync_settles_on_every_sub_handle`, `striping_close_settles_on_every_sub_handle`, `striping_write_failure_refines_to_no_space`, `striping_write_parks_at_max_inflight_reqs`, `striping_write_parks_at_obuf_high_water`, `striping_write_parks_at_max_inflight_bytes`, `striping_member_loss_reissues_reads_on_primary`, `striping_member_loss_fails_writes_with_session_ready`, `striping_route_recomputed_after_member_loss`, `striping_member_write_error_in_drop_window_keeps_ready`, `striping_member_drop_during_barrier_counts_it_done`, `striping_plain_and_append_handles_stay_off_members`, `striping_meta_and_directory_handles_stay_off_members`, `striping_transport_without_members_never_stripes`, `striping_member_drop_reported_twice_acts_once`, `striping_stale_member_event_after_generation_reset_is_ignored`, `striping_stripe_unit_clamped_to_negotiated_limits` | routing and placement, lazy sub-opens, barriers, member loss, the generation guards, the clamp, and the regressions (plain/`APPEND`/meta/directory handles and member-less transports never touch a member stream) |
+| `tests/unit/sd_sftp/test_ssh_interop.c` (`interop.sftp_ssh`, wsl-sshd fixture) | `m2_striping_end_to_end`, `m2_striping_member_lost_mid_transfer` | a 32 MiB striped write + read-back over 3 connections with SHA-256 verify and payload in `stats.conn[1..3]`; exactly one member killed mid-transfer through the fixture (`ctl.ps1` freeze/drop/thaw): burst reads recover byte-exact on the primary, at least one burst write fails with `SD_E_DISCONNECTED`/`maybe_executed`/`session_ready`, the pool reports 2 connections, the session stays READY and a follow-up striped transfer succeeds on the survivor |
+
+Commands (`x64-modern` Debug; `cmake`/`ctest` are not on `PATH`, see the hand-off for the full
+path):
+
+```text
+cmake --build --preset x64-modern-debug                # from the worktree root
+cd build\x64-modern
+ctest -C Debug -R "^unit\.sftp$" --output-on-failure   # whole unit suite, striping included
+bin\Debug\sd-test-sftp.exe --filter striping_          # only the 22 striping unit tests
+ctest -C Debug -R "^interop\.sftp_ssh$" --output-on-failure   # needs the wsl-sshd fixture up:
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\wsl-sshd\start.ps1
+bin\Debug\sd-test-sftp-ssh-interop.exe --filter m2_striping   # only the 2 striping interop tests
+```
+
+`interop.sftp_ssh` exits 77 (skipped) when the fixture is not running. Contract: 01 §10.9
+("Transport view", "Striping", "Per-connection reconnect"); the vfs-side policy that decides which
+handles get `SD_SFTP_O_STRIPED` is 02 §5.6 and still open.
+
 ## x64-analysis brought back to green (backend, M2 order step 6 prep)
 
 The analysis preset had not run since the M2 area work landed. Library fixes: bn.c montmul zeroes
