@@ -6,7 +6,14 @@
  * handles are reopened and the transfer finishes from the last acknowledged offset, verified with
  * SHA-256 on both sides. Also: meta + bulk channels, a TCP drop with the listener alive, and a
  * frozen (silent) link detected by the liveness probe after a request timeout (C16). Faults are
- * injected with tests/fixtures/wsl-sshd/ctl.sh. */
+ * injected with tests/fixtures/wsl-sshd/ctl.sh.
+ *
+ * M2 pool striping (01 §10.9): a striped handle over a three-connection pool writes and reads a
+ * >= 32 MiB pattern with every byte verified and payload on every member connection, and a single
+ * member connection is dropped mid-transfer: its reads are re-issued on the primary, its writes
+ * complete with SD_E_DISCONNECTED / maybe_executed / session_ready, the session stays READY and
+ * usable. ctl.sh cannot drop a single connection (kill/drop take the listener or every session),
+ * so the per-member fault is built from the fixture state (see ctl_drop_one_member). */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -29,6 +36,10 @@
 #define SLOTS     8
 #define BLK       (4u * 1024u * 1024u)
 #define RDIR      "/tmp/sd-m1-interop"
+#define M2_TOTAL  (32ull * 1024ull * 1024ull)   /* striped transfer size: 128+ stripe units */
+#define M2_BURST  24                             /* requests submitted while the fixture is frozen */
+#define M2_BUNIT  (1024u * 1024u)                /* their size */
+#define M2_FOLLOW (8ull * 1024ull * 1024ull)    /* follow-up transfer after a member loss */
 
 static char g_dir[MAX_PATH], g_dir_wsl[MAX_PATH];
 static char g_user[64], g_key[MAX_PATH], g_hostkey[256];
@@ -141,6 +152,29 @@ static int ctl(const char *what)
   return wsl_sh(s, 60000);
 }
 
+/* Fault for the pool member tests: ctl.sh only knows whole-fixture verbs (kill: the listener and
+ * every session, drop: every session), so a single member connection is dropped from the fixture
+ * state instead. The fixture's sshd forks exactly one direct child per accepted connection and the
+ * pool admits its members sequentially after READY, so with a fully admitted pool the newest direct
+ * child of the listener (highest pid) is a member connection, never the primary. Killing that
+ * child's whole process subtree (monitor + unprivileged network child) drops exactly that TCP
+ * connection; the listener and the other connections stay up. SIGKILL also works on the frozen
+ * (SIGSTOPped) processes the member-drop tests leave behind. */
+static int ctl_drop_one_member(void)
+{
+  char s[1400];
+  _snprintf_s(s, sizeof(s), _TRUNCATE,
+    "run=${XDG_STATE_HOME:-$HOME/.local/state}/shelldrive-wsl-sshd; "
+    "root=$(cat $run/sshd.pid 2>/dev/null) || exit 1; "
+    "n=$(ps -eo pid=,ppid= | awk -v r=$root '$2==r {print $1}' | sort -n | tail -1); "
+    "case $n in ''|*[!0-9]*) exit 1;; esac; "
+    "ps -eo pid=,ppid= | awk -v r=$n "
+    "'{p[$1]=$2} END {for (q in p) { x=q; while ((x in p) && x!=r && x>1) x=p[x]; "
+    "if (x==r && q!=r) print q }}' | xargs -r kill -9 2>/dev/null; "
+    "kill -9 $n 2>/dev/null; exit 0");
+  return wsl_sh(s, 60000);
+}
+
 /* SHA-256 (hex) of a remote file, computed in WSL and passed back through the fixture state dir. */
 static int remote_sha(const char *rpath, char out[65])
 {
@@ -170,11 +204,13 @@ static void hex(const uint8_t *d, size_t n, char *out)
 typedef struct ev {
   sd_mutex lock;
   sd_event changed;
+  sd_sftp_session *session;       /* set before the session starts; for stats snapshots */
   uint32_t ready_gen, channels;
   uint32_t n_pool, pool_conns;
   sd_sftp_state last;
   int n_disc, n_wait, n_failed;
   sd_err disc_reason;
+  sd_sftp_stats pool_st;          /* snapshot taken when a POOL drop event arrives */
 } ev;
 
 static void ev_cb(void *ctx, const sd_sftp_event *e)
@@ -193,6 +229,13 @@ static void ev_cb(void *ctx, const sd_sftp_event *e)
     x->pool_conns = e->connections;
     printf("  [event] POOL member %u -> %u connection(s), reason %s\n", e->member,
            e->connections, sd_err_name(e->reason));
+    if (e->reason != SD_OK && x->session && sd_sftp_session_stats(x->session, &x->pool_st) == SD_OK) {
+      uint32_t i;
+      for (i = 0; i < x->pool_st.conn_count; i++)
+        printf("  [event]   conn[%u] rx %llu tx %llu\n", i,
+               (unsigned long long)x->pool_st.conn[i].rx_total,
+               (unsigned long long)x->pool_st.conn[i].tx_total);
+    }
   } else if (e->type == SD_SFTP_EV_READY_INFO) {
     x->ready_gen = e->info->generation;
     x->channels = e->info->channels;
@@ -298,6 +341,7 @@ static int fx_start_opt(fx *x, uint32_t keepalive_ms, uint32_t connections, cons
   opt.reconnect.max_delay_ms = 2000;
   opt.default_timeout_ms = 30000;
   if (sd_sftp_session_create(&cfg, &cb, &opt, ev_cb, &x->e, &x->s) != SD_OK) return 0;
+  x->e.session = x->s;
   if (sd_sftp_session_start(x->s) != SD_OK) return 0;
   if (wait_gen(x->s, &x->e, 1, 30000)) return 1;
   /* the first connect does not loop by itself; one fixture hiccup is retried through reconnect_now */
@@ -344,6 +388,8 @@ typedef struct xfer {
   int write;
   uint64_t total;
   sd_hash_ctx *h;                 /* reads: hash of the data in order */
+  uint8_t *ref;                   /* reads: pattern reference; every buffer is compared (t.corrupt) */
+  int corrupt;                    /* a read buffer did not match the pattern */
   uint64_t kill_at;               /* inject the fault once `done` passes this offset (0: never) */
   const char *fault;              /* ctl.sh command */
   int faulted;
@@ -386,11 +432,21 @@ static uint64_t pipe_xfer(xfer *t, slot *sl, uint64_t from)
       break;
     }
     if (!t->write && t->h) sd_hash_update(t->h, s->buf, s->len);
+    if (!t->write && t->ref) {
+      pattern(t->ref, s->off, s->len);
+      if (memcmp(t->ref, s->buf, s->len) != 0) {
+        t->corrupt = 1;
+        printf("  pattern mismatch in [%llu, %llu)\n", (unsigned long long)s->off,
+               (unsigned long long)(s->off + s->len));
+        if (t->err == SD_OK) t->err = SD_E_INTERNAL;
+        break;
+      }
+    }
     done += s->len;
     if (t->kill_at && !t->faulted && done >= t->kill_at) {
       t->faulted = 1;
       printf("  injecting '%s' at %llu MiB\n", t->fault, (unsigned long long)(done >> 20));
-      ctl(t->fault);
+      (void)ctl(t->fault);
     }
     if (!stop && t->err == SD_OK && next < t->total) {
       if (submit(t, s, next)) next += s->len;
@@ -674,6 +730,313 @@ SD_TEST(m2_pool_interactive_stays_at_one)
   fx_stop(&x);
 }
 
+/* ---- M2 pool striping (01 §10.9) ---- */
+
+/* Waits until the pool reports at most `want` connections (a member was dropped; admissions only
+   grow it). */
+static int wait_pool_lost(fx *x, uint32_t want, uint32_t ms)
+{
+  sd_sftp_stats st;
+  uint64_t end = sd_tick_ms() + ms;
+  for (;;) {
+    if (sd_sftp_session_stats(x->s, &st) == SD_OK && st.conn_count <= want) return 1;
+    if (sd_tick_ms() >= end) return 0;
+    (void)sd_event_wait(&x->e.changed, 100);
+  }
+}
+
+/* Hash of the deterministic pattern over [0, total), the reference for the remote SHA-256. */
+static void pattern_sha(uint8_t *ref, uint64_t total, char out[65])
+{
+  sd_hash_ctx h;
+  uint8_t dg[32];
+  uint64_t off;
+  sd_hash_init(&h, SD_HASH_SHA256);
+  for (off = 0; off < total; off += BLK) { pattern(ref, off, BLK); sd_hash_update(&h, ref, BLK); }
+  sd_hash_final(&h, dg);
+  hex(dg, 32, out);
+}
+
+/* A >= 32 MiB deterministic pattern goes through a striped handle on a three-connection pool and
+   every byte comes back; every member connection carried payload in both directions. */
+SD_TEST(m2_striping_end_to_end)
+{
+  fx x;
+  sd_sftp_file *f = NULL;
+  slot *sl;
+  xfer t;
+  sd_sftp_stats st;
+  uint8_t *ref;
+  char want[65], got[65];
+  uint64_t done, t0;
+  uint32_t i;
+  SD_REQUIRE(wsl_sh("mkdir -p " RDIR " && rm -f " RDIR "/stripe.bin", 30000) == 0);
+  if (!fx_start_opt(&x, 0, 3, NULL)) { SD_CHECK(!"fixture connect failed"); return; }
+  SD_REQUIRE(wait_pool(&x, 3, 30000));
+  sl = slots_new(x.s);
+  ref = (uint8_t *)sd_alloc(BLK);
+  SD_REQUIRE(sl != NULL && ref != NULL);
+  /* striped write: stripe units alternate primary / member 1 / member 2 (route k % 3) */
+  SD_REQUIRE(open_sync(x.s, RDIR "/stripe.bin",
+                       SD_SFTP_O_WRITE | SD_SFTP_O_CREAT | SD_SFTP_O_TRUNC | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  memset(&t, 0, sizeof(t));
+  t.f = f;
+  t.write = 1;
+  t.total = M2_TOTAL;
+  t0 = sd_tick_ms();
+  done = pipe_xfer(&t, sl, 0);
+  printf("  striped write: %s, %llu MiB in %llu ms\n", sd_err_name(t.err),
+         (unsigned long long)(done >> 20), (unsigned long long)(sd_tick_ms() - t0));
+  SD_CHECK_EQ_INT(t.err, SD_OK);
+  SD_CHECK_EQ_U64(done, M2_TOTAL);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  /* the server really holds the pattern */
+  pattern_sha(ref, M2_TOTAL, want);
+  SD_REQUIRE(remote_sha(RDIR "/stripe.bin", got));
+  SD_CHECK_STR(got, want);
+  /* striped read-back: pipe_xfer compares every read buffer against the pattern */
+  SD_REQUIRE(open_sync(x.s, RDIR "/stripe.bin", SD_SFTP_O_READ | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  memset(&t, 0, sizeof(t));
+  t.f = f;
+  t.total = M2_TOTAL;
+  t.ref = ref;
+  done = pipe_xfer(&t, sl, 0);
+  SD_CHECK_EQ_INT(t.err, SD_OK);
+  SD_CHECK(!t.corrupt);
+  SD_CHECK_EQ_U64(done, M2_TOTAL);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  /* the pool did the work: every member connection carried payload in both directions */
+  SD_CHECK(sd_sftp_session_stats(x.s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 3);
+  for (i = 1; i < st.conn_count; i++) {
+    printf("  conn[%u] rx %llu tx %llu bytes\n", i, (unsigned long long)st.conn[i].rx_total,
+           (unsigned long long)st.conn[i].tx_total);
+    SD_CHECK(st.conn[i].rx_total > 0 && st.conn[i].tx_total > 0);
+  }
+  printf("  %llu MiB striped write + read over 3 connections in %llu ms\n",
+         (unsigned long long)((2 * M2_TOTAL) >> 20), (unsigned long long)(sd_tick_ms() - t0));
+  sd_free(ref);
+  slots_free(sl);
+  fx_stop(&x);
+  (void)wsl_sh("rm -f " RDIR "/stripe.bin", 30000);
+}
+
+/* Exactly one member connection is dropped mid-transfer, deterministically: the fixture's sftp
+   processes are frozen (ctl.sh freeze), then a burst of striped requests is submitted - emission
+   is submit-driven, so every channel ends up with pieces that can never be answered - then the
+   newest connection of the listener (the last member admitted, see ctl_drop_one_member) is
+   killed and the rest thawed. The member's in-flight reads are re-issued on the primary and the
+   data still verifies byte for byte; its in-flight writes complete with SD_E_DISCONNECTED /
+   maybe_executed / session_ready; the session never leaves READY and a follow-up striped open +
+   transfer succeeds. A fresh session per phase: the other member must survive the drop. */
+SD_TEST(m2_striping_member_lost_mid_transfer)
+{
+  fx x;
+  sd_sftp_file *f = NULL;
+  slot *sl;
+  xfer t;
+  sd_sftp_stats st;
+  sd_sftp_reqopt o = { 0, 60000, NULL };
+  waiter bw[M2_BURST];
+  uint8_t *bb[M2_BURST];
+  uint8_t *ref;
+  uint64_t off, done, s1_tx;
+  int i, n_fail = 0, fail_maybe = 0, fail_ready = 0;
+  waiter w0;
+
+  /* -- reads across the loss of one member connection -- */
+  SD_REQUIRE(wsl_sh("mkdir -p " RDIR " && rm -f " RDIR "/ml_src.bin", 30000) == 0);
+  if (!fx_start_opt(&x, 0, 3, NULL)) { SD_CHECK(!"fixture connect failed"); return; }
+  SD_REQUIRE(wait_pool(&x, 3, 30000));
+  sl = slots_new(x.s);
+  ref = (uint8_t *)sd_alloc(BLK);
+  SD_REQUIRE(sl != NULL && ref != NULL);
+  /* the source file, written through a plain (non-striped) handle */
+  SD_REQUIRE(open_sync(x.s, RDIR "/ml_src.bin",
+                       SD_SFTP_O_WRITE | SD_SFTP_O_CREAT | SD_SFTP_O_TRUNC, &f) == SD_OK);
+  memset(&t, 0, sizeof(t));
+  t.f = f;
+  t.write = 1;
+  t.total = M2_TOTAL;
+  done = pipe_xfer(&t, sl, 0);
+  SD_CHECK_EQ_INT(t.err, SD_OK);
+  SD_CHECK_EQ_U64(done, M2_TOTAL);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  /* striped read; the warm-up completes, so both member sub-handles are open */
+  SD_REQUIRE(open_sync(x.s, RDIR "/ml_src.bin", SD_SFTP_O_READ | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  waiter_init(&w0, x.s);
+  waiter_reset(&w0, W_RW);
+  bb[0] = (uint8_t *)sd_alloc(M2_BUNIT);
+  SD_REQUIRE(bb[0] != NULL);
+  SD_CHECK_EQ_INT(sd_sftp_read(f, 0, bb[0], M2_BUNIT, &o, waiter_cb, &w0), SD_OK);
+  SD_CHECK(waiter_wait(&w0, 60000) && w0.err == SD_OK && w0.bytes == M2_BUNIT);
+  pattern(ref, 0, M2_BUNIT);
+  SD_CHECK(!memcmp(ref, bb[0], M2_BUNIT));
+  waiter_free(&w0);
+  sd_free(bb[0]);
+  /* freeze the fixture: replies stop from now on. The burst is submitted while frozen: its
+     pieces go out (emission is submit-driven) and can never be answered, so the kill below is
+     certain to land on wires the member really carried. */
+  SD_CHECK_EQ_INT(ctl("freeze"), 0);
+  for (i = 0; i < M2_BURST; i++) {
+    bb[i] = (uint8_t *)sd_alloc(M2_BUNIT);
+    SD_REQUIRE(bb[i] != NULL);
+    off = (uint64_t)(i + 1) * M2_BUNIT;
+    waiter_init(&bw[i], x.s);
+    waiter_reset(&bw[i], W_RW);
+    SD_CHECK_EQ_INT(sd_sftp_read(f, off, bb[i], M2_BUNIT, &o, waiter_cb, &bw[i]), SD_OK);
+  }
+  {
+    sd_sftp_stats fst;
+    uint32_t seen = 0;
+    uint64_t ft0 = sd_tick_ms();
+    while (sd_tick_ms() - ft0 < 2500) {
+      if (sd_sftp_session_stats(x.s, &fst) == SD_OK) {
+        seen = fst.conn[0].inflight_reqs;
+        if (seen >= 12) break;
+      }
+      Sleep(20);
+    }
+    printf("  fixture frozen, burst of %d MiB read in flight (%u pieces); dropping one member\n",
+           M2_BURST, seen);
+    SD_CHECK_EQ_INT(ctl_drop_one_member(), 0);
+    SD_CHECK_EQ_INT(ctl("thaw"), 0);
+  }
+  /* every burst read completes: the pieces the member carried were re-issued on the primary */
+  for (i = 0; i < M2_BURST; i++) {
+    off = (uint64_t)(i + 1) * M2_BUNIT;
+    if (!waiter_wait(&bw[i], 60000)) { SD_CHECK(!"burst read did not complete"); continue; }
+    SD_CHECK_EQ_INT(bw[i].err, SD_OK);
+    SD_CHECK_EQ_INT((int)bw[i].bytes, (int)M2_BUNIT);
+    pattern(ref, off, M2_BUNIT);
+    SD_CHECK(!memcmp(ref, bb[i], M2_BUNIT));
+    waiter_free(&bw[i]);
+    sd_free(bb[i]);
+  }
+  printf("  all %d burst reads completed and verified after the member loss\n", M2_BURST);
+  /* the pool shrank by exactly one member; the session never dropped */
+  SD_CHECK(wait_pool_lost(&x, 2, 15000));
+  SD_CHECK(sd_sftp_session_stats(x.s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 2);
+  SD_CHECK_EQ_INT((int)sd_sftp_session_state(x.s), (int)SD_SFTP_ST_READY);
+  sd_mutex_lock(&x.e.lock);
+  SD_CHECK(x.e.n_disc == 0 && x.e.n_failed == 0);
+  SD_CHECK(x.e.n_pool >= 3);            /* two admissions and at least the drop */
+  SD_CHECK_EQ_INT(x.e.pool_conns, 2);   /* the drop event, not an admission, came last */
+  sd_mutex_unlock(&x.e.lock);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  sd_free(ref);
+  slots_free(sl);
+  fx_stop(&x);
+
+  /* -- writes across the loss: the member's in-flight writes surface DISCONNECTED -- */
+  if (!fx_start_opt(&x, 0, 3, NULL)) { SD_CHECK(!"fixture reconnect failed"); return; }
+  SD_REQUIRE(wait_pool(&x, 3, 30000));
+  sl = slots_new(x.s);
+  ref = (uint8_t *)sd_alloc(BLK);
+  SD_REQUIRE(sl != NULL && ref != NULL);
+  SD_REQUIRE(open_sync(x.s, RDIR "/ml_dst.bin",
+                       SD_SFTP_O_WRITE | SD_SFTP_O_CREAT | SD_SFTP_O_TRUNC | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  /* warm-up write so both member sub-handles are open before the freeze */
+  waiter_init(&w0, x.s);
+  waiter_reset(&w0, W_RW);
+  pattern(ref, 0, M2_BUNIT);
+  SD_CHECK_EQ_INT(sd_sftp_write(f, 0, ref, M2_BUNIT, &o, waiter_cb, &w0), SD_OK);
+  SD_CHECK(waiter_wait(&w0, 60000) && w0.err == SD_OK && w0.bytes == M2_BUNIT);
+  waiter_free(&w0);
+  SD_CHECK_EQ_INT(ctl("freeze"), 0);
+  for (i = 0; i < M2_BURST; i++) {
+    bb[i] = (uint8_t *)sd_alloc(M2_BUNIT);
+    SD_REQUIRE(bb[i] != NULL);
+    off = (uint64_t)(i + 1) * M2_BUNIT;
+    pattern(bb[i], off, M2_BUNIT);
+    waiter_init(&bw[i], x.s);
+    waiter_reset(&bw[i], W_RW);
+    SD_CHECK_EQ_INT(sd_sftp_write(f, off, bb[i], M2_BUNIT, &o, waiter_cb, &bw[i]), SD_OK);
+  }
+  {
+    sd_sftp_stats fst;
+    uint32_t seen = 0;
+    uint64_t ft0 = sd_tick_ms();
+    while (sd_tick_ms() - ft0 < 2500) {
+      if (sd_sftp_session_stats(x.s, &fst) == SD_OK) {
+        seen = fst.conn[0].inflight_reqs;
+        if (seen >= 12) break;
+      }
+      Sleep(20);
+    }
+    printf("  fixture frozen, burst of %d MiB written in flight (%u pieces); dropping one member\n",
+           M2_BURST, seen);
+    SD_CHECK_EQ_INT(ctl_drop_one_member(), 0);
+    SD_CHECK_EQ_INT(ctl("thaw"), 0);
+  }
+  /* the writes the member carried fail; writes on the live channels were acknowledged */
+  for (i = 0; i < M2_BURST; i++) {
+    if (!waiter_wait(&bw[i], 60000)) { SD_CHECK(!"burst write did not complete"); continue; }
+    if (bw[i].err == SD_E_DISCONNECTED && bw[i].session_ready) {
+      if (!n_fail) { fail_maybe = bw[i].maybe_executed; fail_ready = bw[i].session_ready; }
+      n_fail++;
+    } else {
+      SD_CHECK_EQ_INT(bw[i].err, SD_OK);
+    }
+    waiter_free(&bw[i]);
+    sd_free(bb[i]);
+  }
+  printf("  member drop failed %d of %d burst write(s)\n", n_fail, M2_BURST);
+  SD_CHECK(n_fail >= 1);
+  SD_CHECK_EQ_INT(fail_maybe, 1);   /* the request was sent: the server-side effect is unknown */
+  SD_CHECK_EQ_INT(fail_ready, 1);   /* the failure came from a member, not from the session */
+  SD_CHECK_EQ_INT((int)sd_sftp_session_state(x.s), (int)SD_SFTP_ST_READY);
+  sd_mutex_lock(&x.e.lock);
+  SD_CHECK(x.e.n_disc == 0 && x.e.n_failed == 0);
+  sd_mutex_unlock(&x.e.lock);
+  SD_CHECK(wait_pool_lost(&x, 2, 15000));
+  SD_CHECK(sd_sftp_session_stats(x.s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 2);    /* exactly one member was lost, the other one survived */
+  s1_tx = st.conn[1].tx_total;
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+
+  /* -- the session is still usable: a follow-up striped open + transfer succeeds -- */
+  SD_REQUIRE(open_sync(x.s, RDIR "/ml_dst.bin",
+                       SD_SFTP_O_WRITE | SD_SFTP_O_CREAT | SD_SFTP_O_TRUNC | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  memset(&t, 0, sizeof(t));
+  t.f = f;
+  t.write = 1;
+  t.total = M2_FOLLOW;
+  done = pipe_xfer(&t, sl, 0);
+  SD_CHECK_EQ_INT(t.err, SD_OK);
+  SD_CHECK_EQ_U64(done, M2_FOLLOW);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  SD_REQUIRE(open_sync(x.s, RDIR "/ml_dst.bin", SD_SFTP_O_READ | SD_SFTP_O_STRIPED, &f) == SD_OK);
+  memset(&t, 0, sizeof(t));
+  t.f = f;
+  t.total = M2_FOLLOW;
+  t.ref = ref;
+  done = pipe_xfer(&t, sl, 0);
+  SD_CHECK_EQ_INT(t.err, SD_OK);
+  SD_CHECK(!t.corrupt);
+  SD_CHECK_EQ_U64(done, M2_FOLLOW);
+  SD_CHECK_EQ_INT(sd_sftp_close_sync(f, 30000), SD_OK);
+  f = NULL;
+  /* the surviving member carried the follow-up traffic */
+  SD_CHECK(sd_sftp_session_stats(x.s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 2);
+  printf("  surviving member conn[1] tx %llu -> %llu bytes\n", (unsigned long long)s1_tx,
+         (unsigned long long)st.conn[1].tx_total);
+  SD_CHECK(st.conn[1].tx_total > s1_tx);
+  SD_CHECK_EQ_INT((int)sd_sftp_session_state(x.s), (int)SD_SFTP_ST_READY);
+  sd_free(ref);
+  slots_free(sl);
+  fx_stop(&x);
+  (void)wsl_sh("rm -f " RDIR "/ml_src.bin " RDIR "/ml_dst.bin", 30000);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m1_session_two_channels),
   SD_TEST_ENTRY(m1_kill_sshd_during_pipelined_read),
@@ -682,6 +1045,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m1_frozen_link_liveness_probe),
   SD_TEST_ENTRY(m2_pool_admits_members),
   SD_TEST_ENTRY(m2_pool_interactive_stays_at_one),
+  SD_TEST_ENTRY(m2_striping_end_to_end),
+  SD_TEST_ENTRY(m2_striping_member_lost_mid_transfer),
 };
 
 int main(int argc, char **argv)
