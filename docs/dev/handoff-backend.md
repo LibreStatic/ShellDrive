@@ -5,6 +5,80 @@ Date: 2026-10-25. Repo `github.com/LibreStatic/ShellDrive`. Backend work continu
 of every milestone** in `docs/design/00-integration-review.md` §6. Frontend (GUI) work is handed off separately to
 the lead session, which validates and implements it.
 
+## State update: 2026-10-25, end of the M2 session (supersedes the per-area table below)
+
+Branch `wip/m2-backend`, all work committed. Commits of this session, oldest first: "Fix the failing M2 unit
+suites and add the RSA reference vectors", "Add matrix-driven transport interop tests for every fixture row",
+"Add auth interop: every key format and user-certificate paths", "Implement pool members and admission in
+sd_sftp (01 10.9, increment 1)", "Fix the XP/x86 flavours after the M2 WIP and pool work", "Make the
+x64-analysis preset green again and scope the matrix tests", "Label the srv_* interop tests with 'matrix'".
+
+### What is done (M2 order of the original hand-off)
+
+1. Unit suites all green (17/17 on x64-modern Release and on x64-analysis Debug): the missing
+   `refimpl/rsa_keys.txt` regenerated (seed 8017, `python -I tests/vectors/refimpl/pk_ref.py
+   <rfc5903.txt> - - tests/vectors rsa`); the M1-era auth/conn tests updated to the implemented M2
+   contract (cert-first offers, the RSA retry ladder, synchronous prompts -> `pump_prompts(f, n)` in
+   the test harness); the fake pipe agent now always keeps a listening instance (the reconnect race
+   was a test bug, not a product bug).
+2. Transport interop done for every row: `tests/unit/sd_ssh/test_interop_m2.c`
+   (`sd-test-ssh-interop-m2`), entries `interop.ssh_matrix_{connect,kex,pq,update,auth_keys,auth_certs}`
+   with `srv_*` + `matrix` labels; `run-matrix.ps1` green on all rows with fixtures up, including
+   `demo` (SOCKS5-auth -> OTP bastion -> target, PPK v3, ML-KEM), `jump2/jump3`, HTTP CONNECT
+   (plain/Basic), SOCKS5 (plain/RFC 1929), `legacy`, `legacy3des`, `cert` (+ negative certificates),
+   `rotate` (hostkeys-00 apply + reconnect). TOTP computed in-process from `SD_IT_OTP_SECRET`.
+   Plain `ctest` excludes them via `-LE matrix` (they exit 77 without `SD_IT_*`); the runner fixed to
+   not abort at the first failing row (PS 5.1 native-stderr quirk).
+3. Connect, increment 1 of the pool (01 section 10.9): `sd_sftp_options.connections` (1..4) admits
+   secondary members after READY only when authentication was non-interactive (2FA rule; prompts on a
+   member are cancelled), each member = own `sd_ssh_conn` with `SD_SSH_CFG_POOL_MEMBER` + one bulk
+   channel, admission exchange INIT/VERSION + REALPATH(".") length-framed, admit/drop decided on the
+   primary I/O thread comparing host-key fingerprint and realpath; a mismatch drops the member and
+   stops admissions for the generation. EV_POOL events, `info.connections`, `stats.conn[1..3]`.
+   Tests: `m2_pool_admits_members`, `m2_pool_interactive_stays_at_one`
+   (tests/unit/sd_sftp/test_ssh_interop.c, both green against `modern`).
+4. All five presets build warning-free again (the XP import floors gained four documented XP APIs;
+   `InterlockedAdd64` -> portable `sd_atomic_*`; Vista-only `GetTickCount64` -> `sd_tick_ms` in
+   tests) and the x64-analysis preset is green (build + Debug unit suite) after analyzer fixes in
+   `bn.c`, `profile_m2.c`, `secret.c` and several test files (details in m2-notes.md).
+
+### What is NOT done (pick up here)
+
+- **Pool increment 2 - striping (the next big rock).** Design is settled: grow `NCH` from 2 to 5
+  (primary meta/bulk + 3 member bulk channels); the pool transport exposes member channels as
+  streams with idx `1 + member` (2..4) through the existing `open_stream`/`write_stream` vtable
+  (caps already carry `SD_SFTP_TP_POOL`); wires already key replies by `w->ch`, so routing is a new
+  `member` decision in the emit path for `SD_SFTP_O_STRIPED` handles: unit `k = off / stripe_bytes`
+  goes to member `k mod live_members`, sub-handles open lazily per member with
+  `oflags & ~(CREAT|TRUNC|EXCL)`, `fstat/fsetstat/fsync/close` become barriers (wait for the
+  handle's member wires to drain, then run on the primary), member loss reissues in-flight reads on
+  the primary and completes writes with `SD_E_DISCONNECTED`/`maybe_executed = 1`/`session_ready = 1`.
+  Then the vfs-side striping policy (02 section 5.6: >= 8 MiB or >= 1 MiB sequential write,
+  never APPEND/directories) and the 1 GiB pool speed-up measurement.
+- **Pool member reconnect/backoff** (member refused 3x is abandoned for the generation; 500 ms
+  admission stagger) - increment 3.
+- **System proxy opt-in + TM-R10 tests** (`SD_PROXY_SYSTEM`, `allow_discovered_sspi`,
+  `AllowSystemProxySspi`): untested; needs either unit tests with a scripted WinHTTP environment or
+  a fixture row.
+- **sd_mount mapping + CLI** (original hand-off item 5): unchanged, half-done from before.
+- **Verification gate:** a fresh `tools\ci-local.ps1 -Clean` was started and stopped midway at this
+  session's end - run it as the first action; everything short of it is verified green (all presets
+  build+test incrementally, matrix runner green, sftp/ssh interop green). Then
+  `docs/dev/m2-acceptance.md` (does not exist yet) and the D38 review pass 1 package.
+
+### Environment notes for the next session
+
+- Fixtures were left running when the session ended: all matrix instances + proxies except
+  `squid`/`dante` (never run; sudo step not done). `wsl.exe -e sh tests/fixtures/matrix/fixture.sh status`
+  to check; restart with `ctl.ps1 start` / `fixture.sh start`. Never run `wsl --shutdown`.
+- Encrypted PPK fixtures exist (puttygen installed): `SD_IT_KEY_ED25519_PPK3_ARGON2ID`,
+  `SD_IT_KEY_RSA_PPK2_AES` - the PPK cross-check is covered by `interop.ssh_matrix_auth_keys`.
+- `build/run-row.sh` (untracked dev helper) runs one matrix sub-test for one row by hand:
+  `sh build/run-row.sh <row> <filter> [build-dir]`; `SD_IT_DBG=1` adds ssh log lines,
+  row env comes from `tests/fixtures/matrix/state/endpoints.env` via `SD_IT_ENV_FILE`.
+- The Windows->WSL localhost relay can wedge; rows/tests use `direct_host`. Killing sshd fixtures
+  mid-copy is only safe via the fixture ctl scripts.
+
 ## Boundary between the two tracks
 
 | Backend (this hand-off) | Frontend (other hand-off) |

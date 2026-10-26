@@ -174,3 +174,16 @@ admission stagger, member retry with backoff. The sd_sftp.h header states this s
 Tests: `m2_pool_admits_members` (3 members admitted, stats/events checked) and
 `m2_pool_interactive_stays_at_one` (a key passphrase answered by the "user" keeps the pool at 1)
 in `tests/unit/sd_sftp/test_ssh_interop.c` against the modern fixture.
+
+## x64-analysis brought back to green (backend, M2 order step 6 prep)
+
+The analysis preset had not run since the M2 area work landed. Library fixes: bn.c montmul zeroes
+its accumulator with memset (the analyzer loses the zeroing loop through the mac/adc out-params),
+profile_m2.c seeds the host pointer at declaration plus one _Analysis_assume_ where its colon
+aliasing is spurious, secret.c list_add uses a typed allocation with a per-element copy so the size
+model stays per entry. Test-side: tu_hex is annotated _Outptr_result_buffer_(return) (definition
+matches); the auth-flow harness pkt buffer shrank 70000 -> 8192 (auth messages are a few KB; the
+embedded 70 KB buffer put every test over the analysis stack budget) and the wycheproof GCM test
+uses a fixed 16-byte tag buffer; big harness structs (sd_profile locals, h2, the fake conns) are
+static. ci-local.ps1 excludes the new `matrix` CTest label: the srv_* tests need the per-row
+fixtures and run under tests/interop/run-matrix.ps1, whose matrix stayed green.
