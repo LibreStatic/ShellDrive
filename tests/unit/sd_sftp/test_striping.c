@@ -32,7 +32,8 @@
 #define TR_MAX   512
 #define HELD_MAX 8
 
-enum { TR_OPEN = 1, TR_OPENDIR, TR_READ, TR_WRITE, TR_FSTAT, TR_FSETSTAT, TR_FSYNC, TR_CLOSE };
+enum { TR_OPEN = 1, TR_OPENDIR, TR_READ, TR_WRITE, TR_FSTAT, TR_FSETSTAT, TR_FSYNC, TR_CLOSE,
+       TR_STATVFS };
 
 typedef struct tr_ev { uint32_t stream, type; uint64_t off; uint32_t len; char handle[8]; } tr_ev;
 typedef struct held_rq { uint32_t stream, id, kind; uint64_t off; uint32_t len; } held_rq;
@@ -48,6 +49,8 @@ typedef struct xsrv {
   volatile LONG fail_fsync_stream;       /* stream whose FSYNC replies FAILURE (0: none) */
   volatile LONG hold_fsync_stream;       /* stream whose FSYNC is held in flight (0: none) */
   volatile LONG fail_open_stream;        /* stream whose SFTP_OPEN replies FAILURE (0: none) */
+  volatile LONG fail_write_stream;       /* stream whose WRITEs reply FAILURE (0: none) */
+  volatile LONG statvfs_bavail;          /* bavail of the canned statvfs@openssh.com answer */
   uint8_t *wdata;                        /* WRITE mirror */
   uint64_t wlen;
 } xsrv;
@@ -249,6 +252,19 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
       else pk_status(f, id, SFTP_FX_OK, "");
       return;
     }
+    if (span_is(nm, "statvfs@openssh.com")) {
+      /* the refinement probe of a failed write (the path argument is ignored) */
+      LONG bavail = sv->statvfs_bavail;
+      sd_wr w;
+      tr_add(sv, stream, TR_STATVFS, NULL, 0, 0);
+      pk_begin(&w, SFTP_EXTENDED_REPLY, id);
+      sd_wr_u64(&w, 4096); sd_wr_u64(&w, 4096); sd_wr_u64(&w, 1024);
+      sd_wr_u64(&w, (uint64_t)bavail); sd_wr_u64(&w, (uint64_t)bavail);
+      sd_wr_u64(&w, 100); sd_wr_u64(&w, 50); sd_wr_u64(&w, 50);
+      sd_wr_u64(&w, 0); sd_wr_u64(&w, 0); sd_wr_u64(&w, 255);
+      fake_reply_wr(f, &w);
+      return;
+    }
     pk_status(f, id, SFTP_FX_OP_UNSUPPORTED, "unsupported in fake");
     return;
   }
@@ -335,6 +351,10 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
     if (sv->hold_write > 0) {
       InterlockedDecrement(&sv->hold_write);
       st_hold(sv, stream, id, TR_WRITE, off, (uint32_t)d.n);
+      return;
+    }
+    if (sv->fail_write_stream > 0 && sv->fail_write_stream == (LONG)stream) {
+      pk_status(f, id, SFTP_FX_FAILURE, "disk full");
       return;
     }
     if (off + d.n <= ST_SIZE && sv->wdata) memcpy(sv->wdata + off, d.p, d.n);
@@ -849,6 +869,62 @@ SD_TEST(striping_write_units_route_and_place_bytes)
       seen[s] = 1;
     }
   }
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(x);
+}
+
+/* A striped write answered FAILURE (disk full) refines like a plain write: a statvfs probe goes
+   out on the handle's channel and converts the error to SD_E_NO_SPACE when the filesystem is full.
+   Regression: the probe was queued into Q_STRIPE but the pump keyed on r->op alone, so the request
+   parked in the data path until its deadline and completed SD_E_TIMEOUT. */
+SD_TEST(striping_write_failure_refines_to_no_space)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_reqopt no_refine = { SD_SFTP_REQ_NO_REFINE, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  SD_REQUIRE(x != NULL && src != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+
+  /* unit 0 fails on the primary, units 1..2 succeed on the members; the server is full */
+  InterlockedExchange(&x->sv.fail_write_stream, 1);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_NO_SPACE);           /* the refined result, not SD_E_TIMEOUT */
+  SD_CHECK_EQ_U64(w.bytes, 0);                     /* nothing past the failed unit was committed */
+  SD_CHECK_STR(w.msg, "disk full");                /* the server's message survives the refine */
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_STATVFS, 1), 1);  /* one probe, on the handle's own channel */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  /* the probe does not convert when the filesystem has room */
+  InterlockedExchange(&x->sv.statvfs_bavail, 1);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 66 * ST_UNIT, src, 2 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_FAILURE);            /* unit 66 rides the primary and fails */
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_STATVFS, 1), 2);
+
+  /* SD_SFTP_REQ_NO_REFINE skips the probe entirely */
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 132 * ST_UNIT, src, ST_UNIT, &no_refine, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_FAILURE);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_STATVFS, 1), 2);  /* no third probe */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
 
   sd_sftp_file_release(f);
   waiter_free(&w);

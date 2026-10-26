@@ -48,6 +48,7 @@ SD_TEST_DECL(striping_units_route_by_member_in_order);
 SD_TEST_DECL(striping_sub_handles_open_lazily);
 SD_TEST_DECL(striping_refused_sub_open_falls_back_to_primary);
 SD_TEST_DECL(striping_write_units_route_and_place_bytes);
+SD_TEST_DECL(striping_write_failure_refines_to_no_space);
 SD_TEST_DECL(striping_write_parks_at_max_inflight_reqs);
 SD_TEST_DECL(striping_write_parks_at_obuf_high_water);
 SD_TEST_DECL(striping_write_parks_at_max_inflight_bytes);
@@ -113,6 +114,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(striping_sub_handles_open_lazily),
   SD_TEST_ENTRY(striping_refused_sub_open_falls_back_to_primary),
   SD_TEST_ENTRY(striping_write_units_route_and_place_bytes),
+  SD_TEST_ENTRY(striping_write_failure_refines_to_no_space),
   SD_TEST_ENTRY(striping_write_parks_at_max_inflight_reqs),
   SD_TEST_ENTRY(striping_write_parks_at_obuf_high_water),
   SD_TEST_ENTRY(striping_write_parks_at_max_inflight_bytes),

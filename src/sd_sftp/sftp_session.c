@@ -1044,6 +1044,17 @@ static int pump_striped_req(sd_sftp_session *s, sftp_req *r)
   }
   if (r->op != OP_READ && r->op != OP_WRITE) return emit_barrier(s, r);
   if (!f) { finish(s, r, SD_E_INTERNAL); return 1; }
+  if (r->phase != PH_MAIN) {
+    /* A refinement probe the data path queued after a FAILURE (a striped write's statvfs check,
+       like a plain write's): emit() handles probe phases like any other wire, on the handle's own
+       channel. Keying on r->op alone would park here forever - the data path has nothing left. */
+    sftp_chan *ch = &s->ch[f->ch];
+    if (!chan_live(s, ch)) return 0;
+    if (ch->inflight >= s->opt.max_inflight_reqs) return 0;
+    if (ch->obuf.len - ch->osent >= OBUF_HIGH) return 0;
+    emit(s, ch, r);
+    return 1;
+  }
   for (;;) {
     uint64_t off;
     uint32_t len, m;
