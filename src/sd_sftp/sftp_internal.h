@@ -104,7 +104,10 @@ typedef struct sftp_req {
 
 /* sftp_ssh.c -> session (I/O thread): an authentication prompt was raised during a reconnect. */
 void sftp_session_auth_prompt(sd_sftp_session *s);
-/* sftp_ssh.c -> session (primary I/O thread): a pool member settled; admitted=0 carries the reason. */
-void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason);
+/* sftp_ssh.c -> session (primary I/O thread): a pool member settled; admitted=0 carries the reason.
+   gen is the pool's per-member generation the event belongs to (0: the current session generation);
+   a drop whose gen is not the member's admitted generation is ignored (a stale posted event, or the
+   second report of a drop already handled - 01 §10.9). */
+void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason, uint32_t gen);
 
 #endif /* SD_SFTP_INTERNAL_H */

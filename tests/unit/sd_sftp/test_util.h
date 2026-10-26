@@ -42,6 +42,9 @@ typedef struct evlog {
   volatile LONG n;
   uint32_t ext; uint64_t max_read, max_write; uint32_t quirks; uint32_t uid; char home[256];
   uint32_t ext_count;
+  volatile LONG n_pool;         /* SD_SFTP_EV_POOL events */
+  volatile LONG n_pool_drop;    /* of those, the ones with a non-OK reason (a member was dropped) */
+  uint32_t pool_member, pool_conns; sd_err pool_reason;
 } evlog;
 void evlog_init(evlog *e);
 void evlog_free(evlog *e);

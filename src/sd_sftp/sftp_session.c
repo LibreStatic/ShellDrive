@@ -77,6 +77,7 @@ struct sd_sftp_session {
   sftp_chan ch[NCH];
   uint32_t nchan;                      /* channels in use this generation (1 or 2) */
   int member_ready[4];                 /* pool members 1..3 admitted (I/O thread; read under lock for info) */
+  uint32_t member_gen[4];              /* generation each member was admitted in; 0 when not admitted (I/O thread) */
   int bulk_settled, startup_done, in_attempt;
   int tp_opened, tp_close_called, finalized;   /* per connection attempt */
   sd_err lost_err; int lost_pending, lost_done;   /* lost_done: the current connection is dead */
@@ -247,6 +248,20 @@ static void file_unlink_free(sd_sftp_session *s, sd_sftp_file *f)
   sd_free(f);
 }
 
+/* The striping unit, normalised at striped-open time (01 §10.9): never larger than the smaller of
+   the negotiated READ/WRITE limits, so one unit cannot exceed what a single request may carry, and
+   never below the 512-byte floor the codec guarantees. A configured value above the limits is
+   clamped to exactly one chunk (a whole number of chunks). */
+static uint32_t stripe_unit_clamped(const sd_sftp_session *s, uint32_t want)
+{
+  uint64_t chunk = s->info.limits.max_read < s->info.limits.max_write
+                     ? s->info.limits.max_read : s->info.limits.max_write;
+  uint64_t u = want ? want : (1024u * 1024u);
+  if (chunk && u > chunk) u = chunk;
+  if (u < 512) u = 512;
+  return (uint32_t)u;
+}
+
 static sd_sftp_file *file_new(sd_sftp_session *s, const char *path, uint32_t oflags, int is_dir, int meta,
                               uint32_t ch, const uint8_t *h, uint32_t hlen)
 {
@@ -261,7 +276,7 @@ static sd_sftp_file *file_new(sd_sftp_session *s, const char *path, uint32_t ofl
   f->meta = meta;
   f->generation = s->generation;
   f->ch = ch;
-  f->stripe_bytes = s->opt.stripe_bytes ? s->opt.stripe_bytes : (1024u * 1024u);
+  f->stripe_bytes = stripe_unit_clamped(s, s->opt.stripe_bytes);
   f->striped = (oflags & SD_SFTP_O_STRIPED) && !is_dir && !meta && !(oflags & SD_SFTP_O_APPEND);
   f->route_map[0] = 0;
   f->route_n = 1;
@@ -1454,6 +1469,7 @@ static void go_ready(sd_sftp_session *s)
   s->info.ssh = neg;
   sd_mutex_unlock(&s->lock);
   memset(s->member_ready, 0, sizeof(s->member_ready));   /* members re-admit after READY, 01 §10.9 */
+  memset(s->member_gen, 0, sizeof(s->member_gen));       /* a stale member event is ignored after this */
   {
     uint32_t i;
     for (i = 2; i < NCH; i++) {                          /* previous generation's member streams */
@@ -1723,6 +1739,7 @@ static void open_handle_reply(sd_sftp_session *s, sftp_req *r, const sftp_wire *
       memset(r->f->sub_state, 0, sizeof(r->f->sub_state));
       r->f->route_n = 1;
       r->f->route_map[0] = 0;
+      r->f->stripe_bytes = stripe_unit_clamped(s, s->opt.stripe_bytes);   /* limits may have moved */
     }
     InterlockedExchange(&r->f->stale, 0);
     if (r->f->is_dir) { r->c.u.open.file = r->f; finish(s, r, SD_OK); return; }
@@ -2195,7 +2212,7 @@ static void sink_on_open(void *ctx, sd_err err)
     ch->ss = SS_NONE;
     if (ch->idx == 1) degrade_bulk(s, err);     /* e.g. MaxSessions 1: continue with one channel */
     else if (ch->idx >= 2)                     /* member stream: not a session loss */
-      sftp_session_pool_change(s, ch->idx - 1, 0, err);
+      sftp_session_pool_change(s, ch->idx - 1, 0, err, s->member_gen[ch->idx - 1]);
     else if (!s->lost_done) lose(s, err);
     stream_gone(s);
     return;
@@ -2319,7 +2336,8 @@ static void sink_on_closed(void *ctx, sd_err why)
   if (s->finalized) return;
   if (ch->idx >= 2) {                             /* a pool member died: the session stays READY */
     sftp_session_pool_change(s, ch->idx - 1, 0,
-                             why != SD_OK && why != SD_E_SHUTDOWN ? why : SD_E_DISCONNECTED);
+                             why != SD_OK && why != SD_E_SHUTDOWN ? why : SD_E_DISCONNECTED,
+                             s->member_gen[ch->idx - 1]);
     stream_gone(s);
     return;
   }
@@ -2449,13 +2467,20 @@ static void member_lost(sd_sftp_session *s, uint32_t member)
 }
 
 /* 01 §10.9: a pool member settled (I/O thread). admitted: 1 the member is READY, 0 it was dropped
-   (reason tells why). The pool count includes the primary. EV_POOL is informational only. */
-void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason)
+   (reason tells why). The pool count includes the primary. EV_POOL is informational only.
+   gen identifies the member's stream instance: an admission records it, a drop is acted on only when
+   it matches the recorded one, so a drop reported twice (the channel's on_closed and the pool's
+   decision) and a posted event that outlived a generation reset are both ignored. gen 0 means "the
+   current session generation". */
+void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason, uint32_t gen)
 {
   sd_sftp_event e;
   uint32_t count = 1, i;
   if (!s || member == 0 || member > NMB) return;
+  if (gen == 0) gen = s->generation;
   if (!admitted) {
+    if (gen != s->member_gen[member]) return;      /* stale, or already dropped: no second walk */
+    s->member_gen[member] = 0;
     member_lost(s, member);
   } else if ((sd_sftp_state)s->state == SD_SFTP_ST_READY && !s->lost_done && !s->close_requested &&
              s->ch[1 + member].ss == SS_NONE && s->tp.open_stream) {
@@ -2463,9 +2488,11 @@ void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted,
     ch->ss = SS_OPENING;
     if (s->tp.open_stream(s->tp.ctx, 1 + member, &k_sink, ch) == SD_OK) {
       s->member_ready[member] = 1;              /* the stream opens asynchronously */
+      s->member_gen[member] = gen;
     } else {
       ch->ss = SS_NONE;
       s->member_ready[member] = 0;
+      s->member_gen[member] = 0;
       reason = SD_E_DISCONNECTED;
       admitted = 0;
     }

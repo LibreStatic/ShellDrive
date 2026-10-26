@@ -373,6 +373,9 @@ typedef struct pool_member {
   pool_tp *p;
   uint32_t idx;                        /* 1..3 */
   volatile LONG state;                 /* PM_* */
+  volatile LONG gen;                   /* per-member generation: bumped on every session generation
+                                          reset; an event posted for an older one is ignored */
+  volatile LONG posted_gen;            /* generation of the pending member_stream_closed post */
   sd_ssh_conn *conn;
   sd_ssh_channel *ch;
   sd_err err;                          /* why a member was dropped */
@@ -414,9 +417,13 @@ static void member_teardown(pool_member *m);
 static void member_q_reset(pool_member *m);
 static void member_stream_closed(void *arg);
 
+/* The member's current generation (atomic read: written by the primary thread on a reset, read by
+   the member thread when it stamps an event). */
+static uint32_t member_gen(pool_member *m) { return (uint32_t)InterlockedCompareExchange(&m->gen, 0, 0); }
+
 /* ---- primary-thread helpers (posted decisions) ---- */
 
-typedef struct pool_decide { pool_tp *p; uint32_t idx; int admitted; sd_err err; char fp[128]; char rp[POOL_REALPATH_CAP]; } pool_decide;
+typedef struct pool_decide { pool_tp *p; uint32_t idx; int admitted; sd_err err; uint32_t gen; char fp[128]; char rp[POOL_REALPATH_CAP]; } pool_decide;
 
 static void pool_start_next(pool_tp *p);
 
@@ -426,7 +433,7 @@ static void pool_decided(void *arg)
   pool_tp *p = d->p;
   pool_member *m = &p->m[d->idx - 1];
   ssh_tp *t = p->primary;
-  if (m->state != PM_CHECKING) { sd_free(d); return; }    /* closed meanwhile */
+  if (m->state != PM_CHECKING || d->gen != member_gen(m)) { sd_free(d); return; }   /* closed, or a stale generation */
   if (d->admitted) {
     /* same server as the primary? (DNS round robin / load balancer, 01 §10.9) */
     if (!d->fp[0] || !t->have_neg || strcmp(d->fp, t->hostkey_fp) != 0) {
@@ -445,11 +452,11 @@ static void pool_decided(void *arg)
     m->state = PM_DROPPED;
     m->err = d->err;
     sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u dropped: %s", d->idx, sd_err_name(d->err));
-    sftp_session_pool_change(p->session, d->idx, 0, d->err);
+    sftp_session_pool_change(p->session, d->idx, 0, d->err, d->gen);
   } else {
     m->state = PM_READY;
     sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u ready", d->idx);
-    sftp_session_pool_change(p->session, d->idx, 1, SD_OK);
+    sftp_session_pool_change(p->session, d->idx, 1, SD_OK, d->gen);
   }
   sd_free(d);
   pool_start_next(p);                  /* one at a time, no bursts (01 §10.9) */
@@ -468,7 +475,7 @@ static void pool_start_next(pool_tp *p)
     m->err = SD_OK;
     if (sd_ssh_conn_connect(m->conn, member_on_connected, m) != SD_OK) {
       m->state = PM_DROPPED;           /* conn_create problems are structural: do not retry */
-      sftp_session_pool_change(p->session, i + 1, 0, SD_E_INTERNAL);
+      sftp_session_pool_change(p->session, i + 1, 0, SD_E_INTERNAL, member_gen(m));
       continue;
     }
     return;
@@ -488,6 +495,7 @@ static void member_decide(pool_member *m, int admitted, sd_err err)
   d->idx = m->idx;
   d->admitted = admitted;
   d->err = err;
+  d->gen = member_gen(m);              /* the generation this decision belongs to */
   memcpy(d->fp, m->fp, sizeof(d->fp));
   memcpy(d->rp, m->realpath, sizeof(d->rp));
   if (sd_ssh_conn_post(m->p->primary->conn, pool_decided, d) != SD_OK) {
@@ -770,10 +778,14 @@ static sd_err pool_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_
   return SD_OK;
 }
 
-/* Member thread: the channel died while it carried a session stream. */
+/* Member thread: the channel died while it carried a session stream. The member's generation is
+   stamped on the member when the event is posted; a delivery after a generation reset (the member
+   was recycled) is dropped. */
 static void member_stream_closed(void *arg)
 {
   pool_member *m = (pool_member *)arg;
+  if ((uint32_t)InterlockedCompareExchange(&m->posted_gen, 0, 0) != member_gen(m))
+    return;                            /* stale: the member was reset and re-admitted meanwhile */
   m->sink_active = 0;
   if (m->sink) m->sink->on_closed(m->sink_ctx, m->err != SD_OK ? m->err : SD_E_DISCONNECTED);
 }
@@ -848,6 +860,7 @@ static void member_ch_on_closed(void *ctx, sd_err why)
     /* a session stream lived here: report it on the primary thread, which calls member_lost */
     m->err = why != SD_OK ? why : SD_E_DISCONNECTED;
     m->state = PM_DROPPED;
+    InterlockedExchange(&m->posted_gen, (LONG)member_gen(m));   /* stamped when the event is posted */
     InterlockedExchange(&m->sink_active, 0);
     (void)sd_ssh_conn_post(m->p->primary->conn, member_stream_closed, m);
     return;
@@ -917,6 +930,7 @@ static void pool_notify_ready(void *ctx, const char *realpath_dot)
   for (i = 0; i < 3; i++) {
     /* a new generation: every member admits again (the primary reconnect dropped them) */
     pool_member *m = &p->m[i];
+    InterlockedIncrement(&m->gen);    /* invalidate events posted for the previous generation */
     if (m->state != PM_IDLE) {
       m->state = PM_IDLE;             /* before the teardown: its on_closed is then a no-op */
       InterlockedExchange(&m->sink_active, 0);

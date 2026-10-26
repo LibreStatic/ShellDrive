@@ -229,7 +229,8 @@ static void fake_close_all(fake_srv *f, sd_err why)
 static void ft_close(void *ctx) { fake_close_all((fake_srv *)ctx, SD_E_SHUTDOWN); }
 
 /* The SSH pool's notify_ready() admits members once the primary is READY; the fake calls
-   sftp_session_pool_change() with the session fake_set_session() handed over. */
+   sftp_session_pool_change() with the session fake_set_session() handed over. Members are stamped
+   with the session generation, like the SSH pool stamps the member's own generation (01 §10.9). */
 static void ft_notify_ready(void *ctx, const char *realpath_dot)
 {
   fake_srv *f = (fake_srv *)ctx;
@@ -238,7 +239,8 @@ static void ft_notify_ready(void *ctx, const char *realpath_dot)
   if (!f->pool || !f->session) return;
   for (m = 1; m < f->pool_target && m <= FK_MEMBERS; m++) {
     InterlockedOr(&f->admitted, 1L << (m - 1));
-    sftp_session_pool_change((sd_sftp_session *)f->session, m, 1, SD_OK);
+    sftp_session_pool_change((sd_sftp_session *)f->session, m, 1, SD_OK,
+                             sd_sftp_session_generation((sd_sftp_session *)f->session));
   }
 }
 
@@ -306,6 +308,26 @@ void fake_set_pool(fake_srv *f, uint32_t connections)
   f->pool_target = connections < 1 ? 1 : (connections > 1 + FK_MEMBERS ? 1 + FK_MEMBERS : connections);
 }
 void fake_set_session(fake_srv *f, sd_sftp_session *s) { f->session = s; }
+
+/* Plays the pool's decision path: report a member settlement (or a duplicate/stale drop) on the
+   session's I/O thread with an explicit generation, as sftp_ssh.c does from pool_decided(). */
+typedef struct fake_pool_ev { fake_srv *f; uint32_t member; int admitted; sd_err reason; uint32_t gen; } fake_pool_ev;
+
+static void fake_pool_ev_run(void *arg)
+{
+  fake_pool_ev *e = (fake_pool_ev *)arg;
+  if (e->f->session)
+    sftp_session_pool_change((sd_sftp_session *)e->f->session, e->member, e->admitted, e->reason, e->gen);
+  sd_free(e);
+}
+
+void fake_pool_change(fake_srv *f, uint32_t member, int admitted, sd_err reason, uint32_t gen)
+{
+  fake_pool_ev *e = (fake_pool_ev *)sd_alloc(sizeof(*e));
+  if (!e) return;
+  e->f = f; e->member = member; e->admitted = admitted; e->reason = reason; e->gen = gen;
+  if (tl_post(f->loop, fake_pool_ev_run, e) != SD_OK) sd_free(e);
+}
 void fake_drop_member(fake_srv *f, uint32_t member)
 {
   if (member < 1 || member > FK_MEMBERS) return;

@@ -49,6 +49,9 @@ void      fake_reply_on(fake_srv *f, uint32_t idx, const void *bytes, size_t n);
  * fake_transport(). member_stats reports the admitted members in out[member-1], like the SSH pool. */
 void      fake_set_pool(fake_srv *f, uint32_t connections);
 void      fake_set_session(fake_srv *f, sd_sftp_session *s);
+/* Plays the pool's decision path (sftp_ssh.c pool_decided) on the session's I/O thread with an
+   explicit member generation, so tests can post a duplicate or stale member drop. */
+void      fake_pool_change(fake_srv *f, uint32_t member, int admitted, sd_err reason, uint32_t gen);
 void      fake_drop_member(fake_srv *f, uint32_t member);       /* the member channel dies alone */
 uint32_t  fake_stream_packets(fake_srv *f, uint32_t idx);       /* client packets seen on a stream */
 

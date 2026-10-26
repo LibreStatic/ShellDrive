@@ -22,6 +22,7 @@
 
 #define ST_UNIT  4096u
 #define ST_CHUNK 32768u
+#define ST_LIMIT ST_CHUNK            /* the fake's negotiated max_read/max_write */
 #define ST_SIZE  (4u * 1024u * 1024u)
 #define TR_MAX   512
 #define HELD_MAX 8
@@ -349,7 +350,7 @@ static int xf_settle(xf *x)
   return ok;
 }
 
-static xf *xf_new(uint32_t connections)
+static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
 {
   xf *x = (xf *)sd_calloc(1, sizeof(*x));
   sd_sftp_transport t;
@@ -362,8 +363,11 @@ static xf *xf_new(uint32_t connections)
   if (!x->sv.wdata || !x->sv.f) return NULL;
   sd_sftp_options_init(&o);
   o.connections = connections;
-  o.stripe_bytes = ST_UNIT;
+  o.stripe_bytes = stripe_bytes;
   o.default_timeout_ms = 5000;
+  o.reconnect.initial_delay_ms = 20;           /* a fast reconnect for the generation-reset tests */
+  o.reconnect.max_delay_ms = 100;
+  fake_set_caps(x->sv.f, caps);
   fake_set_pool(x->sv.f, connections);
   fake_transport(x->sv.f, &t);
   if (sd_sftp_session_create_transport(&t, &o, evlog_cb, &x->ev, &x->s) != SD_OK) {
@@ -377,6 +381,8 @@ static xf *xf_new(uint32_t connections)
   if (!xf_settle(x)) return NULL;
   return x;
 }
+
+static xf *xf_new(uint32_t connections) { return xf_new_ex(connections, 0, ST_UNIT); }
 
 /* Frees the fixture; the caller frees the struct itself (as in test_session.c). */
 static void xf_stop(xf *x)
@@ -432,6 +438,15 @@ static void drop_member_wait(fake_srv *f, uint32_t member)
   sd_event_reset(&g_probe);
   fake_drop_member(f, member);
   fake_run(f, st_probe_mark, NULL);
+  (void)sd_event_wait(&g_probe, 3000);
+}
+
+/* Blocks until every already-posted item of the fake's I/O thread ran (the probe is queued last). */
+static void xf_drain(xf *x)
+{
+  if (!g_probe_ready) { (void)sd_event_init(&g_probe, 1, 0); g_probe_ready = 1; }
+  sd_event_reset(&g_probe);
+  fake_run(x->sv.f, st_probe_mark, NULL);
   (void)sd_event_wait(&g_probe, 3000);
 }
 
@@ -985,6 +1000,156 @@ SD_TEST(striping_transport_without_members_never_stripes)
     SD_CHECK(sd_sftp_session_stats(x->s, &st) == SD_OK);
     SD_CHECK_EQ_INT(st.conn_count, 1);
   }
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(buf);
+  sd_free(x);
+}
+
+/* ---- life cycle: duplicate and stale member events (01 §10.9) ---- */
+
+static int wait_gen_ready(xf *x, uint32_t gen, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  for (;;) {
+    if (sd_sftp_session_generation(x->s) >= gen &&
+        sd_sftp_session_state(x->s) == SD_SFTP_ST_READY) return 1;
+    if (sd_tick_ms() >= end) return 0;
+    Sleep(5);
+  }
+}
+
+static int wait_connections(xf *x, uint32_t want, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  sd_sftp_stats st;
+  for (;;) {
+    if (sd_sftp_session_stats(x->s, &st) == SD_OK && st.conn_count >= want) return 1;
+    if (sd_tick_ms() >= end) return 0;
+    Sleep(5);
+  }
+}
+
+/* A member drop reaches the session twice - the channel's on_closed and the pool's decision. The
+   second report must neither emit a second EV_POOL nor walk member_lost again. */
+SD_TEST(striping_member_drop_reported_twice_acts_once)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && buf != NULL);
+  SD_CHECK_EQ_INT(x->ev.n_pool_drop, 0);
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+
+  /* one unit per member is in flight, so member_lost has a read to reissue on the primary */
+  InterlockedExchange(&x->sv.hold_read, 3);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, buf, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(wait_held(x, 3, 5000));
+  InterlockedExchange(&x->sv.hold_read, 0);
+
+  /* first report: the channel's on_closed (member 1 dies mid-flight) */
+  drop_member_wait(x->sv.f, 1);
+  SD_CHECK_EQ_INT(x->ev.n_pool_drop, 1);
+  /* second report: the pool's decision, for the same admitted generation */
+  fake_pool_change(x->sv.f, 1, 0, SD_E_DISCONNECTED, sd_sftp_session_generation(x->s));
+  xf_drain(x);
+  SD_CHECK_EQ_INT(x->ev.n_pool_drop, 1);           /* still exactly one drop event */
+
+  fake_run(x->sv.f, st_release_held, &x->sv);      /* the primary's and member 2's replies */
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 3 * ST_UNIT);
+  for (i = 0; i < (int)(3 * ST_UNIT) && ok; i++) ok = buf[i] == pat((uint64_t)i);
+  SD_CHECK(ok);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 0), 4);     /* the three units plus one reissue (not two) */
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 2, ST_UNIT) != NULL);   /* first attempt on member 1 */
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 1, ST_UNIT) != NULL);   /* re-issued once on the primary */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(buf);
+  sd_free(x);
+}
+
+/* A member event posted before a generation reset must not act on the freshly admitted member: its
+   generation no longer matches the one the session recorded at (re-)admission. */
+SD_TEST(striping_stale_member_event_after_generation_reset_is_ignored)
+{
+  xf *x = xf_new_ex(3, SD_SFTP_TP_REOPEN, ST_UNIT);
+  sd_sftp_file *f;
+  sd_sftp_stats st;
+  uint32_t gen0;
+  LONG drops_after_reset;
+  SD_REQUIRE(x != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  SD_REQUIRE(wait_connections(x, 3, 5000));
+
+  gen0 = sd_sftp_session_generation(x->s);         /* the generation the members were admitted in */
+  /* hard drop of the primary: the session reconnects, the generation advances and the members
+     re-admit (their streams are reset and opened again) */
+  fake_hangup(x->sv.f);
+  SD_REQUIRE(wait_gen_ready(x, gen0 + 1, 5000));
+  SD_REQUIRE(wait_connections(x, 3, 5000));
+  drops_after_reset = x->ev.n_pool_drop;
+
+  /* the stale drop carries the pre-reset generation: it must be dropped */
+  fake_pool_change(x->sv.f, 1, 0, SD_E_DISCONNECTED, gen0);
+  xf_drain(x);
+  SD_CHECK_EQ_INT(x->ev.n_pool_drop, drops_after_reset);   /* no new drop event */
+  SD_CHECK(sd_sftp_session_stats(x->s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 3);                       /* the fresh member survived */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  sd_sftp_file_release(f);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* ---- stripe_bytes limits (risk 5) ---- */
+
+SD_TEST(striping_stripe_unit_clamped_to_negotiated_limits)
+{
+  /* the requested 256 KiB exceeds the server's negotiated 32 KiB max_read/max_write, so it is
+     clamped to one chunk: units land on the members instead of staying on the primary */
+  xf *x = xf_new_ex(3, 0, 256u * 1024u);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *buf = (uint8_t *)sd_alloc(4 * ST_LIMIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && buf != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, buf, 4 * ST_LIMIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 4 * ST_LIMIT);
+  for (i = 0; i < (int)(4 * ST_LIMIT) && ok; i++) ok = buf[i] == pat((uint64_t)i);
+  SD_CHECK(ok);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 0), 4);     /* four chunk-sized wires */
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 2, ST_LIMIT) != NULL);   /* unit 1 went to member 1, not the primary */
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 3, 2 * ST_LIMIT) != NULL);
+  for (i = 0; i < (int)n; i++)
+    if (ev[i].type == TR_READ) SD_CHECK(ev[i].len <= ST_LIMIT);
+
   sd_sftp_file_release(f);
   waiter_free(&w);
   xf_stop(x);
