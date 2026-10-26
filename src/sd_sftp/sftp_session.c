@@ -882,6 +882,9 @@ static int start_sub_open(sd_sftp_session *s, sd_sftp_file *f, uint32_t m)
   r->target_ch = 1 + m;
   r->deadline = sd_tick_ms() + s->opt.default_timeout_ms;
   sd_sftp_file_addref(f);
+  /* This request goes out through route_submitted() like a caller's one, so it must be counted
+     here: deliver() decrements s->live exactly once per request (01 §10.5). */
+  InterlockedIncrement(&s->live);
   route_submitted(s, r);                /* already on the I/O thread */
   return 1;
 }
