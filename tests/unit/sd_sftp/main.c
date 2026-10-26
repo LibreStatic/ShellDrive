@@ -66,6 +66,9 @@ SD_TEST_DECL(striping_transport_without_members_never_stripes);
 SD_TEST_DECL(striping_member_drop_reported_twice_acts_once);
 SD_TEST_DECL(striping_stale_member_event_after_generation_reset_is_ignored);
 SD_TEST_DECL(striping_stripe_unit_clamped_to_negotiated_limits);
+SD_TEST_DECL(striping_barrier_fstat_status_ok_is_protocol_violation);
+SD_TEST_DECL(striping_short_read_reissues_the_missing_range);
+SD_TEST_DECL(striping_lost_session_drains_the_striped_queue);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(proto_status_mapping),
@@ -132,6 +135,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(striping_member_drop_reported_twice_acts_once),
   SD_TEST_ENTRY(striping_stale_member_event_after_generation_reset_is_ignored),
   SD_TEST_ENTRY(striping_stripe_unit_clamped_to_negotiated_limits),
+  SD_TEST_ENTRY(striping_barrier_fstat_status_ok_is_protocol_violation),
+  SD_TEST_ENTRY(striping_short_read_reissues_the_missing_range),
+  SD_TEST_ENTRY(striping_lost_session_drains_the_striped_queue),
 };
 
 int main(int argc, char **argv)

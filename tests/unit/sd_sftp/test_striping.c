@@ -13,7 +13,9 @@
  * SD_E_DISCONNECTED / maybe_executed / session_ready while the session stays READY - including a
  * write that fails on the member's stream before the drop report has run; the route table is
  * recomputed at the next barrier; plain, APPEND, CLASS_META and directory handles never touch a
- * member stream. */
+ * member stream; a barrier wire that expects ATTRS rejects a STATUS/FX_OK reply; a member answering
+ * a READ short reissues the missing range on the same member; a striped request parked in the
+ * striped queue is drained when the session is lost. */
 #include <stdio.h>
 #include <string.h>
 
@@ -29,6 +31,7 @@
 #define ST_CHUNK 32768u
 #define ST_LIMIT ST_CHUNK            /* the fake's negotiated max_read/max_write */
 #define ST_SIZE  (4u * 1024u * 1024u)
+#define SHORT_BY 96u                 /* bytes the short-read READ at short_read_off is answered short */
 #define TR_MAX   512
 #define HELD_MAX 8
 
@@ -51,6 +54,8 @@ typedef struct xsrv {
   volatile LONG fail_open_stream;        /* stream whose SFTP_OPEN replies FAILURE (0: none) */
   volatile LONG fail_write_stream;       /* stream whose WRITEs reply FAILURE (0: none) */
   volatile LONG statvfs_bavail;          /* bavail of the canned statvfs@openssh.com answer */
+  volatile LONG fstat_status_ok;         /* FSTAT replies STATUS/FX_OK instead of ATTRS (barrier check) */
+  volatile LONG short_read_off;          /* the READ at this offset is answered SHORT_BY bytes short */
   uint8_t *wdata;                        /* WRITE mirror */
   uint64_t wlen;
 } xsrv;
@@ -308,6 +313,7 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
   case SFTP_FSTAT: {
     sd_span h = sd_rd_string(&rd, 256);
     tr_add_span(sv, stream, TR_FSTAT, h, 0, 0);
+    if (sv->fstat_status_ok) { pk_status(f, id, SFTP_FX_OK, ""); return; }
     st_attrs(sv, id, 0100644, ST_SIZE);
     return;
   }
@@ -337,6 +343,7 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
     }
     if (off >= ST_SIZE) { pk_status(f, id, SFTP_FX_EOF, "EOF"); return; }
     if (len > ST_SIZE - off) len = (uint32_t)(ST_SIZE - off);
+    if (sv->short_read_off > 0 && off == (uint64_t)sv->short_read_off) len -= SHORT_BY;
     pk_begin(&w, SFTP_DATA, id);
     sd_wr_u32(&w, len);
     for (k = 0; k < len; k++) sd_wr_u8(&w, pat(off + k));
@@ -1691,5 +1698,115 @@ SD_TEST(striping_stripe_unit_clamped_to_negotiated_limits)
   waiter_free(&w);
   xf_stop(x);
   sd_free(buf);
+  sd_free(x);
+}
+
+/* ---- barrier protocol, short reads and the striped queue at a loss ---- */
+
+/* A barrier wire that expects ATTRS must reject a STATUS/FX_OK reply the way the plain path does
+   (reply()): the violation loses the session with reason SD_E_PROTOCOL instead of completing the
+   fstat with zeroed attrs. */
+SD_TEST(striping_barrier_fstat_status_ok_is_protocol_violation)
+{
+  xf *x = xf_new(1);                     /* no members needed: the barrier runs on the primary */
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  LONG i;
+  int seen = 0;
+  SD_REQUIRE(x != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  InterlockedExchange(&x->sv.fstat_status_ok, 1);
+  waiter_reset(&w, W_STAT);
+  SD_REQUIRE(sd_sftp_fstat(f, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_DISCONNECTED);       /* not SD_OK with zeroed attrs */
+  SD_CHECK_EQ_INT(w.maybe_executed, 1);            /* the barrier had been sent */
+  for (i = 0; i < x->ev.n && !seen; i++)
+    if (x->ev.states[i] == SD_SFTP_ST_DISCONNECTED) {
+      SD_CHECK_EQ_INT(x->ev.reasons[i], SD_E_PROTOCOL);
+      seen = 1;
+    }
+  SD_CHECK(seen);
+  (void)sd_event_wait(&x->ev.ended, 5000);         /* no REOPEN cap: the loop stops in FAILED */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_FAILED);
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* A member answering a READ with fewer bytes than requested (inside the wire, not EOF) must
+   reissue the missing range on the same member's route: the read completes with every byte. */
+SD_TEST(striping_short_read_reissues_the_missing_range)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n, i;
+  int ok = 1, reissued = 0;
+  SD_REQUIRE(x != NULL && buf != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  InterlockedExchange(&x->sv.short_read_off, (LONG)ST_UNIT);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, buf, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 3 * ST_UNIT);
+  for (i = 0; i < (int)(3 * ST_UNIT) && ok; i++) ok = buf[i] == pat((uint64_t)i);
+  SD_CHECK(ok);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 2, ST_UNIT) != NULL);          /* first attempt on member 1 */
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 2, ST_UNIT + 4000) != NULL);   /* the reissue range */
+  for (i = 0; i < n && !reissued; i++)
+    if (ev[i].type == TR_READ && ev[i].stream == 2 && ev[i].off == (uint64_t)ST_UNIT + 4000)
+      reissued = ev[i].len == (uint32_t)SHORT_BY;
+  SD_CHECK(reissued);                              /* the reissue asks exactly the missing bytes */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 2), 2);     /* attempt plus one reissue, nothing else */
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(buf);
+  sd_free(x);
+}
+
+/* A striped write parked in the striped queue (its three acks held, the member budget full) when
+   the session is lost: detach_all must drain the striped queue too, or the parked request lingers
+   until the next generation's schedule pass (and leaks when no such pass ever runs). */
+SD_TEST(striping_lost_session_drains_the_striped_queue)
+{
+  xf *x = xf_new_full(3, 0, ST_UNIT, ST_UNIT);     /* one unit per channel fills the inflight budget */
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(4 * ST_UNIT);
+  int i;
+  SD_REQUIRE(x != NULL && src != NULL);
+  for (i = 0; i < (int)(4 * ST_UNIT); i++) src[i] = pat((uint64_t)i + 3);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  InterlockedExchange(&x->sv.hold_write, 4);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 4 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(wait_held(x, 3, 5000));               /* units 0..2 are out, one per channel */
+  SD_REQUIRE(xf_settle(x));                        /* unit 3 is parked: the write stays queued */
+  fake_hangup(x->sv.f);                            /* session loss with the write still queued */
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(w.maybe_executed, 1);            /* unit 0 had been sent */
+  (void)sd_event_wait(&x->ev.ended, 5000);         /* no REOPEN cap: the loop stops in FAILED */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_FAILED);
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
   sd_free(x);
 }

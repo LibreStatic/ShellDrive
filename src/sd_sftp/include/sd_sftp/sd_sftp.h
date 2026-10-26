@@ -8,8 +8,11 @@
  * non-interactive (prompts on a member are cancelled, never shown); every member must present the
  * same host-key fingerprint and the same realpath(".") as the primary, otherwise admissions stop for
  * the generation. Members carry one bulk channel; EV_POOL events and sd_sftp_session_stats()
- * report them. Striping (SD_SFTP_O_STRIPED routing, barriers, per-member loss semantics) is not
- * implemented yet: the flag is ignored and data flows over the primary.
+ * report them. Striping (01 §10.9): sd_sftp_open() puts a handle opened with SD_SFTP_O_STRIPED on
+ * the pool and stripes its data across the member streams in stripe_bytes units (a per-handle route
+ * table, recomputed at every barrier); fstat/fsetstat/fsync/fstatvfs/close are barriers that wait
+ * for the handle's in-flight parts, and losing a member reissues its in-flight reads on the primary
+ * and completes its writes with SD_E_DISCONNECTED while the session stays READY.
  *
  * Reconnect contract (M1, 01 §10.4/§10.6; what sd_vfs relies on):
  * - The sd_sftp_session object survives reconnects. generation starts at 1 with the first READY and

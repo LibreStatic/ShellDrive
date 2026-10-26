@@ -1229,7 +1229,8 @@ static void detach_all(sd_sftp_session *s)
     sd_wr_reset(&ch->obuf);
     ch->osent = 0;
   }
-  for (c = 0; c < 2; c++) {
+  for (c = 0; c <= Q_STRIPE; c++) {    /* the striped queue too: a parked request would linger
+                                          until the next generation's schedule pass */
     sftp_req *r;
     while ((r = q_pop(s, c)) != NULL) {
       if (r->done) req_maybe_free(s, r);
@@ -1689,10 +1690,15 @@ static void keep_status(sftp_req *r, const sftp_status *st)
 static void striped_barrier_reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, sd_rd *rd)
 {
   sftp_status st;
-  SD_UNUSED(w);
   if (r->done) return;
   if (type == SFTP_STATUS) {
     if (parse_status(rd, &st) != 0) { lose(s, SD_E_PROTOCOL); return; }
+    /* FX_OK where the wire expected attrs or an extended reply is a protocol violation, exactly
+       like on the plain path (reply()): it must not complete the barrier with zeroed attrs. */
+    if (st.code == SFTP_FX_OK && (w->expect & (EXP_HANDLE | EXP_NAME | EXP_ATTRS | EXP_EXT))) {
+      lose(s, SD_E_PROTOCOL);
+      return;
+    }
     if (st.code != SFTP_FX_OK && r->cerr == SD_OK) {
       r->cerr = sd_sftp_status_to_err(st.code);
       keep_status(r, &st);
