@@ -2368,25 +2368,6 @@ void sftp_session_auth_prompt(sd_sftp_session *s)
     set_state(s, SD_SFTP_ST_AUTH_REQUIRED, SD_E_AUTH_REQUIRED);
 }
 
-/* Removes every wire of r (on every channel) without touching r. */
-static void req_drop_all_wires(sd_sftp_session *s, sftp_req *r)
-{
-  uint32_t b;
-  for (b = 0; b < WIRE_BUCKETS; b++) {
-    sftp_wire **pp = &s->wires[b];
-    while (*pp) {
-      sftp_wire *w = *pp;
-      if (w->r != r) { pp = &w->hnext; continue; }
-      *pp = w->hnext;
-      s->ch[w->ch].inflight--;
-      s->ch[w->ch].inflight_bytes -= w->bytes;
-      if (w->df) { w->df->data_wires--; w->df = NULL; }
-      r->wires--;
-      sd_free(w);
-    }
-  }
-}
-
 /* Adds a lost read range back to the request; the pump reissues it on the primary. */
 static void req_requeue_read(sd_sftp_session *s, sftp_req *r, uint64_t off, uint32_t len)
 {
@@ -2424,7 +2405,9 @@ static void member_lost(sd_sftp_session *s, uint32_t member)
         continue;
       }
       if (r->op == OP_WRITE && w->phase == PH_MAIN) {
-        req_drop_all_wires(s, r);
+        /* The whole write fails (the VFS resubmits it), but its wires on the live channels stay
+           in the table: their acks must be discarded as late replies when they arrive, not hit
+           "reply with unknown id" - stripping them here loses the session to SD_E_PROTOCOL. */
         sd_free(w);
         r->c.session_ready = 1;
         finish(s, r, SD_E_DISCONNECTED);
