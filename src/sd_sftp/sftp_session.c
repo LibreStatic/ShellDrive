@@ -879,7 +879,9 @@ static void sub_open_cb(void *ctx, const sd_sftp_completion *c)
 }
 
 /* Starts the OPEN of a sub-handle on member m (no CREAT/TRUNC/EXCL: the primary created the file).
-    Returns 0 when the request could not be created; the caller then routes to the primary. */
+    Returns 0 when the request could not be created; the unit then routes to the primary. A refusal
+    that arrives later (sub_open_cb) lands in SST_FAILED, which stripe_unit_member treats the same
+    way; the next barrier recomputes the route table without the member. */
 static int start_sub_open(sd_sftp_session *s, sd_sftp_file *f, uint32_t m)
 {
   sub_open *so;
@@ -902,6 +904,21 @@ static int start_sub_open(sd_sftp_session *s, sd_sftp_file *f, uint32_t m)
   InterlockedIncrement(&s->live);
   route_submitted(s, r);                /* already on the I/O thread */
   return 1;
+}
+
+#define STRIPE_WAIT UINT32_MAX
+
+/* The member that serves the unit at `off` right now: 0 the primary, 1..NMB a member, STRIPE_WAIT
+   when a sub-open of that member is still on the wire (pump again later). A member whose sub-handle
+   was refused (SST_FAILED, or the OPEN could not even be created) falls back to the primary instead
+   of stalling its units until the deadline; the next barrier recomputes the table without it. */
+static uint32_t stripe_unit_member(sd_sftp_session *s, sd_sftp_file *f, uint64_t off)
+{
+  uint32_t m = stripe_member(f, off);
+  if (!m || f->sub_state[m - 1] == SST_OPEN) return m;
+  if (f->sub_state[m - 1] == SST_NONE && start_sub_open(s, f, m)) return STRIPE_WAIT;
+  if (f->sub_state[m - 1] == SST_OPENING) return STRIPE_WAIT;
+  return 0;
 }
 
 static void stripe_release_subs(sd_sftp_file *f)
@@ -1037,11 +1054,8 @@ static int pump_striped_req(sd_sftp_session *s, sftp_req *r)
       unit_end = (off / f->stripe_bytes + 1) * f->stripe_bytes;
       if (off + len > unit_end) len = (uint32_t)(unit_end - off);
       if (off - r->off >= chunk_cutoff(r)) { r->reissue = g->next; sd_free(g); continue; }
-      m = stripe_member(f, off);
-      if (m && f->sub_state[m - 1] != SST_OPEN) {
-        if (f->sub_state[m - 1] == SST_NONE) start_sub_open(s, f, m);
-        return 0;
-      }
+      m = stripe_unit_member(s, f, off);
+      if (m == STRIPE_WAIT) return 0;
       if (!emit_piece(s, r, off, len, m)) return 0;
       if (len == g->len) { r->reissue = g->next; sd_free(g); }
       else { g->off += len; g->len -= len; }
@@ -1055,11 +1069,8 @@ static int pump_striped_req(sd_sftp_session *s, sftp_req *r)
       uint64_t unit_end = (off / f->stripe_bytes + 1) * f->stripe_bytes;
       if (off + len > unit_end) len = (uint32_t)(unit_end - off);
     }
-    m = stripe_member(f, off);
-    if (m && f->sub_state[m - 1] != SST_OPEN) {
-      if (f->sub_state[m - 1] == SST_NONE) start_sub_open(s, f, m);
-      return 0;
-    }
+    m = stripe_unit_member(s, f, off);
+    if (m == STRIPE_WAIT) return 0;
     if (!emit_piece(s, r, off, len, m)) return 0;
     r->emit_off += len;
     return 1;
@@ -1116,7 +1127,15 @@ static void flush(sd_sftp_session *s, sftp_chan *ch)
   while (ch->ss == SS_OPEN && !s->lost_pending && !s->lost_done && ch->osent < ch->obuf.len) {
     size_t acc = 0;
     sd_err e = tp_write(s, ch->idx, ch->obuf.p + ch->osent, ch->obuf.len - ch->osent, &acc);
-    if (e != SD_OK) { lose(s, e); return; }
+    if (e != SD_OK) {
+      /* A member stream dies through the pool path, not the session (01 §10.9): between the member
+         thread marking it dropped and the posted member_stream_closed running here, this channel
+         still shows SS_OPEN and its pending bytes fail with the member's error. Leave them queued;
+         the gen-guarded drop report reclaims the channel, its wires and its obuf. Killing the
+         session here would turn one lost member into a full disconnect. */
+      if (ch->idx < 2) lose(s, e);
+      return;
+    }
     if (acc > ch->obuf.len - ch->osent) acc = ch->obuf.len - ch->osent;
     ch->osent += acc;
     sd_atomic_add64(&s->tx_total, (LONG64)acc);

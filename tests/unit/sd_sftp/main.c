@@ -46,11 +46,18 @@ SD_TEST_DECL(reconnect_ready_info_reread_and_reopen_gone);
 SD_TEST_DECL(reconnect_close_during_backoff);
 SD_TEST_DECL(striping_units_route_by_member_in_order);
 SD_TEST_DECL(striping_sub_handles_open_lazily);
+SD_TEST_DECL(striping_refused_sub_open_falls_back_to_primary);
+SD_TEST_DECL(striping_write_units_route_and_place_bytes);
+SD_TEST_DECL(striping_write_parks_at_max_inflight_reqs);
+SD_TEST_DECL(striping_write_parks_at_obuf_high_water);
+SD_TEST_DECL(striping_write_parks_at_max_inflight_bytes);
 SD_TEST_DECL(striping_barrier_waits_for_data_wires);
 SD_TEST_DECL(striping_fsync_settles_on_every_sub_handle);
 SD_TEST_DECL(striping_close_settles_on_every_sub_handle);
 SD_TEST_DECL(striping_member_loss_reissues_reads_on_primary);
 SD_TEST_DECL(striping_member_loss_fails_writes_with_session_ready);
+SD_TEST_DECL(striping_member_write_error_in_drop_window_keeps_ready);
+SD_TEST_DECL(striping_member_drop_during_barrier_counts_it_done);
 SD_TEST_DECL(striping_route_recomputed_after_member_loss);
 SD_TEST_DECL(striping_plain_and_append_handles_stay_off_members);
 SD_TEST_DECL(striping_meta_and_directory_handles_stay_off_members);
@@ -104,11 +111,18 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(reconnect_close_during_backoff),
   SD_TEST_ENTRY(striping_units_route_by_member_in_order),
   SD_TEST_ENTRY(striping_sub_handles_open_lazily),
+  SD_TEST_ENTRY(striping_refused_sub_open_falls_back_to_primary),
+  SD_TEST_ENTRY(striping_write_units_route_and_place_bytes),
+  SD_TEST_ENTRY(striping_write_parks_at_max_inflight_reqs),
+  SD_TEST_ENTRY(striping_write_parks_at_obuf_high_water),
+  SD_TEST_ENTRY(striping_write_parks_at_max_inflight_bytes),
   SD_TEST_ENTRY(striping_barrier_waits_for_data_wires),
   SD_TEST_ENTRY(striping_fsync_settles_on_every_sub_handle),
   SD_TEST_ENTRY(striping_close_settles_on_every_sub_handle),
   SD_TEST_ENTRY(striping_member_loss_reissues_reads_on_primary),
   SD_TEST_ENTRY(striping_member_loss_fails_writes_with_session_ready),
+  SD_TEST_ENTRY(striping_member_write_error_in_drop_window_keeps_ready),
+  SD_TEST_ENTRY(striping_member_drop_during_barrier_counts_it_done),
   SD_TEST_ENTRY(striping_route_recomputed_after_member_loss),
   SD_TEST_ENTRY(striping_plain_and_append_handles_stay_off_members),
   SD_TEST_ENTRY(striping_meta_and_directory_handles_stay_off_members),

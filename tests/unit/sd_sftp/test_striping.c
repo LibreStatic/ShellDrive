@@ -2,13 +2,18 @@
  * network). The fake projects members 1..3 onto streams 2..4, so a session with connections = 3
  * admits two members and a handle opened with SD_SFTP_O_STRIPED routes its stripe units over them.
  *
- * Covered: unit k goes to route_map[k % route_n] in submission order and sub-handles open lazily;
- * FSTAT/FSETSTAT barriers wait for the handle's outstanding data wires and run on the primary
- * handle, FSYNC/CLOSE wait the same way and also settle on every open sub-handle (the first error
- * wins); a member lost mid-flight gets its reads re-issued on the primary (with the right bytes) and
- * its writes completed with SD_E_DISCONNECTED / maybe_executed / session_ready while the session
- * stays READY; the route table is recomputed at the next barrier; plain, APPEND, CLASS_META and
- * directory handles never touch a member stream. */
+ * Covered: unit k goes to route_map[k % route_n] in submission order and sub-handles open lazily
+ * (read and write routing with byte placement through each member's own sub-handle); a member whose
+ * sub-handle OPEN is refused falls back to the primary at once; FSTAT/FSETSTAT barriers wait for
+ * the handle's outstanding data wires and run on the primary handle, FSYNC/CLOSE wait the same way
+ * and also settle on every open sub-handle (the first error wins), and a member dying with its
+ * barrier wire in flight counts that wire as done; emit_piece's limits park the pump when a
+ * member's accept window is shut and the write resumes once it reopens; a member lost mid-flight
+ * gets its reads re-issued on the primary (with the right bytes) and its writes completed with
+ * SD_E_DISCONNECTED / maybe_executed / session_ready while the session stays READY - including a
+ * write that fails on the member's stream before the drop report has run; the route table is
+ * recomputed at the next barrier; plain, APPEND, CLASS_META and directory handles never touch a
+ * member stream. */
 #include <stdio.h>
 #include <string.h>
 
@@ -41,6 +46,8 @@ typedef struct xsrv {
   volatile LONG nheld;
   volatile LONG hold_read, hold_write;   /* reads/writes still to be held in flight */
   volatile LONG fail_fsync_stream;       /* stream whose FSYNC replies FAILURE (0: none) */
+  volatile LONG hold_fsync_stream;       /* stream whose FSYNC is held in flight (0: none) */
+  volatile LONG fail_open_stream;        /* stream whose SFTP_OPEN replies FAILURE (0: none) */
   uint8_t *wdata;                        /* WRITE mirror */
   uint64_t wlen;
 } xsrv;
@@ -234,6 +241,10 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
     if (span_is(nm, "fsync@openssh.com")) {
       sd_span h = sd_rd_string(&c, 256);
       tr_add_span(sv, stream, TR_FSYNC, h, 0, 0);
+      if (sv->hold_fsync_stream > 0 && sv->hold_fsync_stream == (LONG)stream) {
+        st_hold(sv, stream, id, TR_FSYNC, 0, 0);   /* the barrier wire stays in flight */
+        return;
+      }
       if (sv->fail_fsync_stream == (LONG)stream) pk_status(f, id, SFTP_FX_FAILURE, "fsync failed");
       else pk_status(f, id, SFTP_FX_OK, "");
       return;
@@ -259,6 +270,11 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
     (void)sd_rd_string(&rd, 4096);
     _snprintf_s(h, sizeof(h), _TRUNCATE, "h%u", stream);
     tr_add(sv, stream, TR_OPEN, h, 0, 0);
+    if (sv->fail_open_stream > 0 && sv->fail_open_stream == (LONG)stream) {   /* > 0: stream 0 (the
+                                                               meta channel) is never refused */
+      pk_status(f, id, SFTP_FX_FAILURE, "open refused");
+      return;
+    }
     pk_handle(f, id, h);
     return;
   }
@@ -350,7 +366,7 @@ static int xf_settle(xf *x)
   return ok;
 }
 
-static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
+static xf *xf_new_full(uint32_t connections, uint32_t caps, uint32_t stripe_bytes, uint32_t infl_bytes)
 {
   xf *x = (xf *)sd_calloc(1, sizeof(*x));
   sd_sftp_transport t;
@@ -364,6 +380,7 @@ static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
   sd_sftp_options_init(&o);
   o.connections = connections;
   o.stripe_bytes = stripe_bytes;
+  o.max_inflight_bytes = infl_bytes;           /* 0: the default */
   o.default_timeout_ms = 5000;
   o.reconnect.initial_delay_ms = 20;           /* a fast reconnect for the generation-reset tests */
   o.reconnect.max_delay_ms = 100;
@@ -380,6 +397,11 @@ static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
   if (sd_sftp_session_state(x->s) != SD_SFTP_ST_READY) return NULL;
   if (!xf_settle(x)) return NULL;
   return x;
+}
+
+static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
+{
+  return xf_new_full(connections, caps, stripe_bytes, 0);
 }
 
 static xf *xf_new(uint32_t connections) { return xf_new_ex(connections, 0, ST_UNIT); }
@@ -556,6 +578,63 @@ SD_TEST(striping_sub_handles_open_lazily)
   sd_free(x);
 }
 
+/* A member that refuses the sub-handle OPEN (server STATUS error) must not stall the units routed
+   to it: they fall back to the primary at once, and the next barrier recomputes the table without
+   the member. Regression: the pump used to block on sub_state != SST_OPEN until the deadline. */
+SD_TEST(striping_refused_sub_open_falls_back_to_primary)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && buf != NULL);
+  InterlockedExchange(&x->sv.fail_open_stream, 2);   /* member 1 refuses every OPEN */
+  f = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, buf, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);                   /* completes, not SD_E_TIMEOUT */
+  SD_CHECK_EQ_U64(w.bytes, 3 * ST_UNIT);
+  for (i = 0; i < (int)(3 * ST_UNIT) && ok; i++) ok = buf[i] == pat((uint64_t)i);
+  SD_CHECK(ok);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_OPEN, 2), 1);     /* the refused sub-open attempt */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 2), 0);     /* no data was ever sent to member 1 */
+  {
+    const tr_ev *r = tr_off_s(ev, n, TR_READ, 1, ST_UNIT);
+    SD_REQUIRE(r != NULL);                         /* unit 1 ran on the primary instead */
+    SD_CHECK_STR(r->handle, "h1");
+  }
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 3, 2 * ST_UNIT) != NULL);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  /* the barrier recomputes the route table without the refused member: route_map = {0, 2} */
+  waiter_reset(&w, W_STAT);
+  SD_REQUIRE(sd_sftp_fstat(f, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 4 * ST_UNIT, buf, 2 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 1, 4 * ST_UNIT) != NULL);
+  SD_CHECK(tr_off_s(ev, n, TR_READ, 3, 5 * ST_UNIT) != NULL);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 2), 0);
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(buf);
+  sd_free(x);
+}
+
 /* ---- barriers ---- */
 
 SD_TEST(striping_barrier_waits_for_data_wires)
@@ -719,6 +798,255 @@ SD_TEST(striping_close_settles_on_every_sub_handle)
   sd_free(x);
 }
 
+/* ---- striped writes: routing and byte placement ---- */
+
+SD_TEST(striping_write_units_route_and_place_bytes)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(4 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && src != NULL);
+  for (i = 0; i < (int)(4 * ST_UNIT); i++) src[i] = pat((uint64_t)i + 5);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 4 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 4 * ST_UNIT);
+
+  /* the mirror holds exactly the written bytes: unit k travelled on stream 1 + (k % 3) and the
+     pieces were placed at their absolute offsets through each member's own sub-handle */
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  for (i = 0; i < 4; i++) {
+    const tr_ev *r = tr_off_s(ev, n, TR_WRITE, (uint32_t)(1 + (i % 3)), (uint64_t)i * ST_UNIT);
+    char want[16];
+    SD_REQUIRE(r != NULL);
+    SD_CHECK_EQ_U64(r->len, ST_UNIT);
+    _snprintf_s(want, sizeof(want), _TRUNCATE, "h%u", (unsigned)r->stream);
+    SD_CHECK_STR(r->handle, want);
+  }
+  for (i = 0; i < (int)(4 * ST_UNIT) && ok; i++) ok = x->sv.wdata[i] == src[i];
+  SD_CHECK(ok);
+  SD_CHECK_EQ_U64(x->sv.wlen, 4 * ST_UNIT);
+  /* per stream the units arrive in submission order */
+  {
+    uint64_t last[4];
+    int seen[4], j;
+    memset(last, 0, sizeof(last));
+    memset(seen, 0, sizeof(seen));
+    for (j = 0; j < (int)n; j++) {
+      uint32_t s = ev[j].stream;
+      if (ev[j].type != TR_WRITE || s > 3) continue;
+      if (seen[s]) SD_CHECK(ev[j].off > last[s]);
+      last[s] = ev[j].off;
+      seen[s] = 1;
+    }
+  }
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(x);
+}
+
+/* ---- emit_piece limits: a member stream that cannot accept bytes parks the pump ----
+ *
+ * The real pool transport accepts only what fits the member's TX queue; the fake models that with
+ * a byte budget on the member's stream. The unit the budgeted member is due gets emitted into the
+ * channel's obuf, flush cannot send it, and emit_piece's limits must park the request there: no
+ * unit behind the stuck one is emitted. A broken limit check keeps emitting, which shows in the
+ * exact per-stream request counts and in the write finishing while the window is still shut. */
+
+#define GATE_MS 20000
+
+/* A WRITE wire on a member stream: len(4) type(1) id(4) strlen(4) handle(2) off(8) strlen(4) data. */
+static uint32_t gate_wire_bytes(uint32_t unit) { return unit + 27; }
+
+/* Polls until the surviving channels saw exactly the units that precede the gated one and nothing
+   more, and the write is still parked. Returns 1 when parked as expected. */
+static int gate_wait_parked(xf *x, waiter *w, int want1, int want3)
+{
+  uint64_t end = sd_tick_ms() + 5000;
+  tr_ev ev[TR_MAX];
+  for (;;) {
+    LONG n = tr_snapshot(&x->sv, ev, TR_MAX);
+    if (tr_n(ev, n, TR_WRITE, 1) >= want1 && tr_n(ev, n, TR_WRITE, 3) >= want3) {
+      Sleep(150);                      /* a broken pump overshoots the parked counts (or finishes) */
+      n = tr_snapshot(&x->sv, ev, TR_MAX);
+      return tr_n(ev, n, TR_WRITE, 1) == want1 && tr_n(ev, n, TR_WRITE, 3) == want3 &&
+             !waiter_wait(w, 0);
+    }
+    if (sd_tick_ms() >= end) return 0;
+    Sleep(5);
+  }
+}
+
+/* The default request cap (64 per channel) parks the write at unit 202: the 68th member-1 wire
+   would be the 65th unacknowledged one on that channel (three were budgeted through and acked).
+   Once member 1's window reopens the write finishes exactly once. */
+SD_TEST(striping_write_parks_at_max_inflight_reqs)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, GATE_MS, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(400 * ST_UNIT);
+  uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
+  for (i = 0; i < (int)(400 * ST_UNIT); i++) src[i] = pat((uint64_t)i + 3);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  /* open both sub-handles first, so the write phase sees only WRITE wires on the members */
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, pre, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000) && w.err == SD_OK);
+
+  fake_limit_member_writes(x->sv.f, 1, (LONG)(3 * gate_wire_bytes(ST_UNIT)));
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 400 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_CHECK(gate_wait_parked(x, &w, 68, 67));
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 3);    /* only the budgeted wires reached member 1 */
+
+  /* reopen the window: the parked bytes flush, the write resumes and finishes exactly once */
+  fake_limit_member_writes(x->sv.f, 1, -1);
+  SD_REQUIRE(xf_settle(x));
+  SD_REQUIRE(waiter_wait(&w, 10000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 400 * ST_UNIT);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 1), 134);  /* units 0,3,...,399 */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 133);  /* units 1,4,...,397, the parked ones included */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 3), 133);  /* units 2,5,...,398 */
+  SD_CHECK(tr_off_s(ev, n, TR_WRITE, 2, 202 * ST_UNIT) != NULL);   /* the gated unit went out late */
+  for (i = 0; i < (int)(400 * ST_UNIT) && ok; i++) ok = x->sv.wdata[i] == src[i];
+  SD_CHECK(ok);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(pre);
+  sd_free(x);
+}
+
+/* The 512 KiB obuf high-water mark parks the write when the units are chunk-sized (the 64-request
+   cap would allow 2 MiB in flight): the member-1 obuf crosses the mark at its 19th wire, so unit 58
+   parks with 20 units out on the primary and 19 on member 2. */
+SD_TEST(striping_write_parks_at_obuf_high_water)
+{
+  xf *x = xf_new_ex(3, 0, ST_LIMIT);               /* one stripe unit = one negotiated chunk */
+  waiter w;
+  sd_sftp_reqopt o = { 0, GATE_MS, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(160 * ST_LIMIT);
+  uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_LIMIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
+  for (i = 0; i < (int)(160 * ST_LIMIT); i++) src[i] = pat((uint64_t)i + 3);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, pre, 3 * ST_LIMIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000) && w.err == SD_OK);
+
+  fake_limit_member_writes(x->sv.f, 1, (LONG)(3 * gate_wire_bytes(ST_LIMIT)));
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 160 * ST_LIMIT, &o, waiter_cb, &w) == SD_OK);
+  SD_CHECK(gate_wait_parked(x, &w, 20, 19));
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 3);
+
+  fake_limit_member_writes(x->sv.f, 1, -1);
+  SD_REQUIRE(xf_settle(x));
+  SD_REQUIRE(waiter_wait(&w, 10000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 160 * ST_LIMIT);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 1), 54);   /* units 0,3,...,159 */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 53);   /* units 1,4,...,157 */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 3), 53);   /* units 2,5,...,158 */
+  SD_CHECK(tr_off_s(ev, n, TR_WRITE, 2, 58 * ST_LIMIT) != NULL);
+  for (i = 0; i < (int)(100 * ST_LIMIT) && ok; i++) ok = x->sv.wdata[i] == src[i];   /* wdata is 4 MiB */
+  SD_CHECK(ok);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(pre);
+  sd_free(x);
+}
+
+/* The max_inflight_bytes option parks the write once the member's unacknowledged units exceed it
+   (65536 + 32768 > 65536 at unit 13, the two budgeted wires being acked already): 5 units out on
+   the primary, 4 on member 2. */
+SD_TEST(striping_write_parks_at_max_inflight_bytes)
+{
+  xf *x = xf_new_full(3, 0, ST_LIMIT, 2 * ST_LIMIT);
+  waiter w;
+  sd_sftp_reqopt o = { 0, GATE_MS, NULL };
+  sd_sftp_file *f;
+  uint8_t *src = (uint8_t *)sd_alloc(100 * ST_LIMIT);
+  uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_LIMIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
+  for (i = 0; i < (int)(100 * ST_LIMIT); i++) src[i] = pat((uint64_t)i + 3);
+  f = xf_open_striped(x, SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, pre, 3 * ST_LIMIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000) && w.err == SD_OK);
+
+  fake_limit_member_writes(x->sv.f, 1, (LONG)(2 * gate_wire_bytes(ST_LIMIT)));
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 100 * ST_LIMIT, &o, waiter_cb, &w) == SD_OK);
+  SD_CHECK(gate_wait_parked(x, &w, 5, 4));
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 2);
+
+  fake_limit_member_writes(x->sv.f, 1, -1);
+  SD_REQUIRE(xf_settle(x));
+  SD_REQUIRE(waiter_wait(&w, 10000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  SD_CHECK_EQ_U64(w.bytes, 100 * ST_LIMIT);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 1), 34);   /* units 0,3,...,99 */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 2), 33);   /* units 1,4,...,97 */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_WRITE, 3), 33);   /* units 2,5,...,98 */
+  SD_CHECK(tr_off_s(ev, n, TR_WRITE, 2, 13 * ST_LIMIT) != NULL);
+  for (i = 0; i < (int)(100 * ST_LIMIT) && ok; i++) ok = x->sv.wdata[i] == src[i];
+  SD_CHECK(ok);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(pre);
+  sd_free(x);
+}
+
 /* ---- member loss ---- */
 
 SD_TEST(striping_member_loss_reissues_reads_on_primary)
@@ -794,6 +1122,7 @@ SD_TEST(striping_member_loss_fails_writes_with_session_ready)
   waiter_reset(&w, W_RW);
   SD_REQUIRE(sd_sftp_write(f, 0, src, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
   SD_REQUIRE(wait_held(x, 3, 5000));
+  SD_CHECK_EQ_INT(st_held_count(&x->sv), 3);       /* one wire per member incl. the primary */
   InterlockedExchange(&x->sv.hold_write, 0);
   drop_member_wait(x->sv.f, 1);
 
@@ -801,6 +1130,13 @@ SD_TEST(striping_member_loss_fails_writes_with_session_ready)
   SD_CHECK_EQ_INT(w.err, SD_E_DISCONNECTED);
   SD_CHECK_EQ_INT(w.maybe_executed, 1);
   SD_CHECK_EQ_INT(w.session_ready, 1);             /* the VFS resubmits it at once */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  /* The failed write's wires on the live channels (streams 1 and 3) stay in the table on purpose:
+     their late acks must be discarded by dispatch's done-branch instead of surfacing as "reply with
+     unknown id", which would lose the session (fbf8b17). Answer them and take no protocol loss. */
+  fake_run(x->sv.f, st_release_held, &x->sv);
+  xf_drain(x);
   SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
 
   /* the session stays usable: a later striped open and IO still work */
@@ -862,6 +1198,131 @@ SD_TEST(striping_route_recomputed_after_member_loss)
   /* member 1 saw its one unit before the drop and nothing afterwards */
   SD_CHECK_EQ_INT(tr_n(ev, n, TR_READ, 2), 1);
 
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  xf_stop(x);
+  sd_free(buf);
+  sd_free(x);
+}
+
+/* The drop window: the member's transport already fails its stream's writes, but the posted drop
+   report has not run yet, so the session still sees the channel as SS_OPEN. A flush that hits that
+   error used to lose() the whole session; it must leave the bytes queued for the drop report. */
+SD_TEST(striping_member_write_error_in_drop_window_keeps_ready)
+{
+  xf *x = xf_new(3);
+  waiter w, w2;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f, *f2;
+  uint8_t *src = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  uint8_t *src2 = (uint8_t *)sd_alloc(ST_UNIT);
+  uint8_t *rbuf = (uint8_t *)sd_alloc(2 * ST_UNIT);
+  int i, ok = 1;
+  SD_REQUIRE(x != NULL && src != NULL && src2 != NULL && rbuf != NULL);
+  for (i = 0; i < (int)(3 * ST_UNIT); i++) src[i] = pat((uint64_t)i + 5);
+  for (i = 0; i < (int)ST_UNIT; i++) src2[i] = pat((uint64_t)i + 9);
+  f = xf_open_striped(x, SD_SFTP_O_READ | SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  waiter_init(&w2, x->s);
+
+  /* three writes in flight, one per member (held) */
+  InterlockedExchange(&x->sv.hold_write, 3);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, 0, src, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(wait_held(x, 3, 5000));
+  InterlockedExchange(&x->sv.hold_write, 0);
+
+  /* the drop window for member 1: its stream refuses writes, the drop report is still in flight */
+  fake_fail_member_writes(x->sv.f, 1, SD_E_DISCONNECTED);
+  waiter_reset(&w2, W_RW);
+  SD_REQUIRE(sd_sftp_write(f, ST_UNIT, src2, ST_UNIT, &o, waiter_cb, &w2) == SD_OK);
+  SD_REQUIRE(xf_settle(x));                        /* the session's pump ran the failing flush */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);   /* no session loss */
+  SD_CHECK(!waiter_wait(&w2, 150));                /* the unit stays parked on the member */
+
+  /* the drop report lands: both writes complete with session_ready, the session stays READY */
+  drop_member_wait(x->sv.f, 1);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(w.session_ready, 1);
+  SD_REQUIRE(waiter_wait(&w2, 5000));
+  SD_CHECK_EQ_INT(w2.err, SD_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(w2.session_ready, 1);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  /* the surviving channels' late acks are discarded (fbf8b17) */
+  fake_run(x->sv.f, st_release_held, &x->sv);
+  xf_drain(x);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+
+  /* the session stays usable: a later striped open and read still work (member 1 is out) */
+  fake_fail_member_writes(x->sv.f, 0, SD_OK);
+  f2 = xf_open_striped(x, SD_SFTP_O_READ);
+  SD_REQUIRE(f2 != NULL);
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f2, 0, rbuf, 2 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  for (i = 0; i < (int)(2 * ST_UNIT) && ok; i++) ok = rbuf[i] == pat((uint64_t)i);
+  SD_CHECK(ok);
+
+  sd_sftp_file_release(f2);
+  sd_sftp_file_release(f);
+  waiter_free(&w);
+  waiter_free(&w2);
+  xf_stop(x);
+  sd_free(src);
+  sd_free(src2);
+  sd_free(rbuf);
+  sd_free(x);
+}
+
+/* A member dying while its barrier wire (fsync) is still in flight: the wire counts as done, the
+   barrier completes with the surviving wires' outcome and the session stays READY. */
+SD_TEST(striping_member_drop_during_barrier_counts_it_done)
+{
+  xf *x = xf_new(3);
+  waiter w;
+  sd_sftp_reqopt o = { 0, 5000, NULL };
+  sd_sftp_file *f;
+  uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
+  tr_ev ev[TR_MAX];
+  LONG n;
+  SD_REQUIRE(x != NULL && buf != NULL);
+  f = xf_open_striped(x, SD_SFTP_O_READ | SD_SFTP_O_WRITE);
+  SD_REQUIRE(f != NULL);
+  waiter_init(&w, x->s);
+  /* one unit per member first, so both sub-handles are open */
+  waiter_reset(&w, W_RW);
+  SD_REQUIRE(sd_sftp_read(f, 0, buf, 3 * ST_UNIT, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000) && w.err == SD_OK);
+
+  /* the fsync on member 2's sub-handle is in flight when the member dies */
+  InterlockedExchange(&x->sv.hold_fsync_stream, 3);
+  waiter_reset(&w, W_STAT);
+  SD_REQUIRE(sd_sftp_fsync(f, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(wait_held(x, 1, 5000));               /* the primary's and member 1's wires settled */
+  drop_member_wait(x->sv.f, 2);
+
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);                   /* the dead wire counted as done: no timeout */
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_FSYNC, 1), 1);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_FSYNC, 2), 1);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_FSYNC, 3), 1);    /* the wire was out when the member died */
+
+  /* the handle stays usable: the recomputed route runs the next barrier on the primary only */
+  waiter_reset(&w, W_STAT);
+  SD_REQUIRE(sd_sftp_fstat(f, &o, waiter_cb, &w) == SD_OK);
+  SD_REQUIRE(waiter_wait(&w, 5000));
+  SD_CHECK_EQ_INT(w.err, SD_OK);
+  n = tr_snapshot(&x->sv, ev, TR_MAX);
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_FSTAT, 1), 2);    /* open probe + barrier */
+  SD_CHECK_EQ_INT(tr_n(ev, n, TR_FSTAT, 3), 1);    /* the open probe only: member 2 is out */
+
+  InterlockedExchange(&x->sv.hold_fsync_stream, 0);
   sd_sftp_file_release(f);
   waiter_free(&w);
   xf_stop(x);

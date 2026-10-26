@@ -111,6 +111,8 @@ struct fake_srv {
   volatile LONG fail_opens;    /* upcoming open() calls that fail */
   sd_err fail_err;
   sd_err refuse_bulk;          /* != SD_OK: open_stream(1) fails with it */
+  volatile LONG fail_member;   /* member whose stream writes fail with fail_err (drop window) */
+  volatile LONG tx_budget[FK_MEMBERS];   /* bytes member m still accepts (< 0: unlimited) */
   uint32_t caps;
   int open_called;
   /* M2 pool */
@@ -193,7 +195,24 @@ static sd_err ft_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t 
   fake_stream *st = &f->st[idx];
   size_t off = 0;
   *accepted = n;
-  if (idx >= 2 && idx < FK_STREAMS) InterlockedExchangeAdd(&f->tx[idx - 2], (LONG)n);
+  if (idx >= 2 && idx < FK_STREAMS) {
+    LONG b = idx - 2;
+    if (f->fail_member == (LONG)(idx - 1)) {   /* fake_fail_member_writes: the session may still
+                                                  see the stream as open (the drop report lags) */
+      *accepted = 0;
+      return f->fail_err != SD_OK ? f->fail_err : SD_E_DISCONNECTED;
+    }
+    if (f->tx_budget[b] >= 0) {                /* fake_limit_member_writes: bounded accept window,
+                                                  like a full POOL_TX_CAP on the member's queue */
+      LONG left = f->tx_budget[b];
+      if (left < 0) left = 0;
+      if ((LONG)n > left) n = (size_t)left;    /* a partial accept: flush keeps the rest queued */
+      InterlockedExchangeAdd(&f->tx_budget[b], -(LONG)n);
+      *accepted = n;
+      if (!n) return SD_OK;
+    }
+    InterlockedExchangeAdd(&f->tx[b], (LONG)n);
+  }
   if (f->closed || st->state != 2) return SD_OK;
   sd_wr_bytes(&st->in, p, n);
   while (st->in.len - off >= 4) {
@@ -279,6 +298,7 @@ fake_srv *fake_new(fake_handler h, void *ctx)
   if (!f->loop) { sd_free(f); return NULL; }
   f->h = h; f->hctx = ctx;
   for (i = 0; i < FK_STREAMS; i++) sd_wr_init(&f->st[i].in, 64u * 1024u * 1024u);
+  for (i = 0; i < FK_MEMBERS; i++) f->tx_budget[i] = -1;
   return f;
 }
 
@@ -332,6 +352,22 @@ void fake_drop_member(fake_srv *f, uint32_t member)
 {
   if (member < 1 || member > FK_MEMBERS) return;
   fake_post_kind(f, FK_CLOSED, 1 + member, SD_E_DISCONNECTED, NULL, 0);   /* this channel only */
+}
+/* Makes every write on the member's stream fail with e while the stream itself stays open: the
+   window between the member's transport marking it dropped and the session receiving the drop
+   report. member 0 clears it. */
+void fake_fail_member_writes(fake_srv *f, uint32_t member, sd_err e)
+{
+  if (member > FK_MEMBERS) return;
+  f->fail_err = e;
+  InterlockedExchange(&f->fail_member, (LONG)member);
+}
+/* Bounds the bytes the member's stream still accepts (a full member TX queue: pool_write_stream
+   accepts less than asked and the session keeps the rest pending). budget < 0: unlimited again. */
+void fake_limit_member_writes(fake_srv *f, uint32_t member, LONG budget)
+{
+  if (member < 1 || member > FK_MEMBERS) return;
+  InterlockedExchange(&f->tx_budget[member - 1], budget);
 }
 uint32_t fake_stream_packets(fake_srv *f, uint32_t idx) { return idx < FK_STREAMS ? (uint32_t)f->pkts[idx] : 0; }
 void fake_refuse_bulk(fake_srv *f, sd_err e) { f->refuse_bulk = e; }

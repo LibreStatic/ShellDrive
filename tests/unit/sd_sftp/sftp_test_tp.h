@@ -53,6 +53,12 @@ void      fake_set_session(fake_srv *f, sd_sftp_session *s);
    explicit member generation, so tests can post a duplicate or stale member drop. */
 void      fake_pool_change(fake_srv *f, uint32_t member, int admitted, sd_err reason, uint32_t gen);
 void      fake_drop_member(fake_srv *f, uint32_t member);       /* the member channel dies alone */
+/* Member stream failure injection (write path only): fail_member_writes fails every write with e
+ * while the stream stays open (the drop report is still in flight); limit_member_writes accepts at
+ * most `budget` more bytes and then accepts 0, like a full member TX queue. member 0 / budget < 0
+ * clears. Set from the test thread, read on the fake's I/O thread. */
+void      fake_fail_member_writes(fake_srv *f, uint32_t member, sd_err e);
+void      fake_limit_member_writes(fake_srv *f, uint32_t member, LONG budget);
 uint32_t  fake_stream_packets(fake_srv *f, uint32_t idx);       /* client packets seen on a stream */
 
 /* Packet builder: begins a reply of `type` with id (id_present). Finish with fake_reply_wr. */
