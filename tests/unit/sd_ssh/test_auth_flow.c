@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "sd_base/sd_mem.h"
+#include "sd_platform/sd_time.h"
 #include "sd_crypto/sd_crypto.h"
 #include "sd_ssh/sd_agent.h"
 #include "sd_test.h"
@@ -142,9 +143,9 @@ static int take_packet(fake *f)
 /* Runs the queue until the client sent a packet, raised a prompt, finished or failed. */
 static int pump(fake *f, int want_packet)
 {
-  uint64_t end = GetTickCount64() + 20000;
+  uint64_t end = sd_tick_ms() + 20000;
   int prompts = f->prompts;
-  while (GetTickCount64() < end) {
+  while (sd_tick_ms() < end) {
     run_queue(f->c);
     if (want_packet && take_packet(f)) return 1;
     if (!want_packet && f->prompts != prompts) return 1;
@@ -159,8 +160,8 @@ static int pump(fake *f, int want_packet)
    call would wait for a further prompt that never comes. */
 static int pump_prompts(fake *f, int n)
 {
-  uint64_t end = GetTickCount64() + 20000;
-  while (GetTickCount64() < end) {
+  uint64_t end = sd_tick_ms() + 20000;
+  while (sd_tick_ms() < end) {
     run_queue(f->c);
     if ((int)f->prompts >= n) return 1;
     if (f->c->failing || f->done) return 0;

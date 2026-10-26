@@ -127,6 +127,7 @@ kernel32.dll!GetUserDefaultLCID
 kernel32.dll!GetUserDefaultUILanguage
 kernel32.dll!GetVersionExW
 kernel32.dll!GetVolumeInformationW
+kernel32.dll!GetVolumePathNameW
 kernel32.dll!GetWindowsDirectoryW
 kernel32.dll!GlobalFree
 kernel32.dll!GlobalMemoryStatusEx
@@ -139,6 +140,7 @@ kernel32.dll!HeapReAlloc
 kernel32.dll!HeapSetInformation
 kernel32.dll!HeapSize
 kernel32.dll!HeapValidate
+kernel32.dll!InitializeCriticalSection
 kernel32.dll!InitializeCriticalSectionAndSpinCount
 kernel32.dll!InitializeSListHead
 kernel32.dll!InterlockedCompareExchange
@@ -276,6 +278,7 @@ advapi32.dll!GetAclInformation
 advapi32.dll!GetLengthSid
 advapi32.dll!GetNamedSecurityInfoW
 advapi32.dll!GetSecurityDescriptorDacl
+advapi32.dll!GetSecurityDescriptorOwner
 advapi32.dll!GetSecurityInfo
 advapi32.dll!GetTokenInformation
 advapi32.dll!GetUserNameW
@@ -299,6 +302,7 @@ advapi32.dll!RegEnumValueW
 advapi32.dll!RegGetKeySecurity
 advapi32.dll!RegNotifyChangeKeyValue
 advapi32.dll!RegOpenKeyExW
+advapi32.dll!RegQueryInfoKeyW
 advapi32.dll!RegQueryValueExW
 advapi32.dll!RegSetValueExW
 advapi32.dll!RegisterEventSourceW

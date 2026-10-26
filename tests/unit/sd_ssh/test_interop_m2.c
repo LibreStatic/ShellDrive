@@ -218,13 +218,15 @@ static void m_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *a, c
     break;
   }
   case SD_PROMPT_KEY_PASSPHRASE: {
-    const char *resp[1] = { g.pass[0] ? g.pass : "wrong" };
+    const char *resp[1];
+    resp[0] = g.pass[0] ? g.pass : "wrong";
     r->pass_prompts++;
     sd_prompt_answer(p, 1, resp);
     break;
   }
   case SD_PROMPT_PROXY_PASSWORD: {
-    const char *resp[1] = { g.proxy_pass[0] ? g.proxy_pass : "" };
+    const char *resp[1];
+    resp[0] = g.proxy_pass[0] ? g.proxy_pass : "";
     r->proxy_pw_prompts++;
     sd_prompt_answer(p, 1, resp);
     break;

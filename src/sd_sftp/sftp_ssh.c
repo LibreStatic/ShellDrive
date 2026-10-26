@@ -561,7 +561,7 @@ static void member_ch_on_data(void *ctx, const uint8_t *p, size_t n)
 {
   pool_member *m = (pool_member *)ctx;
   sd_ssh_channel_consumed(m->ch, n);
-  InterlockedAdd64(&m->rx, (LONG64)n);
+  sd_atomic_add64(&m->rx, (LONG64)n);
   if (m->state != PM_CHECKING) return;
   /* length-framed stream: uint32 length, then the payload (sftp_proto.h) */
   while (n) {
@@ -690,8 +690,8 @@ static void pool_member_stats(void *ctx, sd_sftp_conn_stats out[3], uint32_t *co
     memset(&out[n], 0, sizeof(out[n]));
     out[n].ready = 1;
     if (m->conn) sd_ssh_conn_rtt(m->conn, &out[n].srtt_ms, &out[n].rttvar_ms);
-    out[n].rx_total = (uint64_t)InterlockedAdd64(&m->rx, 0);
-    out[n].tx_total = (uint64_t)InterlockedAdd64(&m->tx, 0);
+    out[n].rx_total = (uint64_t)sd_atomic_load64(&m->rx);
+    out[n].tx_total = (uint64_t)sd_atomic_load64(&m->tx);
     n++;
   }
   if (count) *count = n;
