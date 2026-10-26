@@ -358,8 +358,16 @@ sd_err sd_sftp_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks *
  * thread (the session's) so the core sees pool changes serialized with everything else. */
 
 #define POOL_REALPATH_CAP 512u
+#define POOL_TX_CAP (1024u * 1024u)
 
 typedef struct pool_tp pool_tp;
+
+/* A queued chunk between the session's I/O thread and a member's I/O thread. */
+typedef struct pool_blk {
+  struct pool_blk *next;
+  size_t len, sent;
+  uint8_t data[1];
+} pool_blk;
 
 typedef struct pool_member {
   pool_tp *p;
@@ -373,6 +381,14 @@ typedef struct pool_member {
   uint8_t in[1024];                    /* admission exchange input (member thread) */
   size_t in_len;
   int have_version;
+  /* data streams (01 §10.9): the session's sink, driven on the primary I/O thread */
+  const sd_ssh_channel_sink *sink; void *sink_ctx;
+  volatile LONG sink_active;           /* primary thread sets; both threads read */
+  sd_mutex qlock;
+  pool_blk *rx_head, *rx_tail, *tx_head, *tx_tail;
+  size_t rx_len, tx_len;
+  volatile LONG rx_posted, tx_posted, consume_posted, writable_posted;
+  volatile LONG credit;
   /* stats */
   uint32_t srtt_ms, rttvar_ms;
   volatile LONG64 rx, tx;
@@ -395,6 +411,8 @@ struct pool_tp {
 
 static void member_on_connected(void *ctx, sd_err err, uint32_t failed_hop);
 static void member_teardown(pool_member *m);
+static void member_q_reset(pool_member *m);
+static void member_stream_closed(void *arg);
 
 /* ---- primary-thread helpers (posted decisions) ---- */
 
@@ -481,6 +499,7 @@ static void member_decide(pool_member *m, int admitted, sd_err err)
 /* Closes the member's channel and connection (any thread; non-blocking). */
 static void member_teardown(pool_member *m)
 {
+  InterlockedExchange(&m->sink_active, 0);
   if (m->ch) { sd_ssh_channel_close(m->ch); m->ch = NULL; }
   if (m->conn) sd_ssh_conn_disconnect(m->conn, NULL, NULL);
 }
@@ -557,11 +576,217 @@ static void member_on_packet(pool_member *m, const uint8_t *p, size_t n)
   member_drop(m, SD_E_PROTOCOL);
 }
 
+/* ---- member data proxy (01 §10.9) ----
+ *
+ * The session drives member streams from the PRIMARY connection's I/O thread, but a member's SFTP
+ * channel lives on the member's own I/O thread. Bytes travel through two queues:
+ *   RX: member thread -> rx queue -> posted drain on the primary thread -> the session's sink.
+ *       The channel is credited only when the session consumed the bytes, so the queues stay
+ *       bounded by the SSH receive window.
+ *   TX: session (primary thread) -> bounded tx queue -> posted pump on the member thread, which
+ *       writes to the channel and reports progress back with on_writable.
+ * Only the member thread touches the channel; only the primary thread calls the session's sink. */
+
+static pool_blk *pool_blk_new(const uint8_t *p, size_t n)
+{
+  pool_blk *b = (pool_blk *)sd_alloc(sizeof(*b) + n);
+  if (!b) return NULL;
+  b->next = NULL;
+  b->len = n;
+  b->sent = 0;
+  if (p && n) memcpy(b->data, p, n);
+  return b;
+}
+
+static void pool_q_free(pool_blk *b)
+{
+  while (b) { pool_blk *n = b->next; sd_free(b); b = n; }
+}
+
+/* An active data stream? Written under qlock by open/close, read by both threads. */
+static int member_stream_live(pool_member *m)
+{
+  return InterlockedCompareExchange(&m->sink_active, 1, 1) != 0;
+}
+
+static void member_rx_drain(void *arg);
+
+/* Member thread: queue received bytes and make sure the primary thread will drain them. */
+static void member_rx_enqueue(pool_member *m, const uint8_t *p, size_t n)
+{
+  pool_blk *b;
+  LONG first;
+  if (!n) return;
+  b = pool_blk_new(p, n);
+  if (!b) { member_drop(m, SD_E_NO_MEMORY); return; }
+  sd_mutex_lock(&m->qlock);
+  if (m->rx_tail) m->rx_tail->next = b; else m->rx_head = b;
+  m->rx_tail = b;
+  m->rx_len += n;
+  first = InterlockedExchange(&m->rx_posted, 1) == 0;
+  sd_mutex_unlock(&m->qlock);
+  if (first && sd_ssh_conn_post(m->p->primary->conn, member_rx_drain, m) != SD_OK)
+    InterlockedExchange(&m->rx_posted, 0);
+}
+
+/* Primary thread: deliver queued bytes to the session, in order. */
+static void member_rx_drain(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  for (;;) {
+    pool_blk *b, *next;
+    sd_mutex_lock(&m->qlock);
+    b = m->rx_head;
+    m->rx_head = m->rx_tail = NULL;
+    m->rx_len = 0;
+    if (!b) { InterlockedExchange(&m->rx_posted, 0); sd_mutex_unlock(&m->qlock); return; }
+    sd_mutex_unlock(&m->qlock);
+    for (; b; b = next) {
+      next = b->next;
+      if (member_stream_live(m) && m->sink) m->sink->on_data(m->sink_ctx, b->data, b->len);
+      sd_free(b);
+    }
+  }
+}
+
+static void member_tx_pump(void *arg);
+static void member_stream_writable(void *arg);
+static void member_consume_drain(void *arg);
+
+/* Primary thread: the session's consumed() credit goes back to the member thread. */
+static void pool_consumed_stream(void *ctx, uint32_t idx, size_t n)
+{
+  ssh_tp *t = (ssh_tp *)ctx;
+  pool_tp *p = t->pool;
+  pool_member *m;
+  if (idx < 2) { tp_consumed_stream(ctx, idx, n); return; }
+  if (idx > 4 || !p || !n) return;
+  m = &p->m[idx - 2];
+  InterlockedExchangeAdd(&m->credit, (LONG)n);
+  if (InterlockedExchange(&m->consume_posted, 1) == 0)
+    if (sd_ssh_conn_post(m->conn, member_consume_drain, m) != SD_OK)
+      InterlockedExchange(&m->consume_posted, 0);
+}
+
+/* Member thread: hand the accumulated credit to the channel. */
+static void member_consume_drain(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  for (;;) {
+    LONG n = InterlockedExchange(&m->credit, 0);
+    if (n > 0 && m->ch) sd_ssh_channel_consumed(m->ch, (size_t)n);
+    InterlockedExchange(&m->consume_posted, 0);
+    if (m->credit == 0) return;
+  }
+}
+
+/* Member thread: write queued bytes, then tell the session there is space again. */
+static void member_tx_pump(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  int freed = 0;
+  for (;;) {
+    pool_blk *b;
+    size_t accepted = 0;
+    sd_err e;
+    sd_mutex_lock(&m->qlock);
+    b = m->tx_head;
+    if (!b) {
+      m->tx_tail = NULL;
+      m->tx_len = 0;
+      InterlockedExchange(&m->tx_posted, 0);
+      sd_mutex_unlock(&m->qlock);
+      break;
+    }
+    sd_mutex_unlock(&m->qlock);
+    if (!m->ch || m->state != PM_READY) {
+      InterlockedExchange(&m->tx_posted, 0);
+      break;
+    }
+    e = sd_ssh_channel_write(m->ch, b->data + b->sent, b->len - b->sent, &accepted);
+    if (e != SD_OK) {
+      InterlockedExchange(&m->tx_posted, 0);
+      member_drop(m, e);
+      return;
+    }
+    sd_atomic_add64(&m->tx, (LONG64)accepted);
+    b->sent += accepted;
+    if (b->sent == b->len) {
+      sd_mutex_lock(&m->qlock);
+      if (m->tx_head == b) { m->tx_head = b->next; if (!m->tx_head) m->tx_tail = NULL; }
+      if (m->tx_len >= b->len) m->tx_len -= b->len; else m->tx_len = 0;
+      sd_mutex_unlock(&m->qlock);
+      sd_free(b);
+      freed = 1;
+      continue;
+    }
+    InterlockedExchange(&m->tx_posted, 0);   /* window closed: on_writable resumes */
+    break;
+  }
+  if (freed && member_stream_live(m) && InterlockedExchange(&m->writable_posted, 1) == 0)
+    if (sd_ssh_conn_post(m->p->primary->conn, member_stream_writable, m) != SD_OK)
+      InterlockedExchange(&m->writable_posted, 0);
+}
+
+/* Primary thread: the session may write again on this member stream. */
+static void member_stream_writable(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  InterlockedExchange(&m->writable_posted, 0);
+  if (member_stream_live(m) && m->sink && m->sink->on_writable) m->sink->on_writable(m->sink_ctx);
+}
+
+/* Primary thread: queue bytes for a member stream (bounded; 0 accepted means wait for
+   on_writable). Never blocks: the member thread does the channel write. */
+static sd_err pool_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t n, size_t *accepted)
+{
+  ssh_tp *t = (ssh_tp *)ctx;
+  pool_tp *p_ = t->pool;
+  pool_member *m;
+  pool_blk *b;
+  size_t space, take;
+  LONG first = 0;
+  if (accepted) *accepted = 0;
+  if (idx < 2) return tp_write_stream(ctx, idx, p, n, accepted);
+  if (!p_ || idx > 4) return SD_E_INVALID_PARAM;
+  m = &p_->m[idx - 2];
+  if (m->state != PM_READY || !member_stream_live(m)) return SD_E_DISCONNECTED;
+  if (!n) return SD_OK;
+  sd_mutex_lock(&m->qlock);
+  space = m->tx_len < POOL_TX_CAP ? POOL_TX_CAP - m->tx_len : 0;
+  take = n < space ? n : space;
+  b = take ? pool_blk_new(p, take) : NULL;
+  if (take && !b) { sd_mutex_unlock(&m->qlock); return SD_E_NO_MEMORY; }
+  if (b) {
+    if (m->tx_tail) m->tx_tail->next = b; else m->tx_head = b;
+    m->tx_tail = b;
+    m->tx_len += take;
+    first = InterlockedExchange(&m->tx_posted, 1) == 0;
+  }
+  sd_mutex_unlock(&m->qlock);
+  if (accepted) *accepted = take;
+  if (first && sd_ssh_conn_post(m->conn, member_tx_pump, m) != SD_OK)
+    InterlockedExchange(&m->tx_posted, 0);
+  return SD_OK;
+}
+
+/* Member thread: the channel died while it carried a session stream. */
+static void member_stream_closed(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  m->sink_active = 0;
+  if (m->sink) m->sink->on_closed(m->sink_ctx, m->err != SD_OK ? m->err : SD_E_DISCONNECTED);
+}
+
 static void member_ch_on_data(void *ctx, const uint8_t *p, size_t n)
 {
   pool_member *m = (pool_member *)ctx;
-  sd_ssh_channel_consumed(m->ch, n);
   sd_atomic_add64(&m->rx, (LONG64)n);
+  if (m->state == PM_READY && member_stream_live(m)) {   /* data plane: proxy to the session */
+    member_rx_enqueue(m, p, n);
+    return;
+  }
+  if (m->ch) sd_ssh_channel_consumed(m->ch, n);
   if (m->state != PM_CHECKING) return;
   /* length-framed stream: uint32 length, then the payload (sftp_proto.h) */
   while (n) {
@@ -581,6 +806,20 @@ static void member_ch_on_data(void *ctx, const uint8_t *p, size_t n)
     }
     if (m->state != PM_CHECKING) return;
   }
+}
+
+static void member_ch_on_writable(void *ctx)
+{
+  pool_member *m = (pool_member *)ctx;
+  if (m->state != PM_READY || !member_stream_live(m)) return;
+  if (InterlockedExchange(&m->tx_posted, 1) == 0)
+    if (sd_ssh_conn_post(m->conn, member_tx_pump, m) != SD_OK) InterlockedExchange(&m->tx_posted, 0);
+}
+
+static void member_ch_on_eof(void *ctx)
+{
+  pool_member *m = (pool_member *)ctx;
+  SD_UNUSED(m);   /* EOF is followed by on_closed, which is what the session acts on */
 }
 
 /* Sends the INIT from a posted function: on_open can run before sd_ssh_channel_open_subsystem()
@@ -604,12 +843,21 @@ static void member_ch_on_closed(void *ctx, sd_err why)
 {
   pool_member *m = (pool_member *)ctx;
   m->ch = NULL;
+  member_q_reset(m);
+  if (m->state == PM_READY && member_stream_live(m)) {
+    /* a session stream lived here: report it on the primary thread, which calls member_lost */
+    m->err = why != SD_OK ? why : SD_E_DISCONNECTED;
+    m->state = PM_DROPPED;
+    InterlockedExchange(&m->sink_active, 0);
+    (void)sd_ssh_conn_post(m->p->primary->conn, member_stream_closed, m);
+    return;
+  }
   if (m->state == PM_CHECKING || m->state == PM_READY)
     member_drop(m, why != SD_OK ? why : SD_E_DISCONNECTED);
 }
 
 static const sd_ssh_channel_sink k_member_sink = {
-  member_ch_on_open, member_ch_on_data, NULL, NULL, member_ch_on_closed
+  member_ch_on_open, member_ch_on_data, member_ch_on_writable, member_ch_on_eof, member_ch_on_closed
 };
 
 static void member_on_connected(void *ctx, sd_err err, uint32_t failed_hop)
@@ -668,7 +916,15 @@ static void pool_notify_ready(void *ctx, const char *realpath_dot)
   copy_cstr(p->primary_realpath, sizeof(p->primary_realpath), realpath_dot);
   for (i = 0; i < 3; i++) {
     /* a new generation: every member admits again (the primary reconnect dropped them) */
-    if (p->m[i].state == PM_READY || p->m[i].state == PM_DROPPED) p->m[i].state = PM_IDLE;
+    pool_member *m = &p->m[i];
+    if (m->state != PM_IDLE) {
+      m->state = PM_IDLE;             /* before the teardown: its on_closed is then a no-op */
+      InterlockedExchange(&m->sink_active, 0);
+      member_teardown(m);
+      m->have_version = 0;
+      m->in_len = 0;
+      m->err = SD_OK;
+    }
   }
   p->gen_stopped = 0;
   if (p->target <= 1 || p->disabled) return;
@@ -680,6 +936,34 @@ static void pool_notify_ready(void *ctx, const char *realpath_dot)
   pool_start_next(p);
 }
 
+static void member_stream_opened(void *arg)
+{
+  pool_member *m = (pool_member *)arg;
+  if (member_stream_live(m) && m->sink) m->sink->on_open(m->sink_ctx, SD_OK);
+}
+
+/* Opens the session stream on an admitted member (called on the primary I/O thread). */
+static sd_err pool_open_stream(void *ctx, uint32_t idx, const sd_ssh_channel_sink *sink, void *sink_ctx)
+{
+  ssh_tp *t = (ssh_tp *)ctx;
+  pool_tp *p = t->pool;
+  pool_member *m;
+  if (idx < 2) return tp_open_stream(ctx, idx, sink, sink_ctx);
+  if (!p || idx > 4) return SD_E_INVALID_PARAM;
+  m = &p->m[idx - 2];
+  if (m->idx != idx - 1 || m->state != PM_READY || !m->ch) return SD_E_DISCONNECTED;
+  sd_mutex_lock(&m->qlock);
+  m->sink = sink;
+  m->sink_ctx = sink_ctx;
+  sd_mutex_unlock(&m->qlock);
+  InterlockedExchange(&m->sink_active, 1);
+  if (sd_ssh_conn_post(t->conn, member_stream_opened, m) != SD_OK) {
+    InterlockedExchange(&m->sink_active, 0);
+    return SD_E_DISCONNECTED;
+  }
+  return SD_OK;                       /* on_open arrives asynchronously, on the primary thread */
+}
+
 static void pool_member_stats(void *ctx, sd_sftp_conn_stats out[3], uint32_t *count)
 {
   pool_tp *p = ((ssh_tp *)ctx)->pool;
@@ -687,11 +971,12 @@ static void pool_member_stats(void *ctx, sd_sftp_conn_stats out[3], uint32_t *co
   for (i = 0; i < 3; i++) {
     pool_member *m = &p->m[i];
     if (m->state != PM_READY || !out) continue;
-    memset(&out[n], 0, sizeof(out[n]));
-    out[n].ready = 1;
-    if (m->conn) sd_ssh_conn_rtt(m->conn, &out[n].srtt_ms, &out[n].rttvar_ms);
-    out[n].rx_total = (uint64_t)sd_atomic_load64(&m->rx);
-    out[n].tx_total = (uint64_t)sd_atomic_load64(&m->tx);
+    memset(&out[m->idx - 1], 0, sizeof(out[m->idx - 1]));
+    out[m->idx - 1].ready = 1;
+    if (m->conn) sd_ssh_conn_rtt(m->conn, &out[m->idx - 1].srtt_ms, &out[m->idx - 1].rttvar_ms);
+    out[m->idx - 1].rx_total = (uint64_t)sd_atomic_load64(&m->rx);
+    out[m->idx - 1].tx_total = (uint64_t)sd_atomic_load64(&m->tx);
+    out[m->idx - 1].inflight_reqs = 0;
     n++;
   }
   if (count) *count = n;
@@ -702,10 +987,10 @@ static void pool_close_members(pool_tp *p)
   uint32_t i;
   for (i = 0; i < 3; i++) {
     pool_member *m = &p->m[i];
-    if (m->conn && (m->state == PM_READY || m->state == PM_CHECKING || m->state == PM_CONNECTING))
-      member_teardown(m);
-    if (m->state == PM_READY || m->state == PM_CHECKING || m->state == PM_CONNECTING)
-      m->state = PM_IDLE;
+    int live = m->state == PM_READY || m->state == PM_CHECKING || m->state == PM_CONNECTING;
+    m->state = PM_IDLE;               /* first: the teardown's on_closed must not report a drop */
+    InterlockedExchange(&m->sink_active, 0);
+    if (live) member_teardown(m);
   }
 }
 
@@ -716,12 +1001,33 @@ static void pool_tp_close(void *ctx)
   tp_close(p->primary);
 }
 
+static void member_q_reset(pool_member *m)
+{
+  pool_blk *rx, *tx;
+  sd_mutex_lock(&m->qlock);
+  rx = m->rx_head;
+  tx = m->tx_head;
+  m->rx_head = m->rx_tail = m->tx_head = m->tx_tail = NULL;
+  m->rx_len = m->tx_len = 0;
+  InterlockedExchange(&m->rx_posted, 0);     /* a drain still queued finds nothing to do */
+  InterlockedExchange(&m->tx_posted, 0);
+  sd_mutex_unlock(&m->qlock);
+  pool_q_free(rx);
+  pool_q_free(tx);
+}
+
 static void pool_tp_destroy(void *ctx)
 {
   pool_tp *p = ((ssh_tp *)ctx)->pool;
   uint32_t i;
-  for (i = 0; i < 3; i++)
-    if (p->m[i].conn) { sd_ssh_conn_destroy(p->m[i].conn); p->m[i].conn = NULL; }
+  if (!p) { tp_destroy(ctx); return; }
+  for (i = 0; i < 3; i++) {
+    pool_member *m = &p->m[i];
+    InterlockedExchange(&m->sink_active, 0);
+    if (m->conn) { sd_ssh_channel_close(m->ch); sd_ssh_conn_destroy(m->conn); m->conn = NULL; }
+    member_q_reset(m);
+    sd_mutex_destroy(&m->qlock);
+  }
   tp_destroy(p->primary);
   sd_free(p);
 }
@@ -756,6 +1062,7 @@ static sd_err pool_create(ssh_tp *t, const sd_ssh_config *ssh, const sd_sftp_opt
     pool_member *m = &p->m[i];
     m->p = p;
     m->idx = i + 1;
+    sd_mutex_init(&m->qlock);
     mcb.ctx = m;
     e = sd_ssh_conn_create(&mcfg, &mcb, &m->conn);
     if (e != SD_OK) {
@@ -768,13 +1075,16 @@ static sd_err pool_create(ssh_tp *t, const sd_ssh_config *ssh, const sd_sftp_opt
   {
     sd_sftp_transport tp = *base;      /* the primary passthrough; ctx stays the ssh_tp */
     t->pool = p;
+    tp.open_stream = pool_open_stream;
+    tp.write_stream = pool_write_stream;
+    tp.consumed_stream = pool_consumed_stream;
     tp.close = pool_tp_close;
     tp.destroy = pool_tp_destroy;
     tp.notify_ready = pool_notify_ready;
     tp.member_stats = pool_member_stats;
     tp.caps |= SD_SFTP_TP_POOL;
     e = sd_sftp_session_create_transport(&tp, opt, ev, ev_ctx, out);
-    if (e != SD_OK) { pool_tp_destroy(p); return e; }
+    if (e != SD_OK) { t->pool = p; pool_tp_destroy(t); return e; }
   }
   p->session = *out;
   t->session = *out;

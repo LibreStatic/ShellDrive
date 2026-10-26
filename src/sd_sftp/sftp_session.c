@@ -31,17 +31,19 @@ enum {
 };
 enum {
   PH_MAIN = 0, PH_FSTAT, PH_PR_LSTAT, PH_PR_OPENDIR, PH_PR_READDIR, PH_PR_CLOSE, PH_PR_STATVFS,
-  PH_ST_LIMITS, PH_ST_REALPATH, PH_ST_STAT, PH_ORPHAN
+  PH_ST_LIMITS, PH_ST_REALPATH, PH_ST_STAT, PH_ORPHAN, PH_STRIPED
 };
 enum { EXP_HANDLE = 1u << 0, EXP_DATA = 1u << 1, EXP_NAME = 1u << 2, EXP_ATTRS = 1u << 3, EXP_EXT = 1u << 4 };
-enum { Q_META = 0, Q_BULK = 1 };
+enum { Q_META = 0, Q_BULK = 1, Q_STRIPE = 2 };
 
 #define WIRE_BUCKETS   256u
 #define OBUF_HIGH      (512u * 1024u)
 #define TICK_MS        50u
 #define NO_OFF         UINT64_MAX
 
-#define NCH 2u
+/* Channels of a session: 0 meta, 1 primary bulk, 2..4 the pool members 1..3 (01 §10.9). */
+#define NCH 5u
+#define NMB NCH - 2u
 enum { SS_NONE = 0, SS_OPENING, SS_OPEN };
 
 typedef struct sftp_chan {
@@ -80,7 +82,7 @@ struct sd_sftp_session {
   sd_err lost_err; int lost_pending, lost_done;   /* lost_done: the current connection is dead */
   sftp_wire *wires[WIRE_BUCKETS];
   uint32_t next_id;
-  sftp_req *qh[2], *qt[2];
+  sftp_req *qh[3], *qt[3];             /* class queues: meta, bulk, striped (01 §10.9) */
   sftp_req *wait_head;                 /* WAIT_READY requests before READY (singly linked by qnext) */
   sftp_req *live_head;
   sftp_req *startup;
@@ -237,6 +239,11 @@ static void file_unlink_free(sd_sftp_session *s, sd_sftp_file *f)
   if (f->fnext) f->fnext->fprev = f->fprev;
   sd_mutex_unlock(&s->lock);
   sd_free(f->path);
+  {
+    uint32_t i;
+    for (i = 0; i < NMB; i++)
+      if (f->sub[i]) { sd_sftp_file *sub = f->sub[i]; f->sub[i] = NULL; sd_sftp_file_release(sub); }
+  }
   sd_free(f);
 }
 
@@ -254,6 +261,10 @@ static sd_sftp_file *file_new(sd_sftp_session *s, const char *path, uint32_t ofl
   f->meta = meta;
   f->generation = s->generation;
   f->ch = ch;
+  f->stripe_bytes = s->opt.stripe_bytes ? s->opt.stripe_bytes : (1024u * 1024u);
+  f->striped = (oflags & SD_SFTP_O_STRIPED) && !is_dir && !meta && !(oflags & SD_SFTP_O_APPEND);
+  f->route_map[0] = 0;
+  f->route_n = 1;
   memcpy(f->handle, h, hlen);
   f->hlen = hlen;
   sd_mutex_lock(&s->lock);
@@ -318,6 +329,7 @@ static sftp_wire *wire_take(sd_sftp_session *s, uint32_t id)
       *pp = w->hnext;
       ch->inflight--;
       ch->inflight_bytes -= w->bytes;
+      if (w->df) { w->df->data_wires--; w->df = NULL; }
       return w;
     }
   return NULL;
@@ -415,6 +427,16 @@ static void finish(sd_sftp_session *s, sftp_req *r, sd_err err)
 
 static int req_class(const sftp_req *r)
 {
+  if (r->target_ch) return Q_STRIPE;             /* internal request bound to a pool member channel */
+  if (r->f && r->f->striped) {                   /* striped handle: data and barriers, 01 §10.9 */
+    switch (r->op) {
+    case OP_READ: case OP_WRITE: case OP_FSTAT: case OP_FSETSTAT: case OP_FSYNC:
+    case OP_FSTATVFS: case OP_CLOSE:
+      return Q_STRIPE;
+    default:
+      break;
+    }
+  }
   switch (r->op) {
   case OP_CLOSE: case OP_READ: case OP_WRITE: case OP_READDIR: case OP_FSTAT: case OP_FSETSTAT:
   case OP_FSYNC: case OP_FSTATVFS: case OP_COPY:
@@ -785,6 +807,277 @@ static void emit(sd_sftp_session *s, sftp_chan *ch, sftp_req *r)
   sftp_pkt_end(o, st);
 }
 
+/* ---- pool striping (01 §10.9, 02 §5.6) ----
+ *
+ * A handle opened with SD_SFTP_O_STRIPED is served by the primary bulk channel and by one lazily
+ * opened sub-handle per pool member. Unit k = off / stripe_bytes goes to route_map[k % route_n];
+ * the table is recomputed only at a quiescent point (a barrier: no wire of the handle in flight),
+ * so a byte range always travels on the same connection in submission order. If a member is lost
+ * before the next barrier its units fall back to the primary until the table is recomputed. */
+
+static void route_submitted(sd_sftp_session *s, sftp_req *r);
+static void striped_barrier_reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, sd_rd *rd);
+static void stripe_release_subs(sd_sftp_file *f);
+static void flush(sd_sftp_session *s, sftp_chan *ch);
+static sftp_req *req_alloc(sd_sftp_session *s, uint32_t op, const sd_sftp_reqopt *o, sd_sftp_cb cb, void *ctx);
+static void member_lost(sd_sftp_session *s, uint32_t member);
+
+static void stripe_quiescent(sd_sftp_file *f)
+{
+  sd_sftp_session *s = f->s;
+  uint32_t n = 1, i;
+  f->route_map[0] = 0;
+  for (i = 0; i < NMB; i++) {
+    if (f->sub_state[i] != SST_FAILED && s->member_ready[i + 1] && s->ch[2 + i].ss == SS_OPEN)
+      f->route_map[n++] = (uint8_t)(i + 1);
+  }
+  f->route_n = n;
+}
+
+/* Member for a byte offset: 0 is the primary, 1..3 a pool member. */
+static uint32_t stripe_member(const sd_sftp_file *f, uint64_t off)
+{
+  uint32_t m;
+  if (f->route_n <= 1) return 0;
+  m = f->route_map[(off / f->stripe_bytes) % f->route_n];
+  if (m && (!f->s->member_ready[m] || f->s->ch[1 + m].ss != SS_OPEN)) m = 0;
+  return m;
+}
+
+/* ---- lazy sub-handles ---- */
+
+typedef struct sub_open { sd_sftp_file *f; uint32_t m; } sub_open;
+
+static void sub_open_cb(void *ctx, const sd_sftp_completion *c)
+{
+  sub_open *so = (sub_open *)ctx;
+  sd_sftp_file *f = so->f;
+  uint32_t m = so->m;
+  if (c->err == SD_OK && c->u.open.file) {
+    f->sub[m - 1] = c->u.open.file;     /* the callback owns this reference now */
+    f->sub_state[m - 1] = SST_OPEN;
+  } else {
+    f->sub_state[m - 1] = SST_FAILED;
+  }
+  sd_sftp_file_release(f);
+  sd_free(so);
+}
+
+/* Starts the OPEN of a sub-handle on member m (no CREAT/TRUNC/EXCL: the primary created the file).
+    Returns 0 when the request could not be created; the caller then routes to the primary. */
+static int start_sub_open(sd_sftp_session *s, sd_sftp_file *f, uint32_t m)
+{
+  sub_open *so;
+  sftp_req *r;
+  f->sub_state[m - 1] = SST_OPENING;
+  so = (sub_open *)sd_calloc(1, sizeof(*so));
+  if (!so) { f->sub_state[m - 1] = SST_FAILED; return 0; }
+  so->f = f; so->m = m;
+  r = req_alloc(s, OP_OPEN, NULL, sub_open_cb, so);
+  if (!r) { f->sub_state[m - 1] = SST_FAILED; sd_free(so); return 0; }
+  r->p1 = dup_str(f->path);
+  if (!r->p1) { f->sub_state[m - 1] = SST_FAILED; sd_free(so); req_free(r); return 0; }
+  r->u1 = f->oflags & ~(uint32_t)(SD_SFTP_O_CREAT | SD_SFTP_O_TRUNC | SD_SFTP_O_EXCL |
+                                  SD_SFTP_O_STRIPED | SD_SFTP_O_APPEND);
+  r->target_ch = 1 + m;
+  r->deadline = sd_tick_ms() + s->opt.default_timeout_ms;
+  sd_sftp_file_addref(f);
+  route_submitted(s, r);                /* already on the I/O thread */
+  return 1;
+}
+
+static void stripe_release_subs(sd_sftp_file *f)
+{
+  uint32_t i;
+  for (i = 0; i < NMB; i++) {
+    if (!f->sub[i]) continue;
+    f->sub[i]->wire_closed = 1;         /* the CLOSE went out (or the member is gone) */
+    f->sub_state[i] = SST_NONE;
+    sd_sftp_file_release(f->sub[i]);
+    f->sub[i] = NULL;
+  }
+}
+
+/* ---- striped wires ---- */
+
+static int emit_piece(sd_sftp_session *s, sftp_req *r, uint64_t off, uint32_t len, uint32_t m)
+{
+  sd_sftp_file *f = r->f;
+  sd_sftp_file *hf = m ? f->sub[m - 1] : f;
+  sftp_chan *ch;
+  sftp_wire *w;
+  size_t st;
+  if (m && (!hf || f->sub_state[m - 1] != SST_OPEN)) return 0;
+  ch = &s->ch[m ? 1 + m : f->ch];
+  if (!chan_live(s, ch)) return 0;
+  if (ch->inflight >= s->opt.max_inflight_reqs) return 0;
+  if (ch->obuf.len - ch->osent >= OBUF_HIGH) return 0;
+  if (ch->inflight_bytes > 0 && ch->inflight_bytes + len > s->opt.max_inflight_bytes) return 0;
+  w = wire_new(s, ch, r, PH_MAIN, r->op == OP_READ ? EXP_DATA : 0);
+  if (!w) return 0;
+  w->off = off; w->len = len; w->bytes = len; w->df = f;
+  ch->inflight_bytes += len;
+  f->data_wires++;
+  st = sftp_pkt_begin(&ch->obuf, r->op == OP_READ ? SFTP_READ : SFTP_WRITE, 1, w->id);
+  sd_wr_string(&ch->obuf, hf->handle, hf->hlen);
+  sd_wr_u64(&ch->obuf, off);
+  if (r->op == OP_READ) sd_wr_u32(&ch->obuf, len);
+  else { sd_wr_string(&ch->obuf, r->buf + (off - r->off), len); f->written = 1; }
+  sftp_pkt_end(&ch->obuf, st);
+  return 1;
+}
+
+/* Emits one barrier wire on `ch` for handle h (phase PH_STRIPED). */
+static void barrier_wire(sd_sftp_session *s, sftp_chan *ch, sftp_req *r, const sd_sftp_file *h)
+{
+  sd_wr *o = &ch->obuf;
+  sftp_wire *w;
+  size_t st;
+  switch (r->op) {
+  case OP_FSTAT:
+    w = wire_new(s, ch, r, PH_STRIPED, EXP_ATTRS);
+    if (!w) return;
+    st = sftp_pkt_begin(o, SFTP_FSTAT, 1, w->id); put_handle(o, h); sftp_pkt_end(o, st);
+    return;
+  case OP_FSETSTAT:
+    w = wire_new(s, ch, r, PH_STRIPED, 0);
+    if (!w) return;
+    st = sftp_pkt_begin(o, SFTP_FSETSTAT, 1, w->id); put_handle(o, h); sftp_enc_attrs(o, &r->a); sftp_pkt_end(o, st);
+    return;
+  case OP_FSTATVFS:
+    w = wire_new(s, ch, r, PH_STRIPED, EXP_EXT);
+    if (!w) return;
+    st = begin_ext(ch, w, "fstatvfs@openssh.com"); put_handle(o, h); sftp_pkt_end(o, st);
+    return;
+  case OP_FSYNC:
+    w = wire_new(s, ch, r, PH_STRIPED, 0);
+    if (!w) return;
+    st = begin_ext(ch, w, "fsync@openssh.com"); put_handle(o, h); sftp_pkt_end(o, st);
+    return;
+  case OP_CLOSE:
+    w = wire_new(s, ch, r, PH_STRIPED, 0);
+    if (!w) return;
+    st = sftp_pkt_begin(o, SFTP_CLOSE, 1, w->id); put_handle(o, h); sftp_pkt_end(o, st);
+    return;
+  default:
+    return;
+  }
+}
+
+static int emit_barrier(sd_sftp_session *s, sftp_req *r)
+{
+  sd_sftp_file *f = r->f;
+  uint32_t i;
+  if (!f) { finish(s, r, SD_E_INTERNAL); return 1; }
+  if (r->barrier_started) return 1;                  /* the wires are out; waiting for them */
+  if (f->data_wires > 0) return 0;                   /* wait for every in-flight part */
+  for (i = 0; i < NMB; i++) if (f->sub_state[i] == SST_OPENING) return 0;
+  if (!chan_live(s, &s->ch[f->ch])) return 0;
+  switch (r->op) {
+  case OP_FSYNC:    if (!(s->info.ext & SD_SFTP_EXT_FSYNC)) { finish(s, r, SD_E_UNSUPPORTED); return 1; } break;
+  case OP_FSTATVFS: if (!(s->info.ext & SD_SFTP_EXT_FSTATVFS)) { finish(s, r, SD_E_UNSUPPORTED); return 1; } break;
+  default: break;
+  }
+  r->emit_pending = 0;
+  r->barrier_started = 1;
+  barrier_wire(s, &s->ch[f->ch], r, f);
+  if (r->op == OP_FSYNC || r->op == OP_CLOSE) {
+    for (i = 0; i < NMB; i++) {
+      if (f->sub_state[i] != SST_OPEN || !f->sub[i]) continue;
+      if (f->sub[i]->wire_closed) continue;
+      if (r->op == OP_CLOSE) f->sub[i]->wire_closed = 1;
+      barrier_wire(s, &s->ch[2 + i], r, f->sub[i]);
+    }
+    if (r->op == OP_CLOSE) f->wire_closed = 1;
+  }
+  return 1;
+}
+
+/* Pumps one Q_STRIPE request. Returns 1 when a wire was emitted or the request finished, 0 when
+   blocked (channel limits, a sub-handle still opening, data wires not drained yet). */
+static int pump_striped_req(sd_sftp_session *s, sftp_req *r)
+{
+  sd_sftp_file *f = r->f;
+  if (r->done) return 1;
+  if (r->target_ch) {
+    sftp_chan *ch = &s->ch[r->target_ch];
+    if (!chan_live(s, ch)) return 0;
+    if (ch->inflight >= s->opt.max_inflight_reqs) return 0;
+    if (ch->obuf.len - ch->osent >= OBUF_HIGH) return 0;
+    emit(s, ch, r);
+    return 1;
+  }
+  if (r->op != OP_READ && r->op != OP_WRITE) return emit_barrier(s, r);
+  if (!f) { finish(s, r, SD_E_INTERNAL); return 1; }
+  for (;;) {
+    uint64_t off;
+    uint32_t len, m;
+    if (r->reissue) {
+      uint64_t unit_end;
+      sftp_range *g = r->reissue;
+      off = g->off; len = g->len;
+      unit_end = (off / f->stripe_bytes + 1) * f->stripe_bytes;
+      if (off + len > unit_end) len = (uint32_t)(unit_end - off);
+      if (off - r->off >= chunk_cutoff(r)) { r->reissue = g->next; sd_free(g); continue; }
+      m = stripe_member(f, off);
+      if (m && f->sub_state[m - 1] != SST_OPEN) {
+        if (f->sub_state[m - 1] == SST_NONE) start_sub_open(s, f, m);
+        return 0;
+      }
+      if (!emit_piece(s, r, off, len, m)) return 0;
+      if (len == g->len) { r->reissue = g->next; sd_free(g); }
+      else { g->off += len; g->len -= len; }
+      return 1;
+    }
+    if (r->emit_off >= chunk_cutoff(r)) return 0;    /* all parts are out (or cut short) */
+    len = next_chunk_bytes(s, r);
+    if (!len) return 0;
+    off = r->off + r->emit_off;
+    {
+      uint64_t unit_end = (off / f->stripe_bytes + 1) * f->stripe_bytes;
+      if (off + len > unit_end) len = (uint32_t)(unit_end - off);
+    }
+    m = stripe_member(f, off);
+    if (m && f->sub_state[m - 1] != SST_OPEN) {
+      if (f->sub_state[m - 1] == SST_NONE) start_sub_open(s, f, m);
+      return 0;
+    }
+    if (!emit_piece(s, r, off, len, m)) return 0;
+    r->emit_off += len;
+    return 1;
+  }
+}
+
+/* Serves the striped queue: one pass, then flushes the channels that received bytes. */
+static void schedule_striped(sd_sftp_session *s)
+{
+  sftp_req *r = s->qh[Q_STRIPE], *prev = NULL;
+  while (r) {
+    sftp_req *next = r->qnext;
+    if (!r->done) (void)pump_striped_req(s, r);
+    if (r->done || !req_has_more(r)) {           /* emitted everything (wires may still be out) */
+      if (prev) prev->qnext = next; else s->qh[Q_STRIPE] = next;
+      if (s->qt[Q_STRIPE] == r) {
+        sftp_req *t = s->qh[Q_STRIPE];
+        while (t && t->qnext) t = t->qnext;
+        s->qt[Q_STRIPE] = t;
+      }
+      r->qnext = NULL;
+      r->queued = 0;
+      req_maybe_free(s, r);
+    } else {
+      prev = r;
+    }
+    r = next;
+  }
+  {
+    uint32_t i;
+    for (i = 1; i < NCH; i++) {
+      if (s->ch[i].ss == SS_OPEN || s->ch[i].ss == SS_OPENING) flush(s, &s->ch[i]);
+    }
+  }
+}
+
 /* ---- output ---- */
 
 static sd_err tp_write(sd_sftp_session *s, uint32_t idx, const uint8_t *p, size_t n, size_t *acc)
@@ -858,6 +1151,7 @@ static void schedule(sd_sftp_session *s)
   /* ch[0] serves the bulk queue too unless a second channel is in use */
   schedule_chan(s, &s->ch[0], k_meta_bulk, s->nchan == 2 ? 1 : 2);
   if (s->nchan == 2) schedule_chan(s, &s->ch[1], k_bulk, 1);
+  schedule_striped(s);
 }
 
 /* ---- connection loss, close, reconnect ---- */
@@ -872,6 +1166,7 @@ static void detach_all(sd_sftp_session *s)
     while (w) {
       sftp_wire *n = w->hnext;
       sftp_req *r = w->r;
+      if (w->df) w->df->data_wires--;
       sd_free(w);
       if (r) { r->wires--; if (r->done) req_maybe_free(s, r); }
       w = n;
@@ -1156,6 +1451,19 @@ static void go_ready(sd_sftp_session *s)
   s->info.ssh = neg;
   sd_mutex_unlock(&s->lock);
   memset(s->member_ready, 0, sizeof(s->member_ready));   /* members re-admit after READY, 01 §10.9 */
+  {
+    uint32_t i;
+    for (i = 2; i < NCH; i++) {                          /* previous generation's member streams */
+      sftp_chan *ch = &s->ch[i];
+      ch->ss = SS_NONE;
+      ch->got_version = 0;
+      ch->ilen = 0;
+      ch->inflight = 0;
+      ch->inflight_bytes = 0;
+      sd_wr_reset(&ch->obuf);
+      ch->osent = 0;
+    }
+  }
 
   sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "ready: generation %u channels=%u ext=0x%x max_read=%llu max_write=%llu quirks=0x%x",
          s->generation, s->nchan, s->info.ext, (unsigned long long)s->info.limits.max_read,
@@ -1327,6 +1635,38 @@ static void keep_status(sftp_req *r, const sftp_status *st)
   r->msg = st->msg.n ? sanitize_dup(st->msg.p, st->msg.n) : NULL;
 }
 
+/* Reply to a barrier wire of a striped handle (fstat/fsetstat/fsync/fstatvfs/close). All wires of
+   the request must settle before the request completes; the first error wins. */
+static void striped_barrier_reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, sd_rd *rd)
+{
+  sftp_status st;
+  SD_UNUSED(w);
+  if (r->done) return;
+  if (type == SFTP_STATUS) {
+    if (parse_status(rd, &st) != 0) { lose(s, SD_E_PROTOCOL); return; }
+    if (st.code != SFTP_FX_OK && r->cerr == SD_OK) {
+      r->cerr = sd_sftp_status_to_err(st.code);
+      keep_status(r, &st);
+    }
+  } else if (type == SFTP_ATTRS && r->op == OP_FSTAT) {
+    if (sftp_dec_attrs(rd, &r->c.u.stat.attrs, s->scratch_ext, SFTP_MAX_EXT_PAIRS) != 0) {
+      lose(s, SD_E_PROTOCOL);
+      return;
+    }
+  } else if (type == SFTP_EXTENDED_REPLY && r->op == OP_FSTATVFS) {
+    if (sftp_parse_statvfs(rd, &r->c.u.statvfs.v) != 0) { lose(s, SD_E_PROTOCOL); return; }
+  } else {
+    lose(s, SD_E_PROTOCOL);
+    return;
+  }
+  if (r->wires) return;
+  if (r->f) {
+    stripe_quiescent(r->f);                 /* a barrier is the only quiescent point (01 §10.9) */
+    if (r->op == OP_CLOSE) stripe_release_subs(r->f);
+  }
+  finish(s, r, r->cerr);
+}
+
 /* Starts a refinement probe for r after a FAILURE; returns 1 if a probe was queued. */
 static int start_refine(sd_sftp_session *s, sftp_req *r)
 {
@@ -1374,6 +1714,13 @@ static void open_handle_reply(sd_sftp_session *s, sftp_req *r, const sftp_wire *
     r->f->written = 0;
     r->f->ch = w->ch;
     r->f->generation = s->generation;
+    r->f->data_wires = 0;
+    if (r->f->striped) {              /* a new generation: sub-handles are stale (01 §10.9) */
+      stripe_release_subs(r->f);
+      memset(r->f->sub_state, 0, sizeof(r->f->sub_state));
+      r->f->route_n = 1;
+      r->f->route_map[0] = 0;
+    }
     InterlockedExchange(&r->f->stale, 0);
     if (r->f->is_dir) { r->c.u.open.file = r->f; finish(s, r, SD_OK); return; }
     queue_phase(s, r, PH_FSTAT, 1);
@@ -1680,6 +2027,7 @@ static void reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, s
   if (r->op == OP_STARTUP) { startup_reply(s, r, w, type, rd); return; }
   if (r->op == OP_READ && w->phase == PH_MAIN) { read_reply(s, r, w, type, rd); return; }
   if (r->op == OP_WRITE && w->phase == PH_MAIN) { write_reply(s, r, w, rd); return; }
+  if (w->phase == PH_STRIPED) { striped_barrier_reply(s, r, w, type, rd); return; }
   if (w->phase >= PH_PR_LSTAT && w->phase <= PH_PR_STATVFS) { probe_reply(s, r, w, type, rd); return; }
 
   if (w->phase == PH_FSTAT) {
@@ -1689,8 +2037,9 @@ static void reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, s
       if (sftp_dec_attrs(rd, &r->c.u.open.attrs, s->scratch_ext, SFTP_MAX_EXT_PAIRS) != 0) { lose(s, SD_E_PROTOCOL); return; }
       if (f) { f->attrs_at_open = r->c.u.open.attrs; f->attrs_at_open.ext = NULL; f->attrs_at_open.ext_count = 0; }
     }
-    if (r->op == OP_REOPEN) { r->c.u.open.file = r->f; }
-    else { r->c.u.open.file = r->newf; r->newf = NULL; }
+    if (r->op == OP_REOPEN) { r->c.u.open.file = r->f; if (r->f->striped) stripe_quiescent(r->f); }
+    else { r->c.u.open.file = r->newf; r->newf = NULL;
+           if (r->c.u.open.file->striped) stripe_quiescent(r->c.u.open.file); }
     finish(s, r, SD_OK);
     return;
   }
@@ -1842,6 +2191,8 @@ static void sink_on_open(void *ctx, sd_err err)
   if (err != SD_OK) {
     ch->ss = SS_NONE;
     if (ch->idx == 1) degrade_bulk(s, err);     /* e.g. MaxSessions 1: continue with one channel */
+    else if (ch->idx >= 2)                     /* member stream: not a session loss */
+      sftp_session_pool_change(s, ch->idx - 1, 0, err);
     else if (!s->lost_done) lose(s, err);
     stream_gone(s);
     return;
@@ -1850,6 +2201,11 @@ static void sink_on_open(void *ctx, sd_err err)
   if (s->lost_done || s->close_requested) {   /* the connection is already being torn down */
     s->tp_close_called = 0;
     close_transport(s);
+    return;
+  }
+  if (ch->idx >= 2) {                          /* admitted member: its channel already ran INIT/VERSION */
+    ch->got_version = 1;
+    io_epilogue(s);
     return;
   }
   st = sftp_pkt_begin(&ch->obuf, SFTP_INIT, 0, 0);
@@ -1947,6 +2303,7 @@ static void sink_on_eof(void *ctx)
   sftp_chan *ch = (sftp_chan *)ctx;
   sd_sftp_session *s = ch->s;
   if (s->finalized) return;
+  if (ch->idx >= 2) { io_epilogue(s); return; }   /* member: on_closed does the cleanup */
   stream_lost(s, ch, SD_E_DISCONNECTED);
   io_epilogue(s);
 }
@@ -1957,6 +2314,12 @@ static void sink_on_closed(void *ctx, sd_err why)
   sd_sftp_session *s = ch->s;
   ch->ss = SS_NONE;
   if (s->finalized) return;
+  if (ch->idx >= 2) {                             /* a pool member died: the session stays READY */
+    sftp_session_pool_change(s, ch->idx - 1, 0,
+                             why != SD_OK && why != SD_E_SHUTDOWN ? why : SD_E_DISCONNECTED);
+    stream_gone(s);
+    return;
+  }
   if (!s->close_requested) stream_lost(s, ch, why != SD_OK && why != SD_E_SHUTDOWN ? why : SD_E_DISCONNECTED);
   stream_gone(s);
 }
@@ -1984,17 +2347,128 @@ void sftp_session_auth_prompt(sd_sftp_session *s)
     set_state(s, SD_SFTP_ST_AUTH_REQUIRED, SD_E_AUTH_REQUIRED);
 }
 
+/* Removes every wire of r (on every channel) without touching r. */
+static void req_drop_all_wires(sd_sftp_session *s, sftp_req *r)
+{
+  uint32_t b;
+  for (b = 0; b < WIRE_BUCKETS; b++) {
+    sftp_wire **pp = &s->wires[b];
+    while (*pp) {
+      sftp_wire *w = *pp;
+      if (w->r != r) { pp = &w->hnext; continue; }
+      *pp = w->hnext;
+      s->ch[w->ch].inflight--;
+      s->ch[w->ch].inflight_bytes -= w->bytes;
+      if (w->df) { w->df->data_wires--; w->df = NULL; }
+      r->wires--;
+      sd_free(w);
+    }
+  }
+}
+
+/* Adds a lost read range back to the request; the pump reissues it on the primary. */
+static void req_requeue_read(sd_sftp_session *s, sftp_req *r, uint64_t off, uint32_t len)
+{
+  sftp_range *g = (sftp_range *)sd_alloc(sizeof(*g));
+  if (!g) { finish(s, r, SD_E_NO_MEMORY); return; }
+  g->off = off; g->len = len; g->next = r->reissue;
+  r->reissue = g;
+  if (!r->queued && !r->done) q_push(s, r, 1);
+}
+
+/* A pool member is gone: reissue its in-flight reads on the primary, fail its in-flight writes
+   with session_ready (the VFS resubmits them at once), drop its sub-handles, stay READY. */
+static void member_lost(sd_sftp_session *s, uint32_t member)
+{
+  uint32_t ci = 1 + member, b;
+  sd_sftp_file *f;
+  if (member < 1 || member > NMB) return;
+  s->member_ready[member] = 0;
+  for (b = 0; b < WIRE_BUCKETS; b++) {
+    sftp_wire **pp = &s->wires[b];
+    while (*pp) {
+      sftp_wire *w = *pp;
+      sftp_req *r = w->r;
+      if (w->ch != ci) { pp = &w->hnext; continue; }
+      *pp = w->hnext;
+      s->ch[ci].inflight--;
+      s->ch[ci].inflight_bytes -= w->bytes;
+      if (w->df) { w->df->data_wires--; w->df = NULL; }
+      if (!r) { sd_free(w); continue; }
+      r->wires--;
+      if (r->done) { sd_free(w); req_maybe_free(s, r); continue; }
+      if (r->op == OP_READ && w->phase == PH_MAIN) {
+        req_requeue_read(s, r, w->off, w->len);
+        sd_free(w);
+        continue;
+      }
+      if (r->op == OP_WRITE && w->phase == PH_MAIN) {
+        req_drop_all_wires(s, r);
+        sd_free(w);
+        r->c.session_ready = 1;
+        finish(s, r, SD_E_DISCONNECTED);
+        continue;
+      }
+      if (r->target_ch == ci) {                 /* the sub-handle OPEN failed */
+        sd_free(w);
+        finish(s, r, SD_E_DISCONNECTED);
+        continue;
+      }
+      /* barrier wire on the dead member: the handle died with it, so it counts as done */
+      sd_free(w);
+      if (r->barrier_started && !r->wires) {
+        if (r->f) {
+          stripe_quiescent(r->f);
+          if (r->op == OP_CLOSE) stripe_release_subs(r->f);
+        }
+        finish(s, r, r->cerr);
+      }
+    }
+  }
+  /* Drop the member's sub-handles (their server-side handles died with it). */
+  for (;;) {
+    sd_sftp_file *sub = NULL;
+    sd_mutex_lock(&s->lock);
+    for (f = s->files; f; f = f->fnext) {
+      if (f->striped && f->sub[member - 1]) {
+        sub = f->sub[member - 1];
+        f->sub[member - 1] = NULL;
+        f->sub_state[member - 1] = SST_FAILED;
+        break;
+      }
+    }
+    sd_mutex_unlock(&s->lock);
+    if (!sub) break;
+    sub->wire_closed = 1;                       /* the connection is gone: no CLOSE to send */
+    sd_sftp_file_release(sub);
+  }
+  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u lost; the session stays ready", member);
+}
+
 /* 01 §10.9: a pool member settled (I/O thread). admitted: 1 the member is READY, 0 it was dropped
    (reason tells why). The pool count includes the primary. EV_POOL is informational only. */
 void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason)
 {
   sd_sftp_event e;
   uint32_t count = 1, i;
-  if (!s || member == 0 || member > 3) return;
-  for (i = 1; i <= 3; i++)
-    if (s->member_ready[i] || (i == member && admitted)) count++;
-  if (!admitted) s->member_ready[member] = 0;
-  else s->member_ready[member] = 1;
+  if (!s || member == 0 || member > NMB) return;
+  if (!admitted) {
+    member_lost(s, member);
+  } else if ((sd_sftp_state)s->state == SD_SFTP_ST_READY && !s->lost_done && !s->close_requested &&
+             s->ch[1 + member].ss == SS_NONE && s->tp.open_stream) {
+    sftp_chan *ch = &s->ch[1 + member];
+    ch->ss = SS_OPENING;
+    if (s->tp.open_stream(s->tp.ctx, 1 + member, &k_sink, ch) == SD_OK) {
+      s->member_ready[member] = 1;              /* the stream opens asynchronously */
+    } else {
+      ch->ss = SS_NONE;
+      s->member_ready[member] = 0;
+      reason = SD_E_DISCONNECTED;
+      admitted = 0;
+    }
+  }
+  for (i = 1; i <= NMB; i++)
+    if (s->member_ready[i]) count++;
   sd_mutex_lock(&s->lock);
   s->info.connections = count;
   sd_mutex_unlock(&s->lock);
@@ -2436,7 +2910,11 @@ sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out)
   out->conn[0].tx_bps = s->tx_bps;
   out->conn[0].rx_total = (uint64_t)(sd_atomic_load64(&s->rx_total) - sd_atomic_load64(&s->gen_rx0));
   out->conn[0].tx_total = (uint64_t)(sd_atomic_load64(&s->tx_total) - sd_atomic_load64(&s->gen_tx0));
-  inflight = s->ch[0].inflight + s->ch[1].inflight;     /* racy snapshot; statistics only */
+  inflight = 0;
+  {
+    uint32_t i;
+    for (i = 0; i < NCH; i++) inflight += s->ch[i].inflight;   /* racy snapshot; statistics only */
+  }
   live = s->live;
   out->conn[0].inflight_reqs = inflight;
   out->conn[0].queued_reqs = live > 0 && (uint32_t)live > inflight ? (uint32_t)live - inflight : 0;
@@ -2560,7 +3038,7 @@ sd_err sd_sftp_open(sd_sftp_session *s, const char *path, uint32_t oflags, const
   sftp_req *r;
   sd_err e;
   if (!same_channel_as)
-    return submit_path(s, OP_OPEN, path, NULL, create_attrs, oflags & ~(uint32_t)SD_SFTP_O_STRIPED, o, cb, ctx);
+    return submit_path(s, OP_OPEN, path, NULL, create_attrs, oflags, o, cb, ctx);
   /* copy-data affinity: the new handle lives on the channel of same_channel_as */
   if (!s || !cb || same_channel_as->s != s) return SD_E_INVALID_PARAM;
   if (same_channel_as->stale) return SD_E_STALE_HANDLE;
@@ -2571,7 +3049,7 @@ sd_err sd_sftp_open(sd_sftp_session *s, const char *path, uint32_t oflags, const
   r->p1 = dup_str(path);
   if (!r->p1) { req_free(r); return SD_E_NO_MEMORY; }
   if (create_attrs) { r->a = *create_attrs; r->a.ext = NULL; r->a.ext_count = 0; r->has_attrs = 1; }
-  r->u1 = oflags & ~(uint32_t)SD_SFTP_O_STRIPED;
+  r->u1 = oflags;
   sd_sftp_file_addref(same_channel_as);
   r->f2 = same_channel_as;
   return req_submit(s, r, o);
