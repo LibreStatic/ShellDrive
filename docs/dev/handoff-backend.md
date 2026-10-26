@@ -5,6 +5,94 @@ Date: 2026-10-25. Repo `github.com/LibreStatic/ShellDrive`. Backend work continu
 of every milestone** in `docs/design/00-integration-review.md` §6. Frontend (GUI) work is handed off separately to
 the lead session, which validates and implements it.
 
+## State update: 2026-10-26, striping session: tested, hardened, one real bug fixed; CI gate red; interop pending
+
+Read this first; on striping state it supersedes the two 2026-10-25 sections below.
+
+**Where things stand.** `wip/m2-striping` (worktree `C:\Users\facum\ShellDrive-striping`) is clean at
+`8703f72`, four commits on top of `5923090`:
+
+1. `99d6042` "Implement pool striping over member streams (01 10.9, increment 2)" - the handed-off WIP,
+   including this document's increment-2 section.
+2. `818c000` "Fix the sub-open request accounting in pool striping" - **a real defect the new tests
+   caught**: `start_sub_open()` (sftp_session.c:868) submitted its internal request without incrementing
+   `s->live`, while `deliver()` (sftp_session.c:415) decrements it for every request, so after the first
+   member sub-open `(uint32_t)s->live` wrapped to ~4e9 and every later submission returned `SD_E_BUSY`
+   (measured: session READY, queued=0, inflight=0, fsync -> 23 "busy"). Fixed with the matching increment;
+   `req_submit()`'s SD_E_BUSY rejection path (sftp_session.c:2969-2973) verified symmetric; barriers count
+   `data_wires`/`SST_OPENING`, not `live`, so no double counting.
+3. `93cc916` "Add fake-transport unit tests for pool striping" - `sftp_test_tp.{c,h}` now models streams
+   0..4 (members 1..3 at idx 2..4, `SD_SFTP_TP_POOL`, `notify_ready` admitting through
+   `sftp_session_pool_change()`, `member_stats` writing `out[idx-1]`, plus `fake_drop_member`,
+   `fake_stream_packets`, `fake_set_session`); `tests/unit/sd_sftp/test_striping.c` (11 tests, registered
+   in CMakeLists.txt and main.c) covering unit routing, lazy sub-opens, barriers across every sub-handle
+   with first-error-wins, member loss (in-flight READs re-issued on the primary with correct bytes,
+   WRITEs completing SD_E_DISCONNECTED + maybe_executed + session_ready with the session still READY and a
+   later striped open working), route recompute at the quiescent point, and regressions (plain handles /
+   APPEND / CLASS_META / directories / no-member transports never touch a member stream).
+4. `8703f72` "Guard pool member events with a per-member generation" - closes hand-off risks 2, 3 and 5:
+   stale posted member events are ignored by generation (session-side guard at sftp_session.c:2482, the
+   transport-side guard is sftp_ssh.c:422/436/787/863/933), a double drop emits exactly one EV_POOL and
+   runs `member_lost` once, `stripe_bytes` is clamped to the negotiated limits (test_striping.c:1036/1088/
+   1123). One falsified unit test per risk (each fails with its guard disabled). Risk 4 evaluated and
+   dropped: no real concurrency - all `f->sub` access is on the session I/O thread and `s->files` is
+   walked under `s->lock`; the only caller-thread `file_unlink_free` path runs after the I/O thread is
+   done (sftp_session.c:1378-1387).
+
+Gates that ran green in the worktree: x64-modern Debug build (zero warnings) + `ctest -R ^unit\.sftp$`
+(56 tests), and the x64-xp flavour (configure + build + unit.sftp, after an XP repair round). Known gap:
+the transport-side generation guard in `sftp_ssh.c` is only reachable through a real SSH session - exactly
+what the pending interop phase exercises.
+
+**The main-tree CI gate is RED, which blocks the landing.** `tools\ci-local.ps1 -Clean` finished on
+`wip/m2-backend` at `5923090` (log: `build/ci-local-clean.log`) with three independent causes:
+
+- x64-modern FAIL at minute 0: `Remove-Item` of `build\x64-modern` hit a file locked by a zombie process
+  from the previous session's interrupted run. Environment only - a plain re-run clears it.
+- x86-ia32-debug and x86-sse2-debug: `unit.crypto_pk` exceeds ctest's 300 s TIMEOUT. It is NOT broken:
+  run by hand it completes `exit=0, 26 tests, 0 failed` in roughly 25-30 minutes (Debug + 32-bit limbs +
+  CNG-diff comparisons + bench at 3.5 ops/s for dh group16). Fix: raise the ctest TIMEOUT for that test
+  (config- or flavour-scoped) or trim/skip the bench in x86 Debug.
+- x64-analysis: `reconnect_drop_during_pipelined_reads` got `SD_E_DISCONNECTED` (18) where the test
+  requires `SD_E_STALE_HANDLE` (19) at `tests/unit/sd_sftp/test_reconnect.c:466` - a stale-marking race
+  right after the drop, seen only in this preset. Decide which error is contractually first and make the
+  marking (or the test's wait) deterministic.
+
+**What is left of increment 2** (the workflow was stopped by the user on purpose, mid-interop; nothing
+was lost and both trees are clean):
+
+1. Interop: extend `tests/unit/sd_sftp/test_ssh_interop.c` with m2_striping_* tests against the wsl-sshd
+   fixture: connections=3, a >= 32 MiB striped write/read with byte-exact verify, `stats.conn[1..3]`
+   carrying data, and exactly one member connection dropped mid-transfer through the fixture's fault
+   injection (`tests/fixtures/wsl-sshd/ctl.ps1`) - in-flight reads recover on the primary, in-flight
+   writes surface SD_E_DISCONNECTED with maybe_executed=1 and session_ready=1, the session stays usable;
+   leave the fixture healthy afterwards. Stay inside the 900 s per-test budget.
+2. Independent review of `git diff 5923090..HEAD` (concurrency, the risk list, test quality, NCH 2->5
+   regressions), then the contract docs: 01 §10.9 (stream idx, PH_STRIPED, barrier ordering,
+   member_stats indexing out[idx-1]), the stale "[0] of out is unused" comment for member_stats in
+   `sd_sftp_transport.h`, a striping section in `docs/dev/m2-notes.md`, and a final update to this file.
+3. Repair the three CI causes above on `wip/m2-backend`, then land `wip/m2-striping` (rebase or merge);
+   a fresh full `ci-local -Clean` is the M2 gate afterwards.
+4. Then the rest of M2 in order: increment 3 (member reconnect/backoff, 500 ms admission stagger,
+   3-strike abandonment), system proxy opt-in + TM-R10 tests, the vfs striping policy (02 §5.6),
+   the 1 GiB pool speed-up measurement, `sd_mount` mapping + CLI with l10n, `docs/dev/m2-acceptance.md`
+   and the D38 review pass 1 package. After M2: M1 remainder (the non-blocked items), then M3-M6 backend
+   per the milestone list below.
+
+**Workflow resume (optional, only on the user's ask).** The dynamic-workflow run
+`dwfrun-6119638b-437d-451c-874a-141e3c6b1b84` implements the phases above and was stopped by the user
+mid-interop; everything through the x64-xp gate is cached under that id (ResumeWorkflowRun continues it;
+its script is `.zcode/workflow-drafts/Striping-del-pool-M2-incremento-2.dwf.ts`). Provider notes from
+this session: TokenHarbor `deepseek-v4.1-flash:free$high` works (it produced all the committed work
+above) but queues long and rate-limits with backoff; the NIM provider rejected the harness reasoning
+parameters (`enable_thinking`, `reasoning`) with 400s on every model and level tried (nemotron enabled
+and disabled, glm-5.3-flash high), so it is unusable for workflow subagents until that clears;
+NIM `deepseek-ai/deepseek-v4.1-flash$high` was switched to last and was stopped before proving itself.
+
+Environment at hand-off: matrix fixtures up except squid/dante (never run); wsl-sshd fixture up; no CI
+running; the striping worktree is the only other checkout. Everything else in the milestone list below
+still applies.
+
 ## State update: 2026-10-25, pool striping (increment 2) - worktree `wip/m2-striping`
 
 **Read this first.** Increment 2 (striping, 01 §10.9 / 02 §5.6) is implemented but **uncommitted** and **not
