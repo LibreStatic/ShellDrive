@@ -63,9 +63,16 @@ typedef struct sd_sftp_transport {
   sd_err (*write_stream)(void *ctx, uint32_t idx, const uint8_t *p, size_t n, size_t *accepted);
   void   (*consumed_stream)(void *ctx, uint32_t idx, size_t n);
   void   (*rtt)(void *ctx, uint32_t *srtt_ms, uint32_t *rttvar_ms);
+  /* ---- M2 pool (zero when unused; a pool transport reports caps & SD_SFTP_TP_POOL) ---- */
+  /* Called on the I/O thread after the primary reported READY. realpath_dot is the primary's
+     realpath(".") (the pool admission check, 01 §10.9); NULL when the session never learned it. */
+  void   (*notify_ready)(void *ctx, const char *realpath_dot);
+  /* Per-member statistics, members 1..3 ([0] of out is unused; the primary is the session's own);
+     any thread. *count receives the number of ADMITTED members. */
+  void   (*member_stats)(void *ctx, sd_sftp_conn_stats out[3], uint32_t *count);
 } sd_sftp_transport;
 
-enum { SD_SFTP_TP_REOPEN = 1u << 0, SD_SFTP_TP_STREAMS = 1u << 1 };
+enum { SD_SFTP_TP_REOPEN = 1u << 0, SD_SFTP_TP_STREAMS = 1u << 1, SD_SFTP_TP_POOL = 1u << 2 };
 
 /* Like sd_sftp_session_create() but over an arbitrary transport. On failure the transport is not
    destroyed (the caller still owns it); on success the session owns it. */

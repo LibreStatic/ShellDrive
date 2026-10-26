@@ -32,6 +32,7 @@
 
 static char g_dir[MAX_PATH], g_dir_wsl[MAX_PATH];
 static char g_user[64], g_key[MAX_PATH], g_hostkey[256];
+static char g_key_enc[MAX_PATH], g_pass[128];
 static uint16_t g_port = 2222;
 /* The fixture's direct address in WSL NAT mode ("direct_host" in state/env) bypasses the localhost relay,
    which can wedge when sshd is killed during heavy traffic; SD_SSHD_VIA_RELAY=1 forces 127.0.0.1. */
@@ -74,6 +75,8 @@ static int load_env(void)
       MultiByteToWideChar(CP_UTF8, 0, g_host, -1, g_whost, (int)SD_COUNTOF(g_whost));
     }
     else if (strcmp(line, "key") == 0) _snprintf_s(g_key, sizeof(g_key), _TRUNCATE, "%s/state/%s", g_dir, eq + 1);
+    else if (strcmp(line, "key_enc") == 0) _snprintf_s(g_key_enc, sizeof(g_key_enc), _TRUNCATE, "%s/state/%s", g_dir, eq + 1);
+    else if (strcmp(line, "pass") == 0) _snprintf_s(g_pass, sizeof(g_pass), _TRUNCATE, "%s", eq + 1);
     else if (strcmp(line, "hostkey") == 0) _snprintf_s(g_hostkey, sizeof(g_hostkey), _TRUNCATE, "%s", eq + 1);
   }
   fclose(f);
@@ -168,6 +171,7 @@ typedef struct ev {
   sd_mutex lock;
   sd_event changed;
   uint32_t ready_gen, channels;
+  uint32_t n_pool, pool_conns;
   sd_sftp_state last;
   int n_disc, n_wait, n_failed;
   sd_err disc_reason;
@@ -184,6 +188,11 @@ static void ev_cb(void *ctx, const sd_sftp_event *e)
     if (e->state == SD_SFTP_ST_FAILED) x->n_failed++;
     printf("  [event] state %d reason %s retry %u attempt %u\n", (int)e->state, sd_err_name(e->reason),
            e->retry_in_ms, e->attempt);
+  } else if (e->type == SD_SFTP_EV_POOL) {
+    x->n_pool++;
+    x->pool_conns = e->connections;
+    printf("  [event] POOL member %u -> %u connection(s), reason %s\n", e->member,
+           e->connections, sd_err_name(e->reason));
   } else if (e->type == SD_SFTP_EV_READY_INFO) {
     x->ready_gen = e->info->generation;
     x->channels = e->info->channels;
@@ -217,9 +226,17 @@ static int wait_not_ready(sd_sftp_session *s, ev *x, uint32_t ms)
   return 1;
 }
 
+static char g_answer_passphrase;    /* on_prompt answers key passphrases with g_pass */
+
 static void on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *a, const sd_hostkey_prompt_info *h)
 {
-  SD_UNUSED(ctx); SD_UNUSED(a); SD_UNUSED(h);
+  SD_UNUSED(ctx); SD_UNUSED(h);
+  if (g_answer_passphrase && a && a->kind == SD_PROMPT_KEY_PASSPHRASE) {
+    const char *resp[1] = { g_pass };
+    sd_prompt_answer(p, 1, resp);
+    return;
+  }
+  SD_UNUSED(a);
   sd_prompt_cancel(p);                 /* known host, plain key: no prompt is expected */
 }
 
@@ -229,7 +246,7 @@ typedef struct fx {
   ev e;
 } fx;
 
-static int fx_start(fx *x, uint32_t keepalive_ms)
+static int fx_start_opt(fx *x, uint32_t keepalive_ms, uint32_t connections, const char *key_utf8)
 {
   sd_ssh_config cfg;
   sd_ssh_hop hop;
@@ -258,7 +275,7 @@ static int fx_start(fx *x, uint32_t keepalive_ms)
   memset(&hop, 0, sizeof(hop));
   memset(&id, 0, sizeof(id));
   memset(&cb, 0, sizeof(cb));
-  MultiByteToWideChar(CP_UTF8, 0, g_key, -1, wkey, MAX_PATH);
+  MultiByteToWideChar(CP_UTF8, 0, key_utf8 ? key_utf8 : g_key, -1, wkey, MAX_PATH);
   id.kind = SD_ID_FILE;
   id.path = wkey;
   hop.host = g_whost;
@@ -276,6 +293,7 @@ static int fx_start(fx *x, uint32_t keepalive_ms)
   cfg.keepalive_interval_ms = keepalive_ms;
   cb.on_prompt = on_prompt;
   sd_sftp_options_init(&opt);
+  opt.connections = connections;
   opt.reconnect.initial_delay_ms = 300;
   opt.reconnect.max_delay_ms = 2000;
   opt.default_timeout_ms = 30000;
@@ -286,6 +304,11 @@ static int fx_start(fx *x, uint32_t keepalive_ms)
   printf("  first connect ended in state %d; retrying with reconnect_now\n", (int)sd_sftp_session_state(x->s));
   if (sd_sftp_session_reconnect_now(x->s) != SD_OK) return 0;
   return wait_gen(x->s, &x->e, 1, 60000);
+}
+
+static int fx_start(fx *x, uint32_t keepalive_ms)
+{
+  return fx_start_opt(x, keepalive_ms, 1, NULL);
 }
 
 static void fx_stop(fx *x)
@@ -592,12 +615,73 @@ SD_TEST(m1_frozen_link_liveness_probe)
   (void)ctl("reap");
 }
 
+/* ---- M2 connection pool (01 §10.9) ---- */
+
+/* Waits until the session reports `want` connections (stats include admitted members). */
+static int wait_pool(fx *x, uint32_t want, uint32_t ms)
+{
+  sd_sftp_stats st;
+  uint64_t end = sd_tick_ms() + ms;
+  for (;;) {
+    if (sd_sftp_session_stats(x->s, &st) == SD_OK && st.conn_count >= want) return 1;
+    if (sd_tick_ms() >= end) return 0;
+    (void)sd_event_wait(&x->e.changed, 100);
+  }
+}
+
+SD_TEST(m2_pool_admits_members)
+{
+  fx x;
+  sd_sftp_stats st;
+  if (!fx_start_opt(&x, 15000, 3, NULL)) { SD_CHECK(!"fixture connect failed"); return; }
+  /* admission happens after READY: INIT/VERSION/realpath per member, one at a time */
+  if (!wait_pool(&x, 3, 30000)) {
+    sd_sftp_session_stats(x.s, &st);
+    printf("  pool reached %u/3 connections\n", st.conn_count);
+    SD_CHECK(!"pool members were not admitted");
+  } else {
+    sd_sftp_session_stats(x.s, &st);
+    SD_CHECK_EQ_INT(st.conn_count, 3);
+    SD_CHECK(st.conn[1].ready && st.conn[2].ready);
+    SD_CHECK(x.e.n_pool >= 2);
+    sd_mutex_lock(&x.e.lock);
+    SD_CHECK_EQ_INT(x.e.pool_conns, 3);
+    sd_mutex_unlock(&x.e.lock);
+  }
+  fx_stop(&x);
+}
+
+/* The 2FA rule: authentication that showed a prompt (here: a key passphrase answered by the
+   "user") keeps the pool at 1 for the session, 01 §10.9. */
+SD_TEST(m2_pool_interactive_stays_at_one)
+{
+  fx x;
+  sd_sftp_stats st;
+  if (!g_key_enc[0] || !g_pass[0]) { printf("  [skip] no encrypted fixture key\n"); return; }
+  g_answer_passphrase = 1;
+  if (!fx_start_opt(&x, 15000, 3, g_key_enc)) {
+    g_answer_passphrase = 0;
+    SD_CHECK(!"fixture connect failed");
+    return;
+  }
+  g_answer_passphrase = 0;
+  Sleep(3000);                          /* admission would have started right after READY */
+  sd_sftp_session_stats(x.s, &st);
+  SD_CHECK_EQ_INT(st.conn_count, 1);
+  sd_mutex_lock(&x.e.lock);
+  SD_CHECK_EQ_INT(x.e.n_pool, 0);
+  sd_mutex_unlock(&x.e.lock);
+  fx_stop(&x);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m1_session_two_channels),
   SD_TEST_ENTRY(m1_kill_sshd_during_pipelined_read),
   SD_TEST_ENTRY(m1_kill_sshd_during_pipelined_write),
   SD_TEST_ENTRY(m1_tcp_drop_reconnects),
   SD_TEST_ENTRY(m1_frozen_link_liveness_probe),
+  SD_TEST_ENTRY(m2_pool_admits_members),
+  SD_TEST_ENTRY(m2_pool_interactive_stays_at_one),
 };
 
 int main(int argc, char **argv)

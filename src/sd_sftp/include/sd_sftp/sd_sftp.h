@@ -3,8 +3,13 @@
  *
  * M0 scope: core operations, pipelining, caller deadlines, error refinement, TM-R12 dirent filtering.
  * M1: meta + bulk SFTP channels with auto-degrade to one (D19), the reconnect loop with generations
- * and stale handles (01 §10.6), sd_sftp_file_reopen, statistics. The pool (connections > 1,
- * SD_SFTP_O_STRIPED) is M2: connections is clamped to 1 and STRIPED is ignored.
+ * and stale handles (01 §10.6), sd_sftp_file_reopen, statistics.
+ * M2 pool (01 §10.9): connections 1..4 opens secondary members after READY when authentication was
+ * non-interactive (prompts on a member are cancelled, never shown); every member must present the
+ * same host-key fingerprint and the same realpath(".") as the primary, otherwise admissions stop for
+ * the generation. Members carry one bulk channel; EV_POOL events and sd_sftp_session_stats()
+ * report them. Striping (SD_SFTP_O_STRIPED routing, barriers, per-member loss semantics) is not
+ * implemented yet: the flag is ignored and data flows over the primary.
  *
  * Reconnect contract (M1, 01 §10.4/§10.6; what sd_vfs relies on):
  * - The sd_sftp_session object survives reconnects. generation starts at 1 with the first READY and

@@ -154,3 +154,23 @@ the first failing row instead of collecting the table).
 | `interop.ssh_matrix_auth_certs` | `srv_cert` | user certificates of every key type authenticate via `TrustedUserCAKeys`; expired, wrong-principal and revoked (KRL) certificates fail with `auth_failed` |
 Dev helper `build/run-row.sh` (untracked, build dir) runs one sub-test for one row by hand with the
 same variables the runner sets.
+
+## Connection pool, increment 1: members and admission (backend, M2 order step 4)
+
+`sd_sftp_options.connections` (1..4) is no longer clamped to 1 (01 §10.9, 02 §5.6). The pool lives
+in `src/sd_sftp/sftp_ssh.c` around the primary transport: secondary members are their own
+`sd_ssh_conn` with `SD_SSH_CFG_POOL_MEMBER`, created with prompt-cancelling callbacks (a member
+never shows UI; a cancelled prompt fails its connect and drops it), connected one at a time after
+the primary reached READY and `sd_ssh_conn_auth_info().noninteractive` says no prompt was shown
+(the 2FA rule). Each member opens one bulk SFTP channel, runs its own INIT/VERSION +
+REALPATH(".") exchange (length-framed, `sftp_proto.h`), and the admit/drop decision is posted to
+the primary I/O thread, which compares the member's host-key fingerprint and realpath against the
+primary's: a mismatch drops the member and stops admissions for the generation. EV_POOL events
+(`member`, `connections`, `reason`), `server_info.connections` and the `conn[1..3]` part of
+`sd_sftp_session_stats()` report the pool. Not yet implemented (next increments): striped handles
+(SD_SFTP_O_STRIPED routing, sub-handles, barriers), per-member loss/reconnect semantics, the 500 ms
+admission stagger, member retry with backoff. The sd_sftp.h header states this scope.
+
+Tests: `m2_pool_admits_members` (3 members admitted, stats/events checked) and
+`m2_pool_interactive_stays_at_one` (a key passphrase answered by the "user" keeps the pool at 1)
+in `tests/unit/sd_sftp/test_ssh_interop.c` against the modern fixture.

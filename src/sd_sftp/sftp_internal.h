@@ -92,5 +92,7 @@ typedef struct sftp_req {
 
 /* sftp_ssh.c -> session (I/O thread): an authentication prompt was raised during a reconnect. */
 void sftp_session_auth_prompt(sd_sftp_session *s);
+/* sftp_ssh.c -> session (primary I/O thread): a pool member settled; admitted=0 carries the reason. */
+void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason);
 
 #endif /* SD_SFTP_INTERNAL_H */

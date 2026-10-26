@@ -74,6 +74,7 @@ struct sd_sftp_session {
   /* ---- I/O thread ---- */
   sftp_chan ch[NCH];
   uint32_t nchan;                      /* channels in use this generation (1 or 2) */
+  int member_ready[4];                 /* pool members 1..3 admitted (I/O thread; read under lock for info) */
   int bulk_settled, startup_done, in_attempt;
   int tp_opened, tp_close_called, finalized;   /* per connection attempt */
   sd_err lost_err; int lost_pending, lost_done;   /* lost_done: the current connection is dead */
@@ -1154,6 +1155,7 @@ static void go_ready(sd_sftp_session *s)
   s->info.home = s->home ? s->home : "";
   s->info.ssh = neg;
   sd_mutex_unlock(&s->lock);
+  memset(s->member_ready, 0, sizeof(s->member_ready));   /* members re-admit after READY, 01 §10.9 */
 
   sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "ready: generation %u channels=%u ext=0x%x max_read=%llu max_write=%llu quirks=0x%x",
          s->generation, s->nchan, s->info.ext, (unsigned long long)s->info.limits.max_read,
@@ -1168,6 +1170,7 @@ static void go_ready(sd_sftp_session *s)
     e.generation = s->generation;
     s->ev(s->ev_ctx, &e);
   }
+  if (s->tp.notify_ready) s->tp.notify_ready(s->tp.ctx, s->home);   /* pool admission, 01 §10.9 */
   /* WAIT_READY requests in submission order (the list is LIFO). */
   {
     sftp_req *rev = NULL;
@@ -1981,6 +1984,30 @@ void sftp_session_auth_prompt(sd_sftp_session *s)
     set_state(s, SD_SFTP_ST_AUTH_REQUIRED, SD_E_AUTH_REQUIRED);
 }
 
+/* 01 §10.9: a pool member settled (I/O thread). admitted: 1 the member is READY, 0 it was dropped
+   (reason tells why). The pool count includes the primary. EV_POOL is informational only. */
+void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason)
+{
+  sd_sftp_event e;
+  uint32_t count = 1, i;
+  if (!s || member == 0 || member > 3) return;
+  for (i = 1; i <= 3; i++)
+    if (s->member_ready[i] || (i == member && admitted)) count++;
+  if (!admitted) s->member_ready[member] = 0;
+  else s->member_ready[member] = 1;
+  sd_mutex_lock(&s->lock);
+  s->info.connections = count;
+  sd_mutex_unlock(&s->lock);
+  if (!s->ev) return;
+  memset(&e, 0, sizeof(e));
+  e.type = SD_SFTP_EV_POOL;
+  e.state = (sd_sftp_state)s->state;
+  e.reason = admitted ? SD_OK : reason;
+  e.member = member;
+  e.connections = count;
+  s->ev(s->ev_ctx, &e);
+}
+
 /* ---- inbox processing (I/O thread) ---- */
 
 /* WAIT_READY may wait in every state that can still lead to READY (02 §5.2 offline_wait). */
@@ -2221,7 +2248,9 @@ sd_err sd_sftp_session_create_transport(const sd_sftp_transport *t, const sd_sft
   if (s->opt.max_queued_reqs == 0) s->opt.max_queued_reqs = 4096;
   if (s->opt.default_timeout_ms == 0) s->opt.default_timeout_ms = 30000;
   if (s->opt.channels != 1) s->opt.channels = 2;      /* 0 or out of range: the default */
-  s->opt.connections = 1;                             /* pool: M2 */
+  if (s->opt.connections == 0) s->opt.connections = 1;
+  if (s->opt.connections > 4) s->opt.connections = 4;
+  if (!s->opt.stripe_bytes) s->opt.stripe_bytes = 1024u * 1024u;
   if (s->opt.reconnect.max_delay_ms < s->opt.reconnect.initial_delay_ms)
     s->opt.reconnect.max_delay_ms = s->opt.reconnect.initial_delay_ms;
   s->ev = ev;
@@ -2414,6 +2443,16 @@ sd_err sd_sftp_session_stats(const sd_sftp_session *s, sd_sftp_stats *out)
   out->conn[0].ready = (sd_sftp_state)s->state == SD_SFTP_ST_READY;
   out->conn_count = 1;
   out->total = out->conn[0];
+  if (s->tp.member_stats) {            /* pool members 1..3 (01 §10.9) */
+    uint32_t n = 0, i;
+    s->tp.member_stats(s->tp.ctx, &out->conn[1], &n);
+    if (n > 3) n = 3;
+    for (i = 0; i < n; i++) {
+      out->total.rx_total += out->conn[1 + i].rx_total;
+      out->total.tx_total += out->conn[1 + i].tx_total;
+    }
+    out->conn_count += n;
+  }
   out->generation = s->generation;
   out->channels = (sd_sftp_state)s->state == SD_SFTP_ST_READY ? s->nchan : 0;
   out->reconnect_attempts = s->attempts;
