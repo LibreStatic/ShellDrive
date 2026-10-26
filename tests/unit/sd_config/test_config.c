@@ -322,7 +322,7 @@ static void remove_tree(const wchar_t *root)
 SD_TEST(profile_files_save_find_enum_delete)
 {
   wchar_t root[MAX_PATH], dir[MAX_PATH], path[MAX_PATH];
-  sd_profile p, q;
+  static sd_profile p, q;              /* profiles are big: keep the test off the stack */
   int n = 0;
   temp_root(root, SD_COUNTOF(root));
   SD_REQUIRE(root[0] != 0);
@@ -343,7 +343,7 @@ SD_TEST(profile_files_save_find_enum_delete)
   SD_REQUIRE(sd_profile_find(p.id, &q, NULL, 0) == SD_OK);
   /* a second profile with the same name slug gets another file name */
   {
-    sd_profile r;
+    static sd_profile r;               /* keep the test under the analysis stack budget */
     sd_profile_defaults(&r);
     strcpy_s(r.name, sizeof(r.name), "web-server");
     strcpy_s(r.host, sizeof(r.host), "other.example");
@@ -365,7 +365,7 @@ SD_TEST(profile_files_save_find_enum_delete)
     SD_REQUIRE(sd_profile_find(p.id, &q, NULL, 0) == SD_OK);
     SD_CHECK_EQ_INT(q.port, 2022);
     {
-      char buf[4096];
+      static char buf[4096];
       DWORD got = 0;
       h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
       SD_REQUIRE(h != INVALID_HANDLE_VALUE);
@@ -410,7 +410,7 @@ SD_TEST(profile_m1_keys)
     "[cache]\r\ndisk = 512M\r\n"
     "[connection]\r\nchannels = 1\r\n";
   sd_ini *ini = parse_s(text, NULL), *out = NULL;
-  sd_profile p, q;
+  static sd_profile p, q;              /* keep the test under the analysis stack budget */
   const char *bad = NULL;
   SD_REQUIRE(ini != NULL);
   SD_REQUIRE(sd_profile_from_ini(ini, &p, &bad) == SD_OK);

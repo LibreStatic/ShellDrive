@@ -37,7 +37,7 @@ typedef struct fake {
   int done;
   sd_err done_err;
   /* last client packet */
-  uint8_t pkt[70000];
+  uint8_t pkt[8192];       /* one auth message; the largest is a 4k-RSA certificate request */
   size_t pkt_len;
 } fake;
 
@@ -92,8 +92,9 @@ static int fake_new(fake *f, uint32_t methods, const sd_ssh_auth_cfg *acfg)
   ssh_dir_init(&c->tx);
   ssh_dir_init(&c->rx);
   c->user = (char *)sd_alloc(7);
-  memcpy(c->user, "tester", 7);
   c->host_utf8 = (char *)sd_alloc(5);
+  if (!c->user || !c->host_utf8) return 0;
+  memcpy(c->user, "tester", 7);
   memcpy(c->host_utf8, "fake", 5);
   c->methods = methods;
   c->cb.ctx = f;
@@ -244,7 +245,7 @@ static int parse_pk(fake *f, pk_req *q)
 static void srv_pk_ok(fake *f, const pk_req *q)
 {
   sd_wr w;
-  sd_wr_init(&w, 70000);
+  sd_wr_init(&w, 8192);
   sd_wr_u8(&w, SSH_MSG_USERAUTH_PK_OK);
   sd_wr_cstring(&w, q->alg);
   sd_wr_string(&w, q->blob.p, q->blob.n);
@@ -267,7 +268,7 @@ static int verify_pk_sig(fake *f, const pk_req *q, const char *keyfile)
   if (sd_ssh_key_load(fb, n, NULL, 0, &k) == SD_E_KEY_PASSPHRASE_REQUIRED) (void)sd_ssh_key_load(fb, n, PASS, strlen(PASS), &k);
   sd_free(fb);
   if (!k) return 0;
-  sd_wr_init(&d, 70000);
+  sd_wr_init(&d, 8192);
   sd_wr_string(&d, f->c->session_id, f->c->session_id_len);
   sd_wr_bytes(&d, f->pkt, q->signed_end);
   sd_rd_init(&r, q->sig.p, q->sig.n);

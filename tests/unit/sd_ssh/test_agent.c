@@ -125,6 +125,7 @@ static unsigned __stdcall pipe_main(void *arg)
       /* a client that connected and left before ConnectNamedPipe fails with ERROR_NO_DATA: retry */
       listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
                                 65536, 0, NULL);
+      if (listen == INVALID_HANDLE_VALUE || listen == NULL) break;
       SetEvent(pa->ready);
     }
     if (!ConnectNamedPipe(listen, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
@@ -139,6 +140,7 @@ static unsigned __stdcall pipe_main(void *arg)
        connection, so a client that reconnects right away never sees the pipe gone. */
     listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
                               65536, 0, NULL);
+    if (listen == INVALID_HANDLE_VALUE || listen == NULL) { CloseHandle(h); break; }
     for (;;) {
       sd_wr w;
       uint8_t lb[4];
@@ -164,7 +166,7 @@ static unsigned __stdcall pipe_main(void *arg)
     CloseHandle(h);
     if (listen == INVALID_HANDLE_VALUE && pa->stop) break;
   }
-  if (listen != INVALID_HANDLE_VALUE) CloseHandle(listen);
+  if (listen != INVALID_HANDLE_VALUE && listen != NULL) CloseHandle(listen);
   return 0;
 }
 

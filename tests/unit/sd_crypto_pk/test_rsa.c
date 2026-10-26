@@ -13,6 +13,7 @@ typedef struct hexbuf { uint8_t *p; size_t n; } hexbuf;
 static hexbuf hb(const char *hex)
 {
   hexbuf b;
+  b.p = NULL;                 /* defined seed: the analyzer cannot see through tu_hex */
   b.n = tu_hex(hex, &b.p);
   return b;
 }
@@ -113,16 +114,17 @@ SD_TEST(wycheproof_rsa_pkcs1_sign)
       } else if (skip) {
         skipped++;
       } else {
-        hexbuf msg = hb(f[3]), want = hb(f[4]);
+        uint8_t *msg_p = NULL, *want_p = NULL;   /* direct tu_hex calls: hb's struct return loses the SAL state */
+        size_t msg_n = tu_hex(f[3], &msg_p), want_n = tu_hex(f[4], &want_p);
         uint8_t dg[64], sig[1024];
         size_t sl = sizeof(sig);
-        sd_hash(h, msg.p, msg.n, dg);
-        if (sd_rsa_pkcs1_sign(k, h, dg, sd_hash_len(h), sig, &sl) != SD_OK || sl != want.n ||
-            memcmp(sig, want.p, sl) != 0)
+        sd_hash(h, msg_p, msg_n, dg);
+        if (sd_rsa_pkcs1_sign(k, h, dg, sd_hash_len(h), sig, &sl) != SD_OK || sl != want_n ||
+            memcmp(sig, want_p, sl) != 0)
           sd_test_fail(sd_t_, __FILE__, __LINE__, "%s tcId %s: signature differs", files[i], f[1]);
         SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg, sd_hash_len(h), sig, sl) == SD_OK);
-        free(msg.p);
-        free(want.p);
+        free(msg_p);
+        free(want_p);
         total++;
       }
     }
@@ -226,34 +228,35 @@ SD_TEST(rsa_reference_keys)
       keys++;
     } else if (!skip_key) {
       sd_hash_alg h;
-      hexbuf dg = hb(f[2]), want = hb(f[3]);
+      uint8_t *dg_p = NULL, *want_p = NULL;   /* direct tu_hex calls: hb loses the SAL state */
+      size_t dg_n = tu_hex(f[2], &dg_p), want_n = tu_hex(f[3], &want_p);
       uint8_t *sig = (uint8_t *)tu_alloc(2048);
       size_t sl = 2048;
       SD_REQUIRE(n == 4 && pkt_hash(f[1], &h));
-      SD_CHECK(sd_rsa_pkcs1_sign(k, h, dg.p, dg.n, sig, &sl) == SD_OK);
-      SD_CHECK(sl == want.n && memcmp(sig, want.p, sl) == 0);
-      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg.p, dg.n, want.p, want.n) == SD_OK);
+      SD_CHECK(sd_rsa_pkcs1_sign(k, h, dg_p, dg_n, sig, &sl) == SD_OK);
+      SD_CHECK(sl == want_n && memcmp(sig, want_p, sl) == 0);
+      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg_p, dg_n, want_p, want_n) == SD_OK);
       if (kswap) {
         sl = 2048;
-        SD_CHECK(sd_rsa_pkcs1_sign(kswap, h, dg.p, dg.n, sig, &sl) == SD_OK && memcmp(sig, want.p, sl) == 0);
+        SD_CHECK(sd_rsa_pkcs1_sign(kswap, h, dg_p, dg_n, sig, &sl) == SD_OK && memcmp(sig, want_p, sl) == 0);
       }
       if (knocrt) {
         sl = 2048;
-        SD_CHECK(sd_rsa_pkcs1_sign(knocrt, h, dg.p, dg.n, sig, &sl) == SD_OK && memcmp(sig, want.p, sl) == 0);
+        SD_CHECK(sd_rsa_pkcs1_sign(knocrt, h, dg_p, dg_n, sig, &sl) == SD_OK && memcmp(sig, want_p, sl) == 0);
       }
       /* tampering */
-      want.p[want.n - 1] ^= 1;
-      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg.p, dg.n, want.p, want.n) == SD_E_CRYPTO);
-      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg.p, dg.n, want.p, want.n - 1) == SD_E_CRYPTO);
-      dg.p[0] ^= 1;
-      want.p[want.n - 1] ^= 1;
-      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg.p, dg.n, want.p, want.n) == SD_E_CRYPTO);
+      want_p[want_n - 1] ^= 1;
+      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg_p, dg_n, want_p, want_n) == SD_E_CRYPTO);
+      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg_p, dg_n, want_p, want_n - 1) == SD_E_CRYPTO);
+      dg_p[0] ^= 1;
+      want_p[want_n - 1] ^= 1;
+      SD_CHECK(sd_rsa_pkcs1_verify(k, h, dg_p, dg_n, want_p, want_n) == SD_E_CRYPTO);
       /* wrong hash algorithm for the digest length */
-      SD_CHECK(sd_rsa_pkcs1_verify(k, h == SD_HASH_SHA1 ? SD_HASH_SHA256 : SD_HASH_SHA1, dg.p, dg.n, want.p,
-                                   want.n) == SD_E_INVALID_PARAM);
+      SD_CHECK(sd_rsa_pkcs1_verify(k, h == SD_HASH_SHA1 ? SD_HASH_SHA256 : SD_HASH_SHA1, dg_p, dg_n, want_p,
+                                   want_n) == SD_E_INVALID_PARAM);
       free(sig);
-      free(dg.p);
-      free(want.p);
+      free(dg_p);
+      free(want_p);
       sigs++;
     }
   }

@@ -78,8 +78,9 @@ foreach ($preset in $Presets) {
       Write-Host "== [$cfg] test"
       $junit = Join-Path $out "ctest-$cfg.xml"
       # Windows PowerShell 5.1 turns native stderr into error records, which 'Stop' would throw on before the
-      # failing tests are printed; judge by the exit code instead.
-      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit 2>&1 }
+      # failing tests are printed; judge by the exit code instead. -LE matrix excludes the srv_* interop
+      # tests: they need the per-row matrix fixtures and are run by tests\interop\run-matrix.ps1.
+      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit -LE matrix 2>&1 }
       $tlog | Out-Host
       if ($LASTEXITCODE) { throw "tests $cfg failed" }
       $skipped = @($tlog | Select-String -Pattern '\*\*\*Skipped' | ForEach-Object { ($_ -split ':')[1].Trim().Split(' ')[0] })

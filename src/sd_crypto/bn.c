@@ -253,8 +253,7 @@ void sd_mp_montmul(sd_limb *r, const sd_limb *a, const sd_limb *b, const sd_limb
   sd_limb t[SD_MP_MAX + 2];
   size_t i, j;
   sd_limb c, c2, u, top, borrow;
-  for (j = 0; j < n + 1; j++)
-    t[j] = 0;
+  memset(t, 0, (n + 1) * sizeof(sd_limb));   /* the analyzer tracks memset, not the loop */
   for (i = 0; i < n; i++) {
     sd_limb bi = b[i];
     c = 0;

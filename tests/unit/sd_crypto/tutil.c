@@ -42,7 +42,7 @@ size_t tu_hexbuf(const char *hex, uint8_t *out, size_t cap)
   return hex[0] ? SIZE_MAX : n;
 }
 
-size_t tu_hex(const char *hex, uint8_t **out)
+_Check_return_ size_t tu_hex(const char *hex, _Outptr_result_buffer_(return) uint8_t **out)
 {
   size_t cap = strlen(hex) / 2 + 1, n;
   *out = (uint8_t *)tu_alloc(cap);

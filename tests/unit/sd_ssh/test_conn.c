@@ -165,7 +165,7 @@ SD_TEST(ssh_secret_cache_roundtrip)
   static const char pw[] = "correct horse battery staple";
   ssh_secret sec;
   sd_secbuf *out = NULL;
-  sd_ssh_conn fake;
+  static sd_ssh_conn fake;             /* ~50 KB: keep the test off the stack */
   memset(&sec, 0, sizeof(sec));
   if (!ssh_secret_cache_available()) { printf("  [skip] no CryptProtectMemory / RtlEncryptMemory\n"); return; }
   SD_REQUIRE(ssh_secret_store(&sec, (const uint8_t *)pw, sizeof(pw) - 1) == SD_OK);

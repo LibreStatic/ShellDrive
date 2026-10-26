@@ -252,7 +252,7 @@ static uint32_t count_kind(const h2 *h, sd_mount_prompt_kind k)
 
 SD_TEST(mount_m2_chain_and_proxies)
 {
-  h2 h;
+  static h2 h;                         /* the prompt/announcement log is big: keep it off the stack */
   sd_mount_params p;
   sd_mount_hop hops[2];
   sd_mount_callbacks cb;
@@ -317,7 +317,7 @@ SD_TEST(mount_m2_chain_and_proxies)
 
 SD_TEST(mount_m2_autofill_rules)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   init(&h);
   fake_backend_reset();
   /* 1: TOFU in this connection -> the saved password is not sent (TM-R05) */
@@ -350,7 +350,7 @@ SD_TEST(mount_m2_autofill_rules)
 
 SD_TEST(mount_m2_save_after_success)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   init(&h);
   fake_backend_reset();
   h.save = 1;
@@ -374,7 +374,7 @@ SD_TEST(mount_m2_save_after_success)
 
 SD_TEST(mount_m2_kbdint_password_round_and_otp)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   init(&h);
   fake_backend_reset();
   SD_REQUIRE(create1(&h, L"kbd.test", "carol", L'P', SD_LEGACY_WARN, 1, SD_HKU_ASK) == SD_OK);
@@ -398,7 +398,7 @@ SD_TEST(mount_m2_kbdint_password_round_and_otp)
 
 SD_TEST(mount_m2_legacy_warn_ask_refuse)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   sd_mount_failure f;
   init(&h);
   fake_backend_reset();
@@ -437,7 +437,7 @@ SD_TEST(mount_m2_legacy_warn_ask_refuse)
 
 SD_TEST(mount_m2_password_change)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   init(&h);
   fake_backend_reset();
   SD_REQUIRE(create1(&h, L"chpw.test", "erin", L'P', SD_LEGACY_WARN, 1, SD_HKU_ASK) == SD_OK);
@@ -452,7 +452,7 @@ SD_TEST(mount_m2_password_change)
 
 SD_TEST(mount_m2_hostkeys_announced)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   sd_kh_store st;
   const char *name = NULL;
   uint32_t removed = 0;
@@ -496,7 +496,7 @@ SD_TEST(mount_m2_hostkeys_announced)
 
 SD_TEST(mount_m2_pool_needs_noninteractive_auth)
 {
-  h2 h;
+  static h2 h;   /* big harness: off the stack */
   sd_mount_conn c;
   init(&h);
   fake_backend_reset();

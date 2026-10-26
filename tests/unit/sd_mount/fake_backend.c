@@ -520,17 +520,18 @@ static unsigned __stdcall session_thread(void *arg)
       he.remove = &rem; he.remove_count = 1;
       s->cb.on_hostkey_event(s->cb.ctx, &he);
     }
-    if (s->connections > 1) {
+    if (s->connections > 1 && s->nhops > 0) {
       /* the pool (D18): one member, which asks for the password: answered from the store or cancelled */
+      uint32_t hi = s->nhops - 1;
       sd_auth_prompt_info ai;
       sd_prompt_item item;
       struct sd_prompt *p;
       sd_sftp_event ev;
       memset(&ai, 0, sizeof(ai));
       ai.kind = SD_PROMPT_PASSWORD;
-      ai.hop_index = s->nhops - 1;
-      ai.host = s->hops[s->nhops - 1].host;
-      ai.user = s->hops[s->nhops - 1].user;
+      ai.hop_index = hi;
+      ai.host = s->hops[hi].host;
+      ai.user = s->hops[hi].user;
       ai.name = ai.instruction = "";
       item.text = "Password: ";
       item.echo = 0;

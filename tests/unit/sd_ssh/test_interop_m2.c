@@ -72,7 +72,7 @@ static int env_or_file(const char *name, char *out, size_t cap)
     buf[len] = 0;
   }
   for (p = buf; p < buf + len; p = end + 1) {
-    end = strchr(p, '\n');
+    end = (char *)memchr(p, '\n', (size_t)(buf + len - p));   /* length-bounded: no NUL needed */
     if (!end) end = buf + len;
     eq = memchr(p, '=', end - p);
     if (eq && (size_t)(eq - p) == strlen(name) && memcmp(p, name, eq - p) == 0) {

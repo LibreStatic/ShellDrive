@@ -741,19 +741,23 @@ static int list_add(name_list *l, const char *full, sd_secret_store st)
 {
   if (l->n == l->cap) {
     uint32_t nc = l->cap ? l->cap * 2 : 16;
-    void *p = sd_alloc((size_t)nc * SD_SECRET_MAX_TARGET);
+    char (*np)[SD_SECRET_MAX_TARGET] =
+      (char (*)[SD_SECRET_MAX_TARGET])sd_alloc((size_t)nc * SD_SECRET_MAX_TARGET);
     uint8_t *q = (uint8_t *)sd_alloc(nc);
-    if (p == NULL || q == NULL) { sd_free(p); sd_free(q); return 0; }
+    if (np == NULL || q == NULL) { sd_free(np); sd_free(q); return 0; }
     if (l->n) {
-      memcpy(p, l->names, (size_t)l->n * SD_SECRET_MAX_TARGET);
+      uint32_t k;
+      for (k = 0; k < l->n; k++)       /* per element: keeps the analyzer's size model per entry */
+        memcpy(np[k], l->names[k], SD_SECRET_MAX_TARGET);
       memcpy(q, l->store, l->n);
     }
     sd_free(l->names);
     sd_free(l->store);
-    l->names = (char (*)[SD_SECRET_MAX_TARGET])p;
+    l->names = np;
     l->store = q;
     l->cap = nc;
   }
+  _Analysis_assume_(l->n < l->cap);   /* the growth above guarantees room for one more */
   strcpy_s(l->names[l->n], SD_SECRET_MAX_TARGET, full);
   l->store[l->n] = (uint8_t)st;
   l->n++;

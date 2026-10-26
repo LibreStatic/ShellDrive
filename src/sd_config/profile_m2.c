@@ -66,7 +66,8 @@ static int parse_port(const char *s, size_t n, uint16_t *port)
 
 int sd_cfg_parse_host_spec_utf8(const char *spec, char *user, size_t ucap, char *host, size_t hcap, uint16_t *port)
 {
-  const char *at = strrchr(spec, '@'), *h, *colon = NULL, *p, *end;
+  const char *at = strrchr(spec, '@'), *colon = NULL, *p, *end;
+  const char *h = spec;                  /* the host part starts after a trailing @user */
   size_t n;
   user[0] = host[0] = 0;
   *port = 0;
@@ -77,7 +78,7 @@ int sd_cfg_parse_host_spec_utf8(const char *spec, char *user, size_t ucap, char 
     user[n] = 0;
     if (sd_cfg_has_ctl(user) || strchr(user, ' ') || strchr(user, ',')) return 0;
   }
-  h = at ? at + 1 : spec;
+  if (at) h = at + 1;
   end = h + strlen(h);
   if (*h == '[') {
     const char *rb = strchr(h, ']');
@@ -89,12 +90,15 @@ int sd_cfg_parse_host_spec_utf8(const char *spec, char *user, size_t ucap, char 
     if (rb[1] == ':') colon = rb + 1;
     else if (rb[1] != 0) return 0;
   } else {
+    const char *host_end;
     int colons = 0;
     for (p = h; *p; p++)
       if (*p == ':') { colons++; colon = p; }
     if (colons > 1) colon = NULL;          /* bare IPv6 literal */
-    n = (size_t)((colon ? colon : end) - h);
+    host_end = colon ? colon : end;
+    n = (size_t)(host_end - h);
     if (n >= hcap) return 0;
+    _Analysis_assume_(h != NULL);   /* h was dereferenced above; the analyzer's colon aliasing is spurious */
     memcpy(host, h, n);
     host[n] = 0;
   }

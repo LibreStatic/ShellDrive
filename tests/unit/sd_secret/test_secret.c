@@ -179,7 +179,7 @@ SD_TEST(secret_dpapi_file_layout)
   wcscat_s(path, MAX_PATH, fd.cFileName);
   h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
   SD_REQUIRE(h != INVALID_HANDLE_VALUE);
-  ReadFile(h, buf, sizeof(buf), &got, NULL);
+  if (!ReadFile(h, buf, sizeof(buf), &got, NULL)) got = 0;
   CloseHandle(h);
   SD_CHECK(got > 20 && memcmp(buf, "SDSEC1\0\0", 8) == 0 && buf[8] == 1 && buf[9] == 0);
   /* the plain secret (UTF-16LE) never appears in the file */
