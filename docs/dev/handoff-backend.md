@@ -5,6 +5,29 @@ Date: 2026-10-25. Repo `github.com/LibreStatic/ShellDrive`. Backend work continu
 of every milestone** in `docs/design/00-integration-review.md` §6. Frontend (GUI) work is handed off separately to
 the lead session, which validates and implements it.
 
+## State update: 2026-10-26, striping session pointer (details live on `wip/m2-striping`)
+
+`wip/m2-striping` (worktree `C:\Users\facum\ShellDrive-striping`, clean at `8703f72`, four commits on
+`5923090`) now carries pool striping increment 2 committed, unit-tested and hardened: the handed-off
+implementation, a fix for a real request-accounting defect the new tests exposed (`start_sub_open()`
+never incremented `s->live` while `deliver()` decrements it, so any submission after the first member
+sub-open returned `SD_E_BUSY`), 11 fake-transport striping tests (`tests/unit/sd_sftp/test_striping.c`),
+and the per-member generation guard closing the hand-off's risks 2/3/5. Worktree gates green on x64-modern
+and x64-xp Debug.
+
+**This tree's clean CI gate finished RED and blocks the landing** (log `build/ci-local-clean.log`):
+x86-ia32-debug and x86-sse2-debug fail only because `unit.crypto_pk` exceeds ctest's 300 s timeout (the
+suite passes by hand in ~25-30 min, `exit=0, 26 tests, 0 failed` - raise the TIMEOUT or trim the bench in
+x86 Debug); x64-analysis hits a stale-marking race at `tests/unit/sd_sftp/test_reconnect.c:466`
+(`SD_E_DISCONNECTED` returned where `SD_E_STALE_HANDLE` is required); x64-modern's failure was a stale
+file lock from the previous session's interrupted run and clears on a re-run.
+
+Read the "State update: 2026-10-26" section in that branch's `docs/dev/handoff-backend.md` before
+anything else: it lists the four commits, the remaining striping work (fixture interop with a mid-transfer
+member drop, the independent review, the contract docs), the three CI repairs to make here, and the
+workflow run id that can be resumed (user ask only). Then land `wip/m2-striping` on this branch and
+continue with M2 increment 3 and the rest of the milestone list below.
+
 ## State update: 2026-10-25, end of the M2 session (supersedes the per-area table below)
 
 Branch `wip/m2-backend`, all work committed. Commits of this session, oldest first: "Fix the failing M2 unit
