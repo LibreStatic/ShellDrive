@@ -16,6 +16,7 @@ void waiter_reset(waiter *w, int kind)
   w->calls = 0;
   w->err = SD_E_INTERNAL;
   w->file = NULL;
+  w->session_ready = 0;
   w->bytes = 0; w->eof = 0; w->count = 0; w->dropped = 0;
 }
 
@@ -30,6 +31,7 @@ void waiter_cb(void *ctx, const sd_sftp_completion *c)
   w->err = c->err;
   w->sftp_status = c->sftp_status;
   w->maybe_executed = c->maybe_executed;
+  w->session_ready = c->session_ready;
   n = c->server_message ? strlen(c->server_message) : 0;
   if (n >= sizeof(w->msg)) n = sizeof(w->msg) - 1;
   if (n) memcpy(w->msg, c->server_message, n);

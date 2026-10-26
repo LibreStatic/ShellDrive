@@ -5,6 +5,7 @@
 
 #include "sd_base/sd_mem.h"
 #include "sd_platform/sd_thread.h"
+#include "sftp_internal.h"      /* sftp_session_pool_change(): the fake plays the SSH pool's part */
 #include "sftp_test_tp.h"
 
 /* ---- I/O loop ---- */
@@ -84,11 +85,13 @@ sd_err tl_post(tl_loop *l, void (*fn)(void *), void *arg)
 int tl_is_io(tl_loop *l) { return l && (DWORD)l->tid == GetCurrentThreadId(); }
 
 /* ---- fake server ----
- * Up to two streams (SD_SFTP_TP_STREAMS) per fake "connection"; with SD_SFTP_TP_REOPEN every open()
- * starts a new connection generation. Chunks queued for an older generation or a stream that is no
- * longer open are dropped, like bytes of a dead TCP connection. */
+ * Up to five streams per fake "connection": 0 (meta, the open() stream), 1 (primary bulk) and, in
+ * pool mode, 2..4 = pool members 1..3 (SD_SFTP_TP_POOL, 01 §10.9). With SD_SFTP_TP_REOPEN every
+ * open() starts a new connection generation. Chunks queued for an older generation or a stream that
+ * is no longer open are dropped, like bytes of a dead TCP connection. */
 
-#define FK_STREAMS 2
+#define FK_STREAMS 5
+#define FK_MEMBERS 3
 
 typedef struct fake_stream {
   const sd_ssh_channel_sink *sink; void *sink_ctx;
@@ -110,6 +113,13 @@ struct fake_srv {
   sd_err refuse_bulk;          /* != SD_OK: open_stream(1) fails with it */
   uint32_t caps;
   int open_called;
+  /* M2 pool */
+  int pool;                    /* streams 2..4 are members 1..3 */
+  uint32_t pool_target;        /* connections incl. the primary; members 1..target-1 admit */
+  void *session;               /* set by fake_set_session(): notify_ready admits members on it */
+  volatile LONG admitted;      /* bit member-1: the member was admitted */
+  volatile LONG pkts[FK_STREAMS];
+  volatile LONG tx[FK_MEMBERS], rx[FK_MEMBERS];
 };
 
 typedef struct fake_chunk { fake_srv *f; size_t n; int kind; uint32_t idx; LONG gen; sd_err err; uint8_t data[1]; } fake_chunk;
@@ -170,9 +180,10 @@ static sd_err ft_open(void *ctx, const sd_ssh_channel_sink *sink, void *sink_ctx
 static sd_err ft_open_stream(void *ctx, uint32_t idx, const sd_ssh_channel_sink *sink, void *sink_ctx)
 {
   fake_srv *f = (fake_srv *)ctx;
-  if (idx != 1) return SD_E_INVALID_PARAM;
-  f->st[1].sink = sink; f->st[1].sink_ctx = sink_ctx; f->st[1].state = 1; f->st[1].in.len = 0;
-  fake_post_kind(f, FK_OPEN, 1, f->refuse_bulk, NULL, 0);
+  if (idx < 1 || idx >= FK_STREAMS) return SD_E_INVALID_PARAM;
+  if (idx > 1 && !f->pool) return SD_E_INVALID_PARAM;      /* only members 1..3 need a pool */
+  f->st[idx].sink = sink; f->st[idx].sink_ctx = sink_ctx; f->st[idx].state = 1; f->st[idx].in.len = 0;
+  fake_post_kind(f, FK_OPEN, idx, idx == 1 ? f->refuse_bulk : SD_OK, NULL, 0);
   return SD_OK;
 }
 
@@ -182,6 +193,7 @@ static sd_err ft_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t 
   fake_stream *st = &f->st[idx];
   size_t off = 0;
   *accepted = n;
+  if (idx >= 2 && idx < FK_STREAMS) InterlockedExchangeAdd(&f->tx[idx - 2], (LONG)n);
   if (f->closed || st->state != 2) return SD_OK;
   sd_wr_bytes(&st->in, p, n);
   while (st->in.len - off >= 4) {
@@ -189,6 +201,7 @@ static sd_err ft_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t 
     LONG g = f->gen;
     if (st->in.len - off - 4 < len) break;
     InterlockedIncrement(&f->packets);
+    InterlockedIncrement(&f->pkts[idx]);
     InterlockedExchange(&f->cur, (LONG)idx);
     f->h(f, f->hctx, st->in.p + off + 4, len);
     if (g != f->gen || f->closed) { st->in.len = 0; return SD_OK; }   /* handler hung up */
@@ -200,7 +213,11 @@ static sd_err ft_write_stream(void *ctx, uint32_t idx, const uint8_t *p, size_t 
 static sd_err ft_write(void *ctx, const uint8_t *p, size_t n, size_t *accepted)
 { return ft_write_stream(ctx, 0, p, n, accepted); }
 static void ft_consumed(void *ctx, size_t n) { SD_UNUSED(ctx); SD_UNUSED(n); }
-static void ft_consumed_stream(void *ctx, uint32_t idx, size_t n) { SD_UNUSED(ctx); SD_UNUSED(idx); SD_UNUSED(n); }
+static void ft_consumed_stream(void *ctx, uint32_t idx, size_t n)
+{
+  fake_srv *f = (fake_srv *)ctx;
+  if (idx >= 2 && idx < FK_STREAMS) InterlockedExchangeAdd(&f->rx[idx - 2], (LONG)n);
+}
 
 static void fake_close_all(fake_srv *f, sd_err why)
 {
@@ -210,6 +227,37 @@ static void fake_close_all(fake_srv *f, sd_err why)
 }
 
 static void ft_close(void *ctx) { fake_close_all((fake_srv *)ctx, SD_E_SHUTDOWN); }
+
+/* The SSH pool's notify_ready() admits members once the primary is READY; the fake calls
+   sftp_session_pool_change() with the session fake_set_session() handed over. */
+static void ft_notify_ready(void *ctx, const char *realpath_dot)
+{
+  fake_srv *f = (fake_srv *)ctx;
+  uint32_t m;
+  SD_UNUSED(realpath_dot);
+  if (!f->pool || !f->session) return;
+  for (m = 1; m < f->pool_target && m <= FK_MEMBERS; m++) {
+    InterlockedOr(&f->admitted, 1L << (m - 1));
+    sftp_session_pool_change((sd_sftp_session *)f->session, m, 1, SD_OK);
+  }
+}
+
+/* Per-member statistics, members 1..3 in out[member-1] (01 §10.9); *count = admitted members. */
+static void ft_member_stats(void *ctx, sd_sftp_conn_stats out[3], uint32_t *count)
+{
+  fake_srv *f = (fake_srv *)ctx;
+  uint32_t m, n = 0;
+  if (!out) { if (count) *count = 0; return; }
+  for (m = 1; m <= FK_MEMBERS; m++) {
+    if (!(f->admitted & (1L << (m - 1)))) continue;
+    memset(&out[m - 1], 0, sizeof(out[m - 1]));
+    out[m - 1].ready = f->st[m].state == 2;
+    out[m - 1].rx_total = (uint64_t)(ULONG)f->rx[m - 1];
+    out[m - 1].tx_total = (uint64_t)(ULONG)f->tx[m - 1];
+    n++;
+  }
+  if (count) *count = n;
+}
 
 static void ft_destroy(void *ctx)
 {
@@ -242,9 +290,28 @@ void fake_transport(fake_srv *f, sd_sftp_transport *t)
   if (f->caps & SD_SFTP_TP_STREAMS) {
     t->open_stream = ft_open_stream; t->write_stream = ft_write_stream; t->consumed_stream = ft_consumed_stream;
   }
+  if (f->pool) {
+    /* a pool transport projects the member connections onto the stream vtable (01 §10.9) */
+    t->caps |= SD_SFTP_TP_STREAMS | SD_SFTP_TP_POOL;
+    t->open_stream = ft_open_stream; t->write_stream = ft_write_stream; t->consumed_stream = ft_consumed_stream;
+    t->notify_ready = ft_notify_ready;
+    t->member_stats = ft_member_stats;
+  }
 }
 
 void fake_set_caps(fake_srv *f, uint32_t caps) { f->caps = caps; }
+void fake_set_pool(fake_srv *f, uint32_t connections)
+{
+  f->pool = 1;
+  f->pool_target = connections < 1 ? 1 : (connections > 1 + FK_MEMBERS ? 1 + FK_MEMBERS : connections);
+}
+void fake_set_session(fake_srv *f, sd_sftp_session *s) { f->session = s; }
+void fake_drop_member(fake_srv *f, uint32_t member)
+{
+  if (member < 1 || member > FK_MEMBERS) return;
+  fake_post_kind(f, FK_CLOSED, 1 + member, SD_E_DISCONNECTED, NULL, 0);   /* this channel only */
+}
+uint32_t fake_stream_packets(fake_srv *f, uint32_t idx) { return idx < FK_STREAMS ? (uint32_t)f->pkts[idx] : 0; }
 void fake_refuse_bulk(fake_srv *f, sd_err e) { f->refuse_bulk = e; }
 void fake_fail_opens(fake_srv *f, LONG n, sd_err e) { f->fail_err = e; InterlockedExchange(&f->fail_opens, n); }
 uint32_t fake_opens(fake_srv *f) { return (uint32_t)f->opens; }

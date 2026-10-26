@@ -1,4 +1,4 @@
-/* sd-test-sftp: codec fixtures, scripted-session and M1 reconnect/channel tests (run everywhere). */
+/* sd-test-sftp: codec fixtures, scripted-session, M1 reconnect/channel and M2 striping tests. */
 #include "sd_platform/sd_log.h"
 #include "sd_test.h"
 
@@ -44,6 +44,17 @@ SD_TEST_DECL(reconnect_auth_required_and_max_attempts);
 SD_TEST_DECL(reconnect_stop_and_disabled);
 SD_TEST_DECL(reconnect_ready_info_reread_and_reopen_gone);
 SD_TEST_DECL(reconnect_close_during_backoff);
+SD_TEST_DECL(striping_units_route_by_member_in_order);
+SD_TEST_DECL(striping_sub_handles_open_lazily);
+SD_TEST_DECL(striping_barrier_waits_for_data_wires);
+SD_TEST_DECL(striping_fsync_settles_on_every_sub_handle);
+SD_TEST_DECL(striping_close_settles_on_every_sub_handle);
+SD_TEST_DECL(striping_member_loss_reissues_reads_on_primary);
+SD_TEST_DECL(striping_member_loss_fails_writes_with_session_ready);
+SD_TEST_DECL(striping_route_recomputed_after_member_loss);
+SD_TEST_DECL(striping_plain_and_append_handles_stay_off_members);
+SD_TEST_DECL(striping_meta_and_directory_handles_stay_off_members);
+SD_TEST_DECL(striping_transport_without_members_never_stripes);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(proto_status_mapping),
@@ -88,6 +99,17 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(reconnect_stop_and_disabled),
   SD_TEST_ENTRY(reconnect_ready_info_reread_and_reopen_gone),
   SD_TEST_ENTRY(reconnect_close_during_backoff),
+  SD_TEST_ENTRY(striping_units_route_by_member_in_order),
+  SD_TEST_ENTRY(striping_sub_handles_open_lazily),
+  SD_TEST_ENTRY(striping_barrier_waits_for_data_wires),
+  SD_TEST_ENTRY(striping_fsync_settles_on_every_sub_handle),
+  SD_TEST_ENTRY(striping_close_settles_on_every_sub_handle),
+  SD_TEST_ENTRY(striping_member_loss_reissues_reads_on_primary),
+  SD_TEST_ENTRY(striping_member_loss_fails_writes_with_session_ready),
+  SD_TEST_ENTRY(striping_route_recomputed_after_member_loss),
+  SD_TEST_ENTRY(striping_plain_and_append_handles_stay_off_members),
+  SD_TEST_ENTRY(striping_meta_and_directory_handles_stay_off_members),
+  SD_TEST_ENTRY(striping_transport_without_members_never_stripes),
 };
 
 int main(int argc, char **argv)

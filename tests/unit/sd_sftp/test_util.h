@@ -16,6 +16,7 @@ struct waiter {
   sd_err err;
   uint32_t sftp_status;
   int maybe_executed;
+  int session_ready;        /* DISCONNECTED from a pool member; the session stayed READY */
   char msg[256];
   sd_sftp_file *file;
   sd_sftp_attrs attrs;

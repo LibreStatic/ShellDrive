@@ -10,7 +10,7 @@
 set(_sftp_test_common sftp_test_tp.c sftp_test_tp.h test_util.c test_util.h)
 
 sd_add_unit_test(sftp
-  SOURCES main.c test_proto.c test_session.c test_reconnect.c ${_sftp_test_common}
+  SOURCES main.c test_proto.c test_session.c test_reconnect.c test_striping.c ${_sftp_test_common}
   DEPS sd_sftp sd_base sd_platform)
 target_include_directories(sd-test-sftp PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_sftp")
 

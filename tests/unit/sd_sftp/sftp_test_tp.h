@@ -42,6 +42,15 @@ uint32_t  fake_gen(fake_srv *f);                                 /* current conn
 uint32_t  fake_cur_stream(fake_srv *f);                          /* stream of the packet being handled */
 int       fake_stream_open(fake_srv *f, uint32_t idx);
 void      fake_reply_on(fake_srv *f, uint32_t idx, const void *bytes, size_t n);
+/* M2 pool (01 §10.9): streams 2..4 model members 1..3 and the caps gain
+ * SD_SFTP_TP_STREAMS | SD_SFTP_TP_POOL. `connections` is the pool size including the primary; the
+ * transport's notify_ready admits members 1..connections-1 through sftp_session_pool_change() once
+ * fake_set_session() supplied the session (this is what the SSH pool does on admission). Call before
+ * fake_transport(). member_stats reports the admitted members in out[member-1], like the SSH pool. */
+void      fake_set_pool(fake_srv *f, uint32_t connections);
+void      fake_set_session(fake_srv *f, sd_sftp_session *s);
+void      fake_drop_member(fake_srv *f, uint32_t member);       /* the member channel dies alone */
+uint32_t  fake_stream_packets(fake_srv *f, uint32_t idx);       /* client packets seen on a stream */
 
 /* Packet builder: begins a reply of `type` with id (id_present). Finish with fake_reply_wr. */
 void pk_begin(sd_wr *w, uint8_t type, uint32_t id);
