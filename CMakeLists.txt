@@ -88,5 +88,11 @@ add_subdirectory(apps/shelldrive-shellext)
 # Setup engine, stub and payload (04 §6; tools/sd-payload attaches the payload CAB, added above).
 add_subdirectory(apps/shelldrive-setup)
 
+# Per-machine MSI packages (04 §8): opt-in, target msi, needs WiX 3.14 (packaging/msi/CMakeLists.txt).
+option(SD_BUILD_MSI "Build the per-machine MSI of this flavour (target msi, WiX 3.14; 04 §8)" OFF)
+if(SD_BUILD_MSI)
+  add_subdirectory(packaging/msi)
+endif()
+
 # Unit tests and other test suites.
 add_subdirectory(tests)

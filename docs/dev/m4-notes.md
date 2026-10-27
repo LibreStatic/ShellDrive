@@ -265,3 +265,27 @@ ctest --preset x64-modern-debug -LE "matrix|bench|interop|repro"
 powershell -ExecutionPolicy Bypass -File tools\check-repro.ps1 -Preset x64-modern
 powershell -ExecutionPolicy Bypass -File tools\check-repro.ps1 -Preset x86-ia32
 ```
+
+## MSI
+
+Per-machine MSI packages (04 §8; decisions and open items in 04 §8.7). Opt-in: `-DSD_BUILD_MSI=ON`, then
+`cmake --build build/<preset> --target msi` (WiX 3.14 at `WIX` or `C:\Program Files (x86)\WiX Toolset v3.14`). Output:
+`build/<preset>/msi/<Config>/ShellDrive-<MAJOR.MINOR.PATCH>-<flavour>.msi` with every language transform embedded.
+
+| Path | What |
+|---|---|
+| `packaging/msi/ShellDrive.wxs` | the package for every flavour (defines from `build-msi.cmake`), WixUI_Minimal, features, hooks |
+| `packaging/msi/build-msi.cmake` | one flavour: sd-msigen, candle, light (ICE), torch per language, sd-msiembed |
+| `packaging/msi/CMakeLists.txt` | the `msi` target, per-flavour table (family, platform, UpgradeCode, launch condition) |
+| `tools/sd-msigen/` | GUIDs, `Registry.wxi` from `packaging/registration.txt`, `.wxl` from the `msi.*` entries of `l10n/installer` |
+| `tools/sd-msiembed/` | embeds a language transform under its LCIDs through `msi.dll` and updates the Template summary |
+| `tests/msi/` | `sd-test-msi`: `tables` (package contents, transforms with the language check) and `admin` (`msiexec /a`) |
+
+Checks: `ctest -L msi` (after the `msi` target). Light runs ICE validation on the base package; the suppressions and
+their reasons are in 04 §8.7. Strings for the installer are in `l10n/installer` (the `msi.*` entries; the lowercase dotted
+msgctxt is the id, the WiX id is its PascalCase form, for example `msi.feature.core.title` is `FeatureCoreTitle`).
+
+Open items: DEFAULTPROFILES (no MSI MoveFile authoring in WiX 3.14), `programdata-secure` runs after InstallFiles, hook
+rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, Spanish WixUI text
+(not voseo), Add/Remove "Change" disabled by WixUI_Minimal, timestamps in the summary information (12.2). The installed
+behaviour is for the lab (11.4).

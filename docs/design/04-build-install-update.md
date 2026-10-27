@@ -955,7 +955,7 @@ decision implements §6.1–§6.9 or narrows it, and says which.
 |---|---|---|---|---|---|
 | `Platform` / Template | `Intel;1033` | `x64;1033` | `x64;1033` | `Arm;1033` **[lab-verify]** (§5.1) | `Arm64;1033` |
 | `InstallerVersion` | **301** (XP SP3 ships Windows Installer 3.1) | **301** (XP x64 SP2 has 3.1) | **500** | **500** (Windows Installer 5.0 is the only version on ARM Windows) | **500** (set explicitly — WiX 3.14 had a bug not raising it for ARM64, [FireGiant #184](https://www.firegiant.com/blog/2020/3/4/wix-online-meeting-184-highlights/)) |
-| UpgradeCode | x86 GUID, **shared** by both x86 flavours | x64 GUID, **shared** by both x64 flavours | (same as `x64-xp`) | ARM32 GUID | ARM64 GUID |
+| UpgradeCode | `{8901324D-C7E1-44ED-BA3C-B1EB08B70174}`, **shared** by both x86 flavours | `{37D2227E-A917-46A7-8F8E-0F9A8146CA5F}`, **shared** by both x64 flavours | (same as `x64-xp`) | `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}` | `{1438051B-3E86-459D-8199-E8D786F5A32B}` (fixed in 8.7) |
 | Launch condition | `x86-sse2`: CPU has SSE2 (see below) | none (also runs on 10+, for admins who standardize on one MSI) | OS ≥ 10.0 | ARM32-capable OS, not RT (§5.1) | — |
 | Scope | `ALLUSERS=1` (per-machine only; per-user is the EXE's job) | | | | |
 
@@ -1148,6 +1148,88 @@ MSI cannot nest MSI installs. Options documented for administrators:
   **[lab-verify]** on XP SP3 and Windows 11.
 
 ---
+
+### 8.7 Implementation decisions (M4, MSI)
+
+Status: built and checked for `x86-ia32`, `x86-sse2`, `x64-xp` and `x64-modern` (CTest label `msi`, `-DSD_BUILD_MSI=ON`;
+ICE clean with the suppressions below). ARM32 is authored but has no preset, so it is not built. Sources: `packaging/msi/` (`ShellDrive.wxs`,
+`build-msi.cmake`, `CMakeLists.txt`), the generator `tools/sd-msigen` (GUIDs, `Registry.wxi` from `packaging/registration.txt`,
+`.wxl` from `l10n/installer`), `tools/sd-msiembed` (transforms through `msi.dll`) and the checks in `tests/msi/sd-test-msi.c`.
+
+- **UpgradeCodes (fixed, 8.2):** x86 family (`x86-ia32`, `x86-sse2`) `{8901324D-C7E1-44ED-BA3C-B1EB08B70174}`; x64 family
+  (`x64-xp`, `x64-modern`) `{37D2227E-A917-46A7-8F8E-0F9A8146CA5F}`; ARM32 `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}`; ARM64
+  `{1438051B-3E86-459D-8199-E8D786F5A32B}`.
+- **ProductCode and PackageCode** are derived from flavour and version (`sd-msigen guid`), so two builds of one tree give the
+  same GUIDs (12.2). The explicit package code makes candle warn (CNDL1091); the warning is suppressed (`-sw1091`) for that
+  reason. Component GUIDs are derived per UpgradeCode family, so two families never share a component.
+- **Major upgrade:** `MajorUpgrade` with `AllowSameVersionUpgrades="yes"` (a flavour switch at one version). `InstallerVersion`
+  is 301 for the XP flavours and 500 for `x64-modern`, as 8.2 says.
+- **Launch conditions:** `x64-modern` requires `CurrentMajorVersionNumber >= 10` (a `RegistrySearch` inside a `Property`). The
+  SSE2 condition of `x86-sse2` is **not authored**: MSI conditions have no bit operators, so the `FeatureSet` bit cannot be
+  tested. The `/arch:IA32` entry thunk (3.2) remains the only guard.
+- **Transforms (C43):** the `en-US` package is the base. Each other language is built as a localized package with the WiX
+  localization of the same culture (`WixUI_<culture>.wxl` and our `ShellDrive.<lang>.wxl`); `torch -t language` produces the
+  transform; `sd-msiembed` stores it as the substorage `<lcid>` for every LCID of the language (the table is `sd-msigen lcids`)
+  and adds those LCIDs to the Template summary. The SDK sample `wisubstg.vbs` stores substorages but does not update the
+  Template list, so `sd-msiembed` does both. Substorage names are bare LCIDs (`TRANSFORMS=:<lcid>`). The check that each LCID
+  applies with `MSITRANSFORM_VALIDATE_LANGUAGE` runs on the Windows Installer of the build host; the install-time behaviour
+  (direct `msiexec` with automatic language selection) is **[lab-verify]** (8.6).
+- **Localized text:** our strings are the `msi.*` entries of `l10n/installer` (feature titles and descriptions, the downgrade
+  and OS messages), generated to `.wxl` by `sd-msigen wxl` (plural, fuzzy and placeholder entries are errors). The WixUI dialogs use
+  WiX's own `WixUI_*.wxl`, which 8.1 allows. For Spanish that is `WixUI_es-es.wxl` (Spain Spanish), not the voseo of our strings:
+  open item 6.
+- **Dialogs:** `WixUI_Minimal` (welcome, verify, progress, finish). The repository has no license text, so the license page of
+  `WixUI_InstallDir` is not used. `WixUI_Minimal` sets `ARPNOMODIFY=1`, so Add/Remove Programs does not offer "Change" (6.7 expects
+  `0`): open item 7.
+- **Registry (6.6):** `packaging/registration.txt` generates one component per row, in HKLM: `SD_RegCore` (`core` rows) and
+  `SD_RegAutostart` (`autostart` rows). The `Uninstall\ShellDrive` rows are skipped because Windows Installer writes the Add/Remove
+  entry of an MSI itself. `Software\LibreStatic\ShellDrive\Version` is written by the MSI for Intune detection (8.3).
+- **Public properties (8.4) as built:** `AUTOSTART` (feature level 0), `DOKANY=0` (writes `settings.ini [backend] dokany = no`),
+  `UPDATECHECK` (`0` under `/qn`, which is `UILevel 2`, otherwise `1`), `UPDATEURL` and `UPDATECHANNEL` (`settings.ini [update]`,
+  `IniFile`), `ENABLELINKEDCONNECTIONS` (written only when the value does not exist yet, `RegistrySearch`), `WEBDAV_TUNING`,
+  `REMOVESECRETS` and `REMOVEDATA` (uninstall-only removal components). Not implemented yet: `DEFAULTPROFILES`, `SERVICE` and
+  `SERVICESTART` (open items 1 and 4).
+- **Installer hooks (8.3, TM-R35):** `programdata-secure` (`NOT REMOVE~="ALL"`), `webdav-tune` `--apply` and `--revert`,
+  `signal-shutdown` (on upgrade and uninstall, before `RemoveExistingProducts`) and `user-cleanup` (impersonated, uninstall). The
+  NoImpersonate bit is set exactly where the 8.3 table says. The hooks run the installed `shelldrive-host.exe` through `FileKey`, so
+  they are scheduled after `InstallFiles`. **Deviation:** `programdata-secure` therefore does not run before `CreateFolders` and
+  `MoveFiles` as the table requires, because the file does not exist yet at that point (open item 2).
+- **ICE suppressions (justified; every other ICE is on):** ICE61 (same-version upgrade, 8.2); ICE38, ICE43 and ICE90 (the Start
+  menu shortcut is in `ProgramMenuFolder`, which is the all-users menu under `ALLUSERS=1`, while ICE checks the path as a user
+  profile); ICE63 (the signal-shutdown hook must run between `InstallInitialize` and `RemoveExistingProducts`, so that the agents
+  release their files before a major upgrade removes the old product). Intermediate localized packages are built with `-sval`;
+  the shipped base package is validated by light.
+- **Service (D6):** `ServiceInstall` and `ServiceControl` sit in `C_Core_Host`, behind `SD_MSI_WITH_SERVICE=1` (off until M5). The
+  service binary is the key file of that component, so `SERVICE=0` needs the host split into its own component when the service
+  lands (open item 4).
+
+**Tests (label `msi`, `-DSD_BUILD_MSI=ON`; `ctest -L msi` after `cmake --build <tree> --target msi`).** `msi.<flavour>.tables` reads
+the package with `msi.dll`: the properties, the Template, the InstallerVersion, the substorages, the transforms applied to a scratch
+copy with the language check, the components, the features, the registry rows, the launch conditions, the hooks and their
+NoImpersonate bits. `msi.<flavour>.admin` runs `msiexec /a ... /qn` into the build tree (files only: no registry, service or
+custom action). Installed-state tests (`msiexec /i`, repair, upgrade, uninstall) are not run on a development machine; they belong
+to the lab (11.4).
+
+**Open items (M4, MSI):**
+
+1. `DEFAULTPROFILES` (C9): WiX 3.14 has no authoring element for the MSI `MoveFile` table (its `MoveFiles` is an action element,
+   and `CopyFile` cannot copy a wildcard). The property is accepted and ignored. Needs a table-injection step (for example in
+   `sd-msiembed`) or the WiX v4+ migration.
+2. `programdata-secure` ordering (8.3): it runs after `InstallFiles`. A fix is a binary-stream custom action (a copy of the host in
+   the package) or a check in the setup stub before the MSI runs.
+3. Hook rollback counterparts (8.3: "each rollback counterpart carries the same condition") are not authored. The apply hooks are
+   idempotent. Add the revert paths for a failed install when the lab shows the need.
+4. `SERVICE`, `SERVICESTART` and the Service feature wait for M5 (see the Service bullet).
+5. Shell extension registration: `packaging/registration.txt` has no COM or context-menu rows yet (8.3 expects them in the generated
+   fragment), so the DLL is installed but not registered. The x64 packages do not carry the x86 copy of the DLL (8.3).
+6. Spanish WiX dialog strings are Spain Spanish (`WixUI_es-es.wxl`), not Rioplatense. Either provide the dialog buttons from our
+   catalog with voseo, or accept WiX's text for the standard buttons and dialogs only.
+7. Add/Remove Programs "Change" is disabled by `WixUI_Minimal`. `WixUI_FeatureTree` or a custom dialog would restore it.
+8. Reproducibility (12.2): the summary `Created` and `LastSaved` times vary between builds; `SOURCE_DATE_EPOCH` is not applied yet.
+9. ARM32 (D31): no `arm32` preset, so the package is not built. The ARM64 package needs the M6 host-tools path, because an ARM64
+   tree cannot run the MSI tools. `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM64 trees.
+10. Lab checks: the install-time behaviour of the hooks, of `ENABLELINKEDCONNECTIONS` (setup returns 3010, 8.4), of the
+    `DOKANY` and `UPDATE*` settings, and of the uninstall removal (TST-27) is not verified on this machine.
 
 ## 9. Updater
 

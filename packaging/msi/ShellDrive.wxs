@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ShellDrive per-machine MSI (docs/design/04 §8). One source for every flavour: packaging/msi/build-msi.cmake passes
+  the flavour through the defines below (candle -d...), and the generated includes come from the build tree:
+    Registry.wxi  tools/sd-msigen registry (packaging/registration.txt)
+    Guids.wxi     component and product GUIDs of this flavour family (sd-msigen guid)
+  Localized text: the loc.* ids come from the generated ShellDrive.<culture>.wxl files and from WixUI.
+
+  Defines: SD_VERSION, SD_FLAVOUR, SD_PRODUCT_CODE, SD_PACKAGE_CODE, SD_UPGRADE_CODE, SD_INSTALLER_VERSION,
+  SD_PF_DIR (ProgramFilesFolder or ProgramFiles64Folder), SD_WIN64 (yes/no), SD_BIN_DIR, SD_ICON,
+  SD_LAUNCH (none or win10), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <?include Guids.wxi?>
+  <Product Id="$(var.SD_PRODUCT_CODE)" Name="ShellDrive" Language="1033" Version="$(var.SD_VERSION)"
+           Manufacturer="LibreStatic" UpgradeCode="$(var.SD_UPGRADE_CODE)">
+    <Package Id="$(var.SD_PACKAGE_CODE)" InstallerVersion="$(var.SD_INSTALLER_VERSION)" Compressed="yes"
+             InstallScope="perMachine" InstallPrivileges="elevated"
+             Description="ShellDrive $(var.SD_FLAVOUR)" Comments="LibreStatic ShellDrive, per-machine package" />
+
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="no" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="!(loc.DowngradeError)" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="ShellDriveIcon" SourceFile="$(var.SD_ICON)" />
+    <Property Id="ARPPRODUCTICON" Value="ShellDriveIcon" />
+
+    <!-- Public properties for silent configuration (04 §8.4). Empty means "not given". -->
+    <Property Id="AUTOSTART" Value="1" />
+    <Property Id="DOKANY" Value="1" />
+    <Property Id="ENABLELINKEDCONNECTIONS" Value="0" />
+    <Property Id="REMOVEDATA" Value="0" />
+    <Property Id="REMOVESECRETS" Value="1" />
+    <Property Id="UPDATECHANNEL" Value="stable" />
+    <Property Id="WEBDAV_TUNING" Value="1" />
+    <!-- UPDATEURL and DEFAULTPROFILES have no default: they are set on the command line (04 §8.4). -->
+    <!-- UPDATECHECK defaults to 0 for a silent install (UILevel 2 is /qn) and to 1 otherwise. -->
+    <SetProperty Id="SD_UpdateCheckSilent" Value="0" Sequence="both" Before="CostInitialize"><![CDATA[UILevel = 2 AND UPDATECHECK = ""]]></SetProperty>
+    <SetProperty Id="SD_UpdateCheckDefault" Value="1" Sequence="both" After="CostInitialize"><![CDATA[UPDATECHECK = ""]]></SetProperty>
+
+    <!-- Read by the launch condition (OS) and by the ENABLELINKEDCONNECTIONS condition (04 §8.2, §8.4). -->
+    <Property Id="SD_OSMAJOR">
+      <RegistrySearch Id="SD_OSMAJOR_RS" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentMajorVersionNumber" Type="raw" Win64="$(var.SD_WIN64)" />
+    </Property>
+    <Property Id="SD_ELC_EXISTS">
+      <RegistrySearch Id="SD_ELC_EXISTS_RS" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+                      Name="EnableLinkedConnections" Type="raw" Win64="$(var.SD_WIN64)" />
+    </Property>
+
+    <?if $(var.SD_LAUNCH) = "win10" ?>
+    <!-- Windows 10 or later: CurrentMajorVersionNumber exists only there (04 §8.2). -->
+    <Condition Message="!(loc.OsRequired)"><![CDATA[Installed OR (SD_OSMAJOR <> "" AND SD_OSMAJOR >= 10)]]></Condition>
+    <?endif?>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="$(var.SD_PF_DIR)">
+        <Directory Id="SD_VENDOR_PF" Name="LibreStatic">
+          <Directory Id="INSTALLDIR" Name="ShellDrive">
+
+            <Component Id="C_Core_Cli" Guid="$(var.G_C_Core_Cli)" Win64="$(var.SD_WIN64)">
+              <File Id="F_shelldrive" Name="shelldrive.exe" Source="$(var.SD_BIN_DIR)\shelldrive.exe" KeyPath="yes" />
+            </Component>
+
+            <Component Id="C_Core_Host" Guid="$(var.G_C_Core_Host)" Win64="$(var.SD_WIN64)">
+              <File Id="F_shelldrive_host" Name="shelldrive-host.exe" Source="$(var.SD_BIN_DIR)\shelldrive-host.exe" KeyPath="yes" />
+              <?if $(var.SD_WITH_SERVICE) = "1" ?>
+              <!-- The service binary is this file (M5). The feature split for SERVICE=0 comes with it (04 §8.3). -->
+              <ServiceInstall Id="SD_ServiceInstall" Name="ShellDriveSvc" DisplayName="ShellDrive" Description="ShellDrive background service"
+                              Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service" />
+              <ServiceControl Id="SD_ServiceControl" Name="ShellDriveSvc" Stop="both" Remove="uninstall" Wait="yes" />
+              <?endif?>
+            </Component>
+
+            <Component Id="C_Core_Ui" Guid="$(var.G_C_Core_Ui)" Win64="$(var.SD_WIN64)">
+              <File Id="F_shelldrive_ui" Name="shelldrive-ui.exe" Source="$(var.SD_BIN_DIR)\shelldrive-ui.exe" KeyPath="yes" />
+            </Component>
+
+            <Component Id="C_ShellExt" Guid="$(var.G_C_ShellExt)" Win64="$(var.SD_WIN64)">
+              <File Id="F_shelldrive_shellext" Name="shelldrive-shellext.dll" Source="$(var.SD_BIN_DIR)\shelldrive-shellext.dll" KeyPath="yes" />
+            </Component>
+
+          </Directory>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="SD_STARTMENU" Name="ShellDrive">
+          <Component Id="C_StartMenu" Guid="$(var.G_C_StartMenu)" Win64="$(var.SD_WIN64)">
+            <CreateFolder />
+            <Shortcut Id="SD_SHORTCUT_UI" Name="ShellDrive" Description="ShellDrive" Target="[INSTALLDIR]shelldrive-ui.exe"
+                      WorkingDirectory="INSTALLDIR" Icon="ShellDriveIcon" IconIndex="0" Advertise="no" />
+            <RemoveFolder Id="SD_STARTMENU_RM" On="uninstall" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <!-- Machine settings and data (04 §6.7, §8.3). Written by the MSI only; removed on uninstall as stated there. -->
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="SD_CAD_VENDOR" Name="LibreStatic">
+          <Directory Id="SD_CAD_PRODUCT" Name="ShellDrive">
+            <Directory Id="SD_CAD_PROFILES" Name="profiles" />
+            <Directory Id="SD_CAD_STATE" Name="state" />
+            <Directory Id="SD_CAD_SERVICE" Name="service">
+              <Directory Id="SD_CAD_SECRETS" Name="secrets" />
+              <Directory Id="SD_CAD_KEYS" Name="keys" />
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- settings.ini (03 §3.4): the [update] and [backend] keys that the public properties write. -->
+    <Component Id="C_Ini_Update" Guid="$(var.G_C_Ini_Update)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
+      <CreateFolder />
+      <IniFile Id="SD_INI_UPDATE_ENABLED" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
+               Section="update" Key="enabled" Value="[UPDATECHECK]" />
+      <IniFile Id="SD_INI_UPDATE_CHANNEL" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
+               Section="update" Key="channel" Value="[UPDATECHANNEL]" />
+    </Component>
+    <Component Id="C_Ini_UpdateUrl" Guid="$(var.G_C_Ini_UpdateUrl)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[UPDATEURL <> ""]]></Condition>
+      <CreateFolder />
+      <IniFile Id="SD_INI_UPDATE_URL" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
+               Section="update" Key="manifest_url" Value="[UPDATEURL]" />
+    </Component>
+    <Component Id="C_Ini_Backend" Guid="$(var.G_C_Ini_Backend)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[DOKANY = "0"]]></Condition>
+      <CreateFolder />
+      <IniFile Id="SD_INI_BACKEND_DOKANY" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
+               Section="backend" Key="dokany" Value="no" />
+    </Component>
+
+    <!-- DEFAULTPROFILES (C9) is not authored yet: WiX 3.14 has no element for the MSI MoveFile table (wildcard
+         copy). Open item in 04 §8.4; the property is accepted and ignored until the table is added. -->
+
+    <!-- ENABLELINKEDCONNECTIONS (D24): written only when the admin has not set the value already. -->
+    <Component Id="C_LinkedConn" Guid="$(var.G_C_LinkedConn)" Directory="TARGETDIR" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[ENABLELINKEDCONNECTIONS = "1" AND VersionNT >= 600 AND SD_ELC_EXISTS = ""]]></Condition>
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+                     Name="EnableLinkedConnections" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Uninstall-only removal (04 §6.7). Each component's condition is true only while the product is removed. -->
+    <Component Id="C_Rm_Secrets" Guid="$(var.G_C_Rm_Secrets)" Directory="SD_CAD_SECRETS" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[(REMOVESECRETS = "1" OR REMOVEDATA = "1") AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFile Id="SD_RMF_SECRETS" Name="*" On="uninstall" />
+      <RemoveFolder Id="SD_RMD_SECRETS" On="uninstall" />
+    </Component>
+    <Component Id="C_Rm_Keys" Guid="$(var.G_C_Rm_Keys)" Directory="SD_CAD_KEYS" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[(REMOVESECRETS = "1" OR REMOVEDATA = "1") AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFile Id="SD_RMF_KEYS" Name="*" On="uninstall" />
+      <RemoveFolder Id="SD_RMD_KEYS" On="uninstall" />
+    </Component>
+    <Component Id="C_Rm_Data" Guid="$(var.G_C_Rm_Data)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[REMOVEDATA = "1" AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFile Id="SD_RMF_DATA" Name="*" On="uninstall" />
+      <RemoveFolder Id="SD_RMD_DATA" On="uninstall" />
+    </Component>
+    <Component Id="C_Rm_DataProfiles" Guid="$(var.G_C_Rm_DataProfiles)" Directory="SD_CAD_PROFILES" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[REMOVEDATA = "1" AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFile Id="SD_RMF_PROFILES" Name="*" On="uninstall" />
+      <RemoveFolder Id="SD_RMD_PROFILES" On="uninstall" />
+    </Component>
+    <Component Id="C_Rm_DataState" Guid="$(var.G_C_Rm_DataState)" Directory="SD_CAD_STATE" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[REMOVEDATA = "1" AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFile Id="SD_RMF_STATE" Name="*" On="uninstall" />
+      <RemoveFolder Id="SD_RMD_STATE" On="uninstall" />
+    </Component>
+    <Component Id="C_Rm_DataService" Guid="$(var.G_C_Rm_DataService)" Directory="SD_CAD_SERVICE" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[REMOVEDATA = "1" AND REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Condition>
+      <CreateFolder />
+      <RemoveFolder Id="SD_RMD_SERVICE" On="uninstall" />
+    </Component>
+
+    <!-- Feature tree (04 §8.3). Core is always installed; the others are on by default. -->
+    <Feature Id="ShellDrive" Title="ShellDrive" Level="1" Display="expand" ConfigurableDirectory="INSTALLDIR">
+      <Feature Id="Core" Title="!(loc.FeatureCoreTitle)" Description="!(loc.FeatureCoreDesc)" Level="1" Absent="disallow" AllowAdvertise="no">
+        <ComponentRef Id="C_Core_Cli" />
+        <ComponentRef Id="C_Core_Host" />
+        <ComponentRef Id="C_Core_Ui" />
+        <ComponentRef Id="C_Ini_Update" />
+        <ComponentRef Id="C_Ini_UpdateUrl" />
+        <ComponentRef Id="C_Ini_Backend" />
+        <ComponentRef Id="C_LinkedConn" />
+        <ComponentRef Id="C_Rm_Secrets" />
+        <ComponentRef Id="C_Rm_Keys" />
+        <ComponentRef Id="C_Rm_Data" />
+        <ComponentRef Id="C_Rm_DataProfiles" />
+        <ComponentRef Id="C_Rm_DataState" />
+        <ComponentRef Id="C_Rm_DataService" />
+        <ComponentGroupRef Id="SD_RegCore" />
+      </Feature>
+      <Feature Id="ShellExt" Title="!(loc.FeatureShellextTitle)" Description="!(loc.FeatureShellextDesc)" Level="1" AllowAdvertise="no">
+        <ComponentRef Id="C_ShellExt" />
+      </Feature>
+      <Feature Id="StartMenu" Title="!(loc.FeatureStartmenuTitle)" Description="!(loc.FeatureStartmenuDesc)" Level="1" AllowAdvertise="no">
+        <ComponentRef Id="C_StartMenu" />
+      </Feature>
+      <Feature Id="Autostart" Title="!(loc.FeatureAutostartTitle)" Description="!(loc.FeatureAutostartDesc)" Level="1" AllowAdvertise="no">
+        <Condition Level="0"><![CDATA[AUTOSTART = "0"]]></Condition>
+        <ComponentGroupRef Id="SD_RegAutostart" />
+      </Feature>
+    </Feature>
+
+    <!-- Deferred custom actions of our own binary (04 §8.3, TM-R35). The conditions are the table of 04 §8.3.
+         FileKey runs the installed copy, so each action is scheduled after InstallFiles. Impersonate="no" only
+         where the table says so. -->
+    <CustomAction Id="CA_ProgramDataSecure" FileKey="F_shelldrive_host" ExeCommand="--installer-hook programdata-secure --apply"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="CA_WebDavTune_Apply" FileKey="F_shelldrive_host" ExeCommand="--installer-hook webdav-tune --apply"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="CA_WebDavTune_Revert" FileKey="F_shelldrive_host" ExeCommand="--installer-hook webdav-tune --revert"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="CA_SignalShutdown" FileKey="F_shelldrive_host" ExeCommand="--installer-hook signal-shutdown --apply"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="CA_UserCleanup" FileKey="F_shelldrive_host" ExeCommand="--installer-hook user-cleanup --apply"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CA_SignalShutdown" Before="RemoveExistingProducts"><![CDATA[NOT REINSTALL AND (REMOVE~="ALL" OR WIX_UPGRADE_DETECTED)]]></Custom>
+      <Custom Action="CA_ProgramDataSecure" After="InstallFiles"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+      <Custom Action="CA_WebDavTune_Apply" After="InstallFiles"><![CDATA[WEBDAV_TUNING = "1" AND NOT REMOVE~="ALL"]]></Custom>
+      <Custom Action="CA_WebDavTune_Revert" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
+      <Custom Action="CA_UserCleanup" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
+    </InstallExecuteSequence>
+
+    <UIRef Id="WixUI_Minimal" />
+  </Product>
+
+  <?include Registry.wxi?>
+</Wix>

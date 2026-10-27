@@ -312,3 +312,64 @@ msgstr "O ShellDrive será removido de {folder}. Suas configurações e perfis s
 msgctxt "installer.uninstall.question"
 msgid "Do you want to remove ShellDrive from this computer?"
 msgstr "Deseja remover o ShellDrive deste computador?"
+
+# MSI strings (04 §8.6): WiX localization ids, one msi.<Id> entry each (tools/sd-msigen wxl).
+#. WiX string FeatureCoreTitle of the MSI.
+msgctxt "msi.feature.core.title"
+msgid "Program files"
+msgstr "Arquivos do programa"
+
+#. WiX string FeatureCoreDesc of the MSI.
+msgctxt "msi.feature.core.desc"
+msgid "The command line, the background agent and the window. Always installed."
+msgstr "A linha de comando, o agente em segundo plano e a janela. Sempre instalado."
+
+#. WiX string FeatureShellExtTitle of the MSI.
+msgctxt "msi.feature.shellext.title"
+msgid "File Explorer menu"
+msgstr "Menu do Explorador de Arquivos"
+
+#. WiX string FeatureShellExtDesc of the MSI.
+msgctxt "msi.feature.shellext.desc"
+msgid "Adds ShellDrive commands to the right-click menu of drives and folders."
+msgstr "Adiciona os comandos do ShellDrive ao menu de contexto de unidades e pastas."
+
+#. WiX string FeatureServiceTitle of the MSI.
+msgctxt "msi.feature.service.title"
+msgid "Background service"
+msgstr "Serviço em segundo plano"
+
+#. WiX string FeatureServiceDesc of the MSI.
+msgctxt "msi.feature.service.desc"
+msgid "Keeps the global drives of the machine running before any user signs in."
+msgstr "Mantém as unidades globais da máquina ativas antes de qualquer usuário entrar."
+
+#. WiX string FeatureStartMenuTitle of the MSI.
+msgctxt "msi.feature.startmenu.title"
+msgid "Start menu shortcut"
+msgstr "Atalho no menu Iniciar"
+
+#. WiX string FeatureStartMenuDesc of the MSI.
+msgctxt "msi.feature.startmenu.desc"
+msgid "Adds ShellDrive to the Start menu."
+msgstr "Adiciona o ShellDrive ao menu Iniciar."
+
+#. WiX string FeatureAutostartTitle of the MSI.
+msgctxt "msi.feature.autostart.title"
+msgid "Start at sign-in"
+msgstr "Iniciar ao entrar no Windows"
+
+#. WiX string FeatureAutostartDesc of the MSI.
+msgctxt "msi.feature.autostart.desc"
+msgid "Starts the ShellDrive agent when each user signs in."
+msgstr "Inicia o agente do ShellDrive quando cada usuário entra no sistema."
+
+#. WiX string DowngradeError of the MSI (MajorUpgrade).
+msgctxt "msi.downgrade.error"
+msgid "A newer version of ShellDrive is already installed."
+msgstr "Já existe uma versão mais recente do ShellDrive instalada."
+
+#. WiX string OsRequired of the MSI (launch condition).
+msgctxt "msi.os.required"
+msgid "This package of ShellDrive needs Windows 10 or later. Use the package for your version of Windows."
+msgstr "Este pacote do ShellDrive precisa do Windows 10 ou de uma versão posterior. Use o pacote correspondente à sua versão do Windows."
