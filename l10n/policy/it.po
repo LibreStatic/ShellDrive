@@ -1,0 +1,320 @@
+# ShellDrive Group Policy strings, Italian (informal imperative, AGENTS.md). Translator: msgid is the English source.
+msgid ""
+msgstr ""
+"Language: it\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+msgctxt "policy.file.display"
+msgid "ShellDrive policies"
+msgstr "Criteri di ShellDrive"
+
+msgctxt "policy.file.description"
+msgid "Group Policy settings for ShellDrive. A policy overrides the same setting in the configuration files."
+msgstr "Impostazioni di Criteri di gruppo per ShellDrive. Un criterio sostituisce la stessa impostazione nei file di configurazione."
+
+msgctxt "policy.cat.librestatic"
+msgid "LibreStatic"
+msgstr "LibreStatic"
+
+msgctxt "policy.cat.shelldrive"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+msgctxt "policy.cat.security"
+msgid "Security"
+msgstr "Sicurezza"
+
+msgctxt "policy.cat.network"
+msgid "Network"
+msgstr "Rete"
+
+msgctxt "policy.cat.mounts"
+msgid "Drives and mounts"
+msgstr "Unità e montaggi"
+
+msgctxt "policy.cat.updates"
+msgid "Updates"
+msgstr "Aggiornamenti"
+
+msgctxt "policy.cat.interface"
+msgid "Interface"
+msgstr "Interfaccia"
+
+msgctxt "policy.cat.logging"
+msgid "Logging and privacy"
+msgstr "Registrazione e privacy"
+
+msgctxt "policy.supported.xp"
+msgid "At least Windows XP Service Pack 3"
+msgstr "Almeno Windows XP con Service Pack 3"
+
+msgctxt "policy.supported.win11"
+msgid "At least Windows 11"
+msgstr "Almeno Windows 11"
+
+msgctxt "policy.legacyalgorithms.title"
+msgid "Legacy SSH algorithms"
+msgstr "Algoritmi SSH legacy"
+
+msgctxt "policy.legacyalgorithms.explain"
+msgid "Controls the use of legacy SSH algorithms. 0 allows them, 1 allows them with a warning, 2 refuses them."
+msgstr "Controlla l'uso degli algoritmi SSH legacy. 0 li consente, 1 li consente con un avviso, 2 li rifiuta."
+
+msgctxt "policy.legacyalgorithms.label"
+msgid "Legacy algorithms:"
+msgstr "Algoritmi legacy:"
+
+msgctxt "policy.legacyalgorithms.opt.0"
+msgid "Allow"
+msgstr "Consenti"
+
+msgctxt "policy.legacyalgorithms.opt.1"
+msgid "Warn"
+msgstr "Avvisa"
+
+msgctxt "policy.legacyalgorithms.opt.2"
+msgid "Refuse"
+msgstr "Rifiuta"
+
+msgctxt "policy.allowuserprofiles.title"
+msgid "Allow user profiles"
+msgstr "Consenti i profili utente"
+
+msgctxt "policy.allowuserprofiles.explain"
+msgid "Allows users to keep their own connection profiles. When disabled, only the machine profiles are used."
+msgstr "Consente a ogni utente di conservare i propri profili di connessione. Se disattivato, si usano solo i profili della macchina."
+
+msgctxt "policy.allowadhocmounts.title"
+msgid "Allow ad hoc mounts"
+msgstr "Consenti i montaggi ad hoc"
+
+msgctxt "policy.allowadhocmounts.explain"
+msgid "Allows mounting a connection that is not saved as a profile. When disabled, only saved profiles can be mounted."
+msgstr "Consente di montare una connessione non salvata come profilo. Se disattivato, si possono montare solo i profili salvati."
+
+msgctxt "policy.allowedbackends.title"
+msgid "Allowed mount backends"
+msgstr "Backend di montaggio consentiti"
+
+msgctxt "policy.allowedbackends.explain"
+msgid "Lists the mount backends that may be used, separated by commas (webdav,dokany)."
+msgstr "Elenca i backend di montaggio che possono essere usati, separati da virgole (webdav,dokany)."
+
+msgctxt "policy.allowedbackends.label"
+msgid "Backends (comma-separated):"
+msgstr "Backend (separati da virgole):"
+
+msgctxt "policy.disablecredentialsaving.title"
+msgid "Disable saving credentials"
+msgstr "Disattiva il salvataggio delle credenziali"
+
+msgctxt "policy.disablecredentialsaving.explain"
+msgid "Prevents ShellDrive from saving passwords and keys in Windows Credential Manager."
+msgstr "Impedisce a ShellDrive di salvare password e chiavi in Gestione credenziali di Windows."
+
+msgctxt "policy.stricthostkeychecking.title"
+msgid "Strict host key checking"
+msgstr "Verifica rigorosa delle chiavi host"
+
+msgctxt "policy.stricthostkeychecking.explain"
+msgid "When enabled, ShellDrive accepts only host keys that are already in the machine known_hosts store. New keys are never accepted on first use."
+msgstr "Se attivata, ShellDrive accetta solo le chiavi host già presenti nell'archivio known_hosts della macchina. Le chiavi nuove non vengono mai accettate al primo utilizzo."
+
+msgctxt "policy.disableknownhostssources.title"
+msgid "Disable other known_hosts sources"
+msgstr "Disattiva le altre fonti known_hosts"
+
+msgctxt "policy.disableknownhostssources.explain"
+msgid "Prevents ShellDrive from reading the user's OpenSSH known_hosts file and the PuTTY host keys."
+msgstr "Impedisce a ShellDrive di leggere il file known_hosts di OpenSSH dell'utente e le chiavi host di PuTTY."
+
+msgctxt "policy.updatehostkeys.title"
+msgid "Host key updates"
+msgstr "Aggiornamento delle chiavi host"
+
+msgctxt "policy.updatehostkeys.explain"
+msgid "Controls whether ShellDrive updates known host keys. 0 never updates, 1 asks the user, 2 accepts keys proven by the server. For the service, 2 is the only way to update the machine store."
+msgstr "Controlla se ShellDrive aggiorna le chiavi host conosciute. 0 non aggiorna mai, 1 chiede all'utente, 2 accetta le chiavi dimostrate dal server. Per il servizio, 2 è l'unico modo per aggiornare l'archivio della macchina."
+
+msgctxt "policy.updatehostkeys.label"
+msgid "Host key updates:"
+msgstr "Aggiornamento chiavi host:"
+
+msgctxt "policy.updatehostkeys.opt.0"
+msgid "Never"
+msgstr "Mai"
+
+msgctxt "policy.updatehostkeys.opt.1"
+msgid "Ask"
+msgstr "Chiedi"
+
+msgctxt "policy.updatehostkeys.opt.2"
+msgid "Accept proven keys"
+msgstr "Accetta le chiavi dimostrate"
+
+msgctxt "policy.forcewritethrough.title"
+msgid "Force write-through"
+msgstr "Forza la scrittura immediata"
+
+msgctxt "policy.forcewritethrough.explain"
+msgid "When enabled, profiles that use write-behind caching are refused. Writes reach the server before the call returns."
+msgstr "Se attivata, i profili che usano la cache di scrittura differita vengono rifiutati. Le scritture raggiungono il server prima che la chiamata termini."
+
+msgctxt "policy.proxyserver.title"
+msgid "Proxy server"
+msgstr "Server proxy"
+
+msgctxt "policy.proxyserver.explain"
+msgid "Forces this proxy as the first hop for every profile, in the form scheme://host:port. When not set, each profile's own proxy setting applies."
+msgstr "Forza questo proxy come primo salto per ogni profilo, nel formato schema://host:porta. Se non è impostato, vale l'impostazione proxy di ogni profilo."
+
+msgctxt "policy.proxyserver.label"
+msgid "Proxy (scheme://host:port):"
+msgstr "Proxy (schema://host:porta):"
+
+msgctxt "policy.allowsystemproxy.title"
+msgid "Allow the system proxy"
+msgstr "Consenti il proxy di sistema"
+
+msgctxt "policy.allowsystemproxy.explain"
+msgid "Allows profiles that use the Windows system proxy, WPAD or PAC. When disabled, those profiles are refused."
+msgstr "Consente i profili che usano il proxy di sistema di Windows, WPAD o PAC. Se disattivato, questi profili vengono rifiutati."
+
+msgctxt "policy.allowsystemproxysspi.title"
+msgid "Allow SSPI to the system proxy"
+msgstr "Consenti SSPI con il proxy di sistema"
+
+msgctxt "policy.allowsystemproxysspi.explain"
+msgid "Allows Windows integrated authentication (SSPI) to be answered for a proxy that comes from the system settings, WPAD or PAC. Disabled by default."
+msgstr "Consente di rispondere all'autenticazione integrata di Windows (SSPI) per un proxy ricavato dalle impostazioni di sistema, WPAD o PAC. Disattivato per impostazione predefinita."
+
+msgctxt "policy.allowwebdavtokenonly.title"
+msgid "Allow WebDAV token-only fallback"
+msgstr "Consenti il fallback WebDAV solo con token"
+
+msgctxt "policy.allowwebdavtokenonly.explain"
+msgid "Allows the WebDAV fallback that uses only a token. When disabled, that fallback is forbidden and the connection fails."
+msgstr "Consente il fallback WebDAV che usa solo un token. Se disattivato, quel fallback è vietato e la connessione non riesce."
+
+msgctxt "policy.uilanguage.title"
+msgid "Interface language"
+msgstr "Lingua dell'interfaccia"
+
+msgctxt "policy.uilanguage.explain"
+msgid "Sets the language of the ShellDrive interface and messages. When not set, the user's Windows language is used."
+msgstr "Imposta la lingua dell'interfaccia e dei messaggi di ShellDrive. Se non è impostata, si usa la lingua di Windows dell'utente."
+
+msgctxt "policy.uilanguage.label"
+msgid "Language:"
+msgstr "Lingua:"
+
+msgctxt "policy.uilanguage.opt.en"
+msgid "English"
+msgstr "English"
+
+msgctxt "policy.uilanguage.opt.es"
+msgid "Español"
+msgstr "Español"
+
+msgctxt "policy.uilanguage.opt.fr"
+msgid "Français"
+msgstr "Français"
+
+msgctxt "policy.uilanguage.opt.pt-br"
+msgid "Português (Brasil)"
+msgstr "Português (Brasile)"
+
+msgctxt "policy.uilanguage.opt.it"
+msgid "Italiano"
+msgstr "Italiano"
+
+msgctxt "policy.uilanguage.opt.de"
+msgid "Deutsch"
+msgstr "Deutsch"
+
+msgctxt "policy.disableupdatecheck.title"
+msgid "Disable update checks"
+msgstr "Disattiva la ricerca di aggiornamenti"
+
+msgctxt "policy.disableupdatecheck.explain"
+msgid "Prevents ShellDrive from checking for updates. When enabled, no check is made and the update settings are ignored."
+msgstr "Impedisce a ShellDrive di cercare aggiornamenti. Se attivata, non viene eseguito alcun controllo e le impostazioni di aggiornamento vengono ignorate."
+
+msgctxt "policy.updatechannel.title"
+msgid "Update channel"
+msgstr "Canale di aggiornamento"
+
+msgctxt "policy.updatechannel.explain"
+msgid "Sets the update channel: stable for released versions only, or beta to include pre-releases."
+msgstr "Imposta il canale di aggiornamento: stabile, solo per le versioni rilasciate, oppure beta, per includere le versioni di anteprima."
+
+msgctxt "policy.updatechannel.label"
+msgid "Channel:"
+msgstr "Canale:"
+
+msgctxt "policy.updatechannel.opt.stable"
+msgid "Stable"
+msgstr "Stabile"
+
+msgctxt "policy.updatechannel.opt.beta"
+msgid "Beta"
+msgstr "Beta"
+
+msgctxt "policy.updateurl.title"
+msgid "Update manifest URL"
+msgstr "URL del manifesto di aggiornamento"
+
+msgctxt "policy.updateurl.explain"
+msgid "Sets the address of the update manifest, for example an internal mirror. When not set, the default address is used."
+msgstr "Imposta l'indirizzo del manifesto di aggiornamento, ad esempio un mirror interno. Se non è impostato, si usa l'indirizzo predefinito."
+
+msgctxt "policy.updateurl.label"
+msgid "Manifest URL:"
+msgstr "URL del manifesto:"
+
+msgctxt "policy.hidetrayicon.title"
+msgid "Hide the tray icon"
+msgstr "Nascondi l'icona nell'area di notifica"
+
+msgctxt "policy.hidetrayicon.explain"
+msgid "Hides the ShellDrive icon in the notification area."
+msgstr "Nasconde l'icona di ShellDrive nell'area di notifica."
+
+msgctxt "policy.disablenetworklocations.title"
+msgid "Disable network locations"
+msgstr "Disattiva i percorsi di rete"
+
+msgctxt "policy.disablenetworklocations.explain"
+msgid "Prevents ShellDrive mounts from being added to Network Locations (NetHood) in Explorer."
+msgstr "Impedisce di aggiungere i montaggi di ShellDrive ai Percorsi di rete (NetHood) in Esplora risorse."
+
+msgctxt "policy.disablemoderncontextmenu.title"
+msgid "Disable the modern context menu"
+msgstr "Disattiva il menu di scelta rapida moderno"
+
+msgctxt "policy.disablemoderncontextmenu.explain"
+msgid "Prevents ShellDrive entries from appearing in the modern Windows 11 context menu. The classic menu entries remain."
+msgstr "Impedisce che le voci di ShellDrive compaiano nel menu di scelta rapida moderno di Windows 11. Le voci del menu classico restano disponibili."
+
+msgctxt "policy.logprivacy.title"
+msgid "Log privacy"
+msgstr "Privacy dei log"
+
+msgctxt "policy.logprivacy.explain"
+msgid "Sets how much personal data is written to the logs. 0 uses standard logging, 1 uses strict logging, which removes more personal data from the entries."
+msgstr "Imposta quanti dati personali vengono scritti nei log. 0 usa la registrazione standard e 1 la registrazione rigorosa, che rimuove più dati personali dalle voci."
+
+msgctxt "policy.logprivacy.label"
+msgid "Log detail:"
+msgstr "Dettaglio dei log:"
+
+msgctxt "policy.logprivacy.opt.0"
+msgid "Standard"
+msgstr "Standard"
+
+msgctxt "policy.logprivacy.opt.1"
+msgid "Strict"
+msgstr "Rigoroso"

@@ -24,13 +24,13 @@
 #include "explorer_data.h"
 #include "sd_base/sd_mem.h"
 #include "sd_config/sd_config.h"
+#include "sd_policy/sd_policy.h"
 #include "sd_config/sd_ini.h"
 #include "sd_platform/sd_log.h"
 #include "sd_base/sd_buf.h"
 
 #define EX_LOG            "explorer"
 #define ICON_KEY_DEFAULT  L"Software\\Classes\\Applications\\Explorer.exe\\Drives"
-#define POLICY_KEY        L"Software\\Policies\\LibreStatic\\ShellDrive"
 #define NETHOOD_CLSID     L"{0AFACED1-E828-11D1-9187-B532F1E9575D}"
 #define UI_EXE_NAME       L"shelldrive-ui.exe"
 #define ICON_INDEX        1                 /* -<id> of DefaultIcon / IconResource: the UI's icon resource */
@@ -169,29 +169,11 @@ static int nethood_path(wchar_t *out, size_t cch)
   return SHGetFolderPathW(NULL, CSIDL_NETHOOD, NULL, SHGFP_TYPE_CURRENT, out) == S_OK;
 }
 
-static int policy_dword_is_one(HKEY root)
-{
-  HKEY k;
-  DWORD v = 0, t = 0, sz = sizeof(v);
-  int one = 0, found = 0;
-  if (RegOpenKeyExW(root, POLICY_KEY, 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS)
-    return -1;
-  if (RegQueryValueExW(k, L"DisableNetworkLocations", NULL, &t, (LPBYTE)&v, &sz) == ERROR_SUCCESS &&
-      t == REG_DWORD) {
-    one = v != 0;
-    found = 1;
-  }
-  RegCloseKey(k);
-  return found ? one : -1;
-}
-
-/* Policy DisableNetworkLocations = 1 (HKLM wins over HKCU, 03 §3.5). */
+/* Policy DisableNetworkLocations = 1 (HKLM wins over HKCU, 03 §3.5; read through sd_policy). */
 static int policy_disables_netloc(void)
 {
-  int v = policy_dword_is_one(HKEY_LOCAL_MACHINE);
-  if (v < 0)
-    v = policy_dword_is_one(HKEY_CURRENT_USER);
-  return v == 1;
+  DWORD v = 0;
+  return sd_policy_get_dword(SD_POLICY_DISABLENETWORKLOCATIONS, &v) && v != 0;
 }
 
 void explorer_init(void)

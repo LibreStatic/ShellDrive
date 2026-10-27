@@ -88,7 +88,7 @@ foreach ($preset in $Presets) {
       # tests: they need the per-row matrix fixtures and are run by tests\interop\run-matrix.ps1.
       # -LE also excludes the opt-in benchmarks (bench.vfs_pool needs SD_IT_BENCH=1 and the fixture; run by
       # hand). One expression: ctest's repeated -LE flags replace rather than accumulate.
-      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit -LE 'matrix|bench' 2>&1 }
+      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit -LE 'matrix|bench|repro' 2>&1 }
       $tlog | Out-Host
       if ($LASTEXITCODE) { throw "tests $cfg failed" }
       $skipped = @($tlog | Select-String -Pattern '\*\*\*Skipped' | ForEach-Object { ($_ -split ':')[1].Trim().Split(' ')[0] })

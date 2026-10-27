@@ -30,5 +30,5 @@ sd_add_app(shelldrive-host
   OUTPUT_NAME shelldrive-host
   DESCRIPTION "ShellDrive agent and service host"
   SOURCES main.c ${SD_HOST_AGENT_SOURCES} ${_backend} ${CMAKE_CURRENT_SOURCE_DIR}/installer_hooks.c
-  DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_config sd_update sd_platform sd_base
+  DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_config sd_update sd_policy sd_platform sd_base
        ole32 shell32 user32)
