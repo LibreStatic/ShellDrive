@@ -15,7 +15,16 @@
 
 #include "sd_base/sd_mem.h"
 
-void sd_sha256_ni_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks, const uint32_t k[64])
+/* Four rounds: wk holds W[t] + K[t] for four consecutive t. The two SHA256RNDS2 steps swap the ABEF and CDGH
+   halves as Intel's sample sequence does. */
+static SD_FORCEINLINE void sd_sha256_ni_rounds4(__m128i *state0, __m128i *state1, __m128i wk)
+{
+  *state1 = _mm_sha256rnds2_epu32(*state1, *state0, wk);
+  wk = _mm_shuffle_epi32(wk, 0x0E);
+  *state0 = _mm_sha256rnds2_epu32(*state0, *state1, wk);
+}
+
+void sd_sha256_ni_blocks_ct(uint32_t st[8], const uint8_t *p, size_t nblocks, const uint32_t k[64])
 {
   /* Byte-swaps each 32-bit word: the message is big-endian. */
   const __m128i swap = _mm_set_epi64x(0x0c0d0e0f08090a0bLL, 0x0405060700010203LL);
@@ -39,17 +48,19 @@ void sd_sha256_ni_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks, const
     for (i = 0; i < 4; i++)
       w[i] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16 * i)), swap);
 
-    for (i = 0; i < 16; i++) {
-      if (i >= 4) {
-        /* W[t] = sigma1(W[t-2]) + W[t-7] + sigma0(W[t-15]) + W[t-16], four words per step. */
-        __m128i t = _mm_sha256msg1_epu32(w[i & 3], w[(i + 1) & 3]);
-        t = _mm_add_epi32(t, _mm_alignr_epi8(w[(i + 3) & 3], w[(i + 2) & 3], 4));
-        w[i & 3] = _mm_sha256msg2_epu32(t, w[(i + 3) & 3]);
-      }
+    /* Two loops instead of one with an "if (i >= 4)" schedule step: no branch depends on the loop index. */
+    for (i = 0; i < 4; i++) {
+      /* Rounds 4i..4i+3 on the words loaded above. */
+      msg = _mm_add_epi32(w[i], _mm_loadu_si128((const __m128i *)(k + 4 * i)));
+      sd_sha256_ni_rounds4(&state0, &state1, msg);
+    }
+    for (i = 4; i < 16; i++) {
+      /* W[t] = sigma1(W[t-2]) + W[t-7] + sigma0(W[t-15]) + W[t-16], four words per step. */
+      __m128i t = _mm_sha256msg1_epu32(w[i & 3], w[(i + 1) & 3]);
+      t = _mm_add_epi32(t, _mm_alignr_epi8(w[(i + 3) & 3], w[(i + 2) & 3], 4));
+      w[i & 3] = _mm_sha256msg2_epu32(t, w[(i + 3) & 3]);
       msg = _mm_add_epi32(w[i & 3], _mm_loadu_si128((const __m128i *)(k + 4 * i)));
-      state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
-      msg = _mm_shuffle_epi32(msg, 0x0E);
-      state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+      sd_sha256_ni_rounds4(&state0, &state1, msg);
     }
 
     state0 = _mm_add_epi32(state0, abef);

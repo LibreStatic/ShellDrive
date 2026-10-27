@@ -13,7 +13,7 @@
 
 #include <immintrin.h>
 
-void sd_aes_ni_encrypt_blocks(const uint8_t *rk, uint32_t rounds, const uint8_t *in, uint8_t *out, size_t nblocks)
+void sd_aes_ni_encrypt_blocks_ct(const uint8_t *rk, uint32_t rounds, const uint8_t *in, uint8_t *out, size_t nblocks)
 {
   uint32_t r;
   while (nblocks >= 4) {

@@ -83,10 +83,16 @@ build\x86-fuzz\bin\Debug\sd-fuzz-json-libfuzzer.exe C:\scratch\json -max_total_t
 
 ## Constant-time checks
 
-Gate (every x86-ia32 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_sd_crypto`):
+Gate (every x86 and x64 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_sd_crypto`):
 
 - No call to a compiler helper from constant-time code (as before).
 - DIV and IDIV are forbidden in constant-time-named functions (`*_ct_*`, `*_ct`, `sd_ct_*`).
+- Which objects: the constant-time list of `tools/sd-isacheck/CMakeLists.txt` (`SD_CT_SOURCES`). On x86-sse2 it also
+  takes the AES-NI and SHA-NI objects (`aes_ni`, `sha256_ni`); on the x64 flavours it takes those two plus `aes_ct` and
+  `hash`. x86-ia32 and ARM take no hardware object. A new hardware or SIMD function that must be judged needs the
+  constant-time name; the `isacheck.ct_scans_*` tests fail if a rename removes it from the scan.
+- x64 objects are decoded in 64-bit mode (`isacheck.selftest` covers both modes). The branch and divide rules on x64
+  reach only the functions listed above.
 - A **forward** conditional branch in those functions is reported, except a loop-entry guard (a forward branch that
   skips a loop whose back-edge lies inside the skipped region). Backward branches are loop back-edges; their bounds
   are public by 01 section 2.4 rule 1 and are not classified.
@@ -94,7 +100,7 @@ Gate (every x86-ia32 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_sd_c
   `tools/sd-isacheck/ct-branch-allow.txt` with the reason. The list is exempt from the forward-branch rule only.
   A change to a listed function needs its branches reviewed again.
 
-Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the ARM32 run. The x86-sse2 run is in place: the vectorizer's overlap checks are kept out of CT loops with `SD_CT_NO_VECTOR` (d38-pass1 section 9.4).
+Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the ARM32 run. The x86-sse2 run is in place: the vectorizer's overlap checks are kept out of CT loops with `SD_CT_NO_VECTOR` (d38-pass1 section 9.4). Round 10 (d38-pass1 section 9.4) brought the AES-NI and SHA-NI code and the dispatch cores under the gate. The `sha256_final` digest store still vectorizes to SSSE3 `PSHUFB` on x86-sse2 and is not judged (open).
 
 dudect-style timing (opt-in, once per release candidate and nightly on a quiet machine):
 

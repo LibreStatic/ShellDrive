@@ -7,6 +7,7 @@
 #include "pk_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_crypto/sd_ct.h"
+#include "sd_ct64.h"
 
 #include "sha2_consts.inc"
 
@@ -43,13 +44,18 @@ SD_STATIC_ASSERT(sizeof(sha512_state) <= sizeof(((sd_hash_ctx *)0)->opaque), "sh
   h = t1 + S256_0(a) + MAJ(a, b, c)
 
 /* The portable block function is the reference; the SHA extensions (sha256_ni.c) take over when the CPU has
-   them and the portable hook is off. The choice depends on the CPU only, never on the message. */
-static void sha256_blocks_portable(uint32_t st[8], const uint8_t *p, size_t nblocks)
+   them and the portable hook is off. The choice depends on the CPU only, never on the message. It is the
+   constant-time core of the SHA-256 block path (sd-isacheck, _ct name); SD_NOINLINE keeps it a separate
+   function for the gate. */
+SD_NOINLINE static void sha256_blocks_portable_ct(uint32_t st[8], const uint8_t *p, size_t nblocks)
 {
   uint32_t w[64];
   uint32_t a, b, c, d, e, f, g, h, t1;
   int i;
   while (nblocks--) {
+    /* Scalar loads only: at /arch:SSE2 the vectorizer would turn this into SSSE3 PSHUFB (not on the x86-sse2
+       floor) with overlap and length-split branches around it. */
+    SD_CT_NO_VECTOR
     for (i = 0; i < 16; i++)
       w[i] = sd_load_be32(p + 4 * i);
     for (i = 16; i < 64; i++) {
@@ -78,11 +84,11 @@ static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
 {
 #if SD_CRYPTO_X86_HW
   if (nblocks != 0 && sd_crypto_use_hw_sha256()) {
-    sd_sha256_ni_blocks(st, p, nblocks, k_sha256_k);
+    sd_sha256_ni_blocks_ct(st, p, nblocks, k_sha256_k);
     return;
   }
 #endif
-  sha256_blocks_portable(st, p, nblocks);
+  sha256_blocks_portable_ct(st, p, nblocks);
 }
 
 static void sha256_update(sha256_state *s, const uint8_t *p, size_t n)

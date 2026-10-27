@@ -1,5 +1,6 @@
 /* See x86_decode.h. Opcode properties follow the Intel SDM Vol. 2 opcode maps (Appendix A) for
-   32-bit protected mode with a 32-bit default operand and address size. */
+   32-bit protected mode with a 32-bit default operand and address size, and for 64-bit mode (REX prefixes,
+   64-bit moffs, MOV r64,imm64, the opcodes that are invalid in 64-bit mode). */
 #include "x86_decode.h"
 
 #include <string.h>
@@ -267,31 +268,61 @@ static void decode_vex(const unsigned char *p, size_t n, size_t pos, int addr16,
   if (i <= n) out->len = (unsigned)i;
 }
 
+/* One-byte opcodes that are invalid in 64-bit mode (the segment push/pop, BCD, PUSHA/POPA, BOUND,
+   the 82 alias, far CALL/JMP ptr16:32, INTO, SALC, the AAM/AAD aliases and JMP far). */
+static int invalid_in_64(unsigned op)
+{
+  switch (op) {
+  case 0x06: case 0x07: case 0x0E: case 0x16: case 0x17: case 0x1E: case 0x1F:
+  case 0x27: case 0x2F: case 0x37: case 0x3F: case 0x60: case 0x61: case 0x82:
+  case 0x9A: case 0xCE: case 0xD4: case 0xD5: case 0xEA:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
 void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
 {
+  x86_decode_bits(p, n, 32, out);
+}
+
+void x86_decode_bits(const unsigned char *p, size_t n, int bits, x86_insn *out)
+{
   size_t i = 0;
-  int p66 = 0, p67 = 0, pf2 = 0, pf3 = 0, m;
+  int p66 = 0, p67 = 0, pf2 = 0, pf3 = 0, rexw = 0, a16, m;
   unsigned op, f;
   memset(out, 0, sizeof(*out));
   if (!g_ready) init_tables();
   for (; i < n && i < 14; i++) {
     unsigned b = p[i];
+    if (bits == 64 && (b & 0xF0) == 0x40) {       /* REX: only the one right before the opcode counts */
+      rexw = (b >> 3) & 1;
+      continue;
+    }
     if (b == 0x66) p66 = 1;
     else if (b == 0x67) p67 = 1;
     else if (b == 0xF2) { pf2 = 1; pf3 = 0; }
     else if (b == 0xF3) { pf3 = 1; pf2 = 0; }
-    else if (b == 0xF0 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) continue;
-    else break;
+    else if (b == 0xF0 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) {
+      rexw = 0;                                   /* a legacy prefix after a REX makes the REX ignored */
+      continue;
+    } else break;
+    rexw = 0;
   }
   if (i >= n) return;
+  /* 64-bit mode: the address size is 64 bits unless 67 is given, and 67 never changes ModRM to 16-bit form. */
+  a16 = bits == 32 && p67;
   op = p[i];
-  /* VEX/EVEX: in 32-bit mode C4/C5/62 are LES/LDS/BOUND unless the next byte has mod == 11. */
-  if ((op == 0xC4 || op == 0xC5 || op == 0x62) && i + 1 < n && (p[i + 1] & 0xC0) == 0xC0) {
-    decode_vex(p, n, i, p67, out, op == 0x62);
+  /* VEX/EVEX: in 32-bit mode C4/C5/62 are LES/LDS/BOUND unless the next byte has mod == 11; in 64-bit mode
+     they are always VEX/EVEX. */
+  if ((op == 0xC4 || op == 0xC5 || op == 0x62) && i + 1 < n && (bits == 64 || (p[i + 1] & 0xC0) == 0xC0)) {
+    decode_vex(p, n, i, a16, out, op == 0x62);
     return;
   }
   if (op != 0x0F) {
     f = g_one[op];
+    if (bits == 64 && invalid_in_64(op)) return;
     out->opcode = (unsigned char)op;
     i++;
     if (f & F_BAD) return;
@@ -300,16 +331,20 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
       if (i >= n) return;
       reg = (p[i] >> 3) & 7;
       if ((op == 0xF6 || op == 0xF7) && reg >= 6) out->is_div = 1;
-      m = modrm_len(p + i, n - i, p67);
+      m = modrm_len(p + i, n - i, a16);
       if (m < 0) return;
       i += (size_t)m;
       if (op == 0xF6 && reg <= 1) i += 1;
       if (op == 0xF7 && reg <= 1) i += p66 ? 2 : 4;
     }
     if (f & F_I8) i += 1;
-    if (f & F_IZ) i += p66 ? 2 : 4;
+    if (f & F_IZ) {
+      /* MOV r64,imm64 (REX.W B8-BF) takes an 8-byte immediate; otherwise immz is 2 bytes with 66, else 4. */
+      if (bits == 64 && rexw && op >= 0xB8 && op <= 0xBF) i += 8;
+      else i += p66 ? 2 : 4;
+    }
     if (f & F_IW) i += 2;
-    if (f & F_MO) i += p67 ? 2 : 4;
+    if (f & F_MO) i += bits == 64 ? (p67 ? 4 : 8) : (p67 ? 2 : 4);
     if (f & F_FAR) i += p66 ? 4 : 6;
     if (i > n) return;
     if (op == 0xE8 && !p66) { out->is_call_rel32 = 1; memcpy(&out->rel32, p + i - 4, 4); }
@@ -339,7 +374,7 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
     if (i >= n) return;
     out->opcode_map = op == 0x38 ? 2 : 3;
     out->opcode = p[i++];
-    m = modrm_len(p + i, n - i, p67);
+    m = modrm_len(p + i, n - i, a16);
     if (m < 0) return;
     i += (size_t)m + (op == 0x3A ? 1 : 0);
     if (i > n) return;
@@ -354,7 +389,7 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
     if (f & F_M) {
       if (i >= n) return;
       modrm = p[i];
-      m = modrm_len(p + i, n - i, p67);
+      m = modrm_len(p + i, n - i, a16);
       if (m < 0) return;
       i += (size_t)m;
     }

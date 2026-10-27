@@ -50,11 +50,11 @@ typedef struct sd_aes_own {
 #if SD_CRYPTO_X86_HW
 /* AES-NI rounds over byte round keys (16 * (rounds + 1) bytes, FIPS 197 order). Encryption only: CTR and GCM
    need no decryption, and CBC decryption stays on the bitsliced core (aes_ni.c). */
-void sd_aes_ni_encrypt_blocks(const uint8_t *rk, uint32_t rounds, const uint8_t *in, uint8_t *out,
+void sd_aes_ni_encrypt_blocks_ct(const uint8_t *rk, uint32_t rounds, const uint8_t *in, uint8_t *out,
                               size_t nblocks);
 /* SHA-256 compression over nblocks 64-byte blocks with the SHA extensions; k is the FIPS 180-4 constant
    table (sha256_ni.c). */
-void sd_sha256_ni_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks, const uint32_t k[64]);
+void sd_sha256_ni_blocks_ct(uint32_t st[8], const uint8_t *p, size_t nblocks, const uint32_t k[64]);
 #endif
 
 sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len);

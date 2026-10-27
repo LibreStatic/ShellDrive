@@ -330,18 +330,14 @@ static void scatter(uint8_t *out, const uint8_t b[64], size_t nblocks)
       out[16 * blk + j] = b[j * 4 + blk];
 }
 
-void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
+/* The bitsliced encryption core: every byte of the blocks and of the round keys goes through here, so it is the
+   part the constant-time gate judges (sd-isacheck, names with _ct). SD_NOINLINE keeps it a separate COMDAT
+   function, so it cannot be folded into the dispatcher below, where the capability branch sits. */
+SD_NOINLINE static void sd_aes_own_encrypt_bs_ct(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
 {
   uint64_t q[8];
   uint8_t b[64];
   uint32_t r;
-#if SD_CRYPTO_X86_HW
-  /* k->hw is a CPU capability chosen at key setup, not a secret; AES-NI itself has no data-dependent timing. */
-  if (k->hw) {
-    sd_aes_ni_encrypt_blocks(k->ni_rk[0], k->rounds, in, out, nblocks);
-    return;
-  }
-#endif
   gather(b, in, nblocks);
   pack(q, b);
   add_round_key(q, k->rk[0]);
@@ -358,6 +354,19 @@ void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, si
   scatter(out, b, nblocks);
   sd_secure_zero(q, sizeof(q));
   sd_secure_zero(b, sizeof(b));
+}
+
+/* Dispatch: k->hw is a CPU capability chosen at key setup, never a secret, so this branch is on public data.
+   AES-NI itself has no data-dependent timing; the bitsliced core is the fallback. */
+void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
+{
+#if SD_CRYPTO_X86_HW
+  if (k->hw) {
+    sd_aes_ni_encrypt_blocks_ct(k->ni_rk[0], k->rounds, in, out, nblocks);
+    return;
+  }
+#endif
+  sd_aes_own_encrypt_bs_ct(k, in, out, nblocks);
 }
 
 void sd_aes_own_decrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)

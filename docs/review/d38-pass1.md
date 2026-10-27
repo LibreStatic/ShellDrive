@@ -708,6 +708,43 @@ unit.crypto_pq 1.6 s, `isacheck.ct_sd_crypto` and the other isacheck tests).
 
 Still open for this flavour: the ARM32 gate, and the x86-sse2 timing run (9.5).
 
+**Hardware objects and the x64 flavours (wip/r10-ctni).** The gate judged only functions whose names carry the
+constant-time convention, so the AES-NI and SHA-NI code (`aes_ni.c`, `sha256_ni.c`) and the code that dispatches to it
+were outside it. Changes:
+
+- Mechanism: the naming convention (01 section 2.4), not a second function list. The branch and divide rules already
+  key on the name, so a new function that follows the convention is judged without touching the tool. Renamed: the
+  AES-NI rounds `sd_aes_ni_encrypt_blocks_ct` and the SHA-NI blocks `sd_sha256_ni_blocks_ct` (both in `hw-allow.txt`
+  too), the bitsliced AES core `sd_aes_own_encrypt_bs_ct`, and the portable SHA-256 core `sha256_blocks_portable_ct`.
+  The public dispatchers keep their names (`sd_aes_own_encrypt`, `sha256_blocks`) and hold the `k->hw` branch, which
+  tests a CPU capability (public), so they stay out of the scan. The cores are `SD_NOINLINE`, so each stays a separate
+  function the gate can see, and the strict scan carries no allow-list exemption.
+- Members: `aes_ni` and `sha256_ni` on x86-sse2 and on the x64 flavours (x64-modern, x64-xp, x64-analysis; the same
+  condition as `sources_hw.cmake`). On x64 the gate also takes `aes_ct` and `hash`, the dispatch objects. x86-ia32 and
+  ARM add nothing. The rest of `SD_CT_SOURCES` is still judged on x86 only.
+- Decoder: `sd-isacheck` decodes AMD64 COFF objects in 64-bit mode (REX, REX.W `MOV r64,imm64`, 8-byte moffs, the
+  opcodes invalid in 64-bit mode). Before, an x64 object was refused as "not an x86 COFF object". Self-test vectors for
+  64-bit mode were added (`isacheck.selftest`, 66 vectors in both modes).
+- Findings fixed in code, not allow-listed:
+  - `sd_sha256_ni_blocks_ct` had `if (i >= 4)` on the round index. The loop is split into rounds 0-3 and 4-15.
+  - `sha256_blocks_portable_ct`: at `/arch:SSE2` the vectorizer turned the big-endian word load into SSSE3 `PSHUFB` (the
+    x86-sse2 floor is SSE2) and wrapped it in overlap and length-split branches. `SD_CT_NO_VECTOR` on that load loop
+    removes both; the core now has only loop back-edges. Same class as the x86-sse2 fix above.
+  - `ct-branch-allow.txt` is unchanged. The one allow-listed branch in these objects (`sd_aes_sbox_ct`) is still
+    reported without its entry (negative test below).
+- Tests: `isacheck.ct_scans_aes_ni` and `isacheck.ct_scans_sha256_ni` (the `--list` report names each judged function;
+  a rename back to a name without the convention fails them), `isacheck.detects_missing_ct_member` (a listed object
+  that is not in the library fails the gate), and `isacheck.detects_ct_branch_without_allow_list` (x86 only: the sbox
+  branch is reported on the real object without `ct-branch-allow.txt`). The scan and the allow-list negative run in
+  Release only.
+- Not judged: `sha256_final` (not a constant-time name) auto-vectorizes the big-endian digest store into `PSHUFB` on
+  x86-sse2 (`hash.obj`, four instances). The shipped executables pass the sse2 ISA audit, so that code is not in an
+  audited image; the library carries it. Follow-up: the same `SD_CT_NO_VECTOR` treatment, or
+  the digest store in a `_ct` function. Static helpers without the convention (`sbox`, `mix_columns`) are checked only
+  for helper calls, as before.
+- Compile check: `sd_crypto` builds for ARM64 with no warning (the `SD_NOINLINE` and pragma changes are in shared code).
+  ARM32 was not compiled in this round.
+
 ### 9.5 Timing harness (TST-03, dudect-style)
 
 Run once: `build/x86-ia32/bin/Release/sd-ct-dudect.exe` (x86-ia32 Release, default samples: 20000 per primitive, 4000
@@ -739,4 +776,5 @@ only that no leak appears at this size.
   (`docs/dev/m6-notes.md` lists it), the x64 libFuzzer runtime on this host, WinAFL, and the nightly `fuzz.yml` job.
 - **F-5 (constant-time gate partial):** partly resolved. The DIV/IDIV and forward-branch rules are in the gate, with a
   reviewed allow list; a dudect-style harness exists and was run once with no leak at this sample size. Still open:
-  the secret-index and 64x64 checks, the x86-sse2 and ARM32 runs, the sample sizes, the high-word classes, and nightly CI.
+  the secret-index and 64x64 checks, the ARM32 run, the branch and divide rules on the rest of the list for x64 (the
+  hardware and dispatch objects are judged on x64 since round 10), the sample sizes, the high-word classes, and nightly CI.
