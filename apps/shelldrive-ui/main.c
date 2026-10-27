@@ -171,6 +171,8 @@ void ui_app_on_agent_state(int up)
   if (!up)
     ui_model_clear(&g_app.model);
   ui_main_refresh();
+  if (!up && g_app.prompt_host)
+    ui_app_quit();              /* a prompt host lives only as long as the agent that started it */
 }
 
 void ui_app_on_list(sd_json *result)
@@ -396,6 +398,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   }
 
+  g_app.prompt_host = req.verb == UI_VERB_PROMPT_HOST;
   e = sd_ipc_object_create(SD_IPC_OBJ_UI_MUTEX, &mutex, &existed);
   if (e != SD_OK || mutex == NULL)
     goto done;

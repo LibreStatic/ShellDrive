@@ -58,6 +58,7 @@ static int setup(void)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_HOST_EXE", v);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_IDLE_MS", L"60000");
   SetEnvironmentVariableW(L"SHELLDRIVE_LANG", L"en");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_UI_LAUNCH", L"0");   /* never start the real prompt UI */
   sd_ipc_set_instance_suffix(g_suffix);
   return GetFileAttributesW(v) != INVALID_FILE_ATTRIBUTES;
 }

@@ -30,3 +30,9 @@ sd_add_unit_test(apps
 target_include_directories(sd-test-apps PRIVATE "${_cli_dir}")
 add_dependencies(sd-test-apps sd-test-cli sd-test-host-fake)
 set_tests_properties(unit.apps PROPERTIES TIMEOUT 600)
+
+# The apps tests must leave no ShellDrive process behind (test agents never start the real UI, and every test
+# agent runs on its own instance). Runs after unit.apps; a leak fails this test with the process list.
+add_test(NAME apps.no_leftover_processes
+  COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/check_no_leftovers.ps1" -BuildDir "${CMAKE_BINARY_DIR}")
+set_tests_properties(apps.no_leftover_processes PROPERTIES LABELS apps DEPENDS unit.apps TIMEOUT 60)

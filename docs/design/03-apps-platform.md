@@ -184,6 +184,10 @@ Why these four and not one:
   connected; shows only the prompt then stays as a tray if the user's setting says so), `--action <verb> <target>`
   (used by the shell extension: unmount, reconnect, mount, show), `--elevated-admin` (re-launched with `runas` to
   answer service prompts or edit machine profiles; exits when done).
+- **A prompt host never starts an agent (M3, 2.5 step 3).** `--prompt-host` connects to the agent of its session
+  without starting one. It exits when the agent cannot be reached (after the connect timeout) and when its connection
+  to the agent ends, because the agent that launched it is then gone. Without this rule a stray prompt host would start
+  the default-instance agent of the user.
 - Always connects to its session's agent (starting it if needed) and, if the service is installed, to the service
   pipe for read-only status of global mounts.
 - Not running is a supported state: everything still works from the CLI.
@@ -485,7 +489,8 @@ Error `code` strings are stable English identifiers; `detail` is English (for lo
 
 Every request is `{"type":"req","id":n,"method":...,"params":{...}}`. Unknown request fields are ignored; unknown reply
 fields and events are ignored by clients (2.3). Errors are `{"code","detail","exit_code"}` with the codes of 6.2 and the
-IPC-only codes of the table below. Unknown methods answer `usage` (exit 2). Methods marked **M4/M5** are not
+IPC-only codes of the table below. `busy` (`SD_E_BUSY`) is exit 8 (6.2) and carries the IPC codes `too_many_connections`
+and `rate_limited`; exit 10 is `conflict`, never busy. Unknown methods answer `usage` (exit 2). Methods marked **M4/M5** are not
 implemented in M3 and are not listed in `hello` `features` (2.8).
 
 | Method | Agent | Service | Access and notes |
@@ -589,7 +594,9 @@ connection: a later reconnect that matches the now stored key behaves normally.
 2. Every client subscribed to `prompt` with cap `prompts.ui`, except the initiator of step 1, so that no client receives
    the same event twice. The broadcast returns `delivered`, the number of recipients queued.
 3. If `delivered` is 0 and no UI runs (the UI mutex `Local\com.librestatic.shelldrive.ui.<SID>` is not held), the agent
-   starts `shelldrive-ui.exe --prompt-host` from its own directory with its own token, at most once per 30 s. Session
+   starts `shelldrive-ui.exe --prompt-host` from its own directory with its own token, at most once per 30 s. The prompt
+   host connects to this agent only and never starts one (1.4). Test builds of the agent start no UI unless
+   `SHELLDRIVE_TEST_UI_LAUNCH=1` (tests/apps set it to 0). Session
    lock state is not probed in M3 (a UI started while locked waits for its first subscription). A missing executable
    is not an error.
 4. The prompt is queued. The queue holds 16 prompts; a 17th evicts the oldest queued one, which is rejected with
@@ -1491,7 +1498,7 @@ On XP the check is plain group membership.
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
 | 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |
-| 8 | agent/service unavailable | `agent_unavailable`, `service_not_installed`, `too_many_connections`, `rate_limited` (TM-R25) |
+| 8 | agent/service unavailable, or busy (`SD_E_BUSY`) | `agent_unavailable`, `service_not_installed`, `busy`, `too_many_connections`, `rate_limited` (TM-R25) |
 | 9 | elevation or permission required | `elevation_required`, `access_denied` |
 | 10 | conflict | `target_in_use`, `already_mounted` |
 | 11 | backend unavailable | `backend_unavailable`, `webclient_disabled` |

@@ -401,19 +401,19 @@ other module, listed for completeness).
 | TST-01 | M0 / P1 | every 01 §12.2 fuzz target present (5 min per PR), WinAFL on x64-xp and x86 | none. No `fuzz_*` target, no fuzz harness, no `tests/fuzz` folder in the tree | **Gap** |
 | TST-02 | M1 / P1 | fuzzing of shared parsers (`fuzz_text_sanitize` and others) | no fuzz target. Unit-level sanitize cases exist (`tests/unit/sd_ssh/test_auth_flow.c`, `tests/unit/sd_base/test_utf.c`) | **Gap** (fuzz); unit partial |
 | TST-03 | M0 / P1 | constant-time gate on x86-ia32, x86-sse2, arm32: no `_all*`/`__rt_*` calls, no branch, div or 64x64 multiply in CT code; dudect from M1 | `isacheck.ct_sd_crypto` passes on x86-ia32 (16 objects). No branch, div or secret-index check. No dudect. x86-sse2 and arm32 not run | **Partial** |
-| TST-04 | M0 / P1 | KAT, Wycheproof and CNG differential per primitive; negatives (all-zero X25519, invalid ECDH point, non-canonical Ed25519 S, tag bit flips, no release before MAC) | KAT and Wycheproof: `unit.crypto`, `unit.crypto_pk`, `unit.crypto_pq` pass. Non-canonical S: `ed25519_rejects_noncanonical_s` (`test_curve.c`). GCM tag bit flip: `test_sym.c:187-189`. Invalid ECDH point: `wycheproof_ecdh`. All-zero X25519: code at `curve25519.c:450-467`, test assertion to confirm in `wycheproof_x25519`. Release-before-MAC: no executed test (`tr_packet_cbc_mac_failure_discards` is unbuilt, F-1); by inspection `pktcipher.c:263`, `:283` | **Partial** |
+| TST-04 | M0 / P1 | KAT, Wycheproof and CNG differential per primitive; negatives (all-zero X25519, invalid ECDH point, non-canonical Ed25519 S, tag bit flips, no release before MAC) | KAT and Wycheproof: `unit.crypto`, `unit.crypto_pk`, `unit.crypto_pq` pass. Non-canonical S: `ed25519_rejects_noncanonical_s` (`test_curve.c`). GCM tag bit flip: `test_sym.c:187-189`. Invalid ECDH point: `wycheproof_ecdh`. All-zero X25519: code at `curve25519.c:450-467`, test assertion to confirm in `wycheproof_x25519`. Release-before-MAC: `tr_packet_cbc_mac_failure_discards` (unit.ssh_transport, pass, F-1) and `gcm_pkt_roundtrip` (`test_sym.c:409-410`, both backends, no plaintext on a tag mismatch; F-7); by inspection `pktcipher.c:263`, `:283` | **Partial** |
 | TST-05 | M0 / P1 | name mapping (sd_vfs, sd_sftp dirents) | outside crypto and SSH | **Out of scope** |
 | TST-07 | M2 / P2 | symlink tests on the WSL fixture | sd_sftp / sd_vfs | **Out of scope** here |
 | TST-11 | M0 / P1 | host-key negatives: mismatch blocks; NEW_TYPE fails without prompt (TM-R04); no stored password after remove+TOFU (TM-R05); reconnect with changed key never prompts | `ssh_kh_stored_types_for_tmr04`, `ssh_lists_hostkey_restricted_to_stored_types` (unit.ssh); `interop_mismatch_blocks`, `interop_stored_type_restriction`, `interop_reconnect_host_key_mismatch`, `interop_reconnect_secret_cache` (interop.ssh, pass); `SD_ANSWER_FROM_STORE` check in `test_conn.c`. NEW_TYPE rows of the matrix: Not run | **Partial** |
 | TST-12 | M2 / P1 | Terrapin: test-only prefix-truncation MITM against a non-strict server; TM-R01 result | list construction only: `ssh_lists_terrapin_drops_chacha_without_strict`, `ssh_lists_terrapin_exposed_only_chacha` (unit.ssh). No MITM test exists in the tree (no test contains a prefix-truncation harness) | **Gap** (MITM); list level Covered |
 | TST-13 | M2 / P1 | legacy policy matrix on lab servers (allow/warn/ask/refuse, GEX < 2048 ranked last) | list level: `ssh_lists_fallback_ranks_aes_first`, `ssh_negotiate_reports_category` (unit.ssh, pass). Lab rows `interop.ssh_matrix_kex` (`srv_legacy`, `srv_legacy3des`) | **Not run** (matrix) |
 | TST-14 | M2 / P2 | live sources: writable-by-others and reparse-point files skipped (`SD_KH_SRC_INSECURE`); wildcard-only lines never MATCH; mismatch in a source blocks | source states and wildcard rule in unit.ssh (`ssh_kh_*`, `test_known_hosts.c`, pass). The ACL-skip cases (`tr_kh_live_source_insecure_is_skipped`, `tr_kh_live_openssh_source`) are in unbuilt files (F-1) | **Partial** |
-| TST-15 | M2 / P1 | UpdateHostKeys negatives (unproven key, proof over another session id, `ssh-rsa` legacy proof, announcement after TOFU, wildcard, secondary member) | `tr_kh_apply_hostkeys_and_remove_key` (unbuilt, F-1); `interop.ssh_matrix_update` (matrix, not run) | **Gap** (executed) |
+| TST-15 | M2 / P1 | UpdateHostKeys negatives (unproven key, proof over another session id, `ssh-rsa` legacy proof, announcement after TOFU, wildcard, secondary member) | `tr_kh_apply_hostkeys_and_remove_key` (unit.ssh_transport, pass, F-1); `interop.ssh_matrix_update` (matrix, not run) | **Partial** (unit negatives executed; matrix not run) |
 | TST-16 | M2 / P2 | pool: DNS round robin to two servers with different keys or homes | no DNS round-robin test. Pool admission and striping: `m2_pool_admits_members`, `m2_pool_interactive_stays_at_one`, `m2_striping_end_to_end`, `m2_striping_member_lost_mid_transfer` (interop.sftp_ssh, pass on rerun) | **Partial** |
 | TST-17 | M2 / P2 | agent squatting: second user creates the agent pipe; Pageant class from low-IL or another user's process; client refuses both | `test_agent.c` (4 tests, fake agents; owner check of TM-R08 in code, `agent_pipe.c`, `agent_pageant.c:91`). No squatting scenario in any executed test | **Gap** (squat) |
 | TST-18 | M2 / P1 | proxy NTLM harvesting: `407 NTLM` without SSPI configured; WPAD-discovered proxy; no SSPI token unless TM-R10 holds; Squid Kerberos in the lab | decision only: `ssh_proxy_system_decision`, `ssh_proxy_system_policy_boundary` (unit.ssh, pass). No executed test mentions a 407 challenge (the only `407` hits in `tests/unit/sd_ssh` are in the unbuilt `test_kex.c`). Lab proxies not run | **Partial** |
 | TST-19 | M0/M5 | Dokany isolation | sd_dokan | **Out of scope** |
-| TST-30 | M0 / P2 | release binaries contain no `none` cipher, no fuzz hooks, no test MITM or mock code | none. Note: `sd_ec_test_mul/add/dbl` are compiled into the product library (`src/sd_crypto/ec_p.c:646-681`, F-6). No release-binary scan exists | **Gap** |
+| TST-30 | M0 / P2 | release binaries contain no `none` cipher, no fuzz hooks, no test MITM or mock code | No scan script. The EC test hooks are gated (`SD_EC_TEST_HOOKS`, F-6) and absent from the product objects, library and binaries (`dumpbin`, pass 2, section 8). The `none` cipher, fuzz and MITM checks are not scanned | **Partial** |
 | TST-33 | M2 / P1 | external review pass 1 findings closed before any public beta | this package. The review itself is the human's | **Open** (human) |
 
 ### 5.2 TM-R items about crypto and SSH (05-threat-model.md §8)
@@ -424,7 +424,7 @@ other module, listed for completeness).
 | TM-R02 | no `_allmul`/`_aull*`/`__rt_*` helper in CT code; allow-list of calls | `isacheck.ct_sd_crypto` and `isacheck.detects_ct_helper_call` pass on x86-ia32. The call allow-list is in the gate design; the branch and div checks are not | **Covered** for helper calls; **Partial** overall |
 | TM-R04 | when any key is stored for the name, NEW_TYPE fails without prompt | `ssh_lists_hostkey_restricted_to_stored_types`, `ssh_kh_stored_types_for_tmr04` (unit.ssh, pass); `interop_stored_type_restriction` (interop.ssh, pass); `known_hosts.c:425` | **Covered** (unit and one live row) |
 | TM-R05 | no stored secrets, cache or kbd-int answer after a fresh acceptance | `SD_ANSWER_FROM_STORE` in `test_conn.c`; `interop_reconnect_secret_cache`, `interop_reconnect_host_key_mismatch` (pass); `prompt.c:169`, `kex.c:513-536` by code | **Partial** |
-| TM-R06 | live sources read only with a user-only DACL; wildcard never MATCHes in a live source | wildcard rule: `ssh_kh_*` (unit.ssh). ACL: `known_hosts_live.c:18` by code; its tests are unbuilt (F-1) | **Partial** |
+| TM-R06 | live sources read only with a user-only DACL; wildcard never MATCHes in a live source | wildcard rule: `ssh_kh_*` (unit.ssh). ACL: `known_hosts_live.c:18` by code; its tests run in unit.ssh_transport (F-1, pass 2) | **Partial** |
 | TM-R07 | protected per-user DACL on `%APPDATA%\LibreStatic\ShellDrive\` | installer and store folder setup, not in sd_ssh tests | **Out of scope** here (UI or installer) |
 | TM-R08 | agent: pipe owner must be LocalSystem or our SID; Pageant window owner must be us | fake-agent tests in `test_agent.c` (owner = our SID); no squat test | **Partial** |
 | TM-R09 | sanitize server text and host names (bidi, controls) | `sd_base/test_utf.c`, `sd_ssh/test_auth_flow.c` (unit); fuzz target missing (TST-02) | **Partial** |
@@ -450,12 +450,20 @@ host-key negatives is therefore **not** part of the evidence in section 3. Wheth
 unknown. `test_kex.c:794` also says "aes128-cbc not provided by sd_crypto yet", but `pktcipher.c:27` provides it,
 so that skip message is stale.
 
+*Resolved in pass 2.* The three sources are built as `unit.ssh_transport` (`tests/unit/sd_ssh/CMakeLists.txt:59`,
+`test_kex_main.c`, `test_kex.c`, `test_known_hosts_m2.c`). The target builds warning-free on x64-modern, x64-analysis
+and x86-ia32, and `ctest -R "ssh|crypto"` runs it (see section 8). The `tr_*` tests named
+above are executed by that run. The stale skip message at `test_kex.c:794` is still there and is harmless.
+
 **F-2. The `x64-analysis` build is red.** `cmake --build --preset x64-analysis` exits 1: MSVC C2220 at
 `apps/shelldrive/cli_cmds2.c:736` ("the following warning is treated as an error"), caused by warning
 C6262 (function uses 19740 bytes of stack) at `apps/shelldrive/cli_cmds2.c:662`. This blocks the `shelldrive`
 targets and `sd-test-cli`. The crypto and SSH test executables did build, and the tests in section 3.3 ran against
 them. `docs/dev/m2-notes.md` (section "x64-analysis brought back to green") records the preset as green, so
 this is a regression since that note. Outside the crypto and SSH scope; not fixed here.
+
+*Resolved in pass 2.* `cli_cmds2.c` now allocates the collected rows on the heap (`hk_list_cmd`, `sd_calloc`, with the
+comment at line 659 on C6262). `cmake --build --preset x64-analysis` exits 0 with no warning (section 8).
 
 **F-3. `interop.sftp_ssh` failed once on x86-ia32 Release and passed on rerun.** The failing run printed:
 `m1_kill_sshd_during_pipelined_write` failed a remote hash check (`tests/unit/sd_sftp/test_ssh_interop.c:622`,
@@ -482,17 +490,40 @@ only, by design (`sd-isacheck.c:723`).
 TST-30 asks that release binaries carry no test-only code. A release-binary scan does not exist (TST-30 gap).
 Recommend a reviewer decision on guarding them.
 
+*Resolved in pass 2.* The hooks are now compiled only inside `#ifdef SD_EC_TEST_HOOKS` in `ec_p.c` and are reached
+only through `tests/unit/sd_crypto_pk/ec_test_hooks.c`, which defines that macro and includes `ec_p.c`. Evidence
+(MSVC 14.44 `dumpbin`, x64-modern Debug build tree): `ec_p.obj`, `sd_crypto.lib`, `shelldrive.exe`,
+`shelldrive-host.exe` and `shelldrive-ui.exe` carry no `sd_ec_test_*` symbol (`/symbols` and `/exports`, and no
+match in the bytes); `ec_test_hooks.obj` carries 9 matches, so the search itself works. Only the TST-30 scan remains
+open as a standing check.
+
 **F-7. CNG path of packet decryption (to verify).** `src/sd_crypto/pktcipher.c:290-293` decrypts in place with
 CNG before any caller-visible check. The own-code path checks the tag first (`:263`). Confirm that after
 `SD_E_CRYPTO` the buffer is never used, or wipe it. TST-04 says "decryption output never released before MAC".
+
+*Resolved in pass 2.* On the CNG path `sd_cng_gcm` (`src/sd_crypto/aes_cng.c:131-140`) zeroes the output buffer
+whenever `BCryptDecrypt` or the tag check fails, so no plaintext remains in the caller's buffer. The own path
+(`gcm_open_own`) checks the tag before it decrypts. `gcm_pkt_roundtrip` (`tests/unit/sd_crypto/test_sym.c:409-410`)
+runs both backends (`pktcipher_aes_gcm`, `pktcipher_own_backend`) and checks that a tag mismatch releases no
+plaintext.
 
 **F-8. Restricted re-key branch (to verify).** `src/sd_ssh/kex.c:343-349` (the `k->fetch` branch) completes a re-key
 with a host key of another type, verified only by its signature over H, and records it for the UpdateHostKeys
 review (`hostkey_update.c:397-410`). This is the design of TM-R04 and 01 §4.3. Confirm that no path lets the
 collected key reach `c->hostkey`, the pinned key or a store without the review step.
 
+*Resolved in pass 2.* The fetch branch only collects the key: `ssh_hku_on_fetch_key` (`hostkey_update.c:397-410`)
+records the plain key in the review list (`u->got`) and never writes `c->hostkey`. `kex.c` sets `hostkey_ok` and
+sends NEWKEYS, so the connection keeps its pinned key. `tr_fetch_key_never_becomes_pinned`
+(`tests/unit/sd_ssh/test_kex.c:840`, unit.ssh_transport) checks that the pinned blob is unchanged after a fetch
+re-key that signs with another key.
+
 **F-9. GCM state advances on a tag failure (to verify, low).** `pktcipher.c:297` runs `gcm_next_iv` even when the
 tag check failed. This is harmless if every caller treats `SD_E_CRYPTO` as fatal. Confirm.
+
+*Resolved in pass 2.* `sd_pktcipher_open` now sets a sticky `failed` flag on any tag failure and returns
+`SD_E_CRYPTO` for every later record of that stream, so the counter cannot be used out of step. The same test
+(`gcm_pkt_roundtrip`, `test_sym.c:413-414`) checks that a valid record after a failure is refused.
 
 **F-10. Non-constant-time comparison of user-typed passwords (low).** `src/sd_ssh/auth.c:1153` compares the two
 typed new passwords with `memcmp`. Keep this in the reviewer's list; the channel is small.
@@ -526,3 +557,41 @@ the fixture is absent. The RSA SHA-224 Wycheproof cases are skipped with a writt
 - The x86-sse2 and ARM32 constant-time runs, and the x64-xp and x64-modern builds.
 - sd_sftp, sd_vfs, sd_dokan and the UI, except where sd_ssh tests exercise them.
 - Build-log details beyond the outcomes quoted above.
+
+---
+
+## 8. Pass 2: fixes and evidence (2026-10-27)
+
+Re-run after the first fixes of the package (commit `3185a54`) and the test-process isolation work. Commands and
+outcomes; nothing here closes a finding for the human reviewer.
+
+| Check | Command | Outcome |
+|---|---|---|
+| x64-analysis, Debug, crypto and SSH | `ctest --preset x64-analysis -R "ssh\|crypto" -LE "matrix\|bench\|interop"` | 6 of 6 passed (`unit.crypto`, `unit.crypto_pq`, `unit.ssh`, `unit.ssh_transport`, `unit.ssh_auth`, `unit.crypto_pk`) |
+| x64-analysis build | `cmake --build --preset x64-analysis` | exit 0, no warning (F-2 closed) |
+| x86-ia32, Release, crypto and SSH | `ctest --preset x86-ia32 -R "ssh\|crypto" -LE "matrix\|bench\|interop"` | 7 of 7 passed (adds `isacheck.ct_sd_crypto`) |
+| x86-ia32 Release build | `cmake --build build/x86-ia32 --config Release` | exit 0, no warning |
+| x64-xp, Release build | `cmake --build build/x64-xp --config Release` | exit 0, no warning; the manifests of the XP flavour carry no `longPathAware` and no `dpiAwareness` (81010002 gone) |
+| x64-modern, Debug, full non-matrix suite | `ctest --preset x64-modern-debug -LE "matrix\|bench\|interop"` | 46 of 47 in the run that counted; the one failure was `unit.vfs` (see below). `unit.vfs` alone passed in 5 of 5 reruns. The new `apps.no_leftover_processes` passed |
+
+Named `tr_*` tests from F-1 and F-8 were run directly on x86-ia32 Release (`sd-test-ssh_transport.exe`): 23 of 23
+passed, including `tr_packet_cbc_mac_failure_discards`, `tr_kh_live_source_insecure_is_skipped`,
+`tr_kh_apply_hostkeys_and_remove_key` and `tr_fetch_key_never_becomes_pinned`.
+
+Intermittent failure seen in pass 2 (not in the D38 scope, not changed): `unit.vfs`, check
+`fake_open_handles(f.s) == 0` at `tests/unit/sd_vfs/test_vfs_ops.c:151`, right after `vclose`. The fake session's
+handle close can still be in flight when the count is read. It failed once under `-j 4` load and passed on five
+standalone reruns. The owner of sd_vfs should wait for the close before the check.
+
+### 8.1 Resolution of the findings
+
+- **F-1** resolved: the three sources are built as `unit.ssh_transport` and run (see above).
+- **F-2** resolved: `cli_cmds2.c` uses a heap copy for the collected rows; `x64-analysis` builds without C2220/C6262.
+- **F-6** resolved: EC test hooks exist only under `SD_EC_TEST_HOOKS`. `dumpbin /symbols` and `/exports` on
+  `ec_p.obj`, `sd_crypto.lib`, `shelldrive.exe`, `shelldrive-host.exe` and `shelldrive-ui.exe` (x64-modern Debug
+  tree) show no `sd_ec_test_*` symbol, and the byte search finds none. The test-hook object `ec_test_hooks.obj`
+  shows nine matches, so the search works.
+- **F-7** resolved: CNG failure zeroes the output (`aes_cng.c:131-140`); tested by `gcm_pkt_roundtrip`.
+- **F-8** resolved: the fetch branch collects the key for review only; `tr_fetch_key_never_becomes_pinned` checks
+  the pinned key is unchanged and the collected key is the one the server sent.
+- **F-9** resolved: `sd_pktcipher_open` keeps a sticky failure; tested by `gcm_pkt_roundtrip`.

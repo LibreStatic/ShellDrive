@@ -18,8 +18,8 @@ Each item is in the code of this package (sd_ipc, the agent) unless marked other
   `SD_IPC_OBJ_STATE` (`Local\com.librestatic.shelldrive.state.<SID>`, file mapping of 256 KiB). The state section has
   `sd_ipc_state_create` / `sd_ipc_state_open`; both verify the owner and label on the handle and fail closed.
   `sd_ipc_state_open` uses `FILE_MAP_READ | READ_CONTROL`, marked [verify] on XP and 7 (lead decision 2).
-- sd_ipc: exit code `secret_not_found` (3) added to the table. The contract lists `busy` as an IPC code with exit 10, but
-  `busy` is already the sd_err name `SD_E_BUSY` with exit 8 (unchanged, so existing replies do not move). Lead to decide.
+- sd_ipc: exit code `secret_not_found` (3) added to the table. `busy` (`SD_E_BUSY`) is exit 8 (03 §6.2, the code that
+  `sd_ipc` already maps; existing replies do not move). Exit 10 is `conflict`. The earlier note that proposed 10 is resolved.
 - Prompt routing (agent): initiator, then UI subscribers of `prompt` with `prompts.ui`, excluding the initiator (no
   duplicate event). Delivery accounting uses the count of `sd_ipc_broadcast_count`. With no recipient the agent starts
   `shelldrive-ui.exe --prompt-host` (rate-limited to once per 30 s, skipped while the UI mutex is held, a missing
@@ -42,6 +42,8 @@ Each item is in the code of this package (sd_ipc, the agent) unless marked other
 - Test hooks (only in `SD_HOST_TEST_HOOKS` builds): `SHELLDRIVE_TEST_PROMPT_MS`,
   `SHELLDRIVE_TEST_RECONNECT_PROMPT_MS`, `SHELLDRIVE_TEST_PROMPT_QUEUE_MAX` and `SHELLDRIVE_TEST_PROMPT_NO_ROUTE`
   (prompts are queued even when a client could take them, which makes the queue tests deterministic).
+  `SHELLDRIVE_TEST_UI_LAUNCH` (default 0 in test builds, `1` enables the launch): the agent starts no prompt UI unless
+  it is set. Every test that runs an agent sets it to `0`, so a test run never leaves a `shelldrive-ui.exe` behind.
 - Features advertised by this build: `status`, `config.reload`, `log.tail`, `selftest`, `prompt.list`,
   `prompt.queued`.
 
