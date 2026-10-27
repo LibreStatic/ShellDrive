@@ -298,11 +298,11 @@ sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len)
       for (blk = 0; blk < 4; blk++)
         b[j * 4 + blk] = w[16 * r + j];
     pack(k->rk[r], b);
-  }
 #if SD_CRYPTO_X86_HW
-  if (k->hw)
-    memcpy(k->ni_rk, w, 16 * (size_t)(k->rounds + 1));
+    if (k->hw)
+      memcpy(k->ni_rk[r], w + 16 * r, 16);
 #endif
+  }
   sd_secure_zero(w, sizeof(w));
   sd_secure_zero(b, sizeof(b));
   return SD_OK;

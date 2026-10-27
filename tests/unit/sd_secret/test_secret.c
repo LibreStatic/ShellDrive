@@ -2,6 +2,7 @@
  * afterwards), DPAPI secret files, the XP Home fallback path (forced DPAPI), enumeration and key files. */
 #include <windows.h>
 #include <wincred.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_test.h"
@@ -14,16 +15,21 @@ static char g_prefix[64];
 static void setup(int force_dpapi)
 {
   sd_secret_config c;
-  wchar_t num[16];
+  wchar_t num[16], stamp[16];
   DWORD pid = GetCurrentProcessId();
   int i = 0;
   char p[16];
+  LARGE_INTEGER qpc;
   GetTempPathW(MAX_PATH, g_dir);
   wcscat_s(g_dir, MAX_PATH, L"sd-secret-test-");
   do { num[i++] = (wchar_t)(L'0' + pid % 10); pid /= 10; } while (pid && i < 15);
   num[i] = 0;
   _wcsrev(num);
   wcscat_s(g_dir, MAX_PATH, num);
+  /* a PID alone is reused: a stale directory from an earlier run must never be picked up */
+  QueryPerformanceCounter(&qpc);
+  _snwprintf_s(stamp, 16, _TRUNCATE, L"-%08lx", (unsigned long)qpc.LowPart);
+  wcscat_s(g_dir, MAX_PATH, stamp);
   CreateDirectoryW(g_dir, NULL);
   for (i = 0; num[i]; i++) p[i] = (char)num[i];
   p[i] = 0;
@@ -36,6 +42,26 @@ static void setup(int force_dpapi)
   c.prefix = g_prefix;
   c.force_dpapi = force_dpapi;
   sd_secret_configure(&c);
+}
+
+/* Removes the test directory and its two levels (secrets\, keys\): the layout test leaves files behind. */
+static void remove_tree(const wchar_t *dir)
+{
+  wchar_t pat[MAX_PATH], path[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  _snwprintf_s(pat, MAX_PATH, _TRUNCATE, L"%s\\*", dir);
+  h = FindFirstFileW(pat, &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+      _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\%s", dir, fd.cFileName);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) remove_tree(path);
+      else DeleteFileW(path);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  RemoveDirectoryW(dir);
 }
 
 static void teardown(void)
@@ -52,6 +78,7 @@ static void teardown(void)
   sd_secret_configure(&c);
   sd_secret_delete_all(SD_SECRET_USER, &n);
   sd_secret_configure(NULL);
+  remove_tree(g_dir);
 }
 
 static int get_eq(sd_secret_kind k, const char *target, const char *want)

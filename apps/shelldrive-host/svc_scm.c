@@ -8,6 +8,7 @@
 #include <strsafe.h>
 #include <string.h>
 
+#include "sd_platform/sd_platform.h"
 #include "svc_scm.h"
 
 #define SVC_SCM_SERVICE_NAME L"ShellDriveSvc"
@@ -358,17 +359,8 @@ static int scm_is_elevated(void *ctx)
 
 static int scm_is_vista_or_later(void *ctx)
 {
-  OSVERSIONINFOW v;
   (void)ctx;
-  memset(&v, 0, sizeof(v));
-  v.dwOSVersionInfoSize = sizeof(v);
-  /* GetVersionExW is deprecated in new SDKs; it is the call that works on XP and Vista alike. */
-#pragma warning(push)
-#pragma warning(disable : 4996)
-  if (!GetVersionExW(&v))
-    return 0;
-#pragma warning(pop)
-  return v.dwMajorVersion >= 6;
+  return sd_os_at_least(6, 0, 0);
 }
 
 int svc_scm_real_ops(svc_scm_ops *out)
