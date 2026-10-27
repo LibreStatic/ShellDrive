@@ -18,6 +18,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_settings_model.h"
+#include "ui_update.h"
 #include "ui_win.h"
 
 #define ST_ID_LANG       4401
@@ -36,8 +37,16 @@
 #define ST_ID_NOTE_UPD   4414
 #define ST_ID_NOTE_REST  4415
 #define ST_ID_GROUP_UPD  4416
+#define ST_ID_CHANNEL    4417
+#define ST_ID_LBL_CHANNEL 4418
+#define ST_ID_NOTE_POLICY 4419
+#define ST_ID_UPD_CHECK  4420
+#define ST_ID_UPD_INSTALL 4421
+#define ST_ID_UPD_NOTES 4422
+#define ST_ID_UPD_STATUS 4423
+#define ST_ID_UPD_STALE  4424
 #define ST_CLIENT_W      640
-#define ST_CLIENT_H      470
+#define ST_CLIENT_H      600
 
 #define ST_RUN_KEY   L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define ST_RUN_VALUE L"ShellDriveTray"
@@ -49,8 +58,9 @@ static const wchar_t *const k_lang_names[UI_SET_LANG_COUNT] = {
 };
 
 static struct {
-  HWND wnd, lang, notify, logon, backend, cache, updates, status;
+  HWND wnd, lang, notify, logon, backend, cache, status;
   HWND lbl_lang, lbl_back, lbl_cache, hint_cache, note_upd, note_rest, grp_upd, btn_save, btn_cancel;
+  HWND channel, lbl_channel, note_policy, upd_status, upd_stale, btn_check, btn_install, btn_notes;
   HFONT font;
   unsigned dpi;
   ui_settings_model model;            /* as loaded */
@@ -137,9 +147,16 @@ static void populate(void)
     swprintf_s(v, SD_COUNTOF(v), L"%u", g_st.model.cache_mb);
     SetWindowTextW(g_st.cache, v);
   }
-  /* the update group needs the agent to offer update.check (decision 10) */
-  EnableWindow(g_st.updates, (g_app.agent_up && (g_app.agent_features & UI_FEAT_UPDATE)) ? TRUE : FALSE);
-  SendMessageW(g_st.updates, BM_SETCHECK, BST_UNCHECKED, 0);
+  /* the update group: channel list (a policy may fix it), status and buttons (decision 10, 04 §9.7) */
+  SendMessageW(g_st.channel, CB_RESETCONTENT, 0, 0);
+  SendMessageW(g_st.channel, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_CHANNEL_STABLE));
+  SendMessageW(g_st.channel, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_CHANNEL_BETA));
+  {
+    char ch[UI_UPD_CHANNEL_MAX];
+    ui_update_channel_now(g_st.loaded.update_channel, ch, sizeof(ch));
+    SendMessageW(g_st.channel, CB_SETCURSEL, strcmp(ch, "beta") == 0 ? 1 : 0, 0);
+  }
+  ui_settings_update_refresh();
 }
 
 static void load(void)
@@ -185,6 +202,14 @@ static void on_save(void)
 
   s = g_st.loaded;
   ui_settings_to_sd(&m, &s);
+  /* the channel is saved unless a policy sets it (the list is then disabled, 03 §3.5) */
+  {
+    ui_upd_policy pol;
+    int ci = (int)SendMessageW(g_st.channel, CB_GETCURSEL, 0, 0);
+    ui_update_policy_now(&pol);
+    if (!pol.channel_set)
+      strcpy_s(s.update_channel, sizeof(s.update_channel), ci == 1 ? "beta" : "stable");
+  }
   e = sd_settings_save(&s);
   if (e != SD_OK) {
     ui_win_error(g_st.wnd, SD_MSG_UI_SETTINGS_SAVE_FAILED, e);
@@ -210,6 +235,42 @@ static void on_save(void)
   DestroyWindow(g_st.wnd);
 }
 
+/* The update group: channel list, status line, buttons and the policy notes (04 §9.7). Called after every change
+   of the updater model (replies, events, agent state). */
+void ui_settings_update_refresh(void)
+{
+  ui_upd_view v;
+  ui_upd_policy pol;
+  wchar_t text[512];
+  int agent_ok, can_apply;
+
+  if (g_st.wnd == NULL || !IsWindow(g_st.wnd) || g_st.channel == NULL)
+    return;
+  agent_ok = (g_app.agent_up && (g_app.agent_features & UI_FEAT_UPDATE)) ? 1 : 0;
+  can_apply = (g_app.agent_up && (g_app.agent_features & UI_FEAT_UPDATE_APPLY)) ? 1 : 0;
+  ui_update_view_now(agent_ok, can_apply, &v);
+  ui_update_policy_now(&pol);
+  EnableWindow(g_st.channel, v.channel_enabled ? TRUE : FALSE);
+  EnableWindow(g_st.btn_check, v.check_enabled ? TRUE : FALSE);
+  EnableWindow(g_st.btn_install, v.install_enabled ? TRUE : FALSE);
+  EnableWindow(g_st.btn_notes, v.notes_enabled ? TRUE : FALSE);
+  SetWindowTextW(g_st.note_policy,
+                 (v.channel_managed || v.check_managed) ? sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_MANAGED) : L"");
+  SetWindowTextW(g_st.note_upd,
+                 (g_app.agent_up && !agent_ok) ? sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATES_UNAVAILABLE) : L"");
+  ui_update_status_text(text, SD_COUNTOF(text));
+  SetWindowTextW(g_st.upd_status, text);
+  ui_update_stale_text(text, SD_COUNTOF(text));
+  SetWindowTextW(g_st.upd_stale, text);
+}
+
+/* --test-windows: every control of the update group was created. */
+int ui_settings_update_controls_ok(void)
+{
+  return g_st.channel && g_st.note_policy && g_st.upd_status && g_st.upd_stale && g_st.btn_check &&
+         g_st.btn_install && g_st.btn_notes && g_st.note_upd;
+}
+
 void ui_settings_on_reply(int kind, sd_err err, const sd_json *result)
 {
   (void)kind;
@@ -229,7 +290,7 @@ static void place(HWND c, int x, int y, int w, int h)
 static void layout(HWND hwnd)
 {
   RECT rc;
-  int m, rh, gap, W, H, y, lw, cw, x, bw1, bw2, by, sh, note_h;
+  int m, rh, gap, W, H, y, lw, cw, x, bw1, bw2, by, sh, note_h, bw, xp;
   int lw_a, lw_b, lw_c;
   if (!g_st.lang)
     return;
@@ -269,8 +330,20 @@ static void layout(HWND hwnd)
   y += rh + gap * 2;
   place(g_st.grp_upd, m, y, W - 2 * m, rh);
   y += rh + gap / 2;
-  place(g_st.updates, m, y, W - 2 * m, rh);
+  place(g_st.lbl_channel, m, y + dpx(4), lw, rh);
+  place(g_st.channel, m + lw, y, cw, dpx(200));
+  xp = m + lw + cw + gap;
+  place(g_st.note_policy, xp, y + dpx(4), W - xp - m, rh);
   y += rh + gap / 2;
+  place(g_st.upd_status, m, y, W - 2 * m, note_h);
+  y += note_h;
+  place(g_st.upd_stale, m, y, W - 2 * m, rh);
+  y += rh + gap / 2;
+  bw = dpx(140);
+  place(g_st.btn_check, m, y, bw, dpx(26));
+  place(g_st.btn_install, m + bw + gap, y, bw + dpx(40), dpx(26));
+  place(g_st.btn_notes, m + bw + gap + bw + dpx(40) + gap, y, bw + dpx(20), dpx(26));
+  y += dpx(26) + gap / 2;
   place(g_st.note_upd, m, y, W - 2 * m, note_h);
   y += note_h + gap;
   place(g_st.note_rest, m, y, W - 2 * m, note_h);
@@ -291,6 +364,12 @@ static void on_command(WORD id, WORD code)
     on_save();
   else if (id == ST_ID_CANCEL && code == BN_CLICKED)
     DestroyWindow(g_st.wnd);
+  else if (id == ST_ID_UPD_CHECK && code == BN_CLICKED)
+    ui_update_check();
+  else if (id == ST_ID_UPD_INSTALL && code == BN_CLICKED)
+    ui_update_install(g_st.wnd);
+  else if (id == ST_ID_UPD_NOTES && code == BN_CLICKED)
+    ui_update_open_notes(g_st.wnd);
 }
 
 static HWND make_child(const wchar_t *cls, const wchar_t *text, DWORD style, int id, HWND parent)
@@ -320,10 +399,19 @@ static void create_children(HWND hwnd)
                                ST_ID_HINT_CACHE, hwnd);
   g_st.grp_upd = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_GROUP_UPDATES), SS_LEFT | SS_NOPREFIX,
                             ST_ID_GROUP_UPD, hwnd);
-  g_st.updates = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_CHECK_UPDATES),
-                            WS_TABSTOP | BS_AUTOCHECKBOX, ST_ID_UPDATES, hwnd);
-  g_st.note_upd = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATES_UNAVAILABLE), SS_LEFT,
-                             ST_ID_NOTE_UPD, hwnd);
+  g_st.lbl_channel = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_CHANNEL), SS_LEFT | SS_NOPREFIX,
+                                ST_ID_LBL_CHANNEL, hwnd);
+  g_st.channel = make_child(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, ST_ID_CHANNEL, hwnd);
+  g_st.note_policy = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_POLICY, hwnd);
+  g_st.upd_status = make_child(L"STATIC", L"", SS_LEFT, ST_ID_UPD_STATUS, hwnd);
+  g_st.upd_stale = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_UPD_STALE, hwnd);
+  g_st.btn_check = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_CHECK_NOW),
+                              WS_TABSTOP | BS_PUSHBUTTON, ST_ID_UPD_CHECK, hwnd);
+  g_st.btn_install = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_INSTALL),
+                                WS_TABSTOP | BS_PUSHBUTTON, ST_ID_UPD_INSTALL, hwnd);
+  g_st.btn_notes = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_NOTES),
+                              WS_TABSTOP | BS_PUSHBUTTON, ST_ID_UPD_NOTES, hwnd);
+  g_st.note_upd = make_child(L"STATIC", L"", SS_LEFT, ST_ID_NOTE_UPD, hwnd);
   g_st.note_rest = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_LIVE_NOTE), SS_LEFT,
                               ST_ID_NOTE_REST, hwnd);
   g_st.status = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_STATUS, hwnd);

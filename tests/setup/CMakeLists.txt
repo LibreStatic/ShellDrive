@@ -6,5 +6,5 @@
 # a Windows tool used at test time only and never part of the shipped output.
 
 sd_add_unit_test(engine
-  SOURCES main.c test_common.c test_args.c test_cab.c test_install.c
+  SOURCES main.c test_common.c test_args.c test_cab.c test_install.c test_flow.c
   DEPS sd_setup_core)

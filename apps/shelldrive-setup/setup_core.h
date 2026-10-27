@@ -59,6 +59,7 @@ typedef struct sd_setup_args {
   int force;
   int update;
   int help;
+  int test_pages;                /* hidden: /test-pages builds the wizard pages and installs nothing (tests) */
   int autostart;                 /* -1 unset, 0 or 1 */
   int flavour_forced;
   sd_setup_flavour flavour;

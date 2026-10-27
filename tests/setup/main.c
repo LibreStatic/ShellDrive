@@ -27,6 +27,12 @@ SD_TEST_DECL(setup_portable_roundtrip);
 SD_TEST_DECL(setup_machine_mode_not_in_this_build);
 SD_TEST_DECL(setup_shortcut_and_log_files);
 SD_TEST_DECL(setup_current_sid_format);
+SD_TEST_DECL(setup_flow_first_page);
+SD_TEST_DECL(setup_flow_interactive_pages);
+SD_TEST_DECL(setup_flow_terminates_for_every_input);
+SD_TEST_DECL(setup_flow_dokany_view_states);
+SD_TEST_DECL(setup_flow_dokany_plan_by_mode);
+SD_TEST_DECL(setup_flow_names_and_titles);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flavour_table),
@@ -53,6 +59,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_machine_mode_not_in_this_build),
   SD_TEST_ENTRY(setup_shortcut_and_log_files),
   SD_TEST_ENTRY(setup_current_sid_format),
+  SD_TEST_ENTRY(setup_flow_first_page),
+  SD_TEST_ENTRY(setup_flow_interactive_pages),
+  SD_TEST_ENTRY(setup_flow_terminates_for_every_input),
+  SD_TEST_ENTRY(setup_flow_dokany_view_states),
+  SD_TEST_ENTRY(setup_flow_dokany_plan_by_mode),
+  SD_TEST_ENTRY(setup_flow_names_and_titles),
 };
 
 int main(int argc, char **argv)

@@ -17,6 +17,7 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_logs_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_hostkeys_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_update_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_notify_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_dark_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_wizard_model.c)
@@ -47,6 +48,7 @@ sd_add_app(shelldrive-ui
     ui_profiles.c
     ui_prompt.c
     ui_settings.c
+    ui_update.c
     ui_tray.c
     ui_win.c
     ui_dark.c
@@ -69,6 +71,8 @@ sd_add_app(shelldrive-ui
     ui_hostkeys_model.h
     ui_logs_model.h
     ui_settings_model.h
+    ui_update.h
+    ui_update_model.h
     ${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc
     ${SD_UI_PURE_SOURCES}
   DEPS sd_ipc sd_config sd_crypto sd_ssh sd_l10n sd_l10n_catalog_ui sd_platform sd_base comctl32 comdlg32 shell32)

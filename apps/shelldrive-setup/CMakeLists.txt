@@ -21,6 +21,7 @@ add_library(sd_setup_core STATIC
   setup_log.c
   setup_shortcut.c
   setup_msg.c
+  setup_flow.c
   setup_install.c
   ${SD_SETUP_REGTABLE_C})
 target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -52,6 +53,18 @@ if(SD_FLAVOUR STREQUAL "x86-ia32")
                    --knowndlls "${CMAKE_SOURCE_DIR}/tests/os-imports/knowndlls.txt" --no-delayload
                    "$<TARGET_FILE:shelldrive-setup-stub>")
   set_tests_properties(importcheck.stub.knowndlls PROPERTIES LABELS importcheck)
+
+  # Hidden /test-pages: the wizard pages are built and logged, nothing is installed (04 §6.10, tests/setup).
+  set(_tp_dir "${CMAKE_BINARY_DIR}/test-pages")
+  file(MAKE_DIRECTORY "${_tp_dir}")
+  add_test(NAME setup.stub.test_pages
+           COMMAND $<TARGET_FILE:shelldrive-setup-stub> /test-pages "/log=${_tp_dir}/pages.log"
+                   "/installdir=${_tp_dir}/install")
+  add_test(NAME setup.stub.test_pages_log
+           COMMAND "${CMAKE_COMMAND}" "-DLOG=${_tp_dir}/pages.log" "-DNOT_CREATED=${_tp_dir}/install"
+                   -P "${CMAKE_SOURCE_DIR}/tests/setup/check_test_pages.cmake")
+  set_tests_properties(setup.stub.test_pages setup.stub.test_pages_log PROPERTIES LABELS setup TIMEOUT 120)
+  set_tests_properties(setup.stub.test_pages_log PROPERTIES DEPENDS setup.stub.test_pages)
 
   sd_setup_add_payload(shelldrive-setup-stub SD_SETUP_EXE "${SD_FLAVOUR}")
 endif()

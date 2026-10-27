@@ -256,6 +256,7 @@ typedef struct sd_settings {
   char   ui_language[16];        /* [ui] language: "" = system default (the UI default language order, 9.3) */
   int    notify;                 /* [ui] notify = yes (balloons on, default) | no */
   int    default_backend;        /* [defaults] backend: SD_PROFILE_BACKEND_* (auto) */
+  char   update_channel[8];      /* [update] channel: "stable" (default) or "beta" (04 §9.1, the Settings window) */
 } sd_settings;
 void   sd_settings_defaults(sd_settings *s);
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s);   /* SD_E_INVALID_PARAM if a value was bad */

@@ -156,6 +156,8 @@ int sd_setup_parse_args(int argc, const wchar_t *const *argv, sd_setup_args *out
       mode_given = 1;
     } else if (arg_is(tok + 1, L"help") || arg_is(tok + 1, L"?")) {
       out->help = 1;
+    } else if (arg_is(tok + 1, L"test-pages")) {
+      out->test_pages = 1;
     } else if ((v = arg_value(tok, L"portable")) != NULL) {
       if (mode_given && out->mode != SD_SETUP_MODE_PORTABLE)
         goto bad_token;

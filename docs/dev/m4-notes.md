@@ -188,7 +188,11 @@ writes to the real account.
 9. KnownDLLs and XP floor: `tests/os-imports/knowndlls.txt` comes from a Windows 11 capture; the XP SP3 and XP x64
    captures (04 §11.4 lab) must confirm it. The ten Win32 1.0 names added to `xp-sp3-x86.txt` need the same
    confirmation.
-10. Frontend: setup pages (mode, options, Dokany, language) replace `setup_ui.c`, using the same engine interface.
+10. Frontend (done in `wip/r6-uisetup`): the wizard pages in `setup_ui.c` (welcome, MIT license, mode, destination, Dokany,
+    progress, finish, removal confirmation) are driven by the page flow in `setup_flow.c`. Plain Win32 controls, no comctl32.
+    The all-users choice is shown disabled (`SD_FLOW_MACHINE_AVAILABLE = 0`), so the Dokany page is reached only through
+    `shelldrive-setup-stub.exe /test-pages /permachine` until the MSI lands. No language page: the language follows
+    `/lang` and the UI language order (03 §9.3). Hidden `/test-pages` builds the pages, logs them and installs nothing.
 
 ## ADMX and reproducibility
 

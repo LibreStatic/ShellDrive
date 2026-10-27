@@ -1633,3 +1633,128 @@ msgstr "ShellDrive"
 msgctxt "ui.notify.hostkeys"
 msgid "{host} offered new host keys. Review"
 msgstr "{host} ha proposto nuove chiavi host. Controllale"
+
+#. Settings: label of the update channel list (stable or beta).
+msgctxt "ui.settings.update_channel"
+msgid "Channel"
+msgstr "Canale"
+
+#. Settings: the stable update channel.
+msgctxt "ui.settings.channel_stable"
+msgid "Stable"
+msgstr "Stabile"
+
+#. Settings: the beta update channel. Beta is a product term and is not translated.
+msgctxt "ui.settings.channel_beta"
+msgid "Beta"
+msgstr "Beta"
+
+#. Settings: button that asks the agent for the latest manifest now.
+msgctxt "ui.settings.update_check_now"
+msgid "Check now"
+msgstr "Verifica ora"
+
+#. Settings: button that installs an offered update after consent.
+msgctxt "ui.settings.update_install"
+msgid "Install update"
+msgstr "Installa l'aggiornamento"
+
+#. Settings: button that opens the release notes of the offered version in the browser.
+msgctxt "ui.settings.update_notes"
+msgid "Release notes"
+msgstr "Note di rilascio"
+
+#. Settings: shown next to a control that a group policy sets.
+msgctxt "ui.settings.update_managed"
+msgid "Managed by your organization."
+msgstr "Gestito dalla tua organizzazione."
+
+#. Settings: update checks are disabled by a group policy.
+msgctxt "ui.settings.update_off_policy"
+msgid "Update checks are turned off by your organization."
+msgstr "La tua organizzazione ha disattivato la ricerca di aggiornamenti."
+
+#. Settings: update checks are disabled in settings.ini.
+msgctxt "ui.settings.update_off_settings"
+msgid "Update checks are turned off in settings."
+msgstr "La ricerca di aggiornamenti è disattivata nelle impostazioni."
+
+#. Update status: no check has run in this session yet.
+msgctxt "ui.update.status_idle"
+msgid "No update check has run in this session."
+msgstr "In questa sessione non è ancora stata eseguita alcuna verifica di aggiornamenti."
+
+#. Update status: a check is running.
+msgctxt "ui.update.status_checking"
+msgid "Checking for updates..."
+msgstr "Verifica degli aggiornamenti..."
+
+#. Update status: the installed version is the newest one. {channel} is stable or beta.
+msgctxt "ui.update.status_current"
+msgid "ShellDrive is up to date ({channel} channel)."
+msgstr "ShellDrive è aggiornato (canale {channel})."
+
+#. Update status: a newer version is offered. {size} is in kilobytes.
+msgctxt "ui.update.status_available"
+msgid "Version {version} is available ({size} KB)."
+msgstr "È disponibile la versione {version} ({size} KB)."
+
+#. Update status: the last successful check is old. {days} is at least 14.
+msgctxt "ui.update.status_stale"
+msgid "The last successful update check was {days} days ago."
+msgstr "L'ultima verifica di aggiornamenti riuscita risale a {days} giorni fa."
+
+#. Update status: the check or the install failed. {code} is the error name.
+msgctxt "ui.update.status_failed"
+msgid "The update check failed ({code})."
+msgstr "La verifica degli aggiornamenti non è riuscita ({code})."
+
+#. Update status: an update is being installed. {version} is the new version.
+msgctxt "ui.update.status_installing"
+msgid "Installing version {version}. ShellDrive restarts when it is done."
+msgstr "Installazione della versione {version} in corso. ShellDrive si riavvia al termine."
+
+#. Update progress: the new version is downloaded.
+msgctxt "ui.update.stage_downloading"
+msgid "Downloading the update..."
+msgstr "Download dell'aggiornamento..."
+
+#. Update progress: the downloaded version is installed.
+msgctxt "ui.update.stage_applying"
+msgid "Installing the update..."
+msgstr "Installazione dell'aggiornamento..."
+
+#. Update progress: the update is installed.
+msgctxt "ui.update.stage_done"
+msgid "The update is installed."
+msgstr "L'aggiornamento è installato."
+
+#. Update progress: the install failed. {code} is the error name.
+msgctxt "ui.update.stage_failed"
+msgid "The update could not be installed ({code})."
+msgstr "Impossibile installare l'aggiornamento ({code})."
+
+#. Title of the consent dialog before an update is installed.
+msgctxt "ui.update.consent_title"
+msgid "Install the update"
+msgstr "Installa l'aggiornamento"
+
+#. Consent dialog: what happens. {version} is the offered version.
+msgctxt "ui.update.consent_text"
+msgid "ShellDrive {name} will be downloaded, its signature and checksum will be checked, and it will be installed. ShellDrive restarts when the installation ends."
+msgstr "ShellDrive {name} verrà scaricato, firma e checksum verranno verificati e poi verrà installato. ShellDrive si riavvia al termine dell'installazione."
+
+#. Consent dialog: the button that starts the install.
+msgctxt "ui.update.consent_yes"
+msgid "Install and restart"
+msgstr "Installa e riavvia"
+
+#. Consent dialog: the button that leaves the update for later.
+msgctxt "ui.update.consent_no"
+msgid "Not now"
+msgstr "Non ora"
+
+#. Balloon when a newer version is offered. {version} is the offered version.
+msgctxt "ui.notify.update"
+msgid "ShellDrive {version} is available. Open Settings to install it."
+msgstr "È disponibile ShellDrive {version}. Apri le impostazioni per installarlo."

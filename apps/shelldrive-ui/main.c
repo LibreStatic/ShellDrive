@@ -271,6 +271,9 @@ void ui_app_on_event(sd_json *ev)
   } else if (name != NULL && strcmp(name, "hostkeys.announced") == 0) {
     ui_tray_on_hostkeys_announced(data);
     ui_windows_on_event(name, data);
+  } else if (name != NULL && strncmp(name, "update.", 7) == 0) {
+    /* update.available, update.progress, update.stale: the Settings group and the balloon (ui_update.c) */
+    ui_windows_on_event(name, data);
   }
   sd_json_free(ev);
 }

@@ -52,6 +52,16 @@ SD_TEST_DECL(free_drive_letters);
 SD_TEST_DECL(json_escape_and_mount_params);
 SD_TEST_DECL(dpi_scale_rounding_and_clamp);
 SD_TEST_DECL(dpi_font_height);
+SD_TEST_DECL(updater_check_then_install_flow);
+SD_TEST_DECL(updater_up_to_date_and_disabled_replies);
+SD_TEST_DECL(updater_check_failure_and_retry);
+SD_TEST_DECL(updater_install_failure_keeps_the_offer);
+SD_TEST_DECL(updater_offer_balloon_once_per_version);
+SD_TEST_DECL(updater_stale_flag);
+SD_TEST_DECL(updater_agent_going_away);
+SD_TEST_DECL(updater_policy_display);
+SD_TEST_DECL(updater_view_enabled_rules);
+SD_TEST_DECL(updater_progress_and_status_text_kinds);
 
 /* test_logs.c, test_hostkeys.c and test_settings.c: the M3 models and their file paths. */
 SD_TEST_DECL(logs_cursor_appends_records_in_order);
@@ -133,6 +143,16 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(json_escape_and_mount_params),
   SD_TEST_ENTRY(dpi_scale_rounding_and_clamp),
   SD_TEST_ENTRY(dpi_font_height),
+  SD_TEST_ENTRY(updater_check_then_install_flow),
+  SD_TEST_ENTRY(updater_up_to_date_and_disabled_replies),
+  SD_TEST_ENTRY(updater_check_failure_and_retry),
+  SD_TEST_ENTRY(updater_install_failure_keeps_the_offer),
+  SD_TEST_ENTRY(updater_offer_balloon_once_per_version),
+  SD_TEST_ENTRY(updater_stale_flag),
+  SD_TEST_ENTRY(updater_agent_going_away),
+  SD_TEST_ENTRY(updater_policy_display),
+  SD_TEST_ENTRY(updater_view_enabled_rules),
+  SD_TEST_ENTRY(updater_progress_and_status_text_kinds),
   SD_TEST_ENTRY(logs_cursor_appends_records_in_order),
   SD_TEST_ENTRY(logs_reset_clears_or_keeps_by_dropped_count),
   SD_TEST_ENTRY(logs_malformed_reply_changes_nothing),

@@ -26,6 +26,8 @@
 #define UI_IPC_CALL_MS     10000u
 #define UI_IPC_RETRY_MS    10000u
 #define UI_IPC_CONNECT_MS  10000u
+#define UI_IPC_UPDATE_MS   120000u   /* update.check: the manifest download may take a while */
+#define UI_IPC_APPLY_MS    630000u   /* update.apply: the agent's staged setup waits up to 600 s (04 §9) */
 
 typedef struct ui_ipc_req {
   ui_ipc_kind kind;
@@ -54,6 +56,8 @@ static int features_of(sd_ipc_conn *c)
     f |= UI_FEAT_RELOAD;
   if (sd_ipc_conn_has_feature(c, "update.check"))
     f |= UI_FEAT_UPDATE;
+  if (sd_ipc_conn_has_feature(c, "update.apply"))
+    f |= UI_FEAT_UPDATE_APPLY;
   return f;
 }
 
@@ -135,6 +139,16 @@ static sd_err subscribe_topics(sd_ipc_conn *c)
   return e;
 }
 
+/* Time allowed for one call: the updater calls are deferred and may take much longer than the others. */
+static unsigned ui_ipc_call_ms(ui_ipc_kind kind)
+{
+  if (kind == UI_IPC_UPDATE_CHECK)
+    return UI_IPC_UPDATE_MS;
+  if (kind == UI_IPC_UPDATE_APPLY)
+    return UI_IPC_APPLY_MS;
+  return UI_IPC_CALL_MS;
+}
+
 static int pump_requests(sd_ipc_conn *c)
 {
   ui_ipc_req r;
@@ -144,7 +158,7 @@ static int pump_requests(sd_ipc_conn *c)
     sd_err e;
 
     memset(&err, 0, sizeof(err));
-    e = sd_ipc_call_raw(c, r.method, r.params, r.params ? strlen(r.params) : 0, UI_IPC_CALL_MS, &res, &err);
+    e = sd_ipc_call_raw(c, r.method, r.params, r.params ? strlen(r.params) : 0, ui_ipc_call_ms(r.kind), &res, &err);
     if (r.kind == UI_IPC_LIST) {
       if (e == SD_OK)
         post_json(UI_WM_IPC_LIST, res);

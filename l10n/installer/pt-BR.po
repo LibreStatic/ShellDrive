@@ -157,3 +157,158 @@ msgstr "A instalação falhou com o erro {code}."
 msgctxt "installer.help"
 msgid "Usage: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<folder>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<name>] [/log=<file>] [/lang=<code>]"
 msgstr "Uso: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<pasta>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<nome>] [/log=<arquivo>] [/lang=<código>]"
+
+#. Wizard button: go to the previous page.
+msgctxt "installer.button.back"
+msgid "Back"
+msgstr "Voltar"
+
+#. Wizard button: go to the next page.
+msgctxt "installer.button.next"
+msgid "Next"
+msgstr "Avançar"
+
+#. Wizard button: start the installation.
+msgctxt "installer.button.install"
+msgid "Install"
+msgstr "Instalar"
+
+#. Wizard button: start the removal.
+msgctxt "installer.button.uninstall"
+msgid "Uninstall"
+msgstr "Remover"
+
+#. Wizard button: close the setup after it completed.
+msgctxt "installer.button.finish"
+msgid "Finish"
+msgstr "Concluir"
+
+#. Wizard button: stop without changing anything.
+msgctxt "installer.button.cancel"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Wizard button: choose a folder with a dialog. The dots are part of the label.
+msgctxt "installer.button.browse"
+msgid "Browse..."
+msgstr "Procurar..."
+
+#. Title of the first page.
+msgctxt "installer.welcome.title"
+msgid "Welcome to ShellDrive Setup"
+msgstr "Bem-vindo ao instalador do ShellDrive"
+
+#. Text of the first page.
+msgctxt "installer.welcome.text"
+msgid "This wizard installs ShellDrive on this computer. Click Next to continue."
+msgstr "Este assistente instala o ShellDrive neste computador. Clique em Avançar para continuar."
+
+#. Title of the license page.
+msgctxt "installer.license.title"
+msgid "License"
+msgstr "Licença"
+
+#. Line above the license text. The license itself is in English.
+msgctxt "installer.license.intro"
+msgid "ShellDrive is free software released under the MIT License. The license text below is in English, the language of the license."
+msgstr "O ShellDrive é um software livre distribuído sob a licença MIT. O texto da licença abaixo está em inglês, o idioma em que foi redigida."
+
+#. The MIT License text. Legal text: it is not translated, in any locale.
+msgctxt "installer.license.text"
+msgid "MIT License\n\nCopyright (c) LibreStatic\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
+msgstr "MIT License\n\nCopyright (c) LibreStatic\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
+
+#. Title of the install mode page.
+msgctxt "installer.mode.title"
+msgid "Install mode"
+msgstr "Modo de instalação"
+
+#. Text of the install mode page.
+msgctxt "installer.mode.text"
+msgid "Choose where ShellDrive is installed."
+msgstr "Escolha onde o ShellDrive será instalado."
+
+#. Radio button: install for the current account only.
+msgctxt "installer.mode.user"
+msgid "Install for me only (no administrator rights needed)"
+msgstr "Instalar só para mim (não requer privilégios de administrador)"
+
+#. Radio button: install for every user of the computer. Disabled in this version.
+msgctxt "installer.mode.machine"
+msgid "Install for all users (requires administrator)"
+msgstr "Instalar para todos os usuários (requer administrador)"
+
+#. Radio button: copy ShellDrive to a folder of the user's choice, with no registration.
+msgctxt "installer.mode.portable"
+msgid "Portable (copy to a folder you choose)"
+msgstr "Portátil (copiar para uma pasta escolhida)"
+
+#. Shown under the all-users choice, which this version does not offer yet.
+msgctxt "installer.mode.machine_reason"
+msgid "Not available yet: installing for all users needs the MSI package, which this version does not include."
+msgstr "Ainda não disponível: a instalação para todos os usuários precisa do pacote MSI, que esta versão não inclui."
+
+#. Title of the destination page (portable copies).
+msgctxt "installer.dest.title"
+msgid "Destination folder"
+msgstr "Pasta de destino"
+
+#. Text of the destination page. The folder must be new or empty.
+msgctxt "installer.dest.text"
+msgid "ShellDrive is copied to this folder. Choose a new or empty folder."
+msgstr "O ShellDrive será copiado para esta pasta. Escolha uma pasta nova ou vazia."
+
+#. Title of the Dokany page. Dokany is a product name and is not translated.
+msgctxt "installer.dokany.title"
+msgid "Dokany driver"
+msgstr "Driver Dokany"
+
+#. Explains the Dokany driver on the per-machine page.
+msgctxt "installer.dokany.text"
+msgid "Dokany is a file system driver from the Dokany project. It is a signed third-party kernel driver. It is installed for the whole computer, stays available to every user, and ShellDrive does not remove it when ShellDrive is uninstalled."
+msgstr "O Dokany é um driver de sistema de arquivos do projeto Dokany. É um driver de kernel de terceiros, assinado digitalmente. Ele é instalado para o computador inteiro, continua disponível para todos os usuários e não é removido com o ShellDrive."
+
+#. Checkbox on the Dokany page. Checked by default when the driver can be installed.
+msgctxt "installer.dokany.option"
+msgid "Install the Dokany file system driver (recommended)"
+msgstr "Instalar o driver de sistema de arquivos Dokany (recomendado)"
+
+#. Shown on the Dokany page when this Windows version cannot take the driver.
+msgctxt "installer.dokany.unavailable"
+msgid "This version of Windows cannot use the Dokany driver. ShellDrive uses WebDAV."
+msgstr "Esta versão do Windows não pode usar o driver Dokany. O ShellDrive usa WebDAV."
+
+#. Shown on the Dokany page under the checkbox, when it is unchecked.
+msgctxt "installer.dokany.skip_note"
+msgid "Without Dokany, ShellDrive uses only the WebDAV backend."
+msgstr "Sem o Dokany, o ShellDrive usa somente o backend WebDAV."
+
+#. Title of the last page after an installation.
+msgctxt "installer.finish.title"
+msgid "Setup is complete"
+msgstr "Instalação concluída"
+
+#. Checkbox on the last page: start ShellDrive when setup closes.
+msgctxt "installer.finish.launch"
+msgid "Launch ShellDrive"
+msgstr "Iniciar o ShellDrive"
+
+#. Shown when ShellDrive could not be started from the last page.
+msgctxt "installer.launch.failed"
+msgid "ShellDrive could not be started. Open it from the Start menu."
+msgstr "Não foi possível iniciar o ShellDrive. Abra-o pelo menu Iniciar."
+
+#. Title of the removal confirmation page.
+msgctxt "installer.uninstall.title"
+msgid "Remove ShellDrive"
+msgstr "Remover o ShellDrive"
+
+#. Text of the removal confirmation page. {folder} is the install folder.
+msgctxt "installer.uninstall.text"
+msgid "ShellDrive will be removed from {folder}. Your settings and profiles are kept."
+msgstr "O ShellDrive será removido de {folder}. Suas configurações e perfis serão mantidos."
+
+#. Question on the removal confirmation page.
+msgctxt "installer.uninstall.question"
+msgid "Do you want to remove ShellDrive from this computer?"
+msgstr "Deseja remover o ShellDrive deste computador?"

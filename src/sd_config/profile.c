@@ -676,6 +676,7 @@ void sd_settings_defaults(sd_settings *s)
   s->putty_source = 1;
   s->notify = 1;
   s->default_backend = SD_PROFILE_BACKEND_AUTO;
+  strcpy_s(s->update_channel, sizeof(s->update_channel), "stable");
 }
 
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
@@ -726,6 +727,11 @@ sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
     else if (strcmp(v, "dokany") == 0) s->default_backend = SD_PROFILE_BACKEND_DOKANY;
     else if (strcmp(v, "webdav") == 0) s->default_backend = SD_PROFILE_BACKEND_WEBDAV;
     else { SD_LOGW("config", "settings.ini: invalid [defaults] backend"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "update", "channel")) != NULL) {
+    if (strcmp(v, "stable") == 0 || strcmp(v, "beta") == 0)
+      strcpy_s(s->update_channel, sizeof(s->update_channel), v);
+    else { SD_LOGW("config", "settings.ini: invalid [update] channel"); e = SD_E_INVALID_PARAM; }
   }
   return e;
 }
@@ -797,6 +803,11 @@ sd_err sd_settings_save(const sd_settings *s)
   }
   if (e == SD_OK) e = sd_ini_set(ini, "ui", "notify", s->notify ? "yes" : "no");
   if (e == SD_OK) e = sd_ini_set(ini, "defaults", "backend", backends[s->default_backend]);
+  /* stable is the default: the key is written only for beta, and removed otherwise */
+  if (e == SD_OK) {
+    if (strcmp(s->update_channel, "beta") == 0) e = sd_ini_set(ini, "update", "channel", "beta");
+    else (void)sd_ini_remove(ini, "update", "channel");
+  }
   if (e == SD_OK) {
     sd_wr_init(&w, SD_INI_MAX_BYTES);
     e = sd_ini_serialize(ini, &w);

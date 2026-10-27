@@ -23,6 +23,7 @@
 #define UI_FEAT_LOG_TAIL  (1u << 0)    /* log.tail: the Logs viewer */
 #define UI_FEAT_RELOAD    (1u << 1)    /* config.reload: Settings applies the saved file */
 #define UI_FEAT_UPDATE    (1u << 2)    /* update.check: the update group of Settings is enabled */
+#define UI_FEAT_UPDATE_APPLY (1u << 3) /* update.apply: "Install update" is offered */
 
 /* Menu and tray command ids of the secondary windows (ui_int.h keeps the others). */
 #define UI_CMD_HOSTKEYS   3101
@@ -54,6 +55,7 @@ void   ui_windows_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_windows_on_event(const char *name, const sd_json *data);
 void   ui_windows_on_agent_state(int up);
 void   ui_windows_close_all(void);
+/* Replies and events of the updater (ui_update.c), dispatched from ui_windows_on_reply and ui_windows_on_event. */
 /* Creates every secondary window hidden, checks it and destroys it (--test-windows). 1 when all were created. */
 int    ui_windows_smoke_test(void);
 
@@ -76,6 +78,8 @@ HWND   ui_logs_create_hidden(void);
 void   ui_settings_open(void);
 void   ui_settings_close(void);
 void   ui_settings_on_reply(int kind, sd_err err, const sd_json *result);
+void   ui_settings_update_refresh(void);     /* the update group: status, enabled controls (ui_update.c) */
+int    ui_settings_update_controls_ok(void); /* --test-windows: the update group controls exist */
 HWND   ui_settings_create_hidden(void);
 
 /* ---- ui_about.c: the About window ---- */

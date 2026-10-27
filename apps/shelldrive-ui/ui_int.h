@@ -56,7 +56,9 @@ typedef enum ui_ipc_kind {
   UI_IPC_RELOAD,      /* config.reload (ui_ipc_config_reload, ui_settings.c) */
   UI_IPC_ANNOUNCED,   /* hostkey.announced.list (ui_hostkeys.c) */
   UI_IPC_ACCEPT,      /* hostkey.announced.accept (ui_hostkeys.c) */
-  UI_IPC_LOG          /* log.tail (ui_logs.c) */
+  UI_IPC_LOG,         /* log.tail (ui_logs.c) */
+  UI_IPC_UPDATE_CHECK, /* update.check (ui_update.c) */
+  UI_IPC_UPDATE_APPLY  /* update.apply, consent true (ui_update.c) */
 } ui_ipc_kind;
 
 typedef struct ui_ipc_reply {

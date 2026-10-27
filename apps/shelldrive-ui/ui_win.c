@@ -13,6 +13,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_res.h"
+#include "ui_update.h"
 #include "ui_win.h"
 
 #ifndef WM_DPICHANGED
@@ -183,6 +184,10 @@ void ui_windows_on_reply(int kind, sd_err err, const sd_json *result)
   case UI_IPC_RELOAD:
     ui_settings_on_reply(kind, err, result);
     break;
+  case UI_IPC_UPDATE_CHECK:
+  case UI_IPC_UPDATE_APPLY:
+    ui_update_on_reply(kind, err, result);
+    break;
   default:
     break;
   }
@@ -190,15 +195,17 @@ void ui_windows_on_reply(int kind, sd_err err, const sd_json *result)
 
 void ui_windows_on_event(const char *name, const sd_json *data)
 {
-  (void)data;
   if (name != NULL && strcmp(name, "hostkeys.announced") == 0)
     ui_hostkeys_on_event();
+  else if (name != NULL && strncmp(name, "update.", 7) == 0)
+    ui_update_on_event(name, data);
 }
 
 void ui_windows_on_agent_state(int up)
 {
   ui_hostkeys_on_agent_state(up);
   ui_logs_on_agent_state(up);
+  ui_update_on_agent_state(up);
 }
 
 void ui_windows_close_all(void)
@@ -227,6 +234,8 @@ int ui_windows_smoke_test(void)
 
   w = ui_settings_create_hidden();
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
+  /* the update group of Settings: channel list, status, Check now, Install update, Release notes */
+  ok = ok && ui_settings_update_controls_ok();
   if (w)
     DestroyWindow(w);
 
