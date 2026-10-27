@@ -628,7 +628,8 @@ SD_TEST(m3_new_methods_and_list_warnings)
   SD_CHECK(sd_ipc_conn_has_feature(c, "log.tail"));
   SD_CHECK(sd_ipc_conn_has_feature(c, "selftest"));
   SD_CHECK(sd_ipc_conn_has_feature(c, "prompt.list"));
-  SD_CHECK(!sd_ipc_conn_has_feature(c, "update.check"));    /* M4 */
+  SD_CHECK(sd_ipc_conn_has_feature(c, "update.check"));    /* M4: the updater engine (04 §9) */
+  SD_CHECK(sd_ipc_conn_has_feature(c, "update"));
 
   /* selftest: four checks, all passing in a test root */
   SD_REQUIRE(call(c, "selftest", "{}", &res, &err) == SD_OK);
@@ -1024,4 +1025,24 @@ SD_TEST(m3_cache_clear_refuses_queued_writes)
   shutdown_agent(c);
   sd_ipc_close(c);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_WB_DIRTY", NULL);
+}
+
+/* M4: update.apply refuses without consent and never starts a network check in a test root; update.check
+   with the updater disabled by the test settings answers without network (enabled = no). */
+SD_TEST(m4_update_consent_and_disabled_check)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  SD_REQUIRE(setup_agent(L"upd", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("cli", 0, &c) == SD_OK);
+  SD_CHECK(sd_ipc_conn_has_feature(c, "update.apply"));
+  SD_CHECK(call(c, "update.apply", "{}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "consent_required");
+  SD_CHECK_EQ_INT(err.exit_code, 1);
+  SD_CHECK(call(c, "update.apply", "{\"consent\":false}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "consent_required");
+  sd_json_free(res);
+  shutdown_agent(c);
+  sd_ipc_close(c);
 }

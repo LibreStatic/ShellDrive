@@ -27,6 +27,7 @@ enable_testing()
 add_subdirectory(tools/sdl10n)
 add_subdirectory(tools/sd-importcheck)
 add_subdirectory(tools/sd-isacheck)
+add_subdirectory(tools/sd-updsign)
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)
@@ -46,6 +47,7 @@ add_subdirectory(src/sd_secret)
 add_subdirectory(src/sd_ipc)
 add_subdirectory(src/sd_state)
 add_subdirectory(src/sd_mount)
+add_subdirectory(src/sd_update)
 
 # Localized catalogs (PO sources under l10n/).
 add_subdirectory(l10n)
