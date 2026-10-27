@@ -82,7 +82,7 @@ static int resolve_test(void *ctx, const char *entry, char *out, size_t cap)
 
 SD_TEST(acl_resolves_names_and_fails_closed)
 {
-  sd_profile p;
+  static sd_profile p;   /* large: keep it off the stack */
   svc_acl acl;
   sd_profile_defaults(&p);
   p.scope = SD_PROFILE_SCOPE_SERVICE;

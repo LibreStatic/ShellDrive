@@ -985,6 +985,7 @@ static void svc_tick(void)
   uint32_t n = 0, i, nexp = 0;
   struct { char mid[16]; sd_mount *m; uint32_t mprompt; } expired[SVC_MAX_PROMPTS];
   uint64_t now = svc_now();
+  memset(expired, 0, sizeof(expired));
   /* only this thread creates, destroys and removes records, so they stay valid after the lock is released; sd_mount
      is queried outside g.lock (lock order: sd_mount never waits on g.lock while we hold it) */
   sd_mutex_lock(&g.lock);

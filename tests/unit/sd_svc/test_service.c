@@ -98,10 +98,12 @@ static int make_fixture(void)
   sd_profile p;
   wchar_t d[MAX_PATH];
   wchar_t tmp[MAX_PATH];
+  LARGE_INTEGER qpc;
   DWORD n = GetTempPathW(MAX_PATH, tmp);
   if (!(n > 0 && n < MAX_PATH)) return 0;
+  QueryPerformanceCounter(&qpc);
   _snwprintf_s(g_root, MAX_PATH, _TRUNCATE, L"%ssdsvc-%lu-%lu", tmp, (unsigned long)GetCurrentProcessId(),
-               (unsigned long)GetTickCount());
+               (unsigned long)qpc.LowPart);
   if (!CreateDirectoryW(g_root, NULL)) return 0;
   _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\profiles", g_root);
   if (!CreateDirectoryW(d, NULL)) return 0;
