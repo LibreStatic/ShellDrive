@@ -279,13 +279,25 @@ Per-machine MSI packages (04 §8; decisions and open items in 04 §8.7). Opt-in:
 | `packaging/msi/CMakeLists.txt` | the `msi` target, per-flavour table (family, platform, UpgradeCode, launch condition) |
 | `tools/sd-msigen/` | GUIDs, `Registry.wxi` from `packaging/registration.txt`, `.wxl` from the `msi.*` entries of `l10n/installer` |
 | `tools/sd-msiembed/` | embeds a language transform under its LCIDs through `msi.dll` and updates the Template summary |
-| `tests/msi/` | `sd-test-msi`: `tables` (package contents, transforms with the language check) and `admin` (`msiexec /a`) |
+| `packaging/msi/wixui/` | WixUI string overrides, one complete `WixUI_<culture>.wxl` per culture (es-es voseo, de-de `du`, it-it informal), and `dialog-set.txt` (the 183 WixUI ids the package shows) |
+| `tests/msi/` | `sd-test-msi`: `tables` (package contents, transforms with the language check) and `admin` (`msiexec /a`); `check-wixui.cmake` (`msi.<flavour>.wixui`: every id of `dialog-set.txt` in every override, Spanish register lint) |
 
 Checks: `ctest -L msi` (after the `msi` target). Light runs ICE validation on the base package; the suppressions and
 their reasons are in 04 §8.7. Strings for the installer are in `l10n/installer` (the `msi.*` entries; the lowercase dotted
 msgctxt is the id, the WiX id is its PascalCase form, for example `msi.feature.core.title` is `FeatureCoreTitle`).
 
+WixUI strings: the stock `WixUI_<culture>.wxl` of the WiX SDK is not edited. `build-msi.cmake` passes an override
+`packaging/msi/wixui/WixUI_<culture>.wxl` to light before the stock file when it exists (light takes the first definition
+of an overridable string). fr-fr and pt-BR have no override:
+the stock French ("vous") and Brazilian Portuguese ("você") text already follows the register. The ids of the dialog set
+were taken from the built package: every WixUI `loc.*` reference of the Control, Dialog, RadioButton and UIText tables.
+To rebuild the list, replace each WixUI string with a marker in a copy of `WixUI_en-us.wxl`, light the English package
+with it and read the `@@` markers back from the tables (`WindowsInstaller.Installer`); overrides are then regenerated.
+
+`ARPNOMODIFY` is `1`. Design 04 §6.7 says `0`, but the package has no modify UI (WixUI_Minimal has no feature tree), so
+`0` would offer "Change" with nothing behind it. Revisit with a feature-tree dialog (open item 7 below).
+
 Open items: DEFAULTPROFILES (no MSI MoveFile authoring in WiX 3.14), `programdata-secure` runs after InstallFiles, hook
-rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, Spanish WixUI text
-(not voseo), Add/Remove "Change" disabled by WixUI_Minimal, timestamps in the summary information (12.2). The installed
+rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, Add/Remove "Change"
+disabled by WixUI_Minimal (ARPNOMODIFY=1, see above), timestamps in the summary information (12.2). The installed
 behaviour is for the lab (11.4).

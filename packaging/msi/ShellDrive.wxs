@@ -24,6 +24,8 @@
 
     <Icon Id="ShellDriveIcon" SourceFile="$(var.SD_ICON)" />
     <Property Id="ARPPRODUCTICON" Value="ShellDriveIcon" />
+    <!-- ARPNOMODIFY=1 comes from WixUI_Minimal (no feature tree, so no modify UI). Do not set it here too: WiX 3.14
+         rejects the duplicate Property (LGHT0091). -->
 
     <!-- Public properties for silent configuration (04 §8.4). Empty means "not given". -->
     <Property Id="AUTOSTART" Value="1" />

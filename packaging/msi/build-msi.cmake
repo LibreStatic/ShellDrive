@@ -134,9 +134,17 @@ foreach(_l IN LISTS _translated)
   list(GET _cultures ${_i} _cu)
   set(_loc "${_work}/loc-${_l}.msi")
   set(_mst "${_work}/${_l}.mst")
+  # Project overrides of the WiX stock dialog strings (packaging/msi/wixui, one complete file per culture; the stock
+  # files are not edited). light takes the first definition of an overridable string, so the override goes first.
+  string(TOLOWER "${_cu}" _cu_lc)
+  set(_loc_args)
+  if(EXISTS "${SD_MSI_SRC}/wixui/WixUI_${_cu_lc}.wxl")
+    list(APPEND _loc_args -loc "${SD_MSI_SRC}/wixui/WixUI_${_cu_lc}.wxl")
+  endif()
+  list(APPEND _loc_args -loc "${_wix_ui}/${_wixui_${_l}}")
   # Intermediate localized packages are not shipped: their ICE run would repeat the base package's (-sval).
   sd_msi_step("light (${_l})" "${_light}" -nologo -sval -ext WixUIExtension
-              -cultures:${_cu} -loc "${_wix_ui}/${_wixui_${_l}}" -loc "${_work}/ShellDrive.${_l}.wxl"
+              -cultures:${_cu} ${_loc_args} -loc "${_work}/ShellDrive.${_l}.wxl"
               -out "${_loc}" "${_obj}")
   sd_msi_step("torch (${_l})" "${_torch}" -nologo -t language "${_base}" "${_loc}" -out "${_mst}")
 endforeach()
