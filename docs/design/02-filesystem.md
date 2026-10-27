@@ -1634,6 +1634,13 @@ choices: `system` = mechanism A, `link` = mechanism B, `attach` = the per-user f
 the compiled-in table. **No-go** → that OS
 uses the per-user attach below. The spike result is recorded in this section before M5 ends.
 
+**Spike result (2026-10-27, `docs/dev/m5-webdav-global-spike.md`).** Lab run on one Windows 11 machine as a standard
+user. `system`: no-go on every family (G2 fails by reasoning, unverified). `link`: no-go for v1, candidate for the lab
+(the session-local raw target is accepted without elevation and a `Global\` definition is denied to a standard user,
+both verified; G1 to G5 and G7 need LocalSystem and a second session). `attach`: the fallback on every family,
+conditional on the service method and the G2 test. The compiled table in `svc_gw.c` therefore has no GO cell, and
+`auto` resolves to `attach`. The other OS families still need the lab run listed in that report.
+
 **Fallback: per-user attach at logon (no-go OSes, and whenever the system-wide mapping fails at run time).**
 - The per-user agent, started at logon (Run key, C11), asks the service over its pipe for the attach
   information of each global WebDAV profile the user is allowed to use (a read-only service IPC call,

@@ -28,6 +28,20 @@ SD_TEST_DECL(scm_uninstall_tolerates_a_missing_event_source);
 SD_TEST_DECL(scm_start_and_stop_need_elevation);
 SD_TEST_DECL(scm_start_and_stop_pass_the_result_through);
 SD_TEST_DECL(scm_host_spec_points_at_the_host_next_to_the_program);
+SD_TEST_DECL(gw_family_from_version);
+SD_TEST_DECL(gw_mode_parses_the_four_names_only);
+SD_TEST_DECL(gw_compiled_table_has_no_go_cell);
+SD_TEST_DECL(gw_auto_is_attach_on_every_family_until_a_lab_go);
+SD_TEST_DECL(gw_explicit_system_and_link_refuse_unverified_cells);
+SD_TEST_DECL(gw_go_cells_select_system_then_link);
+SD_TEST_DECL(gw_token_only_is_refused_for_global_mounts);
+SD_TEST_DECL(gw_machine_state_refusals);
+SD_TEST_DECL(gw_reason_codes_use_the_ipc_vocabulary);
+SD_TEST_DECL(gw_attach_remote_shapes);
+SD_TEST_DECL(gw_attach_map_calls_the_seam_with_the_xp_form_flag);
+SD_TEST_DECL(gw_attach_map_refuses_bad_input_without_calling_the_seam);
+SD_TEST_DECL(gw_attach_map_maps_win32_errors);
+SD_TEST_DECL(gw_attach_unmap_calls_cancel);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -58,6 +72,20 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(scm_start_and_stop_need_elevation),
   SD_TEST_ENTRY(scm_start_and_stop_pass_the_result_through),
   SD_TEST_ENTRY(scm_host_spec_points_at_the_host_next_to_the_program),
+  SD_TEST_ENTRY(gw_family_from_version),
+  SD_TEST_ENTRY(gw_mode_parses_the_four_names_only),
+  SD_TEST_ENTRY(gw_compiled_table_has_no_go_cell),
+  SD_TEST_ENTRY(gw_auto_is_attach_on_every_family_until_a_lab_go),
+  SD_TEST_ENTRY(gw_explicit_system_and_link_refuse_unverified_cells),
+  SD_TEST_ENTRY(gw_go_cells_select_system_then_link),
+  SD_TEST_ENTRY(gw_token_only_is_refused_for_global_mounts),
+  SD_TEST_ENTRY(gw_machine_state_refusals),
+  SD_TEST_ENTRY(gw_reason_codes_use_the_ipc_vocabulary),
+  SD_TEST_ENTRY(gw_attach_remote_shapes),
+  SD_TEST_ENTRY(gw_attach_map_calls_the_seam_with_the_xp_form_flag),
+  SD_TEST_ENTRY(gw_attach_map_refuses_bad_input_without_calling_the_seam),
+  SD_TEST_ENTRY(gw_attach_map_maps_win32_errors),
+  SD_TEST_ENTRY(gw_attach_unmap_calls_cancel),
 };
 
 int main(int argc, char **argv)
