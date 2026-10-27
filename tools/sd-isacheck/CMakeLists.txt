@@ -58,11 +58,11 @@ set_tests_properties(isacheck.ct_sd_crypto PROPERTIES LABELS isacheck)
 # the branch and divide rules judge. A rename back to a name without the convention fails these two tests. Only
 # on the flavours that build the hardware objects (x86-sse2 and x64; not x86-ia32, not ARM).
 if(_ct_hw_built)
-  add_test(NAME isacheck.ct_scans_aes_ni COMMAND sd-isacheck ${_ct_args} --list)
-  set_tests_properties(isacheck.ct_scans_aes_ni PROPERTIES LABELS isacheck CONFIGURATIONS Release
+  add_test(NAME isacheck.ct_scans_aes_ni CONFIGURATIONS Release COMMAND sd-isacheck ${_ct_args} --list)
+  set_tests_properties(isacheck.ct_scans_aes_ni PROPERTIES LABELS isacheck
     PASS_REGULAR_EXPRESSION "scan aes_ni.obj: sd_aes_ni_encrypt_blocks_ct \\(")
-  add_test(NAME isacheck.ct_scans_sha256_ni COMMAND sd-isacheck ${_ct_args} --list)
-  set_tests_properties(isacheck.ct_scans_sha256_ni PROPERTIES LABELS isacheck CONFIGURATIONS Release
+  add_test(NAME isacheck.ct_scans_sha256_ni CONFIGURATIONS Release COMMAND sd-isacheck ${_ct_args} --list)
+  set_tests_properties(isacheck.ct_scans_sha256_ni PROPERTIES LABELS isacheck
     PASS_REGULAR_EXPRESSION "scan sha256_ni.obj: sd_sha256_ni_blocks_ct \\(")
 endif()
 # Negative: a listed object that is not in the library fails the gate (the list cannot go stale unnoticed).
@@ -76,9 +76,9 @@ if(NOT SD_X86)
 endif()
 # Negative on the real object: without ct-branch-allow.txt the public-condition branch of sd_aes_sbox_ct is reported,
 # so the allow-list entry is load-bearing and the branch rule does scan the constant-time objects of sd_crypto.
-add_test(NAME isacheck.detects_ct_branch_without_allow_list
+add_test(NAME isacheck.detects_ct_branch_without_allow_list CONFIGURATIONS Release
          COMMAND sd-isacheck --ct-lib "$<TARGET_FILE:sd_crypto>" --config Release --ct-member aes_ct.obj)
-set_tests_properties(isacheck.detects_ct_branch_without_allow_list PROPERTIES LABELS isacheck CONFIGURATIONS Release
+set_tests_properties(isacheck.detects_ct_branch_without_allow_list PROPERTIES LABELS isacheck
   PASS_REGULAR_EXPRESSION "aes_ct.obj\\): sd_aes_sbox_ct: forward conditional branch")
 
 if(NOT SD_FUZZ)   # ISA and entry-thunk fixtures judge the x86-ia32 release code; ASan and libFuzzer code is not ISA-clean

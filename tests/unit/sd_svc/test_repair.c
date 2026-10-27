@@ -83,14 +83,16 @@ static int is_link(const wchar_t *path)
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
-/* Creates <TEMP>\sd-repair-<pid>-<tick>-<n> and returns 1 on success. */
+/* Creates <TEMP>\sd-repair-<pid>-<qpc>-<n> and returns 1 on success. */
 static int make_base(wchar_t *base, size_t cch, const wchar_t *name)
 {
   wchar_t tmp[MAX_PATH];
+  LARGE_INTEGER qpc;
   if (GetTempPathW(MAX_PATH, tmp) == 0)
     return 0;
+  QueryPerformanceCounter(&qpc);
   StringCchPrintfW(base, cch, L"%ssd-repair-%lu-%lu-%s", tmp, (unsigned long)GetCurrentProcessId(),
-                   (unsigned long)GetTickCount(), name);
+                   (unsigned long)qpc.LowPart, name);
   return CreateDirectoryW(base, NULL) ? 1 : 0;
 }
 

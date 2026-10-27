@@ -455,7 +455,7 @@ static DWORD scm_query_source(void *ctx, const wchar_t *source, wchar_t *message
   wchar_t path[256];
   DWORD e, type = 0, bytes;
   (void)ctx;
-  if (cch == 0)
+  if (message_file == NULL || cch == 0)
     return ERROR_INSUFFICIENT_BUFFER;
   message_file[0] = 0;
   if (FAILED(StringCchPrintfW(path, SVC_SCM_COUNT(path), L"%s\\%s", SVC_SCM_EVENTLOG_APP, source)))

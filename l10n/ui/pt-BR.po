@@ -1791,5 +1791,5 @@ msgstr "Conexão menos protegida"
 
 #. Prompt dialog button: continue with the token-only connection for this enable (answers accept).
 msgctxt "ui.prompt.btn.token_continue"
-msgid "Conti&nue"
-msgstr "Conti&nuar"
+msgid "Contin&ue"
+msgstr "Con&tinuar"
