@@ -18,6 +18,8 @@
 #include "host.h"
 #include "service.h"
 #include "svc_access.h"
+#include "svc_events.h"
+#include "svc_scm.h"
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
@@ -109,6 +111,8 @@ static struct svc_state {
   int idle;                         /* layout refused (reparse point, no rights): nothing is loaded */
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
+  svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
+  void *event_ctx;
   svc_prof *profs[SVC_MAX_PROFILES];
   uint32_t nprofs;
   svc_mount *mounts[SVC_MAX_MOUNTS];
@@ -579,9 +583,59 @@ static void announce_state(const char *id, wchar_t letter, const char *state)
 
 /* ---- sd_mount callbacks (control thread) ---- */
 
+/* ---- Event Log (10.3) ---- */
+
+static void svc_event(DWORD id, const wchar_t **args, size_t nargs)
+{
+  if (g.event != NULL)
+    g.event(g.event_ctx, id, args, nargs);
+}
+
+/* Mount state events of a global drive: mounted, unmounted, and failed with the IPC code. Messages stay English. */
+static void svc_event_mount(sd_mount_state st, const char *prof_id, wchar_t letter, const char *err_code)
+{
+  wchar_t wprof[256], wtarget[4], wcode[64];
+  const wchar_t *args[3];
+  wide_from_utf8(prof_id, wprof, SD_COUNTOF(wprof));
+  wtarget[0] = letter;
+  wtarget[1] = L':';
+  wtarget[2] = 0;
+  args[0] = wprof;
+  args[1] = wtarget;
+  if (st == SD_MOUNT_MOUNTED) {
+    svc_event(SVC_MSG_MOUNTED, args, 2);
+  } else if (st == SD_MOUNT_UNMOUNTED) {
+    svc_event(SVC_MSG_UNMOUNTED, args, 2);
+  } else if (st == SD_MOUNT_FAILED) {
+    wide_from_utf8(err_code, wcode, SD_COUNTOF(wcode));
+    args[2] = wcode;
+    svc_event(SVC_MSG_MOUNT_FAILED, args, 3);
+  }
+}
+
+/* The SCM sink: ReportEventW under source ShellDrive (registered by `shelldrive service install`). The message file
+   is shelldrive-host.exe itself, so the ids of svc_events.mc resolve in the Application log. */
+static void svc_eventlog_write(void *ctx, DWORD id, const wchar_t **args, size_t nargs)
+{
+  HANDLE h;
+  WORD type;
+  (void)ctx;
+  switch ((id >> 30) & 3u) {
+  case 3u: type = EVENTLOG_ERROR_TYPE; break;
+  case 2u: type = EVENTLOG_WARNING_TYPE; break;
+  case 1u: type = EVENTLOG_INFORMATION_TYPE; break;
+  default: type = EVENTLOG_SUCCESS; break;
+  }
+  h = RegisterEventSourceW(NULL, SVC_SCM_EVENT_SOURCE);
+  if (h == NULL)
+    return;
+  (void)ReportEventW(h, type, 0, id, NULL, (WORD)nargs, 0, args, NULL);
+  DeregisterEventSource(h);
+}
+
 static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
 {
-  char id[16] = "", state[24];
+  char id[16] = "", state[24], prof_id[256] = "", err_code[64] = "";
   wchar_t letter = 0;
   svc_mount *r;
   const char *code = NULL;
@@ -592,12 +646,15 @@ static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
     r->st = st;
     strcpy_s(id, sizeof(id), r->id);
     letter = r->letter;
+    if (r->prof != NULL)
+      strcpy_s(prof_id, sizeof(prof_id), r->prof->p.id);
     if (st == SD_MOUNT_FAILED || st == SD_MOUNT_UNMOUNTED) {
       r->final = 1;
       if (st == SD_MOUNT_FAILED) {
         code = r->prompt_refused ? (r->refuse_code ? r->refuse_code : "prompt_unavailable") : sd_err_name(why);
         strcpy_s(r->err_code, sizeof(r->err_code), code);
         strcpy_s(r->err_detail, sizeof(r->err_detail), "mount failed");
+        strcpy_s(err_code, sizeof(err_code), code);
       }
     }
   }
@@ -607,6 +664,7 @@ static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   strcpy_s(state, sizeof(state), sd_mount_state_name(st));
   SD_LOGI("svc", "mount %s: %s (%s)", id, state, sd_err_name(why));
   announce_state(id, letter, state);
+  svc_event_mount(st, prof_id, letter, err_code);
 }
 
 /* ---- attention (2.6 rule 3) ---- */
@@ -1606,6 +1664,8 @@ int svc_run(const svc_opts *o)
     return 1;
   }
   g.be = (o && o->backend) ? o->backend : host_backend();
+  g.event = o ? o->event : NULL;
+  g.event_ctx = o ? o->event_ctx : NULL;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
 #endif
@@ -1638,7 +1698,12 @@ int svc_run(const svc_opts *o)
   cfg.on_subscribe = svc_on_subscribe;
   e = sd_ipc_server_start_ex(SD_IPC_SERVICE, &cfg, &g.srv);
   if (e != SD_OK) {
+    wchar_t why[64];
+    const wchar_t *args[1];
     SD_LOGE("svc", "the control pipe did not start (%s)", sd_err_name(e));
+    wide_from_utf8(sd_err_name(e), why, SD_COUNTOF(why));
+    args[0] = why;
+    svc_event(SVC_MSG_START_FAILED, args, 1);
     rc = 1;
     goto out_secrets;
   }
@@ -1646,12 +1711,18 @@ int svc_run(const svc_opts *o)
   if (o && o->on_running)
     o->on_running(o->ctx);
   svc_log_info("service running");
+  {
+    const wchar_t *args[1];
+    args[0] = SD_VERSION_STRING_W;
+    svc_event(SVC_MSG_STARTED, args, 1);
+  }
   svc_loop();
   g.running = 0;
   g.stopping = 1;
   sd_ipc_server_stop(g.srv);
   g.srv = NULL;
   svc_log_info("service stopped");
+  svc_event(SVC_MSG_STOPPED, NULL, 0);
 
 out_secrets:
   (void)sd_secret_configure(NULL);
@@ -1775,6 +1846,7 @@ static void WINAPI scm_main(DWORD argc, LPWSTR *argv)
   memset(&o, 0, sizeof(o));
   o.open_log = 1;
   o.on_running = scm_running;
+  o.event = svc_eventlog_write;
   rc = svc_run(&o);
   g_scm_status.dwServiceSpecificExitCode = (DWORD)rc;
   scm_report(SERVICE_STOPPED, rc ? ERROR_SERVICE_SPECIFIC_ERROR : NO_ERROR, 0);

@@ -5,14 +5,17 @@
  *   service unmount <profile|X:>      stops a global drive (administrators only)
  *   service status <profile|X:>       one drive
  *
- * install, uninstall, start, stop and repair-data are parsed and reported as not in this build: the Service Control
- * Manager registration (03 §1.3 recovery and description, §6.1) is not part of M5 part 1. */
+ *   service install | uninstall       registers or removes ShellDriveSvc and its Event Log source (elevated, 1.3, 10.3)
+ *   service start | stop              starts or stops ShellDriveSvc (elevated)
+ *
+ * repair-data is parsed and reported as not in this build yet. */
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "cli.h"
 #include "cli_int.h"
+#include "svc_scm.h"
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
@@ -269,6 +272,63 @@ static int is_verb(const wchar_t *v, const wchar_t *name)
   return v && wcscmp(v, name) == 0;
 }
 
+/* Maps a Win32 error of the Service Control Manager to a message and exit code (non-zero result). */
+static int scm_error(DWORD e)
+{
+  sd_arg arg;
+  switch (e) {
+  case ERROR_ACCESS_DENIED:
+    say(SD_MSG_CLI_SERVICE_NEED_ADMIN, NULL, 0, 1);
+    return 9;
+  case ERROR_SERVICE_EXISTS:
+    say(SD_MSG_CLI_SERVICE_ALREADY_INSTALLED, NULL, 0, 1);
+    return 1;
+  case ERROR_SERVICE_DOES_NOT_EXIST:
+    say(SD_MSG_CLI_SERVICE_NOT_INSTALLED, NULL, 0, 1);
+    return 1;
+  case ERROR_SERVICE_ALREADY_RUNNING:
+    say(SD_MSG_CLI_SERVICE_ALREADY_RUNNING, NULL, 0, 1);
+    return 1;
+  case ERROR_SERVICE_NOT_ACTIVE:
+    say(SD_MSG_CLI_SERVICE_NOT_RUNNING, NULL, 0, 1);
+    return 1;
+  default:
+    arg.name = "code"; arg.type = SD_ARG_INT; arg.v.i = (long long)e;
+    say(SD_MSG_CLI_SERVICE_SCM_FAILED, &arg, 1, 1);
+    return 1;
+  }
+}
+
+/* install, uninstall, start and stop (M5, 03 §1.3, §6.1). The rules and the SCM calls are in svc_scm.c; this only
+   prints. The description is the localized text of this process (the cli domain). */
+static int scm_verb(const wchar_t *verb)
+{
+  svc_scm_ops ops;
+  svc_install_spec spec;
+  sd_msg_id done;
+  DWORD e;
+  svc_scm_real_ops(&ops);
+  if (is_verb(verb, L"install")) {
+    e = svc_scm_host_spec(&spec, sd_l10n_get(SD_MSG_CLI_SERVICE_DESCRIPTION));
+    if (e == 0)
+      e = svc_scm_install(&ops, &spec);
+    done = SD_MSG_CLI_SERVICE_INSTALLED;
+  } else if (is_verb(verb, L"uninstall")) {
+    e = svc_scm_uninstall(&ops);
+    done = SD_MSG_CLI_SERVICE_UNINSTALLED;
+  } else if (is_verb(verb, L"start")) {
+    e = svc_scm_start(&ops);
+    done = SD_MSG_CLI_SERVICE_STARTED;
+  } else {
+    e = svc_scm_stop(&ops);
+    done = SD_MSG_CLI_SERVICE_STOPPED;
+  }
+  if (e != 0)
+    return scm_error(e);
+  say(done, NULL, 0, 0);
+  return 0;
+}
+
 int cli_run_service(const cli_args *a)
 {
   sd_ipc_conn *c = NULL;
@@ -277,7 +337,9 @@ int cli_run_service(const cli_args *a)
   if (verb == NULL)
     return 2;
   if (is_verb(verb, L"install") || is_verb(verb, L"uninstall") || is_verb(verb, L"start") ||
-      is_verb(verb, L"stop") || is_verb(verb, L"repair-data")) {
+      is_verb(verb, L"stop"))
+    return scm_verb(verb);
+  if (is_verb(verb, L"repair-data")) {
     sd_arg arg;
     arg.name = "verb"; arg.type = SD_ARG_STR; arg.v.s = verb;
     say(SD_MSG_CLI_SERVICE_UNIMPLEMENTED, &arg, 1, 1);

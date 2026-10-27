@@ -823,8 +823,8 @@ msgid "Connect and sign in, then resolve the remote path, without mounting anyth
 msgstr "Conecta e autentica, depois resolve o caminho remoto, sem montar nada."
 
 msgctxt "cli.help.service"
-msgid "Global drives (shared by every session): list, mount, unmount and status. Changing them needs an elevated console."
-msgstr "Unidades globais (compartilhadas por todas as sessões): list, mount, unmount e status. Para alterá-las, use um console elevado."
+msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start and stop. Changing them needs an elevated console."
+msgstr "Unidades globais (compartilhadas por todas as sessões) e o serviço ShellDrive: list, mount, unmount, status, install, uninstall, start e stop. Para alterá-las, use um console elevado."
 
 msgctxt "cli.service.need_admin"
 msgid "Changing global drives needs an elevated console. Run it as administrator."
@@ -877,3 +877,53 @@ msgstr "offline"
 msgctxt "cli.service.state.unmounting"
 msgid "unmounting"
 msgstr "desmontando"
+
+#. Printed by "shelldrive service install" after the service is registered (exit 0).
+msgctxt "cli.service.installed"
+msgid "ShellDrive service installed."
+msgstr "O serviço ShellDrive foi instalado."
+
+#. Printed by "shelldrive service uninstall" after the service and its Event Log source are removed (exit 0).
+msgctxt "cli.service.uninstalled"
+msgid "ShellDrive service removed."
+msgstr "O serviço ShellDrive foi removido."
+
+#. Printed by "shelldrive service start" when the service is running (exit 0).
+msgctxt "cli.service.started"
+msgid "ShellDrive service started."
+msgstr "O serviço ShellDrive foi iniciado."
+
+#. Printed by "shelldrive service stop" when the service has stopped (exit 0).
+msgctxt "cli.service.stopped"
+msgid "ShellDrive service stopped."
+msgstr "O serviço ShellDrive foi parado."
+
+#. Printed by "shelldrive service install" when the service already exists (exit 1).
+msgctxt "cli.service.already_installed"
+msgid "The ShellDrive service is already installed."
+msgstr "O serviço ShellDrive já está instalado."
+
+#. Printed by "shelldrive service uninstall, start or stop" when the service does not exist (exit 1).
+msgctxt "cli.service.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "O serviço ShellDrive não está instalado."
+
+#. Printed by "shelldrive service start" when the service is already running (exit 1).
+msgctxt "cli.service.already_running"
+msgid "The ShellDrive service is already running."
+msgstr "O serviço ShellDrive já está em execução."
+
+#. Printed by "shelldrive service stop" when the service is not running (exit 1).
+msgctxt "cli.service.not_running"
+msgid "The ShellDrive service is not running."
+msgstr "O serviço ShellDrive não está em execução."
+
+#. Printed when the Windows Service Control Manager refuses a service verb (exit 1). {code} is the Win32 error number.
+msgctxt "cli.service.scm_failed"
+msgid "The Windows service manager refused the request (error {code})."
+msgstr "O gerenciador de serviços do Windows recusou a solicitação (erro {code})."
+
+#. Description of ShellDriveSvc shown in the Services console; set at install time in the language of the installing console.
+msgctxt "cli.service.description"
+msgid "Mounts ShellDrive drives shared by every user of this computer. Stays idle while no global drive is configured."
+msgstr "Monta as unidades do ShellDrive compartilhadas por todos os usuários deste computador. Fica inativo enquanto nenhuma unidade global estiver configurada."
