@@ -92,30 +92,35 @@ void ui_tray_remove(void)
   g_tray_added = 0;
 }
 
-void ui_tray_balloon(const char *code, const wchar_t *drive)
+void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
 {
   NOTIFYICONDATAW nid;
   wchar_t *text;
-  sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
 
   if (!g_tray_added)
     return;
-  if (code && strcmp(code, "legacy_algorithms") == 0)
-    msg = SD_MSG_UI_WARN_LEGACY;
-  else if (code && strcmp(code, "terrapin_exposed") == 0)
-    msg = SD_MSG_UI_WARN_TERRAPIN;
-  else if (code && strcmp(code, "write_failed") == 0)
-    msg = SD_MSG_UI_WARN_WRITE_FAILED;
-  text = ui_format1(msg, "drive", drive ? drive : L"");
+  text = ui_format1(msg, name, arg ? arg : L"");
   if (text == NULL)
     return;
   fill_nid(&nid);
   nid.uFlags |= NIF_INFO;
   copy_text(nid.szInfo, SD_COUNTOF(nid.szInfo), text);
   copy_text(nid.szInfoTitle, SD_COUNTOF(nid.szInfoTitle), sd_l10n_get(SD_MSG_UI_WARN_TITLE));
-  nid.dwInfoFlags = NIIF_WARNING | NIIF_RESPECT_QUIET_TIME;
+  nid.dwInfoFlags = (msg == SD_MSG_UI_PROMPT_TIMEOUT ? NIIF_INFO : NIIF_WARNING) | NIIF_RESPECT_QUIET_TIME;
   Shell_NotifyIconW(NIM_MODIFY, &nid);
   sd_free(text);
+}
+
+void ui_tray_balloon(const char *code, const wchar_t *drive)
+{
+  sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
+  if (code && strcmp(code, "legacy_algorithms") == 0)
+    msg = SD_MSG_UI_WARN_LEGACY;
+  else if (code && strcmp(code, "terrapin_exposed") == 0)
+    msg = SD_MSG_UI_WARN_TERRAPIN;
+  else if (code && strcmp(code, "write_failed") == 0)
+    msg = SD_MSG_UI_WARN_WRITE_FAILED;
+  ui_tray_notify_msg(msg, "drive", drive);
 }
 
 /* Two-argument unmount item text: "Unmount {drive} ({profile})". */

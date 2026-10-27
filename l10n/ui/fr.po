@@ -171,3 +171,272 @@ msgstr "Le lecteur {drive} demande votre attention. Ouvrez ShellDrive pour les d
 msgctxt "ui.error.unmount"
 msgid "Could not unmount drive {drive}."
 msgstr "Impossible de démonter le lecteur {drive}."
+
+#. Prompt dialog title for a server whose host key is not known yet (first connection).
+msgctxt "ui.prompt.title_hostkey"
+msgid "Unknown server"
+msgstr "Serveur inconnu"
+
+#. Prompt dialog title when a known server presents a different host key. ShellDrive never offers to accept it.
+msgctxt "ui.prompt.title_changed"
+msgid "Server identity changed"
+msgstr "L'identité du serveur a changé"
+
+#. Prompt dialog title for a password. {host} is the server name.
+msgctxt "ui.prompt.title_password"
+msgid "Sign in to {host}"
+msgstr "Connexion à {host}"
+
+#. Prompt dialog title for a key passphrase. {profile} is the profile name.
+msgctxt "ui.prompt.title_passphrase"
+msgid "Passphrase for {profile}"
+msgstr "Phrase secrète de {profile}"
+
+#. Prompt dialog title for keyboard-interactive questions. {host} is the server name.
+msgctxt "ui.prompt.title_kbdint"
+msgid "Verification from {host}"
+msgstr "Vérification de {host}"
+
+#. Prompt dialog title when the server requires a password change. {host} is the server name.
+msgctxt "ui.prompt.title_change"
+msgid "Change your password on {host}"
+msgstr "Changez votre mot de passe sur {host}"
+
+#. Prompt dialog title for outdated security algorithms. {host} is the server name.
+msgctxt "ui.prompt.title_legacy"
+msgid "Outdated security on {host}"
+msgstr "Sécurité obsolète sur {host}"
+
+#. Prompt dialog title for a proxy password. {profile} is the profile name.
+msgctxt "ui.prompt.title_proxy"
+msgid "Proxy password for {profile}"
+msgstr "Mot de passe du proxy de {profile}"
+
+#. Prompt dialog: first line for a host key or keyboard prompt. {host} and {port} are the server and its port.
+msgctxt "ui.prompt.hostkey_intro"
+msgid "The authenticity of host {host} (port {port}) can't be established."
+msgstr "Impossible de vérifier l'identité de l'hôte {host} (port {port})."
+
+#. Prompt dialog: a jump host chain. {hop} is this hop (from 1) and {hops} the total number of hops.
+msgctxt "ui.prompt.hop_info"
+msgid "Jump host {hop} of {hops}."
+msgstr "Hôte de rebond {hop} sur {hops}."
+
+#. Prompt dialog: names the jump host the connection went through. {via} is that host name.
+msgctxt "ui.prompt.reach_via"
+msgid "Reached through jump host {via}."
+msgstr "Atteint via l'hôte de rebond {via}."
+
+#. Prompt dialog: the profile line, outside the server text. {profile} is the profile name.
+msgctxt "ui.prompt.profile_line"
+msgid "Profile: {profile}"
+msgstr "Profil : {profile}"
+
+#. Prompt dialog: the server and user line of a sign-in prompt. {host} and {user} are the server and the account.
+msgctxt "ui.prompt.target_line"
+msgid "Server: {host}, user: {user}"
+msgstr "Serveur : {host}, utilisateur : {user}"
+
+#. Prompt dialog: key type of a new host key. {type} is the algorithm name, such as ED25519.
+msgctxt "ui.prompt.key_type"
+msgid "Key type: {type}"
+msgstr "Type de clé : {type}"
+
+#. Prompt dialog: label of the read-only fingerprint field. The mnemonic letter moves focus to the field.
+msgctxt "ui.prompt.field.fingerprint"
+msgid "&Fingerprint (SHA-256):"
+msgstr "&Empreinte (SHA-256) :"
+
+#. Prompt dialog: asks the user to check a new host key with the administrator.
+msgctxt "ui.prompt.hostkey_check"
+msgid "Ask the server's administrator to confirm this fingerprint before you trust it."
+msgstr "Demandez à l'administrateur du serveur de confirmer cette empreinte avant de lui faire confiance."
+
+#. Prompt dialog: explains the two trust buttons. Use the same words as the button captions.
+msgctxt "ui.prompt.hostkey_choice"
+msgid "Trust and connect saves this server's key for next time. Connect once uses it only for this connection."
+msgstr "« Faire confiance et se connecter » enregistre la clé de ce serveur pour la prochaine fois. « Se connecter une seule fois » ne l'utilise que pour cette connexion."
+
+#. Prompt dialog: screen reader hint, because no button is the default for a trust decision.
+msgctxt "ui.prompt.choose_button"
+msgid "Choose a button to continue."
+msgstr "Choisissez un bouton pour continuer."
+
+#. Prompt dialog button: trusts the new host key, saves it and connects.
+msgctxt "ui.prompt.btn.trust"
+msgid "&Trust and connect"
+msgstr "&Faire confiance et se connecter"
+
+#. Prompt dialog button: connects once with a new host key, without saving it.
+msgctxt "ui.prompt.btn.once"
+msgid "Connect &once"
+msgstr "Se connecter &une seule fois"
+
+#. Prompt dialog button: closes the dialog without answering the request (rejects it).
+msgctxt "ui.prompt.btn.cancel"
+msgid "&Cancel"
+msgstr "&Annuler"
+
+#. Prompt dialog button for the host key change notice: closes it.
+msgctxt "ui.prompt.btn.close"
+msgid "Clos&e"
+msgstr "Fer&mer"
+
+#. Prompt dialog button: sends the password or passphrase and connects.
+msgctxt "ui.prompt.btn.connect"
+msgid "Co&nnect"
+msgstr "&Se connecter"
+
+#. Prompt dialog button: sends the keyboard-interactive answers.
+msgctxt "ui.prompt.btn.verify"
+msgid "&Verify"
+msgstr "&Vérifier"
+
+#. Prompt dialog button: sends the old and new passwords.
+msgctxt "ui.prompt.btn.change"
+msgid "Chan&ge password"
+msgstr "Changer le mot de &passe"
+
+#. Prompt dialog button: continues with the outdated algorithms, once.
+msgctxt "ui.prompt.btn.anyway"
+msgid "Continue &anyway"
+msgstr "Continuer &quand même"
+
+#. Prompt dialog: a host key change notice. {host} is the server name.
+msgctxt "ui.prompt.changed_intro"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection."
+msgstr "L'identité de {host} a changé. ShellDrive a interrompu la connexion."
+
+#. Prompt dialog: warning under the host key change notice.
+msgctxt "ui.prompt.changed_warning"
+msgid "This can mean someone is intercepting the connection. Ask the server's administrator before you change anything."
+msgstr "Cela peut signifier que quelqu'un intercepte la connexion. Demandez à l'administrateur du serveur avant de modifier quoi que ce soit."
+
+#. Prompt dialog: the key ShellDrive has stored. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.changed_stored"
+msgid "Stored key: {fingerprint}"
+msgstr "Clé enregistrée : {fingerprint}"
+
+#. Prompt dialog: the key the server offers now. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.changed_offered"
+msgid "Offered key: {fingerprint}"
+msgstr "Clé proposée : {fingerprint}"
+
+#. Prompt dialog: the server sent its own text (name, instruction) above the answer fields.
+msgctxt "ui.prompt.server_caption"
+msgid "From the server (ShellDrive does not check this text):"
+msgstr "Du serveur (ShellDrive ne vérifie pas ce texte) :"
+
+#. Prompt dialog: appended to a password prompt after a host key was accepted in this connection.
+msgctxt "ui.prompt.just_accepted"
+msgid "You just accepted this server's identity. ShellDrive did not send your saved password automatically."
+msgstr "Vous venez d'accepter l'identité de ce serveur. ShellDrive n'a pas envoyé automatiquement votre mot de passe enregistré."
+
+#. Prompt dialog: the password is asked again because the connection was lost.
+msgctxt "ui.prompt.reconnect"
+msgid "The connection was lost. Enter your password to reconnect."
+msgstr "La connexion a été perdue. Saisissez votre mot de passe pour vous reconnecter."
+
+#. Prompt dialog: label of the password field. The mnemonic letter moves focus to the field.
+msgctxt "ui.prompt.field.password"
+msgid "&Password:"
+msgstr "Mot de &passe :"
+
+#. Prompt dialog: label of the key passphrase field.
+msgctxt "ui.prompt.field.passphrase"
+msgid "Passph&rase:"
+msgstr "Phrase se&crète :"
+
+#. Prompt dialog: label of the proxy password field.
+msgctxt "ui.prompt.field.proxy"
+msgid "Pro&xy password:"
+msgstr "Mot de passe du pro&xy :"
+
+#. Prompt dialog: label of the current password in a password change.
+msgctxt "ui.prompt.field.current"
+msgid "C&urrent password:"
+msgstr "Mot de passe &actuel :"
+
+#. Prompt dialog: label of the new password in a password change.
+msgctxt "ui.prompt.field.new"
+msgid "Ne&w password:"
+msgstr "&Nouveau mot de passe :"
+
+#. Prompt dialog: label of the repeated new password in a password change.
+msgctxt "ui.prompt.field.retype"
+msgid "Re&type new password:"
+msgstr "Con&firmer le nouveau mot de passe :"
+
+#. Prompt dialog: check box that keeps the secret on this computer, shown only when it can be saved.
+msgctxt "ui.prompt.check.save"
+msgid "&Save on this computer"
+msgstr "&Enregistrer sur cet ordinateur"
+
+#. Prompt dialog: shows the fingerprint of the key that unlocks a key file. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.key_fingerprint"
+msgid "Key fingerprint: {fingerprint}"
+msgstr "Empreinte de la clé : {fingerprint}"
+
+#. Prompt dialog: the server asks a password change. {user} is the account name.
+msgctxt "ui.prompt.change_intro"
+msgid "The server asks you to choose a new password for {user}."
+msgstr "Le serveur vous demande de choisir un nouveau mot de passe pour {user}."
+
+#. Prompt dialog: the new passwords differ.
+msgctxt "ui.prompt.mismatch"
+msgid "The new passwords do not match."
+msgstr "Les nouveaux mots de passe ne correspondent pas."
+
+#. Prompt dialog: a field is empty.
+msgctxt "ui.prompt.empty"
+msgid "Fill in every field."
+msgstr "Remplissez tous les champs."
+
+#. Prompt dialog: the answer could not be queued for the agent; the dialog stays open.
+msgctxt "ui.prompt.send_failed"
+msgid "ShellDrive could not send your answer. Try again."
+msgstr "ShellDrive n'a pas pu envoyer votre réponse. Réessayez."
+
+#. Prompt dialog: label above one keyboard-interactive answer field. {n} is this field and {total} the count.
+msgctxt "ui.prompt.kbd_answer"
+msgid "Answer {n} of {total}:"
+msgstr "Réponse {n} sur {total} :"
+
+#. Prompt dialog: the server asks questions. {host} is the server name and {port} its port.
+msgctxt "ui.prompt.kbdint_intro"
+msgid "The server {host} (port {port}) asks you to answer these questions."
+msgstr "Le serveur {host} (port {port}) vous demande de répondre à ces questions."
+
+#. Prompt dialog: a proxy needs a password. {proxy_host} and {proxy_port} are the proxy, {host} the server.
+msgctxt "ui.prompt.proxy_intro"
+msgid "The proxy {proxy_host}:{proxy_port} needs a password to reach {host}."
+msgstr "Le proxy {proxy_host}:{proxy_port} demande un mot de passe pour atteindre {host}."
+
+#. Prompt dialog: the proxy user name. {user} is the user name.
+msgctxt "ui.prompt.proxy_user"
+msgid "Proxy user: {user}"
+msgstr "Utilisateur du proxy : {user}"
+
+#. Prompt dialog: outdated algorithms. {host} is the server, {algorithms} a list such as hmac-sha1, 3des-cbc.
+msgctxt "ui.prompt.legacy_intro"
+msgid "{host} uses outdated security algorithms: {algorithms}."
+msgstr "{host} utilise des algorithmes de sécurité obsolètes : {algorithms}."
+
+#. Prompt dialog: explains the outdated algorithms warning.
+msgctxt "ui.prompt.legacy_text"
+msgid "The connection works, but these algorithms are easier to attack. Continue only if you trust this server."
+msgstr "La connexion fonctionne, mais ces algorithmes sont plus faciles à attaquer. Ne continuez que si vous faites confiance à ce serveur."
+
+#. Prompt dialog: remaining time, shown as text only. {count} is the number of minutes, at least 1.
+#, plural-arg=count
+msgctxt "ui.prompt.deadline"
+msgid "Time left to answer: about {count} minute."
+msgid_plural "Time left to answer: about {count} minutes."
+msgstr[0] "Temps restant pour répondre : environ {count} minute."
+msgstr[1] "Temps restant pour répondre : environ {count} minutes."
+msgstr[2] "Temps restant pour répondre : environ {count} minutes."
+
+#. Tray balloon when a prompt expired without an answer. {profile} is the profile name.
+msgctxt "ui.prompt.timeout"
+msgid "A sign-in for {profile} timed out. Open ShellDrive to try again."
+msgstr "La connexion à {profile} a expiré. Ouvrez ShellDrive pour réessayer."

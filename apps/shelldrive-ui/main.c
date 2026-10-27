@@ -7,7 +7,12 @@
  *
  * Modes: no arguments opens the main window; --tray starts with the window hidden (Run key); --prompt-host
  * and --action <verb> <target> are the verbs of ui_wire.c; --test-window is the smoke test of tests/ui: it
- * creates the main window hidden, checks the window class and its controls, and exits 0. */
+ * creates the main window hidden, checks the window class and its controls, and exits 0; --test-prompts
+ * creates every prompt dialog hidden and destroys it (exit 0 when all were created).
+ *
+ * --prompt-host (03 §1.4, §2.5 step 3): the agent starts this process when a prompt has nobody to answer it.
+ * It shows the tray icon and the prompt dialogs only, never starts an agent, leaves when the agent goes away
+ * and after 60 s with no open prompt. A prompt-host process that finds a running UI forwards and exits. */
 #include <windows.h>
 #include <shellapi.h>
 #include <string.h>
@@ -140,7 +145,7 @@ void ui_app_handle_request(const ui_request *req)
     break;
   case UI_VERB_TRAY:
   case UI_VERB_PROMPT_HOST:
-    /* TODO (prompt host package): --prompt-host shows the prompt window; --tray changes nothing here. */
+    /* --tray changes nothing here; --prompt-host was handled in wWinMain (g_app.prompt_host). */
     break;
   case UI_VERB_UNMOUNT:
     /* The drive must be one of this UI's mounts; the agent checks again. */
@@ -168,8 +173,16 @@ void ui_app_handle_request(const ui_request *req)
 void ui_app_on_agent_state(int up)
 {
   g_app.agent_up = up ? 1 : 0;
-  if (!up)
+  if (!up) {
+    /* the agent is gone: its prompts are gone with it (dialogs close without an answer) */
     ui_model_clear(&g_app.model);
+    ui_prompt_close_all();
+    if (g_app.prompt_host) {
+      SD_LOGI("ui", "prompt host: the agent is gone, leaving");
+      ui_app_quit();
+      return;
+    }
+  }
   ui_main_refresh();
 }
 
@@ -204,13 +217,43 @@ void ui_app_on_event(sd_json *ev)
     const char *code = sd_json_get_str(data, "code");
     ui_mount *m = ui_model_find_id(&g_app.model, sd_json_get_str(data, "mount_id"));
     ui_tray_balloon(code, m ? m->drive : L"");
+  } else if (name != NULL && strcmp(name, "prompt.request") == 0) {
+    ui_prompt_on_request(data);
+  } else if (name != NULL && strcmp(name, "prompt.closed") == 0) {
+    ui_prompt_on_closed(sd_json_get_str(data, "prompt_id"), sd_json_get_str(data, "reason"));
   }
   sd_json_free(ev);
 }
 
+void ui_app_on_prompt_list(sd_json *result)
+{
+  ui_prompt_on_list(result);
+  sd_json_free(result);
+}
+
+/* Once a second. The prompt host leaves after UI_PROMPT_IDLE_MS with no open prompt (03 §1.4). */
+void ui_app_on_timer(UINT_PTR id)
+{
+  if (id != UI_TIMER_PROMPT_IDLE || !g_app.prompt_host)
+    return;
+  if (ui_prompt_count() > 0) {
+    g_app.idle_ms = 0;
+    return;
+  }
+  g_app.idle_ms += 1000u;
+  if (g_app.idle_ms >= UI_PROMPT_IDLE_MS) {
+    SD_LOGI("ui", "prompt host: no prompt for 60 s, leaving");
+    ui_app_quit();
+  }
+}
+
 void ui_app_on_reply(ui_ipc_reply *r)
 {
-  if (r->kind == UI_IPC_UNMOUNT && r->err != SD_OK) {
+  if (r->kind == UI_IPC_ANSWER) {
+    /* answers close their dialog when queued; a refused one (answered elsewhere) needs no message */
+    if (r->err != SD_OK)
+      SD_LOGI("ui", "prompt answer not accepted by the agent (%s)", sd_err_name(r->err));
+  } else if (r->kind == UI_IPC_UNMOUNT && r->err != SD_OK) {
     wchar_t *t = ui_format1(SD_MSG_UI_ERROR_UNMOUNT, "drive", r->drive);
     if (t != NULL) {
       MessageBoxW(g_app.main, t, L"ShellDrive", MB_OK | MB_ICONERROR);
@@ -267,6 +310,12 @@ static LRESULT CALLBACK ctrl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return 0;
   case UI_WM_TRAY:
     ui_tray_callback(lp);
+    return 0;
+  case UI_WM_IPC_PROMPTS:
+    ui_app_on_prompt_list((sd_json *)lp);
+    return 0;
+  case WM_TIMER:
+    ui_app_on_timer(wp);
     return 0;
   default:
     break;
@@ -389,6 +438,10 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     rc = run_smoke_test();
     goto done;
   }
+  if (argc > 1 && wcscmp(argv[1], L"--test-prompts") == 0) {
+    rc = ui_prompt_smoke_test() ? 0 : 1;
+    goto done;
+  }
 
   if (ui_request_from_args(argc - 1, (const wchar_t *const *)(argv + 1), &req) != SD_OK) {
     SD_LOGW("ui", "command line not recognized");
@@ -405,11 +458,17 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   }
 
+  /* set before the IPC thread starts: it reads the flag at its first connect */
+  g_app.prompt_host = req.verb == UI_VERB_PROMPT_HOST;
   if (!register_ctrl_class(inst) || !ui_main_register_class(inst, g_app.class_main))
     goto done;
   g_app.ctrl = CreateWindowExW(0, g_app.class_ctrl, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
-  if (g_app.ctrl == NULL || ui_main_create(inst, g_app.class_main, 0) == NULL)
+  if (g_app.ctrl == NULL)
     goto done;
+  if (!g_app.prompt_host && ui_main_create(inst, g_app.class_main, 0) == NULL)
+    goto done;
+  if (g_app.prompt_host)
+    SetTimer(g_app.ctrl, UI_TIMER_PROMPT_IDLE, 1000, NULL);
   /* Explorer may not be ready yet; TaskbarCreated adds the icon later. */
   ui_tray_add();
   if (ui_ipc_start() != SD_OK)
@@ -417,6 +476,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   ui_app_handle_request(&req);
 
   while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+    if (ui_prompt_filter(&msg))
+      continue;                        /* IsDialogMessage: keyboard handling of the prompt dialogs */
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }

@@ -3,7 +3,7 @@
  * thread talks to the UI thread through PostMessage (the messages below) and never reads g_app.
  *
  * Not in the design yet (TODO, tracked for the next packages): the mount dialog ("Mount..." is disabled),
- * the prompt host (prompts.ui is not declared), the profile editor, and the balloon rate limit of 7.7. */
+ * the profile editor, and the balloon rate limit of 7.7. The prompt host (prompts.ui, ui_prompt.c) is in. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 
@@ -21,6 +21,11 @@
 #define UI_WM_IPC_EVENT  (WM_APP + 3)   /* lParam: sd_json* event envelope (owned by the UI) */
 #define UI_WM_IPC_REPLY  (WM_APP + 4)   /* lParam: ui_ipc_reply* (owned by the UI) */
 #define UI_WM_TRAY       (WM_APP + 5)   /* tray icon callback: lParam is the mouse message */
+#define UI_WM_IPC_PROMPTS (WM_APP + 6)  /* lParam: sd_json* result of "prompt.list" (owned by the UI) */
+
+/* Timer of the prompt host (--prompt-host): once a second, the idle exit of 60 s is counted. */
+#define UI_TIMER_PROMPT_IDLE  1
+#define UI_PROMPT_IDLE_MS     60000u
 
 /* Command ids of the tray menu and the main window controls. */
 #define UI_CMD_OPEN          1001
@@ -34,7 +39,7 @@
 
 #define UI_MAX_MOUNTS 64
 
-typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT } ui_ipc_kind;
+typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER } ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
   ui_ipc_kind kind;
@@ -72,6 +77,8 @@ typedef struct ui_app {
   HANDLE mutex;                 /* SD_IPC_OBJ_UI_MUTEX, held for the life of the first instance */
   int agent_up;
   int quit;
+  int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
+  unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
   ui_model model;
 } ui_app;
 
@@ -84,6 +91,8 @@ void ui_app_on_list(sd_json *result);
 void ui_app_on_event(sd_json *event);
 void ui_app_on_reply(ui_ipc_reply *reply);
 void ui_app_quit(void);
+void ui_app_on_prompt_list(sd_json *result);
+void ui_app_on_timer(UINT_PTR id);
 
 /* ---- ui_model.c: the mount list and text helpers ---- */
 void        ui_text_utf8(const char *s, wchar_t *out, size_t cch);
@@ -104,6 +113,8 @@ void   ui_ipc_stop(void);
 sd_err ui_ipc_list(void);
 sd_err ui_ipc_unmount(const wchar_t *drive);
 sd_err ui_ipc_mount(const char *profile_id);
+/* prompt.answer, see ui_ipc.c: the JSON is copied; the caller wipes its own copy. */
+sd_err ui_ipc_answer(const char *json, size_t len);
 
 /* ---- ui_tray.c: notification area icon ---- */
 sd_err ui_tray_add(void);
@@ -112,6 +123,17 @@ void   ui_tray_readd(void);
 void   ui_tray_update(void);
 void   ui_tray_callback(LPARAM mouse_message);
 void   ui_tray_balloon(const char *code, const wchar_t *drive);
+/* Balloon with one catalog message; arg fills the placeholder called name ("drive" or "profile"). */
+void   ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg);
+
+/* ---- ui_prompt.c: prompt dialogs (03 §2.5, §5.2, §7.6) ---- */
+void   ui_prompt_on_request(const sd_json *data);
+void   ui_prompt_on_closed(const char *prompt_id, const char *reason);
+void   ui_prompt_on_list(const sd_json *result);
+void   ui_prompt_close_all(void);
+size_t ui_prompt_count(void);
+int    ui_prompt_filter(MSG *msg);
+int    ui_prompt_smoke_test(void);
 
 /* ---- ui_main.c: the main window ---- */
 int    ui_main_register_class(HINSTANCE inst, const wchar_t *class_name);
