@@ -16,7 +16,10 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_profile_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_logs_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_hostkeys_model.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_notify_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_dark_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_wizard_model.c)
 set(SD_UI_PURE_SOURCES ${SD_UI_PURE_SOURCES} PARENT_SCOPE)
 
 # Icon resources (res/icons): the template gets the absolute icon directory (rc.exe does not search the
@@ -46,8 +49,15 @@ sd_add_app(shelldrive-ui
     ui_settings.c
     ui_tray.c
     ui_win.c
+    ui_dark.c
+    ui_wizard.c
     ui_int.h
     ui_res.h
+    ui_dark.h
+    ui_wizard.h
+    ui_notify_model.h
+    ui_dark_model.h
+    ui_wizard_model.h
     ui_win.h
     ui_wire.h
     ui_dpi.h

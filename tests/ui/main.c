@@ -71,6 +71,19 @@ SD_TEST_DECL(settings_save_load_round_trip_in_a_temp_root);
 SD_TEST_DECL(settings_cache_budget_parsing);
 SD_TEST_DECL(settings_language_index_and_run_command);
 
+/* test_notify.c, test_dark.c and test_wizard.c: the balloon rate limit, the dark mode decision and the wizard's
+   should-show logic. */
+SD_TEST_DECL(notify_limit_one_per_subject_and_kind);
+SD_TEST_DECL(notify_limit_is_per_subject_and_kind);
+SD_TEST_DECL(notify_clock_going_back_is_not_a_burst);
+SD_TEST_DECL(notify_table_is_bounded_and_keeps_recent_pairs);
+SD_TEST_DECL(notify_interval_is_one_minute);
+SD_TEST_DECL(dark_needs_build_22000_and_the_api);
+SD_TEST_DECL(dark_follows_the_app_theme_value);
+SD_TEST_DECL(dark_stays_light_on_older_systems);
+SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
+SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(dlg_empty_template_parses),
   SD_TEST_ENTRY(dlg_items_aligned_and_counted),
@@ -136,6 +149,16 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),
   SD_TEST_ENTRY(settings_cache_budget_parsing),
   SD_TEST_ENTRY(settings_language_index_and_run_command),
+  SD_TEST_ENTRY(notify_limit_one_per_subject_and_kind),
+  SD_TEST_ENTRY(notify_limit_is_per_subject_and_kind),
+  SD_TEST_ENTRY(notify_clock_going_back_is_not_a_burst),
+  SD_TEST_ENTRY(notify_table_is_bounded_and_keeps_recent_pairs),
+  SD_TEST_ENTRY(notify_interval_is_one_minute),
+  SD_TEST_ENTRY(dark_needs_build_22000_and_the_api),
+  SD_TEST_ENTRY(dark_follows_the_app_theme_value),
+  SD_TEST_ENTRY(dark_stays_light_on_older_systems),
+  SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
+  SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),
 };
 
 int main(int argc, char **argv)

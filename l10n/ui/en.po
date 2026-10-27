@@ -1513,3 +1513,115 @@ msgctxt "ui.menu.help"
 msgid "Help"
 msgstr ""
 
+
+#. First-run wizard: the title of the sheet.
+msgctxt "ui.wizard.caption"
+msgid "Set up ShellDrive"
+msgstr ""
+
+#. First-run wizard, welcome page: title.
+msgctxt "ui.wizard.welcome_title"
+msgid "Welcome to ShellDrive"
+msgstr ""
+
+#. First-run wizard, welcome page: what a profile is.
+msgctxt "ui.wizard.welcome_text"
+msgid "ShellDrive shows folders on SFTP servers as Windows drives. Each connection is a profile: a server, a user name and a folder on that server."
+msgstr ""
+
+#. First-run wizard, welcome page: what to do next.
+msgctxt "ui.wizard.welcome_next"
+msgid "Choose Next to set up your first connection. You can close this wizard at any time."
+msgstr ""
+
+#. First-run wizard, backend page: title.
+msgctxt "ui.wizard.backend_title"
+msgid "How drives are shown"
+msgstr ""
+
+#. First-run wizard, backend page: explains Dokany (a driver) and WebDAV (the Windows network redirector). Product names stay.
+msgctxt "ui.wizard.backend_text"
+msgid "ShellDrive uses one of two ways to show a drive in Windows. Dokany is a driver that is fast and is used when it is installed. WebDAV uses the Windows network redirector and needs no driver."
+msgstr ""
+
+#. First-run wizard, backend page: Dokany is installed on this computer.
+msgctxt "ui.wizard.backend_dokany_yes"
+msgid "Dokany is installed on this computer. Automatic will use it."
+msgstr ""
+
+#. First-run wizard, backend page: Dokany is missing, so the automatic choice is WebDAV.
+msgctxt "ui.wizard.backend_dokany_no"
+msgid "Dokany is not installed on this computer. Automatic will use WebDAV."
+msgstr ""
+
+#. First-run wizard, import page: title.
+msgctxt "ui.wizard.import_title"
+msgid "Import existing connections"
+msgstr ""
+
+#. First-run wizard, import page: what the importers read.
+msgctxt "ui.wizard.import_text"
+msgid "ShellDrive can read the sessions of PuTTY and the hosts of your OpenSSH configuration file and offer them as profiles."
+msgstr ""
+
+#. First-run wizard, import page: host keys are trusted from PuTTY and OpenSSH live.
+msgctxt "ui.wizard.import_trust"
+msgid "ShellDrive also trusts the host keys you already accepted in PuTTY and OpenSSH. You can turn this off in Settings."
+msgstr ""
+
+#. First-run wizard, import page: opens the import dialog. Mnemonic I.
+msgctxt "ui.wizard.import_button"
+msgid "&Import…"
+msgstr ""
+
+#. First-run wizard, create page: title.
+msgctxt "ui.wizard.create_title"
+msgid "Create your first profile"
+msgstr ""
+
+#. First-run wizard, create page: what a profile holds.
+msgctxt "ui.wizard.create_text"
+msgid "A profile holds the server, your user name and the folder to show. You can create more profiles later."
+msgstr ""
+
+#. First-run wizard, create page: opens the profile editor. Mnemonic C.
+msgctxt "ui.wizard.create_button"
+msgid "&Create a profile…"
+msgstr ""
+
+#. First-run wizard, create page: shown after a profile was saved. {name} is the profile name.
+msgctxt "ui.wizard.create_saved"
+msgid "Saved: {name}. Choose Next to continue."
+msgstr ""
+
+#. First-run wizard, finish page: title.
+msgctxt "ui.wizard.finish_title"
+msgid "Setup complete"
+msgstr ""
+
+#. First-run wizard, finish page: the tray icon keeps running.
+msgctxt "ui.wizard.finish_text"
+msgid "When you close the main window, ShellDrive keeps running in the notification area."
+msgstr ""
+
+#. First-run wizard, finish page: full-disk encryption advice (TM-R31).
+msgctxt "ui.wizard.fde_note"
+msgid "Saved passwords and keys are only as safe as your Windows password. Turn on BitLocker or device encryption if you keep keys in ShellDrive or use the disk cache."
+msgstr ""
+
+#. First-run wizard, finish page: mounts the profile created on the create page. Mnemonic M.
+msgctxt "ui.wizard.mount_now"
+msgid "&Mount the new profile now"
+msgstr ""
+
+#. Balloon title for notifications that are not warnings.
+#. sdl10n:maxlen=64
+msgctxt "ui.notify.title"
+msgid "ShellDrive"
+msgstr ""
+
+#. Balloon text: the server offered new host keys (03 5.6). {host} is the host name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notify.hostkeys"
+msgid "{host} offered new host keys. Review"
+msgstr ""
