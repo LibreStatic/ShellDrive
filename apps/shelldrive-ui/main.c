@@ -27,7 +27,9 @@
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
 #include "ui_dpi.h"
+#include "sd_config/sd_config.h"
 #include "ui_int.h"
+#include "ui_sdmount.h"
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
@@ -133,6 +135,39 @@ static int sender_trusted(HWND sender)
 
 /* ---- requests ---- */
 
+/* --action mount-file <path> (03 §8.1): the file must be a valid .sdmount naming one of the user's profiles. A file
+   with Mark of the Web asks first. Nothing else in the file is read, so it can only start a configured mount. */
+static void handle_mount_file(const wchar_t *path)
+{
+  unsigned char *buf;
+  size_t n = 0;
+  char id[33];
+  sd_err e;
+  const sd_profile *p = NULL;
+
+  buf = (unsigned char *)sd_alloc(UI_SDMOUNT_MAX_BYTES + 1u);
+  if (buf == NULL)
+    return;
+  e = ui_sdmount_read(path, buf, UI_SDMOUNT_MAX_BYTES + 1u, &n);
+  if (e == SD_OK)
+    e = ui_sdmount_parse(buf, n, id);
+  sd_free(buf);
+  if (e == SD_OK && ui_profiles_load() == SD_OK)
+    p = ui_profiles_find_id(id);
+  if (e != SD_OK || p == NULL) {
+    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_MOUNT_FILE_INVALID), L"ShellDrive", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  if (ui_file_has_mark(path)) {
+    wchar_t name[160];
+    ui_text_utf8(p->name, name, SD_COUNTOF(name));
+    if (!ui_confirm(g_app.main, SD_MSG_UI_MOUNT_FILE_TITLE, SD_MSG_UI_MOUNT_FILE_MARK, name,
+                    SD_MSG_UI_MOUNT_FILE_CONNECT, SD_MSG_UI_MOUNT_FILE_CANCEL, 0))
+      return;
+  }
+  ui_ipc_mount(id);
+}
+
 void ui_app_handle_request(const ui_request *req)
 {
   char id[40];
@@ -160,10 +195,16 @@ void ui_app_handle_request(const ui_request *req)
     ui_text_ascii(req->target, id, sizeof(id));
     ui_ipc_mount(id);
     break;
+  case UI_VERB_OPEN:
+    /* The shell extension's "Open" verb: the drive is one of ours (03 §8.2); Explorer shows it. */
+    ui_open_drive(req->target);
+    break;
   case UI_VERB_MOUNT_FILE:
+    handle_mount_file(req->target);
+    break;
   case UI_VERB_RECONNECT:
-    /* TODO (mount dialog package): the verb is valid but has no handler yet. */
-    SD_LOGI("ui", "action has no handler in this build");
+    /* The agent has no reconnect method yet (03 §2.4): the verb is accepted and logged only. */
+    SD_LOGI("ui", "reconnect is not available in this build");
     break;
   default:
     break;
@@ -255,6 +296,9 @@ void ui_app_on_reply(ui_ipc_reply *r)
     /* answers close their dialog when queued; a refused one (answered elsewhere) needs no message */
     if (r->err != SD_OK)
       SD_LOGI("ui", "prompt answer not accepted by the agent (%s)", sd_err_name(r->err));
+  } else if (r->kind == UI_IPC_MOUNT && r->err != SD_OK) {
+    /* a refused or failed mount: the mount state events say what happened; this says the request did not start */
+    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_ERROR_MOUNT), L"ShellDrive", MB_OK | MB_ICONERROR);
   } else if (r->kind == UI_IPC_UNMOUNT && r->err != SD_OK) {
     wchar_t *t = ui_format1(SD_MSG_UI_ERROR_UNMOUNT, "drive", r->drive);
     if (t != NULL) {
@@ -436,12 +480,27 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   build_class_names();
 
+  if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
+                   wcscmp(argv[1], L"--test-editor") == 0)) {
+    /* the smoke tests never read or write the user's profiles: the store is a temporary folder */
+    wchar_t tmp[MAX_PATH];
+    if (GetTempPathW(SD_COUNTOF(tmp), tmp) > 0 && wcslen(tmp) < SD_COUNTOF(tmp) - 32) {
+      wchar_t dir[MAX_PATH + 32];
+      wcscpy_s(dir, SD_COUNTOF(dir), tmp);
+      wcscat_s(dir, SD_COUNTOF(dir), L"shelldrive-ui-test");
+      sd_config_set_root_override(dir);
+    }
+  }
   if (argc > 1 && wcscmp(argv[1], L"--test-window") == 0) {
     rc = run_smoke_test();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-prompts") == 0) {
     rc = ui_prompt_smoke_test() ? 0 : 1;
+    goto done;
+  }
+  if (argc > 1 && wcscmp(argv[1], L"--test-editor") == 0) {
+    rc = ui_editor_smoke_test() ? 0 : 1;
     goto done;
   }
 

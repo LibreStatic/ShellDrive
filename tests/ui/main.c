@@ -1,5 +1,5 @@
-/* UI unit tests (tests/ui): harness entry point. The cases are in test_wire.c, test_dpi.c, test_dlg.c and
-   test_prompt.c. The prompt dialogs themselves are checked by the smoke test (shelldrive-ui --test-prompts). */
+/* UI unit tests (tests/ui): harness entry point. The cases are in test_wire.c, test_dpi.c, test_dlg.c,
+   test_prompt.c and test_profile.c. The prompt dialogs themselves are checked by the smoke test (shelldrive-ui --test-prompts). */
 #include "sd_test.h"
 
 SD_TEST_DECL(dlg_empty_template_parses);
@@ -39,7 +39,17 @@ SD_TEST_DECL(verbs_show_tray_prompt);
 SD_TEST_DECL(verbs_unmount_drive);
 SD_TEST_DECL(verbs_mount_profile_id);
 SD_TEST_DECL(verbs_reconnect_and_mount_file);
+SD_TEST_DECL(verbs_open_drive);
 SD_TEST_DECL(verbs_unknown_are_rejected);
+
+SD_TEST_DECL(sdmount_accepts_one_profile_line);
+SD_TEST_DECL(sdmount_rejects_anything_else);
+SD_TEST_DECL(sdmount_size_limit);
+SD_TEST_DECL(profile_form_round_trip);
+SD_TEST_DECL(profile_form_set_rejects_bad_text);
+SD_TEST_DECL(profile_form_validation_fields);
+SD_TEST_DECL(free_drive_letters);
+SD_TEST_DECL(json_escape_and_mount_params);
 SD_TEST_DECL(dpi_scale_rounding_and_clamp);
 SD_TEST_DECL(dpi_font_height);
 
@@ -80,7 +90,16 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(verbs_unmount_drive),
   SD_TEST_ENTRY(verbs_mount_profile_id),
   SD_TEST_ENTRY(verbs_reconnect_and_mount_file),
+  SD_TEST_ENTRY(verbs_open_drive),
   SD_TEST_ENTRY(verbs_unknown_are_rejected),
+  SD_TEST_ENTRY(sdmount_accepts_one_profile_line),
+  SD_TEST_ENTRY(sdmount_rejects_anything_else),
+  SD_TEST_ENTRY(sdmount_size_limit),
+  SD_TEST_ENTRY(profile_form_round_trip),
+  SD_TEST_ENTRY(profile_form_set_rejects_bad_text),
+  SD_TEST_ENTRY(profile_form_validation_fields),
+  SD_TEST_ENTRY(free_drive_letters),
+  SD_TEST_ENTRY(json_escape_and_mount_params),
   SD_TEST_ENTRY(dpi_scale_rounding_and_clamp),
   SD_TEST_ENTRY(dpi_font_height),
 };

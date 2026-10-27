@@ -390,6 +390,7 @@ user32.dll!TranslateMessage
 shell32.dll!CommandLineToArgvW
 shell32.dll!SHChangeNotify
 shell32.dll!SHGetFolderPathW
+shell32.dll!ShellExecuteW
 shell32.dll!ShellExecuteExW
 
 ole32.dll!CoCreateInstance
@@ -418,6 +419,10 @@ advapi32.dll!GetSidSubAuthorityCount
 
 # comctl32: common controls initialisation (documentation: Windows XP). Pending capture.
 comctl32.dll!InitCommonControlsEx
+comctl32.dll!PropertySheetW
+
+# comdlg32: the key file picker of the profile editor (documentation: Windows 2000). Pending capture.
+comdlg32.dll!GetOpenFileNameW
 
 # gdi32: fonts, the DIB icon bitmaps and the device caps of the system DPI (documentation: Windows 2000). Pending capture.
 gdi32.dll!CreateBitmap
@@ -498,3 +503,13 @@ user32.dll!SetTimer
 user32.dll!SetWindowLongPtrW
 user32.dll!SetWindowLongW
 user32.dll!SetWindowTextW
+
+# user32 (profile editor and confirmation dialog, property sheet pages, drop-down lists; documentation: Windows 2000 or earlier). Pending capture.
+user32.dll!DialogBoxIndirectParamW
+user32.dll!EndDialog
+user32.dll!GetParent
+user32.dll!GetPropW
+user32.dll!ScreenToClient
+user32.dll!SetPropW
+user32.dll!wsprintfW
+user32.dll!MapWindowPoints

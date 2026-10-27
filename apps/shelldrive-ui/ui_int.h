@@ -2,8 +2,9 @@
  * ui_ipc.c, ui_model.c, ui_tray.c, ui_main.c and ui_icon.c. Only the UI thread touches g_app; the IPC
  * thread talks to the UI thread through PostMessage (the messages below) and never reads g_app.
  *
- * Not in the design yet (TODO, tracked for the next packages): the mount dialog ("Mount..." is disabled),
- * the profile editor, and the balloon rate limit of 7.7. The prompt host (prompts.ui, ui_prompt.c) is in. */
+ * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c) and the .sdmount
+ * verb are in. Not yet: import (03 §3.7 wizard), reconnect, host keys, logs, settings and the balloon rate
+ * limit of 7.7. The prompt host (prompts.ui, ui_prompt.c) is in. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 
@@ -12,6 +13,7 @@
 #include "sd/base.h"
 #include "sd_base/sd_err.h"
 #include "sd_base/sd_json.h"
+#include "sd_config/sd_config.h"
 #include "sd_l10n/sd_l10n_catalog.h"
 #include "ui_wire.h"
 
@@ -34,12 +36,19 @@
 #define UI_CMD_MOUNT         3001
 #define UI_CMD_UNMOUNT       3002
 #define UI_CMD_REFRESH       3003
+#define UI_CMD_NEW           3004
+#define UI_CMD_EDIT          3005
+#define UI_CMD_DELETE        3006
+#define UI_CMD_DUPLICATE     3007
+#define UI_CMD_OPEN_DRIVE    3008
+#define UI_CMD_QUICK_MOUNT   3009
+#define UI_CMD_IMPORT        3010
 #define UI_CTL_LIST          4001
 #define UI_CTL_STATUS        4002
 
 #define UI_MAX_MOUNTS 64
 
-typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER } ui_ipc_kind;
+typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER, UI_IPC_RELOAD } ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
   ui_ipc_kind kind;
@@ -51,6 +60,7 @@ typedef struct ui_ipc_reply {
 /* One mount as the agent reports it in "list" (03 §2.4). Identifiers are ASCII, text is UTF-16. */
 typedef struct ui_mount {
   char id[40];                  /* mount_id */
+  char profile_id[33];          /* profile_id of the list item; "" for an ad-hoc mount */
   char state[24];               /* state token: connecting, mounted, ... */
   wchar_t state_w[24];          /* the same token in UTF-16, shown when the token is unknown */
   wchar_t drive[3];             /* "X:" */
@@ -69,6 +79,7 @@ typedef struct ui_app {
   HWND ctrl;                    /* message-only window: IPC, tray callbacks, WM_COPYDATA */
   HWND main;                    /* main window, created hidden or shown */
   HWND list, status, btn_mount, btn_unmount, btn_refresh;
+  HWND btn_new, btn_edit, btn_delete, btn_duplicate, btn_quick, btn_import, btn_open;
   HFONT font;
   unsigned dpi;                 /* DPI of the main window (ui_dpi_window) */
   UINT wm_taskbar;              /* "TaskbarCreated": the tray icon is added again */
@@ -113,6 +124,10 @@ void   ui_ipc_stop(void);
 sd_err ui_ipc_list(void);
 sd_err ui_ipc_unmount(const wchar_t *drive);
 sd_err ui_ipc_mount(const char *profile_id);
+/* mount with the complete params object of 03 §2.4 (ui_mount_params_json). */
+sd_err ui_ipc_mount_params(const char *json);
+/* config.reload: the agent re-reads the profiles after a save or delete (03 §2.4, decision 3). */
+sd_err ui_ipc_config_reload(void);
 /* prompt.answer, see ui_ipc.c: the JSON is copied; the caller wipes its own copy. */
 sd_err ui_ipc_answer(const char *json, size_t len);
 
@@ -135,12 +150,40 @@ size_t ui_prompt_count(void);
 int    ui_prompt_filter(MSG *msg);
 int    ui_prompt_smoke_test(void);
 
+/* ---- ui_profiles.c: the profile list and the .sdmount file ---- */
+sd_err                 ui_profiles_load(void);
+void                   ui_profiles_clear(void);
+size_t                 ui_profiles_count(void);
+const sd_profile      *ui_profiles_at(size_t i);
+const sd_profile      *ui_profiles_find_id(const char *id);
+sd_err                 ui_sdmount_read(const wchar_t *path, unsigned char *buf, size_t cap, size_t *len);
+int                    ui_file_has_mark(const wchar_t *path);
+
+/* ---- ui_editor.c: the profile editor, the mount dialog and the confirmation dialog (03 §7.5) ---- */
+typedef enum ui_edit_mode { UI_EDIT_NEW = 0, UI_EDIT_EDIT, UI_EDIT_ADHOC } ui_edit_mode;
+/* Runs the editor (modal, owner may be NULL). p is the profile in and out. Returns 1 when the user chose OK
+   and every field is valid; the caller saves. */
+int    ui_editor_run(HWND owner, ui_edit_mode mode, sd_profile *p);
+/* Yes/No question; default_yes puts the default button on Yes. yes_id/no_id are catalog ids. */
+int    ui_confirm(HWND owner, sd_msg_id title, sd_msg_id text_id, const wchar_t *arg, sd_msg_id yes_id,
+                  sd_msg_id no_id, int default_yes);
+/* The import dialog (PuTTY sessions or the OpenSSH config) with its preview; owner may be NULL. */
+void   ui_import_run(HWND owner);
+/* Creates every page of every editor mode hidden and destroys it (--test-editor). */
+int    ui_editor_smoke_test(void);
+
 /* ---- ui_main.c: the main window ---- */
 int    ui_main_register_class(HINSTANCE inst, const wchar_t *class_name);
 HWND   ui_main_create(HINSTANCE inst, const wchar_t *class_name, int visible);
 void   ui_main_show(void);
 void   ui_main_refresh(void);
 int    ui_main_test_controls(void);
+/* The selected profile of the list (NULL when none), and its mount (NULL when not mounted). */
+const sd_profile *ui_main_selected_profile(void);
+ui_mount         *ui_main_selected_mount(void);
+void   ui_main_reload_profiles(void);
+/* Shows a drive in Explorer (ShellExecuteW "explore"); drive is "X:". */
+void   ui_open_drive(const wchar_t *drive);
 
 /* ---- ui_icon.c: programmatically drawn icons (no third-party art) ---- */
 typedef enum ui_icon_kind { UI_ICON_IDLE = 0, UI_ICON_CONNECTED, UI_ICON_WARNING, UI_ICON_COUNT } ui_icon_kind;

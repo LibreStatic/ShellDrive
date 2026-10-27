@@ -7,8 +7,8 @@
 set(_ui_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-ui")
 
 sd_add_unit_test(ui
-  SOURCES main.c test_wire.c test_dpi.c test_dlg.c test_prompt.c ${SD_UI_PURE_SOURCES}
-  DEPS sd_platform sd_base)
+  SOURCES main.c test_wire.c test_dpi.c test_dlg.c test_prompt.c test_profile.c ${SD_UI_PURE_SOURCES}
+  DEPS sd_config sd_crypto sd_platform sd_base)
 target_include_directories(sd-test-ui PRIVATE "${_ui_dir}")
 add_dependencies(sd-test-ui shelldrive-ui)
 
@@ -17,6 +17,9 @@ set_tests_properties(ui.smoke PROPERTIES LABELS ui TIMEOUT 120)
 
 add_test(NAME ui.prompts COMMAND $<TARGET_FILE:shelldrive-ui> --test-prompts)
 set_tests_properties(ui.prompts PROPERTIES LABELS ui TIMEOUT 120)
+
+add_test(NAME ui.editor COMMAND $<TARGET_FILE:shelldrive-ui> --test-editor)
+set_tests_properties(ui.editor PROPERTIES LABELS ui TIMEOUT 120)
 
 # sd_add_dll fixture: exercises the DLL helper (version resource, import audit, ISA audit) on every flavour.
 sd_add_dll(sd-test-ui-fixture

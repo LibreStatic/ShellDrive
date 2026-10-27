@@ -343,6 +343,21 @@ sd_err ui_ipc_mount(const char *profile_id)
   return enqueue(UI_IPC_MOUNT, "mount", params, NULL);
 }
 
+/* mount with a complete params object (ui_mount_params_json): the profile or the ad-hoc connection, with the
+   overrides of the mount dialog. The queue keeps its own copy. */
+sd_err ui_ipc_mount_params(const char *json)
+{
+  if (json == NULL || json[0] != '{')
+    return SD_E_INVALID_PARAM;
+  return enqueue(UI_IPC_MOUNT, "mount", json, NULL);
+}
+
+/* config.reload: the agent re-reads the profile store (03 §2.4). A failed call is only logged. */
+sd_err ui_ipc_config_reload(void)
+{
+  return enqueue(UI_IPC_RELOAD, "config.reload", NULL, NULL);
+}
+
 /* prompt.answer: json is the complete request object, NUL-terminated, with len bytes. The queue keeps its own
    copy, which is wiped after the call (free_params). The caller wipes its copy. */
 sd_err ui_ipc_answer(const char *json, size_t len)

@@ -106,6 +106,10 @@ void ui_model_set_list(ui_model *m, const sd_json *result)
     ui_text_utf8(sd_json_get_str(mo, "target"), tmp, SD_COUNTOF(tmp));
     if (!ui_drive_normalize(tmp, it->drive))
       it->drive[0] = 0;
+    s = sd_json_get_str(mo, "profile_id");
+    it->profile_id[0] = 0;
+    if (s != NULL && strlen(s) < sizeof(it->profile_id))
+      strcpy_s(it->profile_id, sizeof(it->profile_id), s);
     ui_text_utf8(sd_json_get_str(mo, "profile"), it->profile, SD_COUNTOF(it->profile));
     ui_text_utf8(sd_json_get_str(mo, "backend"), it->backend, SD_COUNTOF(it->backend));
     server_text(mo, it->server, SD_COUNTOF(it->server));
