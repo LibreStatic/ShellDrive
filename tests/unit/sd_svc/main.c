@@ -15,6 +15,18 @@ SD_TEST_DECL(svc_admin_answers_a_password_prompt_on_the_pipe);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
+SD_TEST_DECL(scm_install_registers_the_service_in_order);
+SD_TEST_DECL(scm_install_skips_the_sid_type_before_vista);
+SD_TEST_DECL(scm_install_refuses_without_elevation);
+SD_TEST_DECL(scm_install_rolls_back_a_failed_configuration);
+SD_TEST_DECL(scm_install_rolls_back_a_failed_event_source);
+SD_TEST_DECL(scm_install_leaves_an_existing_service_alone);
+SD_TEST_DECL(scm_uninstall_stops_deletes_then_unregisters);
+SD_TEST_DECL(scm_uninstall_reports_a_missing_service);
+SD_TEST_DECL(scm_uninstall_tolerates_a_missing_event_source);
+SD_TEST_DECL(scm_start_and_stop_need_elevation);
+SD_TEST_DECL(scm_start_and_stop_pass_the_result_through);
+SD_TEST_DECL(scm_host_spec_points_at_the_host_next_to_the_program);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -32,6 +44,18 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
+  SD_TEST_ENTRY(scm_install_registers_the_service_in_order),
+  SD_TEST_ENTRY(scm_install_skips_the_sid_type_before_vista),
+  SD_TEST_ENTRY(scm_install_refuses_without_elevation),
+  SD_TEST_ENTRY(scm_install_rolls_back_a_failed_configuration),
+  SD_TEST_ENTRY(scm_install_rolls_back_a_failed_event_source),
+  SD_TEST_ENTRY(scm_install_leaves_an_existing_service_alone),
+  SD_TEST_ENTRY(scm_uninstall_stops_deletes_then_unregisters),
+  SD_TEST_ENTRY(scm_uninstall_reports_a_missing_service),
+  SD_TEST_ENTRY(scm_uninstall_tolerates_a_missing_event_source),
+  SD_TEST_ENTRY(scm_start_and_stop_need_elevation),
+  SD_TEST_ENTRY(scm_start_and_stop_pass_the_result_through),
+  SD_TEST_ENTRY(scm_host_spec_points_at_the_host_next_to_the_program),
 };
 
 int main(int argc, char **argv)

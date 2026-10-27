@@ -12,6 +12,9 @@
 
 #define SVC_SERVICE_NAME L"ShellDriveSvc"
 
+/* Event Log sink (10.3): msg_id is an id of svc_events.mc, args are its %1..%n inserts. */
+typedef void (*svc_event_fn)(void *ctx, DWORD msg_id, const wchar_t **args, size_t nargs);
+
 typedef struct svc_opts {
   const sd_mount_backend *backend;   /* NULL = host_backend() (the real modules or the unavailable stub) */
   const wchar_t *machine_root;       /* NULL = %ProgramData%\LibreStatic\ShellDrive (tests: a temp folder) */
@@ -19,6 +22,8 @@ typedef struct svc_opts {
   int open_log;                      /* 1 = <machine root>\logs\service.log */
   void (*on_running)(void *ctx);     /* called once the control pipe listens (SCM: SERVICE_RUNNING) */
   void *ctx;
+  svc_event_fn event;                /* NULL = no Event Log writes (console mode, tests); SCM: svc_eventlog_write */
+  void *event_ctx;
   int test_all_admin;                /* SD_SVC_TEST_HOOKS builds only: every client counts as an elevated admin */
 } svc_opts;
 

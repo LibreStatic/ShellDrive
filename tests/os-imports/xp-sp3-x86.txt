@@ -274,6 +274,7 @@ advapi32.dll!CredWriteW
 advapi32.dll!CryptAcquireContextW
 advapi32.dll!CryptGenRandom
 advapi32.dll!CryptReleaseContext
+advapi32.dll!DeleteService
 advapi32.dll!DeregisterEventSource
 advapi32.dll!DuplicateTokenEx
 advapi32.dll!EqualSid
@@ -297,6 +298,7 @@ advapi32.dll!OpenProcessToken
 advapi32.dll!OpenSCManagerW
 advapi32.dll!OpenServiceW
 advapi32.dll!OpenThreadToken
+advapi32.dll!QueryServiceStatus
 advapi32.dll!QueryServiceStatusEx
 advapi32.dll!RegCloseKey
 advapi32.dll!RegCreateKeyExW

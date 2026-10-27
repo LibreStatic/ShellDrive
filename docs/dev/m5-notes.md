@@ -117,11 +117,69 @@ Used by the service and mapped by the CLI through the existing table: `access_de
 The tests run in-process: no SCM registration, no child process, no real drive. The restricted-token tests need the
 interactive-user ACE on the pipe (they accept a refused connect as the refusal).
 
+## Part 2: service registration and Event Log
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/svc_scm.c`, `svc_scm.h` | `shelldrive service install | uninstall | start | stop`: the rules (elevation, order of the SCM calls, rollback) over a function-pointer seam (`svc_scm_ops`); `svc_scm_real_ops` is the only code that calls advapi32 and HKLM |
+| `apps/shelldrive-host/svc_events.mc` | Event Log message table, English only (10.3). `mc.exe` writes `svc_events.h` and `svc_events.rc` into `generated/svc_events/<config>`; the `.rc` is linked into `shelldrive-host.exe`, which is the event message file |
+| `apps/shelldrive-host/service.c` | Event Log events from the core (start, stop, start failure, mounted, unmounted, mount failed) through `svc_opts.event`; the SCM path sets it to `svc_eventlog_write` (`ReportEventW`) |
+| `apps/shelldrive/cli_service.c` | the four verbs; `repair-data` is still "not part of this build" |
+| `tests/unit/sd_svc/test_scm.c` | 12 tests against a fake SCM; no test calls `svc_scm_real_ops` |
+
+**Contract changes**
+
+- `svc_opts` gets `event` and `event_ctx` (`svc_event_fn`). NULL means no Event Log writes: console mode and the unit
+  tests. Additive.
+- CLI: `install`, `uninstall`, `start` and `stop` now run (no longer "not part of this build"). Exit codes: 9 when
+  not elevated (`ERROR_ACCESS_DENIED`, the same as `mount`), 1 for the other SCM errors (`already_installed`,
+  `not_installed`, `already_running`, `not_running`, `scm_failed` with the Win32 code), 0 on success.
+- New CLI strings (cli domain, six locales): `cli.service.installed`, `uninstalled`, `started`, `stopped`,
+  `already_installed`, `not_installed`, `already_running`, `not_running`, `scm_failed`, `description`.
+  `cli.help.service` lists the new verbs.
+
+**Decisions taken in this part**
+
+- Registration (`CreateServiceW`): LocalSystem (null start name), `SERVICE_WIN32_OWN_PROCESS`, `SERVICE_AUTO_START`,
+  dependency `Tcpip` only (1.3). Failure actions: restart after 5 s, 30 s, then 5 min; the count resets after one day.
+  `SERVICE_SID_TYPE_UNRESTRICTED` only on Vista and later (checked with `GetVersionExW`); XP skips it.
+- Installation order: create, description, failure actions, SID type, Event Log source. A failure after create deletes
+  the service again. A failed `register` does not unregister the source (it was not ours to remove). An existing
+  service is not touched.
+- Uninstall stops the service (a service that is not running is fine), deletes it, then removes the Event Log source
+  key. A missing source is not an error. Secrets are not removed here; that stays with the installer (4.7).
+- Event source `ShellDrive` under `...\Services\EventLog\Application\ShellDrive`: `EventMessageFile` is the path of
+  `shelldrive-host.exe` (REG_EXPAND_SZ), `TypesSupported = 7` (DWORD).
+- Start waits up to 30 s for `SERVICE_RUNNING`; stop waits up to 60 s for `SERVICE_STOPPED`.
+- Event IDs (10.3): 1000 started (`%1` version), 1001 stopped, 1100 mounted (`%1` profile, `%2` target),
+  1101 unmounted (same inserts), 2100 mount failed (`%1` profile, `%2` IPC code, `%3` detail), 2110 start failed
+  (`%1` reason). Deviation from 10.3: 1100 has no host name (`%3` in the design) so that no server name reaches the
+  Event Log by default (settings.log_privacy). 3100 (configuration invalid) is not emitted yet.
+- The description is localized at install time in the language of the installing console (cli domain); it is written
+  once with `ChangeServiceConfig2W`. The display name is the English product name, not an indirect string.
+- The `svc` domain has no new strings: the service writes no user-facing text in this part.
+
+**Tests and verification**
+
+| Check | Result |
+|---|---|
+| `unit.svc` (`sd-test-svc.exe`), 27 tests: the 15 of part 1 and 12 new fake-SCM tests in `test_scm.c` (install order and spec, SID type per OS, refusal without elevation, rollbacks, existing service, uninstall order, missing service and source, start/stop elevation and results, host spec) | all pass in `x64-modern`, `x64-xp`, `x86-ia32` (Debug) |
+| `svc_core_stops_and_leaves_nothing_behind` also checks the Event Log sink order: 1000 first, mounted, unmounted, mount failed, 1001 last | pass |
+| `x64-modern` Debug, ctest `-LE "matrix|bench|interop|repro"`, 76 tests | 75 pass; `unit.crypto_pk` hits its 300 s ctest timeout on this machine (it does not link any service code; unchanged by this part) |
+| `x64-xp` Debug, ctest, 76 tests | all pass; XP SP2 x64 import audit passes (`DeleteService` and `QueryServiceStatus` added to the floor list, both documented from Windows 2000) |
+| `x86-ia32` Debug, ctest, 97 tests | all pass; IA32 ISA audit passes |
+
+Build notes: `mc.exe` runs on the `.mc` file in ANSI mode (no `-u`; the file is ASCII and has no comments, because mc
+copies comment lines into the generated header). The message file is `MSG00409.bin` (named after the English LCID).
+
 ## Left (not in this part)
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
-- SCM install, uninstall, start, stop, status and `repair-data` (`shelldrive service ...`); the recovery actions and
-  the localized display name and description (`ChangeServiceConfig2W`, 03 §1.3); the Event Log (10.3).
+- `status` and `repair-data` (`shelldrive service ...`); the display name as an indirect string (`@<path>,-<id>`,
+  Vista+); the service's own re-set of the description at first start (1.3); the Event Log 3100 and 3101 to 3102 and
+  the other 2xxx/3xxx ids of 10.3 that depend on features not in this part.
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store).
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).

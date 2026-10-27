@@ -18,7 +18,32 @@
 #include "sd_mount/sd_mount.h"
 #include "sd_secret/sd_secret.h"
 #include "sd_mount/sd_mount.h"
+#include "svc_events.h"
 #include "fake_backend.h"
+
+/* Event Log sink of the shared core: records the ids in order (the core calls it on its own thread). */
+#define T_EV_MAX 64
+static DWORD g_ev_ids[T_EV_MAX];
+static int g_ev_n;
+
+static void test_event(void *ctx, DWORD msg_id, const wchar_t **args, size_t nargs)
+{
+  (void)ctx;
+  (void)args;
+  (void)nargs;
+  if (g_ev_n < T_EV_MAX)
+    g_ev_ids[g_ev_n++] = msg_id;
+}
+
+static int saw_event(DWORD msg_id)
+{
+  int i;
+  for (i = 0; i < g_ev_n; i++) {
+    if (g_ev_ids[i] == msg_id)
+      return 1;
+  }
+  return 0;
+}
 
 #define T_ID_MOUNTED  "00000000000000000000000000000001"
 #define T_ID_NOSUB    "00000000000000000000000000000002"
@@ -183,6 +208,8 @@ static int ensure_core(void)
   o.open_log = 0;
   o.on_running = on_running;
   o.test_all_admin = 1;
+  o.event = test_event;
+  o.event_ctx = NULL;
   g_running = CreateEventW(NULL, TRUE, FALSE, NULL);
   g_thread = CreateThread(NULL, 0, core_main, &o, 0, NULL);
   if (g_thread == NULL || g_running == NULL)
@@ -628,6 +655,13 @@ SD_TEST(svc_core_stops_and_leaves_nothing_behind)
   CloseHandle(g_thread);
   g_thread = NULL;
   SD_CHECK_EQ_INT(g_rc, 0);
+  /* Event Log (10.3): start, the mounts of the earlier tests, and stop last */
+  SD_CHECK(g_ev_n > 0);
+  SD_CHECK(g_ev_ids[0] == SVC_MSG_STARTED);
+  SD_CHECK(saw_event(SVC_MSG_MOUNTED));
+  SD_CHECK(saw_event(SVC_MSG_UNMOUNTED));
+  SD_CHECK(saw_event(SVC_MSG_MOUNT_FAILED));
+  SD_CHECK(g_ev_ids[g_ev_n - 1] == SVC_MSG_STOPPED);
   /* the pipe is gone with the core */
   SD_CHECK(connect_as("testadmin", 0, &c) != SD_OK);
   CloseHandle(g_running);
