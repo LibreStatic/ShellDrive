@@ -26,6 +26,7 @@ SD_TEST_DECL(tr_kh_live_source_insecure_is_skipped);
 SD_TEST_DECL(tr_kh_putty_values);
 SD_TEST_DECL(tr_kh_putty_registry_source);
 SD_TEST_DECL(tr_kh_apply_hostkeys_and_remove_key);
+SD_TEST_DECL(tr_fetch_key_never_becomes_pinned);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(tr_lists_static_order_modern_first),
@@ -50,6 +51,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(tr_kh_putty_values),
   SD_TEST_ENTRY(tr_kh_putty_registry_source),
   SD_TEST_ENTRY(tr_kh_apply_hostkeys_and_remove_key),
+  SD_TEST_ENTRY(tr_fetch_key_never_becomes_pinned),
 };
 
 int main(int argc, char **argv)

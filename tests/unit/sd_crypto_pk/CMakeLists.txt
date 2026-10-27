@@ -5,7 +5,7 @@
 
 sd_add_unit_test(crypto_pk
   SOURCES main.c test_sha1.c test_bn.c test_rsa.c test_dh.c test_ec.c test_cng_pk.c test_bench_pk.c pkt.h
-          ../sd_crypto/tutil.c
+          ec_test_hooks.c ../sd_crypto/tutil.c
   DEPS sd_crypto sd_platform sd_base)
 
 # Debug limbs on the 32-bit flavours run the suite in ~25-30 minutes by hand (bench_pk_throughput at

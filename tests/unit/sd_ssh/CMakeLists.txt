@@ -52,5 +52,16 @@ set_tests_properties(interop.ssh_matrix_auth_keys PROPERTIES
 set_tests_properties(interop.ssh_matrix_auth_certs PROPERTIES LABELS "interop;matrix;srv_cert" TIMEOUT 600
   SKIP_RETURN_CODE 77)
 
+# M2 transport area (01 §4, §7): algorithm lists, KEX methods against an in-process mock server,
+# host key signatures, certificates, CBC/SHA-1 packet protection, known_hosts M2 (hashed, live sources,
+# UpdateHostKeys review helpers). test_kex_main.c owns main() and runs the tr_* cases of both sources.
+#   unit.ssh_transport     sd-test-ssh_transport.exe (no network)
+sd_add_unit_test(ssh_transport
+  SOURCES test_kex_main.c test_kex.c test_known_hosts_m2.c test_util.c
+  DEPS sd_ssh sd_crypto sd_base sd_platform)
+target_include_directories(sd-test-ssh_transport PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_ssh")
+target_compile_definitions(sd-test-ssh_transport PRIVATE
+  SD_SSH_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+
 # M2 per-area test lists (each area owns tests_<area>.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/tests_auth.cmake OPTIONAL)

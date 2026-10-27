@@ -659,20 +659,19 @@ static int hk_announced(const cli_args *a)
   return 0;
 }
 
-static int hk_list_cmd(const cli_args *a, const char *lookup)
+/* The collected rows (about 15 KB) live on the heap: a stack copy trips C6262 under /analyze. */
+static int hk_list_run(const cli_args *a, const char *lookup, hk_list *l)
 {
   sd_known_hosts *kh = NULL;
-  hk_list l;
   size_t i, k;
   if (!kh_open(1, &kh))
     return fail_code(a, "io_error", "cannot open the known_hosts stores", NULL);
-  memset(&l, 0, sizeof(l));
   for (k = 0; k < SD_COUNTOF(k_hk_list_stores); k++) {
-    uint32_t before = l.n;
-    if (sd_known_hosts_list(kh, k_hk_list_stores[k], lookup, hk_collect, &l) != SD_OK)
+    uint32_t before = l->n;
+    if (sd_known_hosts_list(kh, k_hk_list_stores[k], lookup, hk_collect, l) != SD_OK)
       continue;
-    for (i = before; i < l.n; i++)
-      l.row[i].store = (int)k_hk_list_stores[k];
+    for (i = before; i < l->n; i++)
+      l->row[i].store = (int)k_hk_list_stores[k];
   }
   sd_known_hosts_close(kh);
   if (a->json) {
@@ -686,13 +685,13 @@ static int hk_list_cmd(const cli_args *a, const char *lookup)
     sd_jw_obj_begin(&jw);
     sd_jw_key(&jw, "keys");
     sd_jw_arr_begin(&jw);
-    for (i = 0; i < l.n; i++) {
+    for (i = 0; i < l->n; i++) {
       sd_jw_obj_begin(&jw);
-      sd_jw_key(&jw, "store"); sd_jw_cstr(&jw, kh_store_name((sd_kh_store_kind)l.row[i].store));
+      sd_jw_key(&jw, "store"); sd_jw_cstr(&jw, kh_store_name((sd_kh_store_kind)l->row[i].store));
       sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, lookup);
-      sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, l.row[i].type);
-      sd_jw_key(&jw, "fingerprint"); sd_jw_cstr(&jw, l.row[i].fp);
-      sd_jw_key(&jw, "line"); sd_jw_int(&jw, l.row[i].line);
+      sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, l->row[i].type);
+      sd_jw_key(&jw, "fingerprint"); sd_jw_cstr(&jw, l->row[i].fp);
+      sd_jw_key(&jw, "line"); sd_jw_int(&jw, l->row[i].line);
       sd_jw_obj_end(&jw);
     }
     sd_jw_arr_end(&jw);
@@ -703,7 +702,7 @@ static int hk_list_cmd(const cli_args *a, const char *lookup)
     sd_wr_free(&w);
     return 0;
   }
-  if (l.n == 0) {
+  if (l->n == 0) {
     wchar_t *wh = wide(lookup);
     say1w(SD_MSG_CLI_HK_LIST_EMPTY, "host", wh ? wh : L"", 0);
     sd_free(wh);
@@ -718,11 +717,11 @@ static int hk_list_cmd(const cli_args *a, const char *lookup)
     pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(SD_MSG_CLI_HK_COL_FP), 0);
     cli_print(line);
   }
-  for (i = 0; i < l.n; i++) {
+  for (i = 0; i < l->n; i++) {
     wchar_t line[1024];
     size_t len = 0;
-    wchar_t *ws = wide(kh_store_name((sd_kh_store_kind)l.row[i].store));
-    wchar_t *wt = wide(l.row[i].type), *wf = wide(l.row[i].fp);
+    wchar_t *ws = wide(kh_store_name((sd_kh_store_kind)l->row[i].store));
+    wchar_t *wt = wide(l->row[i].type), *wf = wide(l->row[i].fp);
     line[0] = 0;
     pad_print(line, SD_COUNTOF(line), &len, ws ? ws : L"", 10);
     pad_print(line, SD_COUNTOF(line), &len, wt ? wt : L"", 18);
@@ -730,9 +729,20 @@ static int hk_list_cmd(const cli_args *a, const char *lookup)
     cli_print(line);
     sd_free(ws); sd_free(wt); sd_free(wf);
   }
-  if (l.truncated)
+  if (l->truncated)
     say(SD_MSG_CLI_HK_LIST_TRUNCATED, NULL, 0, 0);
   return 0;
+}
+
+static int hk_list_cmd(const cli_args *a, const char *lookup)
+{
+  hk_list *l = (hk_list *)sd_calloc(1, sizeof(*l));
+  int rc;
+  if (!l)
+    return fail_code(a, "io_error", "out of memory", NULL);
+  rc = hk_list_run(a, lookup, l);
+  sd_free(l);
+  return rc;
 }
 
 static int hk_import(const cli_args *a)

@@ -39,6 +39,7 @@ struct sd_pktcipher {
   sd_cng_key *cng;                 /* CNG key when that backend is used, else NULL */
   sd_aes_own aes;
   sd_des3_key des3;
+  int failed;                      /* a GCM open failed: the record stream is dead, later GCM opens refuse */
 };
 
 const sd_pktcipher_info *sd_pktcipher_find(const char *ssh_name)
@@ -287,6 +288,12 @@ sd_err sd_pktcipher_open(sd_pktcipher *c, uint32_t seq, uint8_t *pkt, size_t len
     sd_chacha20(c->k_main, nonce, 1, pkt + 4, len - 4, pkt + 4);
     return SD_OK;
   }
+  /* RFC 5647 / OpenSSH: a failed record ends the connection (SD_E_CRYPTO is fatal to the caller).
+     The sticky flag makes that hold at this layer too: no later record is decrypted with a counter
+     that the failed record left out of step. Both backends wipe or never write the plaintext on
+     a tag mismatch (sd_cng_gcm zeroes the buffer; gcm_open_own checks the tag before decrypting). */
+  if (c->failed)
+    return SD_E_CRYPTO;
   if (c->cng) {
     uint8_t t[16];
     memcpy(t, tag, 16);
@@ -294,8 +301,12 @@ sd_err sd_pktcipher_open(sd_pktcipher *c, uint32_t seq, uint8_t *pkt, size_t len
   } else {
     err = gcm_open_own(c, pkt, len, tag);
   }
+  if (err != SD_OK) {
+    c->failed = 1;
+    return err;
+  }
   gcm_next_iv(c);
-  return err;
+  return SD_OK;
 }
 
 sd_err sd_pktcipher_peek_len(sd_pktcipher *c, uint32_t seq, const uint8_t enc_len[4], uint32_t *len)

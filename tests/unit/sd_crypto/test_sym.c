@@ -406,9 +406,14 @@ static void gcm_pkt_roundtrip(sd_test_ctx *sd_t_, const char *name, size_t kl)
       memcpy(keep, pkt, sizeof(pkt));
       tag[0] ^= 1;
       SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_E_CRYPTO);
+      /* no plaintext released on a tag mismatch: CNG zeroes the buffer, the own path never decrypted it */
+      SD_CHECK(memcmp(pkt + 4, orig + 4, 64) != 0);
       tag[0] ^= 1;
-      memcpy(pkt, keep, sizeof(pkt));              /* the CNG backend wipes the buffer on failure */
-      sd_pktcipher_free(dec);                      /* the failed open consumed a nonce: restart */
+      memcpy(pkt, keep, sizeof(pkt));
+      /* sticky failure: the same object refuses the next record, even with a valid tag */
+      SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_E_CRYPTO);
+      memcpy(pkt, keep, sizeof(pkt));
+      sd_pktcipher_free(dec);                      /* the failed open ends this stream: restart */
       SD_REQUIRE(sd_pktcipher_new(info, 0, key, nonce, &dec) == SD_OK);
     }
     SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_OK);

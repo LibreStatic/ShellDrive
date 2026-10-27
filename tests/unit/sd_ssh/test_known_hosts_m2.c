@@ -164,8 +164,22 @@ SD_TEST(tr_kh_cert_authority)
 #define KEY_A "ed25519_plain.pub"
 #define KEY_B "other_host.pub"
 
-/* Live OpenSSH file next to our user store; returns 0 if the temp directory is not usable as a
-   trusted source on this machine (reported, not failed). */
+/* The live file must pass the TM-R06 check on its own DACL. A file created in %TEMP% inherits the
+   temp directory's ACEs, which on some machines include other principals, so the test gives the
+   live file a user-only DACL (owner, SYSTEM, Administrators) before the source is read. */
+static int secure_test_path(const wchar_t *path)
+{
+  PSECURITY_DESCRIPTOR sd = NULL;
+  int ok = 0;
+  if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)",
+                                                           SDDL_REVISION_1, &sd, NULL)) {
+    ok = SetFileSecurityW(path, DACL_SECURITY_INFORMATION, sd) != 0;
+    LocalFree(sd);
+  }
+  return ok;
+}
+
+/* Live OpenSSH file next to our user store; returns 0 if the file cannot be written or secured. */
 static int live_setup(sd_test_ctx *sd_t_, const wchar_t *tag, wchar_t *user, wchar_t *live, sd_known_hosts **kh,
                       const char *text)
 {
@@ -175,11 +189,12 @@ static int live_setup(sd_test_ctx *sd_t_, const wchar_t *tag, wchar_t *user, wch
   _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s-ssh\\", tag);
   SD_CHECK(tu_temp_path(sub, dir, SD_COUNTOF(dir)));
   CreateDirectoryW(dir, NULL);
+  if (!secure_test_path(dir)) return 0;
   _snwprintf_s(live, MAX_PATH, _TRUNCATE, L"%sknown_hosts", dir);
   _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s-user\\known_hosts", tag);
   SD_CHECK(tu_temp_path(sub, user, MAX_PATH));
   DeleteFileW(user);
-  if (!write_text(live, text)) return 0;
+  if (!write_text(live, text) || !secure_test_path(live)) return 0;
   st[0].kind = SD_KH_STORE_USER; st[0].path = user; st[0].writable = 1;
   st[1].kind = SD_KH_SRC_OPENSSH; st[1].path = live; st[1].writable = 0;
   return sd_known_hosts_open(st, 2, kh) == SD_OK;
@@ -202,11 +217,8 @@ SD_TEST(tr_kh_live_openssh_source)
   _snprintf_s(text, sizeof(text), _TRUNCATE, "h1 ssh-ed25519 %s\n* ssh-ed25519 %s\n", ab64, bb64);
   SD_REQUIRE(live_setup(sd_t_, L"live", user, live, &kh, text));
   SD_CHECK_EQ_INT(sd_known_hosts_source_state(kh, SD_KH_SRC_OPENSSH, &ss, sid, SD_COUNTOF(sid)), SD_OK);
-  if (ss != SD_KH_SRC_OK) {
-    printf("  [skip] tr_kh_live_openssh_source: temp directory is not a trusted location here (%d %ls)\n", (int)ss, sid);
-    sd_known_hosts_close(kh);
-    return;
-  }
+  SD_CHECK_EQ_INT(ss, SD_KH_SRC_OK);
+  if (ss != SD_KH_SRC_OK) { sd_known_hosts_close(kh); return; }
   /* MATCH from the live source, copied into the user store with its origin (D7) */
   SD_CHECK_EQ_INT(sd_known_hosts_check(kh, "h1", a, al, 0, &r), SD_OK);
   SD_CHECK_EQ_INT(r.status, SD_HK_MATCH);
@@ -318,8 +330,9 @@ SD_TEST(tr_kh_putty_values)
   SD_CHECK_EQ_INT(e, SD_E_KEY_FORMAT);
   /* ECDSA P-256, port != 22, escaped name, upper case host */
   SD_CHECK(line_of(L"ecdsa-sha2-nistp256@2222:%2EHost.Example", L"nistp256," P256_X L"," P256_Y, line, sizeof(line), &e));
-  SD_CHECK(strncmp(line, "[.host.example]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABB",
-                   96) == 0);
+  /* the comparison length is the literal's own length: the old fixed 96 read past its NUL terminator */
+  SD_CHECK(strncmp(line, "[.host.example]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGsX",
+                   sizeof("[.host.example]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGsX") - 1) == 0);
   SD_CHECK(!line_of(L"ecdsa-sha2-nistp256@22:h", L"nistp256," P256_X L",0x01", line, sizeof(line), &e));
   SD_CHECK(!line_of(L"ecdsa-sha2-nistp384@22:h", L"nistp256," P256_X L"," P256_Y, line, sizeof(line), &e));
   /* RSA */
@@ -367,6 +380,7 @@ SD_TEST(tr_kh_putty_registry_source)
   st[1].kind = SD_KH_SRC_PUTTY; st[1].path = sub; st[1].writable = 0;
   SD_REQUIRE(sd_known_hosts_open(st, 2, &kh) == SD_OK);
   SD_CHECK_EQ_INT(sd_known_hosts_source_state(kh, SD_KH_SRC_PUTTY, &ss, NULL, 0), SD_OK);
+  SD_CHECK_EQ_INT(ss, SD_KH_SRC_OK);
   if (ss == SD_KH_SRC_OK) {
     uint8_t pk[32];
     sd_wr_init_fixed(&w, blob, sizeof(blob));
@@ -393,8 +407,6 @@ SD_TEST(tr_kh_putty_registry_source)
     txt = read_text(user2);
     SD_CHECK(txt && strstr(txt, "[rsahost]:2200 ssh-rsa "));
     sd_free(txt);
-  } else {
-    printf("  [skip] tr_kh_putty_registry_source: test key not trusted here (%d)\n", (int)ss);
   }
   sd_known_hosts_close(kh);
   RegDeleteKeyW(HKEY_CURRENT_USER, sub);

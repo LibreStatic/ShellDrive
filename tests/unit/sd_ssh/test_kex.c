@@ -7,6 +7,7 @@
 #include "sd_test.h"
 #include "hostkey_internal.h"
 #include "kex_internal.h"
+#include "transport_internal.h"
 #include "ssh_internal.h"
 #include "test_util.h"
 
@@ -369,6 +370,7 @@ static int mock_reply(mock *s, const uint8_t *init, size_t n, sd_wr *reply)
     sd_err e = s->m->kind == SSH_KM_DH ? sd_dh_new_group(s->m->param, 0, &d) : sd_dh_new(s->gp, s->gplen, &two, 1, 0, &d);
     if (e != SD_OK) return 0;
     len = sd_dh_len(d);
+    if (len > sizeof(f) || len > sizeof(k)) { sd_dh_free(d); return 0; }
     if (sd_dh_public(d, f, len) != SD_OK || sd_dh_compute(d, q.p, q.n, k, len) != SD_OK) { sd_dh_free(d); return 0; }
     sd_dh_free(d);
     if (s->f_one) { memset(f, 0, len); f[len - 1] = 1; }
@@ -753,10 +755,8 @@ SD_TEST(tr_packet_cbc_and_sha1_roundtrip)
     uint8_t key[64], iv[32], mk[64];
     size_t kl, il, ml, off = 0;
     int got = 0;
-    if (!sd_pktcipher_find(k_combos[i].cipher)) {
-      printf("  [skip] %s not provided by sd_crypto yet\n", k_combos[i].cipher);
-      continue;
-    }
+    /* every listed cipher is provided by pktcipher.c (aes128-cbc at pktcipher.c:27): no skip */
+    SD_REQUIRE(sd_pktcipher_find(k_combos[i].cipher) != NULL);
     SD_REQUIRE(ssh_alg_key_sizes(k_combos[i].cipher, k_combos[i].mac, &kl, &il, &ml) == SD_OK);
     SD_CHECK_EQ_INT(ml, strstr(k_combos[i].mac, "sha1") ? 20 : strstr(k_combos[i].mac, "512") ? 64 : 32);
     tu_det_random(key, sizeof(key)); tu_det_random(iv, sizeof(iv)); tu_det_random(mk, sizeof(mk));
@@ -791,7 +791,7 @@ SD_TEST(tr_packet_cbc_mac_failure_discards)
   sd_span pl;
   int pass;
   if (!tu_crypto_or_skip("tr_packet_cbc_mac_failure_discards")) return;
-  if (!sd_pktcipher_find("aes128-cbc")) { printf("  [skip] aes128-cbc not provided by sd_crypto yet\n"); return; }
+  SD_REQUIRE(sd_pktcipher_find("aes128-cbc") != NULL);
   big = (uint8_t *)sd_calloc(1, SSH_MAX_PACKET_LEN + 64);
   SD_REQUIRE(big != NULL);
   for (pass = 0; pass < 2; pass++) {
@@ -832,4 +832,53 @@ SD_TEST(tr_packet_cbc_mac_failure_discards)
     ssh_dir_clear(&tx);
     ssh_dir_clear(&rx);
   }
+}
+
+/* kex.c fetch branch (01 §4.3): a restricted re-key signed with another host key. The new key is only
+   collected for the host's review; it must never replace the pinned key of the connection, and the
+   collected key must be the one the server sent. */
+SD_TEST(tr_fetch_key_never_becomes_pinned)
+{
+  sd_ssh_conn *c;
+  ssh_hku *u;
+  uint8_t pinned_blob[64], other_blob[64];
+  sd_wr w;
+  size_t pinned_len, other_len;
+  if (!tu_crypto_or_skip("tr_fetch_key_never_becomes_pinned")) return;
+  c = (sd_ssh_conn *)sd_calloc(1, sizeof(*c));
+  SD_REQUIRE(c != NULL);
+  sd_wr_init_fixed(&w, pinned_blob, sizeof(pinned_blob));
+  sd_wr_cstring(&w, "ssh-ed25519");
+  {
+    uint8_t pk[32];
+    memset(pk, 0x11, sizeof(pk));
+    sd_wr_string(&w, pk, sizeof(pk));
+  }
+  pinned_len = w.len;
+  sd_wr_init_fixed(&w, other_blob, sizeof(other_blob));
+  sd_wr_cstring(&w, "ssh-ed25519");
+  {
+    uint8_t pk[32];
+    memset(pk, 0x22, sizeof(pk));
+    sd_wr_string(&w, pk, sizeof(pk));
+  }
+  other_len = w.len;
+  memcpy(c->hostkey, pinned_blob, pinned_len);
+  c->hostkey_len = pinned_len;
+  u = ssh_hku_get(c);
+  SD_REQUIRE(u != NULL);
+  u->fetching = 1;
+  u->fetch_rekey = 1;
+  ssh_hku_on_fetch_key(c, other_blob, other_len);
+  /* the pinned key is untouched */
+  SD_CHECK_EQ_INT(c->hostkey_len, pinned_len);
+  SD_CHECK(memcmp(c->hostkey, pinned_blob, pinned_len) == 0);
+  /* the new key is held for review, as the server sent it */
+  SD_CHECK_EQ_INT(u->ngot, 1);
+  SD_CHECK(u->got[0].len == other_len && memcmp(u->got[0].blob, other_blob, other_len) == 0);
+  /* a fetch key equal to the pinned one is not collected */
+  ssh_hku_on_fetch_key(c, pinned_blob, pinned_len);
+  SD_CHECK_EQ_INT(u->ngot, 1);
+  ssh_hku_free(c);
+  sd_free(c);
 }

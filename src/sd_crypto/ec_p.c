@@ -641,7 +641,10 @@ sd_err sd_ecdsa_verify(const sd_ec_key *key, const uint8_t *digest, size_t dlen,
   return sd_mp_vt_cmp(x, c->nl, r, c->nl) == 0 ? SD_OK : SD_E_CRYPTO;
 }
 
-/* ---- test hooks ---- */
+/* ---- test hooks ----
+ * Compiled only into the test translation unit tests/unit/sd_crypto_pk/ec_test_hooks.c, which includes
+ * this file with SD_EC_TEST_HOOKS defined. The product object never carries these entry points. */
+#ifdef SD_EC_TEST_HOOKS
 
 sd_err sd_ec_test_mul(sd_curve cid, const uint8_t *kb, size_t klen, const uint8_t *pt, uint8_t *out)
 {
@@ -691,3 +694,5 @@ sd_err sd_ec_test_dbl(sd_curve cid, const uint8_t *pa, uint8_t *out)
   encode_point(c, out, x, y);
   return SD_OK;
 }
+
+#endif /* SD_EC_TEST_HOOKS */
