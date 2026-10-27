@@ -179,6 +179,7 @@ static struct {
   uint64_t prompt_ms, reconnect_prompt_ms;
   int no_route;                 /* test hook: prompts are never routed (queue tests) */
   uint64_t last_ui_launch;      /* tick of the last prompt-UI launch attempt; 0 = never */
+  int ui_launch;                /* 0 in test builds unless SHELLDRIVE_TEST_UI_LAUNCH=1: tests never start a UI */
   host_warn warns[WARN_RING];
   uint32_t warn_next, warn_count;
   uint64_t boot_tick;           /* log.tail cursor boot id */
@@ -862,6 +863,8 @@ static void maybe_launch_ui(void)
   PROCESS_INFORMATION pi;
   DWORD n;
   size_t i;
+  if (!g.ui_launch)
+    return;
   if (g.last_ui_launch && now - g.last_ui_launch < UI_LAUNCH_INTERVAL_MS)
     return;
   g.last_ui_launch = now;
@@ -2274,11 +2277,15 @@ int host_agent_run(const host_agent_opts *opts)
   g.prompt_queue_max = PROMPT_QUEUE_MAX;
   g.prompt_ms = PROMPT_DEADLINE_MS;
   g.reconnect_prompt_ms = PROMPT_RECONNECT_MS;
+  g.ui_launch = 1;
 #ifdef SD_HOST_TEST_HOOKS
   g.prompt_ms = env_u32(L"SHELLDRIVE_TEST_PROMPT_MS", (uint32_t)g.prompt_ms);
   g.reconnect_prompt_ms = env_u32(L"SHELLDRIVE_TEST_RECONNECT_PROMPT_MS", (uint32_t)g.reconnect_prompt_ms);
   g.prompt_queue_max = env_u32(L"SHELLDRIVE_TEST_PROMPT_QUEUE_MAX", g.prompt_queue_max);
   g.no_route = env_u32(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", 0) != 0;
+  /* a test agent never starts the prompt UI: the UI would reach the default instance and start the real
+     agent. Only a test that asks for the launch sets SHELLDRIVE_TEST_UI_LAUNCH=1. */
+  g.ui_launch = env_u32(L"SHELLDRIVE_TEST_UI_LAUNCH", 0) != 0;
 #endif
   g.boot_tick = sd_tick_ms();
   (void)sd_settings_load(&g.settings);

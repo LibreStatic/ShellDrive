@@ -68,6 +68,7 @@ static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_MS", prompt_ms);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_QUEUE_MAX", queue_max);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", no_route);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_UI_LAUNCH", L"0");   /* never start the real prompt UI */
   sd_ipc_set_instance_suffix(suffix);
   wcscpy_s(exe, MAX_PATH, g_dir);
   wcscat_s(exe, MAX_PATH, L"\\sd-test-host-fake.exe");

@@ -72,6 +72,7 @@ typedef struct ui_app {
   HANDLE mutex;                 /* SD_IPC_OBJ_UI_MUTEX, held for the life of the first instance */
   int agent_up;
   int quit;
+  int prompt_host;              /* started with --prompt-host: never starts the agent, exits without it */
   ui_model model;
 } ui_app;
 

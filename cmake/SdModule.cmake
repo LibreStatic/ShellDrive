@@ -140,6 +140,13 @@ function(sd_manifest_configure out_file name gui)
     set(SD_MANIFEST_DEPENDENCY "")
     set(SD_MANIFEST_DPI "")
   endif()
+  # longPathAware is in the 2016 namespace too: the XP flavours (SDK 7.1A) do not know it, and XP has no
+  # long path support to ask for (manifest warning 81010002).
+  if(NOT SD_XP)
+    set(SD_MANIFEST_LONGPATH [[      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>]])
+  else()
+    set(SD_MANIFEST_LONGPATH "")
+  endif()
   configure_file("${CMAKE_SOURCE_DIR}/res/manifest/app.manifest.in" "${out_file}" @ONLY)
 endfunction()
 

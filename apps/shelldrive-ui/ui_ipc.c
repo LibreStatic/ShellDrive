@@ -191,7 +191,9 @@ static DWORD WINAPI ipc_thread(void *arg)
     hello.lang = sd_l10n_lang_code(sd_l10n_lang());
     hello.caps = 0;                     /* prompts.ui is not declared yet (see the file comment) */
 
-    e = sd_ipc_connect(SD_IPC_AGENT, &hello, first, UI_IPC_CONNECT_MS, &c);
+    /* A prompt host (--prompt-host) was started by the agent: it never starts one itself (03 §2.5), and it
+       exits when the agent is gone (post_state(0) makes the UI thread quit). */
+    e = sd_ipc_connect(SD_IPC_AGENT, &hello, first && !g_app.prompt_host, UI_IPC_CONNECT_MS, &c);
     first = 0;
     if (e == SD_OK) {
       sd_json *res = NULL;
@@ -211,8 +213,12 @@ static DWORD WINAPI ipc_thread(void *arg)
     } else {
       SD_LOGD("ui", "agent not reachable (%s)", sd_err_name(e));
       fail_queued();
+      if (g_app.prompt_host) {
+        SD_LOGI("ui", "prompt host: no agent, exiting");
+        post_state(0);
+      }
     }
-    if (stop)
+    if (stop || g_app.prompt_host)
       break;
     if (WaitForSingleObject(g_ipc.stop, UI_IPC_RETRY_MS) == WAIT_OBJECT_0)
       break;
