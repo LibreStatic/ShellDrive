@@ -57,7 +57,13 @@ foreach ($preset in $Presets) {
   $note = ''
   try {
     $dir = Join-Path $root "build\$preset"
-    if ($Clean -and (Test-Path $dir)) { Remove-Item -Recurse -Force $dir }
+    if ($Clean -and (Test-Path $dir)) {
+      # A scanner or a test process that is just exiting can hold a file for a moment; retry before failing.
+      for ($try = 1; ; $try++) {
+        try { Remove-Item -Recurse -Force $dir -ErrorAction Stop; break }
+        catch { if ($try -ge 5) { throw }; Start-Sleep -Seconds 5 }
+      }
+    }
 
     Write-Host "== [$preset] configure"
     & $cmake --preset $preset | Out-Host
