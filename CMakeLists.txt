@@ -56,5 +56,9 @@ add_subdirectory(apps/shelldrive-host)
 add_subdirectory(apps/shelldrive-ui)
 add_subdirectory(apps/shelldrive-shellext)
 
+# Setup engine, stub and payload tool (04 §6; tools/sd-payload attaches the payload CAB).
+add_subdirectory(tools/sd-payload)
+add_subdirectory(apps/shelldrive-setup)
+
 # Unit tests and other test suites.
 add_subdirectory(tests)

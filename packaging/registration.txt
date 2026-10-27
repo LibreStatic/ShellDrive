@@ -1,0 +1,33 @@
+# ShellDrive registration data: the single source for the per-user setup (apps/shelldrive-setup) and
+# for the MSI registry tables that tools/sd-regtable will generate (04 §6.6, D45).
+#
+# One row per registry value:   subkey|value name|type|data|feature
+#   subkey      relative to the hive chosen by the install mode (HKCU per-user; HKLM per-machine, MSI).
+#               Empty subkey is not allowed. Backslashes are literal.
+#   value name  empty = the key's default value.
+#   type        SZ | DWORD (DWORD data is a decimal number or a placeholder that expands to one).
+#   data        literal text, with placeholders expanded by the installer:
+#                 [INSTALLDIR]  install folder, with a trailing backslash
+#                 [VERSION]     product version (VERSION file)
+#                 [FLAVOUR]     flavour name of the installed payload (x86-ia32, x64-modern, ...)
+#                 [SIZEKB]      installed size in KB (rounded up)
+#   feature     core (always written) | autostart (written only when sign-in start is chosen)
+# Rows are written and removed in file order. Keys are removed by the uninstaller when empty.
+# Lines starting with # are comments. A "|" never appears inside data.
+
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive||SZ|ShellDrive|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayName|SZ|ShellDrive|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayVersion|SZ|[VERSION]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|Publisher|SZ|LibreStatic|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayIcon|SZ|[INSTALLDIR]shelldrive-ui.exe,0|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|InstallLocation|SZ|[INSTALLDIR]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|UninstallString|SZ|"[INSTALLDIR]uninstall.exe" /uninstall|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|QuietUninstallString|SZ|"[INSTALLDIR]uninstall.exe" /uninstall /quiet|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|EstimatedSize|DWORD|[SIZEKB]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|NoModify|DWORD|1|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|NoRepair|DWORD|1|core
+Software\LibreStatic\ShellDrive|InstallDir|SZ|[INSTALLDIR]|core
+Software\LibreStatic\ShellDrive|Version|SZ|[VERSION]|core
+Software\LibreStatic\ShellDrive|Flavour|SZ|[FLAVOUR]|core
+Software\Microsoft\Windows\CurrentVersion\App Paths\shelldrive-ui.exe||SZ|[INSTALLDIR]shelldrive-ui.exe|core
+Software\Microsoft\Windows\CurrentVersion\Run|ShellDrive|SZ|"[INSTALLDIR]shelldrive-host.exe" agent --logon --if-needed|autostart

@@ -528,3 +528,15 @@ user32.dll!OpenClipboard
 user32.dll!SetClipboardData
 user32.dll!SetMenu
 gdi32.dll!CreateFontW
+# M4 setup stub additions (docs/design/04 §2.4): Win32 1.0 APIs present on XP SP3, not in the clean-VM
+# capture yet. The XP lab capture (04 §11.4) must confirm these names.
+kernel32.dll!FindResourceW
+kernel32.dll!LoadResource
+kernel32.dll!LockResource
+kernel32.dll!SizeofResource
+user32.dll!AdjustWindowRectEx
+user32.dll!BeginPaint
+user32.dll!EndPaint
+user32.dll!FillRect
+user32.dll!UpdateWindow
+gdi32.dll!CreateSolidBrush

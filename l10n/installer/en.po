@@ -1,0 +1,197 @@
+# ShellDrive installer strings, English source of truth (03 §9.1, 04 §8.6). Used by the setup
+# program (apps/shelldrive-setup). msgstr stays empty in en.po; the msgctxt is the stable symbolic id.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Title of the setup window and of its message boxes.
+msgctxt "installer.window.title"
+msgid "ShellDrive Setup"
+msgstr ""
+
+#. Progress line while setup starts.
+msgctxt "installer.progress.prepare"
+msgid "Preparing setup..."
+msgstr ""
+
+#. Progress line while the installed version is read.
+msgctxt "installer.progress.check"
+msgid "Checking the installed version..."
+msgstr ""
+
+#. Progress line while running ShellDrive programs are asked to close.
+msgctxt "installer.progress.stop"
+msgid "Closing running ShellDrive programs..."
+msgstr ""
+
+#. Progress line while the setup package is unpacked to a temporary folder.
+msgctxt "installer.progress.extract"
+msgid "Unpacking the files..."
+msgstr ""
+
+#. Progress line while files are copied. {folder} is the install folder.
+msgctxt "installer.progress.copy"
+msgid "Copying files to {folder}..."
+msgstr ""
+
+#. Progress line while the account registration is written.
+msgctxt "installer.progress.register"
+msgid "Registering ShellDrive for this account..."
+msgstr ""
+
+#. Progress line while the Start menu shortcut is created.
+msgctxt "installer.progress.shortcut"
+msgid "Creating the Start menu shortcut..."
+msgstr ""
+
+#. Progress line while uninstalling. {folder} is the install folder.
+msgctxt "installer.progress.uninstall"
+msgid "Removing ShellDrive from {folder}..."
+msgstr ""
+
+#. Progress line while the portable copy is unpacked. {folder} is the chosen folder.
+msgctxt "installer.progress.portable"
+msgid "Unpacking the portable copy to {folder}..."
+msgstr ""
+
+#. Final line after an install. {version} is the product version, {folder} the install folder.
+msgctxt "installer.done.install"
+msgid "ShellDrive {version} is installed in {folder}."
+msgstr ""
+
+#. Final line after an uninstall. Settings and profiles are kept by default.
+msgctxt "installer.done.uninstall"
+msgid "ShellDrive has been removed. Your settings and profiles were kept."
+msgstr ""
+
+#. Final line after a portable extraction. {folder} is the chosen folder.
+msgctxt "installer.done.portable"
+msgid "The portable copy is ready in {folder}."
+msgstr ""
+
+#. Summary line after an install. {count} is the number of files copied.
+#, plural-arg=count
+msgctxt "installer.summary.files"
+msgid "{count} file copied."
+msgid_plural "{count} files copied."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Shown after an error, with the path of the setup log. {path} is the log file.
+msgctxt "installer.log.saved"
+msgid "Details were written to {path}."
+msgstr ""
+
+#. Shown for a portable copy on a drive without file permissions.
+msgctxt "installer.warn.volume"
+msgid "This drive may not keep file permissions, so anyone with it can change the files."
+msgstr ""
+
+#. Error for an unknown or malformed command-line option. {option} is the option as typed.
+msgctxt "installer.error.args"
+msgid "Unknown or invalid option: {option}. Run setup with /help for the options."
+msgstr ""
+
+#. Error for /permachine in builds without the MSI engine.
+msgctxt "installer.error.machine_unsupported"
+msgid "Installing for all users is not available in this version. Run setup without /permachine."
+msgstr ""
+
+#. Error when the processor has no SSE2 and the SSE2 build was asked for. {flavour} is the build name.
+msgctxt "installer.error.flavour_sse2"
+msgid "This processor does not support SSE2, so the {flavour} build cannot run here."
+msgstr ""
+
+#. Error when the Windows version is older than the build needs. {flavour} is the build name.
+msgctxt "installer.error.flavour_os"
+msgid "The {flavour} build needs a newer version of Windows."
+msgstr ""
+
+#. Error for a processor type the setup program does not know.
+msgctxt "installer.error.flavour_cpu"
+msgid "This processor is not supported by this setup program."
+msgstr ""
+
+#. Error for 32-bit Windows on ARM, which needs its own setup program.
+msgctxt "installer.error.flavour_arm32"
+msgid "Windows on ARM (32-bit) needs the ARM32 setup program."
+msgstr ""
+
+#. Error when the build does not match the Windows bitness or processor. {flavour} is the build name.
+msgctxt "installer.error.flavour_bitness"
+msgid "The {flavour} build cannot run on this version of Windows or this processor."
+msgstr ""
+
+#. Error when the setup program has no files for the chosen build. {flavour} is the build name.
+msgctxt "installer.error.payload_missing"
+msgid "This setup program does not include the files for {flavour}."
+msgstr ""
+
+#. Error when the embedded package does not match its recorded checksum.
+msgctxt "installer.error.payload_damaged"
+msgid "The setup program is damaged. Download it again."
+msgstr ""
+
+#. Error for a file name inside the package that could escape the install folder. {name} is that name.
+msgctxt "installer.error.payload_unsafe"
+msgid "The setup package contains an unsafe file name: {name}."
+msgstr ""
+
+#. Error when the package or one of its files is larger than the allowed size.
+msgctxt "installer.error.payload_too_big"
+msgid "The setup package is larger than the allowed size."
+msgstr ""
+
+#. Error when the package cannot be unpacked. {code} is the Windows error code.
+msgctxt "installer.error.payload_extract"
+msgid "The setup files could not be unpacked (error {code})."
+msgstr ""
+
+#. Error when a newer version is installed and /update was not given. {version} is that version.
+msgctxt "installer.error.newer_installed"
+msgid "A newer ShellDrive ({version}) is already installed. Use /update to replace it."
+msgstr ""
+
+#. Error when ShellDrive is still running after it was asked to close, and /force was not given.
+msgctxt "installer.error.running"
+msgid "ShellDrive is still running. Close it and try again, or use /force."
+msgstr ""
+
+#. Error when a file cannot be replaced. {file} is the file name.
+msgctxt "installer.error.file_locked"
+msgid "Could not replace {file}. Close the programs that use it and try again."
+msgstr ""
+
+#. Error when a folder cannot be written. {path} is the folder.
+msgctxt "installer.error.write"
+msgid "Setup could not write to {path}."
+msgstr ""
+
+#. Error when a per-machine installation already exists and a per-user one was requested.
+msgctxt "installer.error.machine_exists"
+msgid "ShellDrive is installed for all users. Remove that copy first."
+msgstr ""
+
+#. Error for /uninstall when no ShellDrive is registered for this account.
+msgctxt "installer.error.not_installed"
+msgid "ShellDrive is not installed for this account."
+msgstr ""
+
+#. Error for a portable folder that already has files. {folder} is the folder.
+msgctxt "installer.error.portable_not_empty"
+msgid "The folder {folder} is not empty. Choose an empty folder."
+msgstr ""
+
+#. Generic error with the Windows error code. {code} is the number.
+msgctxt "installer.error.generic"
+msgid "Setup failed with error {code}."
+msgstr ""
+
+#. Output of /help. Option names and separators are literal syntax.
+msgctxt "installer.help"
+msgid "Usage: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<folder>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<name>] [/log=<file>] [/lang=<code>]"
+msgstr ""
