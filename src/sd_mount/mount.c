@@ -687,6 +687,7 @@ static void on_ready(sd_mount *m)
     wc.read_only = m->read_only ? TRUE : FALSE;
     wc.label = vo.volume_label;
     wc.owner_sid = m->owner_sid;
+    wc.global = m->global_mount ? TRUE : FALSE;     /* TM-R19: token-only is always refused for global mounts */
     e = m->be->webdav_mount_start(m->vfs, &wc, &m->wm);
     if (e != SD_OK) {
       m->wm = NULL;

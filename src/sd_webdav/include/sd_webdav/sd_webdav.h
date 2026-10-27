@@ -82,6 +82,7 @@ typedef struct sd_webdav_export_cfg {
   uint32_t struct_size;        /* sizeof(sd_webdav_export_cfg) */
   BOOL read_only;              /* write methods omitted from Allow, refused with 403 */
   const wchar_t *label;        /* drive label (_LabelFromReg); NULL = none */
+  BOOL token_only;             /* TM-R19: the path token is the only authenticator (no SSPI, caller = owner) */
 } sd_webdav_export_cfg;
 
 sd_err sd_webdav_export_add(sd_webdav_server *s, sd_vfs *vfs, const sd_webdav_export_cfg *cfg,
@@ -116,6 +117,9 @@ typedef struct sd_webdav_mount_cfg {
   BOOL read_only;
   const wchar_t *label;
   PSID owner_sid;              /* NULL = process user; must match across mounts of the process */
+  BOOL global;                 /* a service (global) mount: token-only is always refused */
+  BOOL token_only;             /* request token-only mode (TM-R19); the host asked the user first */
+  BOOL token_only_confirmed;   /* the user confirmed this enable in the host dialog (03 7.5) */
 } sd_webdav_mount_cfg;
 
 /* Starts the process server if needed (cleaning stale mappings first), adds the export, maps the
@@ -124,5 +128,39 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
 /* Unmaps, removes the export, stops the server with the last mount. Frees m. */
 sd_err sd_webdav_mount_stop(sd_webdav_mount *m);
 uint16_t sd_webdav_mount_port(const sd_webdav_mount *m);
+
+/* ---- token-only mode (TM-R19, 02 §7.4) ----
+   Used when the redirector cannot authenticate. Never switched on by sd_webdav itself: the host asks the
+   user each time it is enabled and passes token_only_confirmed. */
+
+typedef enum sd_webdav_tok_verdict {
+  SD_WD_TOK_OK = 0,
+  SD_WD_TOK_FORBIDDEN_GLOBAL,      /* global (service) mounts never use token-only */
+  SD_WD_TOK_FORBIDDEN_POLICY,      /* AllowWebDavTokenOnly = 0 (or a value other than 1) */
+  SD_WD_TOK_NOT_CONFIRMED,         /* the user has not confirmed this enable */
+  SD_WD_TOK_RDSH,                  /* Remote Desktop Session Host, a server product, or a remote session */
+  SD_WD_TOK_SESSIONS               /* more than one active session, or the count is unknown */
+} sd_webdav_tok_verdict;
+
+typedef struct sd_webdav_tok_input {
+  int policy;                      /* AllowWebDavTokenOnly: -1 when absent (default 1), else the value read */
+  BOOL global;
+  BOOL confirmed;
+  BOOL rdsh;                       /* filled by sd_webdav_token_only_environment */
+  DWORD active_sessions;           /* filled by sd_webdav_token_only_environment; 0xFFFFFFFF = unknown */
+} sd_webdav_tok_input;
+
+/* Pure decision (TM-R19): checks global, policy, confirmation, RDSH, then sessions. */
+sd_webdav_tok_verdict sd_webdav_token_only_decide(const sd_webdav_tok_input *in);
+/* Fills rdsh and active_sessions from the machine (read-only: registry, GetSystemMetrics, WTS enumeration).
+   Anything it cannot establish is reported as the refusing value. */
+void sd_webdav_token_only_environment(sd_webdav_tok_input *io);
+const char *sd_webdav_tok_verdict_name(sd_webdav_tok_verdict v);
+
+/* WinHTTP self-test (02 §7.4): on loopback with automatic logon disabled for the request, PROPFIND of
+   prefix ("/s-<token>") must answer 2xx and PROPFIND of "/" (no token) must answer 4xx. Returns SD_OK;
+   SD_E_AUTH_FAILED when the server does not behave that way; SD_E_UNSUPPORTED when WinHTTP is missing;
+   SD_E_FAILURE when the request could not be made. */
+sd_err sd_webdav_token_selftest(uint16_t port, const char *prefix);
 
 #endif /* SD_WEBDAV_H */

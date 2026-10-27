@@ -16,6 +16,11 @@ SD_TEST_DECL(webdav_server_auth_and_methods);
 SD_TEST_DECL(webdav_server_rejects_other_sid);
 SD_TEST_DECL(webdav_server_read_only_export);
 SD_TEST_DECL(webdav_server_slowloris_and_quotas);
+SD_TEST_DECL(webdav_token_only_decision_matrix);
+SD_TEST_DECL(webdav_token_selftest_verdict);
+SD_TEST_DECL(webdav_token_only_gate_per_mode);
+SD_TEST_DECL(webdav_token_only_selftest);
+SD_TEST_DECL(webdav_token_only_mount_refused);
 SD_TEST_DECL(webdav_server_ipv6_loopback);
 
 static const sd_test_case k_tests[] = {
@@ -36,6 +41,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(webdav_server_read_only_export),
   SD_TEST_ENTRY(webdav_server_slowloris_and_quotas),
   SD_TEST_ENTRY(webdav_server_ipv6_loopback),
+  SD_TEST_ENTRY(webdav_token_only_decision_matrix),
+  SD_TEST_ENTRY(webdav_token_selftest_verdict),
+  SD_TEST_ENTRY(webdav_token_only_gate_per_mode),
+  SD_TEST_ENTRY(webdav_token_only_selftest),
+  SD_TEST_ENTRY(webdav_token_only_mount_refused),
 };
 
 int main(int argc, char **argv)
