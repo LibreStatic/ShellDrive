@@ -17,6 +17,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
+#pragma comment(lib, "iphlpapi.lib")
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -152,26 +154,81 @@ static int ctl(const char *what)
   return wsl_sh(s, 60000);
 }
 
+/* Local ports of this process's ESTABLISHED IPv4 connections to the fixture (the primary and the
+ * pool members; an abandoned admission attempt is closed on this side and is not listed). */
+static int fixture_conn_ports(uint16_t *ports, int cap, int *count)
+{
+  DWORD size = 0, pid = GetCurrentProcessId(), i;
+  PMIB_TCPTABLE_OWNER_PID t;
+  int n = 0;
+  *count = 0;
+  if (GetExtendedTcpTable(NULL, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) !=
+      ERROR_INSUFFICIENT_BUFFER)
+    return 0;
+  t = (PMIB_TCPTABLE_OWNER_PID)malloc(size);
+  if (!t) return 0;
+  if (GetExtendedTcpTable(t, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) != NO_ERROR) {
+    free(t);
+    return 0;
+  }
+  for (i = 0; i < t->dwNumEntries; i++) {
+    const MIB_TCPROW_OWNER_PID *r = &t->table[i];
+    if (r->dwOwningPid != pid || r->dwState != MIB_TCP_STATE_ESTAB) continue;
+    if (ntohs((u_short)r->dwRemotePort) != g_port) continue;
+    if (n < cap) ports[n] = ntohs((u_short)r->dwLocalPort);
+    n++;
+  }
+  free(t);
+  *count = n;
+  return 1;
+}
+
 /* Fault for the pool member tests: ctl.sh only knows whole-fixture verbs (kill: the listener and
  * every session, drop: every session), so a single member connection is dropped from the fixture
- * state instead. The fixture's sshd forks exactly one direct child per accepted connection and the
- * pool admits its members sequentially after READY, so with a fully admitted pool the newest direct
- * child of the listener (highest pid) is a member connection, never the primary. Killing that
- * child's whole process subtree (monitor + unprivileged network child) drops exactly that TCP
- * connection; the listener and the other connections stay up. SIGKILL also works on the frozen
- * (SIGSTOPped) processes the member-drop tests leave behind. */
+ * state instead. The member is identified by its TCP peer port: the pool holds exactly three
+ * ESTABLISHED connections (the primary plus two members). Local ports are not allocated in connect
+ * order, so they cannot tell the primary apart; the fixture's sshd accepts connections in order and
+ * the members connect only after READY, so on the server the primary's per-connection monitor has
+ * the lowest pid and the victim is the highest-pid monitor among the three. The fixture side finds
+ * each connection's sshd session by its peer port (the connection is direct, no relay, so the
+ * client's local port is the server's peer port), climbs to its monitor (a direct child of the
+ * listener) and kills that subtree; the listener and the other connections stay up. SIGKILL also works on the frozen (SIGSTOPped) processes the member-drop
+ * tests leave behind. The chosen port is logged to <fixture>/state/drop_win.log. */
 static int ctl_drop_one_member(void)
 {
-  char s[1400];
+  uint16_t ports[8], victim = 0;
+  int cnt = 0, i;
+  char s[1800], logp[MAX_PATH];
+  FILE *f;
+  if (!fixture_conn_ports(ports, 8, &cnt) || cnt != 3) return 2;
+  for (i = 0; i < cnt; i++)
+    if (ports[i] > victim) victim = ports[i];
+  _snprintf_s(logp, sizeof(logp), _TRUNCATE, "%s/state/drop_win.log", g_dir);
+  if (fopen_s(&f, logp, "a") == 0 && f) {
+    fprintf(f, "drop: established=%d ports=%u,%u,%u victim=%u\n", cnt, (unsigned)ports[0],
+            (unsigned)ports[1], (unsigned)ports[2], (unsigned)victim);
+    fclose(f);
+  }
   _snprintf_s(s, sizeof(s), _TRUNCATE,
     "run=${XDG_STATE_HOME:-$HOME/.local/state}/shelldrive-wsl-sshd; "
     "root=$(cat $run/sshd.pid 2>/dev/null) || exit 1; "
-    "n=$(ps -eo pid=,ppid= | awk -v r=$root '$2==r {print $1}' | sort -n | tail -1); "
-    "case $n in ''|*[!0-9]*) exit 1;; esac; "
+    "best=0; bestp=0; "
+    "for p in %u %u %u; do "
+    "pid=$(ss -Htnp state established '( sport = :%u )' | awk -v p=:$p '{ if (substr($4, length($4) - length(p) + 1) == p) { print; exit } }' | sed 's/.*pid=\\([0-9]*\\).*/\\1/'); "
+    "case $pid in ''|*[!0-9]*) echo no sshd for port $p >> '%s/state/drop.log'; exit 1;; esac; "
+    "m=$(ps -eo pid=,ppid= | awk -v q=$pid -v r=$root '{p[$1]=$2} END {x=q; while ((x in p) && p[x]!=r && x>1) x=p[x]; if (p[x]==r) print x}'); "
+    "case $m in ''|*[!0-9]*) echo no monitor for port $p >> '%s/state/drop.log'; exit 1;; esac; "
+    "echo port $p session $pid monitor $m >> '%s/state/drop.log'; "
+    "if [ $m -gt $best ]; then best=$m; bestp=$p; fi; "
+    "done; "
+    "n=$best; "
+    "echo drop victim port $bestp monitor $n >> '%s/state/drop.log'; "
     "ps -eo pid=,ppid= | awk -v r=$n "
     "'{p[$1]=$2} END {for (q in p) { x=q; while ((x in p) && x!=r && x>1) x=p[x]; "
     "if (x==r && q!=r) print q }}' | xargs -r kill -9 2>/dev/null; "
-    "kill -9 $n 2>/dev/null; exit 0");
+    "kill -9 $n 2>/dev/null; exit 0",
+    (unsigned)ports[0], (unsigned)ports[1], (unsigned)ports[2], (unsigned)g_port,
+    g_dir_wsl, g_dir_wsl, g_dir_wsl, g_dir_wsl);
   return wsl_sh(s, 60000);
 }
 
