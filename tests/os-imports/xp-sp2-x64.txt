@@ -47,6 +47,7 @@ kernel32.dll!FileTimeToSystemTime
 kernel32.dll!FindClose
 kernel32.dll!FindFirstFileExA
 kernel32.dll!FindFirstFileExW
+kernel32.dll!FindFirstFileW
 kernel32.dll!FindNextFileA
 kernel32.dll!FindNextFileW
 kernel32.dll!FlushFileBuffers
@@ -81,6 +82,7 @@ kernel32.dll!GetExitCodeThread
 kernel32.dll!GetFileAttributesExW
 kernel32.dll!GetFileAttributesW
 kernel32.dll!GetFileInformationByHandle
+kernel32.dll!GetFileSize
 kernel32.dll!GetFileSizeEx
 kernel32.dll!GetFileTime
 kernel32.dll!GetFileType
@@ -100,6 +102,7 @@ kernel32.dll!GetNativeSystemInfo
 kernel32.dll!GetNumberFormatW
 kernel32.dll!GetOEMCP
 kernel32.dll!GetOverlappedResult
+kernel32.dll!GetPrivateProfileStringW
 kernel32.dll!GetProcAddress
 kernel32.dll!GetProcessHeap
 kernel32.dll!GetProcessTimes
@@ -237,6 +240,7 @@ kernel32.dll!WideCharToMultiByte
 kernel32.dll!WriteConsoleW
 kernel32.dll!WriteFile
 kernel32.dll!WriteFileEx
+kernel32.dll!WritePrivateProfileStringW
 kernel32.dll!lstrcmpiW
 kernel32.dll!lstrlenW
 

@@ -44,6 +44,7 @@ add_subdirectory(src/sd_l10n)
 add_subdirectory(src/sd_config)
 add_subdirectory(src/sd_secret)
 add_subdirectory(src/sd_ipc)
+add_subdirectory(src/sd_state)
 add_subdirectory(src/sd_mount)
 
 # Localized catalogs (PO sources under l10n/).

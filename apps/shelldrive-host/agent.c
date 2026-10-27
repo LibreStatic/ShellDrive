@@ -30,6 +30,7 @@
  * M0 gaps (documented in docs/dev/m0-notes.md by the lead): no hidden window (WM_ENDSESSION, WTS
  * and power notifications), no prompt queue while locked, no UI launch for prompts, no autostart. */
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "host.h"
@@ -44,6 +45,9 @@
 #include "sd_platform/sd_time.h"
 
 #include "log_ring.h"
+#include "state_producer.h"
+#include "explorer_data.h"
+#include "sd_state/sd_state.h"
 
 typedef struct work { struct work *next; void (*fn)(void *); void *arg; } work;
 
@@ -104,6 +108,7 @@ typedef struct host_mount {
   uint32_t hop_count;
   /* M3 */
   uint32_t initiator_caps;      /* SD_IPC_CAP_* of the initiator when it asked for the mount */
+  int network_location;         /* profile mount.network_location (03 §8.7) */
 } host_mount;
 
 /* ---- M3 constants (03 §2.5, §3.3, 1.7.4) ---- */
@@ -417,6 +422,90 @@ static void send_warning(host_mount *h, const char *code, const wchar_t *path, U
   sd_wr_free(&d);
 }
 
+/* ---- M3 state snapshot and Explorer data (03 §8.2.1, §8.3, §8.7) ---- */
+
+/* The producer copies the URL during the call; this table keeps the strings alive for that call. g.lock held. */
+static char g_snap_url[SD_STATE_MAX_ENTRIES][1024];
+
+static uint32_t snap_backend(const host_mount *h)
+{
+  const char *n = h->m ? sd_mount_backend_kind_name(sd_mount_backend_kind_used(h->m)) : NULL;
+  if (n && strcmp(n, "webdav") == 0)
+    return SD_STATE_B_WEBDAV;
+  if (n && strcmp(n, "dokany") == 0)
+    return SD_STATE_B_DOKANY;
+  return SD_STATE_B_UNKNOWN;
+}
+
+/* The drive is mapped: mounted, offline (the letter stays) or waiting for credentials. */
+static int mount_present(const host_mount *h)
+{
+  return h->state == SD_MOUNT_MOUNTED || h->state == SD_MOUNT_OFFLINE || h->state == SD_MOUNT_AUTH_REQUIRED;
+}
+
+/* sftp://user@host:port/path (IPv6 literals in brackets). The path only: never credentials (03 §8.2.1). */
+static void mount_url(const host_mount *h, char *out, size_t cap)
+{
+  if (strchr(h->host, ':') != NULL)
+    _snprintf_s(out, cap, _TRUNCATE, "sftp://%s@[%s]:%u%s", h->user, h->host, (unsigned)h->port, h->remote);
+  else
+    _snprintf_s(out, cap, _TRUNCATE, "sftp://%s@%s:%u%s", h->user, h->host, (unsigned)h->port, h->remote);
+}
+
+/* Publishes every mount into the snapshot section. g.lock held. */
+static void state_publish_locked(uint32_t flags)
+{
+  host_state_src src[SD_STATE_MAX_ENTRIES];
+  uint32_t n = 0;
+  const host_mount *h;
+  for (h = g.mounts; h && n < SD_STATE_MAX_ENTRIES; h = h->next) {
+    host_state_src *s = &src[n];
+    memset(s, 0, sizeof(*s));
+    s->mount_num = h->num;
+    s->mount_id = h->id;
+    s->profile_id = h->profile_id;
+    s->profile_name = h->profile_name;
+    mount_url(h, g_snap_url[n], sizeof(g_snap_url[n]));
+    s->remote_url = g_snap_url[n];
+    s->label = h->label;
+    s->letter = h->letter;
+    s->state = SD_STATE_S_CONNECTING + (uint32_t)h->state;   /* sd_mount_state has the order of SD_STATE_S_* */
+    s->backend = snap_backend(h);
+    s->read_only = h->read_only;
+    s->network_location = h->network_location;
+    n++;
+  }
+  host_state_publish(src, n, flags);
+}
+
+static void work_explorer(void *arg)
+{
+  host_explorer_mount *x = (host_explorer_mount *)arg;
+  explorer_apply(x);
+  sd_free(x);
+}
+
+/* Copies the Explorer data of a mount and runs the change on the control thread, without g.lock. */
+static void explorer_post_locked(const host_mount *h)
+{
+  host_explorer_mount *x = (host_explorer_mount *)sd_calloc(1, sizeof(*x));
+  if (x == NULL)
+    return;
+  x->letter = h->letter;
+  x->present = mount_present(h);
+  x->network_location = h->network_location;
+  scopy(x->profile_id, sizeof(x->profile_id), h->profile_id);
+  scopy(x->profile_name, sizeof(x->profile_name), h->profile_name);
+  post(NULL, work_explorer, x);
+}
+
+/* A mount was added, changed or removed (h is no longer linked when it is removed). g.lock held. */
+static void mount_changed_locked(const host_mount *h)
+{
+  state_publish_locked(0);
+  explorer_post_locked(h);
+}
+
 /* ---- sd_mount callbacks (control thread) ---- */
 
 static void destroy_record_locked(host_mount *h)
@@ -424,6 +513,7 @@ static void destroy_record_locked(host_mount *h)
   host_mount **pp;
   for (pp = &g.mounts; *pp; pp = &(*pp)->next)
     if (*pp == h) { *pp = h->next; break; }
+  mount_changed_locked(h);
   if (h->m) {
     prompt_drop_mount(h->m);
     sd_mount_destroy(h->m);
@@ -453,6 +543,7 @@ static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   if (h) {
     h->state = st;
     send_state_event(h, st, why);
+    mount_changed_locked(h);
     if (sd_mount_is_final(m))
       post(NULL, work_reap, h);
   }
@@ -862,6 +953,11 @@ static void maybe_launch_ui(void)
   PROCESS_INFORMATION pi;
   DWORD n;
   size_t i;
+#ifdef SD_HOST_TEST_HOOKS
+  /* tests: SHELLDRIVE_TEST_NO_UI (set by every agent test) keeps the test host from starting a UI */
+  if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_NO_UI", NULL, 0) != 0)
+    return;
+#endif
   if (g.last_ui_launch && now - g.last_ui_launch < UI_LAUNCH_INTERVAL_MS)
     return;
   g.last_ui_launch = now;
@@ -1204,6 +1300,7 @@ static void work_start(void *arg)
     host_mount **pp;
     for (pp = &g.mounts; *pp; pp = &(*pp)->next)
       if (*pp == h) { *pp = h->next; break; }
+    state_publish_locked(0);            /* never started: its CONNECTING entry goes */
     sd_mutex_unlock(&g.lock);
     free_chain(h->chain);
     sd_free(h);
@@ -1653,8 +1750,10 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->params.kh_store_count = h->chain->nstores;
   h->hop_count = h->chain->count;
   scopy(h->legacy_accepted, sizeof(h->legacy_accepted), prof->legacy_accepted);
+  h->network_location = prof->network_location;
   h->next = g.mounts;
   g.mounts = h;
+  state_publish_locked(0);
   g.last_busy = sd_tick_ms();
   sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
   sd_jw_key(res, "target"); jw_letter(res, letter);
@@ -2326,6 +2425,13 @@ int host_agent_run(const host_agent_opts *opts)
     ResetEvent(stop_ev);
   }
 
+  /* M3: the snapshot section (03 §8.2.1) exists before any client can connect; then the Explorer data
+     left by a crashed agent is reconciled (03 §8.3, §8.7). */
+  explorer_init();
+  if (host_state_open() != SD_OK)
+    SD_LOGW("agent", "state snapshot unavailable (named object squatted or no memory)");
+  explorer_reconcile_start();
+
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size = sizeof(cfg);
   cfg.handler = ipc_handler;
@@ -2397,6 +2503,8 @@ int host_agent_run(const host_agent_opts *opts)
   sd_ipc_server_stop(g.srv);
   g.srv = NULL;
   drain();
+  explorer_shutdown();                  /* icons of this agent go; the snapshot is emptied below */
+  host_state_close();
   /* mounts that did not finish their teardown in time must not leave a mapping behind (TM-R17) */
   cleanup_webdav_mappings("stop");
   SetUnhandledExceptionFilter(g_prev_filter);

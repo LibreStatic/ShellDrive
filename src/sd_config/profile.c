@@ -103,6 +103,7 @@ void sd_profile_defaults(sd_profile *p)
   p->write_mode = SD_PROFILE_WRITE_THROUGH;
   p->backend = SD_PROFILE_BACKEND_AUTO;
   p->channels = 2;
+  p->network_location = 1;
   sd_profile_m2_defaults(p);
 }
 
@@ -232,6 +233,10 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
     else BAD("mount.write_mode");
   }
   if ((v = sd_ini_get(ini, "mount", "label")) != NULL && !scpy(p->label, sizeof(p->label), v)) BAD("mount.label");
+  if ((v = sd_ini_get(ini, "mount", "network_location")) != NULL) {
+    if (!sd_ini_parse_bool(v, &b)) BAD("mount.network_location");
+    p->network_location = b;
+  }
   if ((v = sd_ini_get(ini, "mount", "backend")) != NULL) {
     if (strcmp(v, "auto") == 0) p->backend = SD_PROFILE_BACKEND_AUTO;
     else if (strcmp(v, "dokany") == 0) p->backend = SD_PROFILE_BACKEND_DOKANY;
@@ -319,6 +324,9 @@ sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
                          : p->symlinks == SD_PROFILE_SYMLINKS_HIDE ? "hide" : "follow_inside");
   SET("mount", "write_mode", p->write_mode == SD_PROFILE_WRITE_BEHIND ? "behind" : "through");
   if (p->label[0] || sd_ini_get(d, "mount", "label")) SET("mount", "label", p->label);
+  /* the default is yes: written only when it is off or the key is already present */
+  if (!p->network_location || sd_ini_get(d, "mount", "network_location"))
+    SET("mount", "network_location", p->network_location ? "yes" : "no");
   /* M1 keys: only when set or already present, so M0 files stay as they were */
   if (p->backend != SD_PROFILE_BACKEND_AUTO || sd_ini_get(d, "mount", "backend"))
     SET("mount", "backend", p->backend == SD_PROFILE_BACKEND_DOKANY ? "dokany"

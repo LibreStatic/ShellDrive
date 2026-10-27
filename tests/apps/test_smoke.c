@@ -58,6 +58,7 @@ static int setup(void)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_HOST_EXE", v);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_IDLE_MS", L"60000");
   SetEnvironmentVariableW(L"SHELLDRIVE_LANG", L"en");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NO_UI", L"1");     /* never start shelldrive-ui.exe from a test */
   sd_ipc_set_instance_suffix(g_suffix);
   return GetFileAttributesW(v) != INVALID_FILE_ATTRIBUTES;
 }

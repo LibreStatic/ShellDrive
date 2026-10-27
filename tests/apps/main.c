@@ -18,6 +18,8 @@ SD_TEST_DECL(m3_queue_evicts_and_drains_to_ui);
 SD_TEST_DECL(m3_initiator_gone_keeps_prompts_for_ui);
 SD_TEST_DECL(m3_initiator_gone_without_ui_cancels);
 SD_TEST_DECL(m3_new_methods_and_list_warnings);
+SD_TEST_DECL(m3_snapshot_and_icon_follow_mount);
+SD_TEST_DECL(m3_network_location_entries_at_start);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -38,6 +40,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m3_initiator_gone_keeps_prompts_for_ui),
   SD_TEST_ENTRY(m3_initiator_gone_without_ui_cancels),
   SD_TEST_ENTRY(m3_new_methods_and_list_warnings),
+  SD_TEST_ENTRY(m3_snapshot_and_icon_follow_mount),
+  SD_TEST_ENTRY(m3_network_location_entries_at_start),
 };
 
 int main(int argc, char **argv)
