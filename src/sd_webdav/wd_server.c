@@ -376,6 +376,20 @@ static void challenge(wd_rq *q, const char *token_hdr)
   wd_sb_free(&extra);
 }
 
+/* A token-only export answered on this connection: it leaves the unauthenticated quota and gets the
+   authenticated idle deadline, without becoming authenticated (see wd_conn.tok). */
+static void mark_token_conn(wd_conn *c)
+{
+  sd_webdav_server *s = c->srv;
+  sd_mutex_lock(&s->mu);
+  c->tok = 1;
+  if (c->unauth_counted) {
+    c->unauth_counted = 0;
+    s->nunauth--;
+  }
+  sd_mutex_unlock(&s->mu);
+}
+
 static void set_authed(wd_conn *c, PSID user)
 {
   sd_webdav_server *s = c->srv;
@@ -489,9 +503,17 @@ static void handle(wd_rq *q)
     wd_options(q);
     return;
   }
-  if (!authenticate(q))
-    return;
-  q->caller.sid = c->user;
+  if (q->ex && q->ex->token_only) {
+    /* TM-R19 token-only export: the per-mount token (already matched above) is the sole authenticator. No
+       SSPI challenge, no owner SID check; the caller is the mount owner. The connection is marked, but
+       authed stays 0 so that a later request to any other export still goes through SSPI. */
+    mark_token_conn(c);
+    q->caller.sid = c->srv->owner;
+  } else {
+    if (!authenticate(q))
+      return;
+    q->caller.sid = c->user;
+  }
   q->caller.can_write = q->ex ? !q->ex->read_only : FALSE;
   q->vpath = wd_path_to_vfs(&q->path, 1);
   if (q->vpath == NULL) {
@@ -528,7 +550,7 @@ static unsigned __stdcall conn_main(void *arg)
     uint64_t deadline;
     memset(&q, 0, sizeof(q));
     q.c = c;
-    deadline = c->authed ? c->last_at + s->idle_ms
+    deadline = (c->authed || c->tok) ? c->last_at + s->idle_ms
                          : SD_MIN(c->last_at + s->header_ms, c->accepted_at + s->auth_ms);
     for (;;) {
       if (c->ilen > c->ipos) {
@@ -567,7 +589,7 @@ static unsigned __stdcall conn_main(void *arg)
     if (!q.close_after && wd_has_body(&q) && !q.body_done) {
       if (q.r.expect_continue && !q.continue_sent)
         q.close_after = 1;               /* the client may or may not send it: framing is lost */
-      else if (drain(&q, c->authed ? (1u << 20) : WD_UNAUTH_DRAIN_MAX, 0) != 0)
+      else if (drain(&q, (c->authed || (q.ex && q.ex->token_only)) ? (1u << 20) : WD_UNAUTH_DRAIN_MAX, 0) != 0)
         q.close_after = 1;
     }
     export_release(q.ex);
@@ -928,6 +950,7 @@ sd_err sd_webdav_export_add(sd_webdav_server *s, sd_vfs *vfs, const sd_webdav_ex
   e->srv = s;
   e->vfs = vfs;
   e->read_only = cfg->read_only;
+  e->token_only = cfg->token_only;
   if (cfg->label && cfg->label[0]) {
     size_t n = wcslen(cfg->label);
     e->label = (WCHAR *)sd_alloc((n + 1) * sizeof(WCHAR));

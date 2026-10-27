@@ -5,12 +5,13 @@
 
 add_library(sd_webdav_fake STATIC ${SD_WEBDAV_SOURCES})
 target_include_directories(sd_webdav_fake PUBLIC "${SD_WEBDAV_DIR}/include" "${SD_WEBDAV_DIR}")
-target_link_libraries(sd_webdav_fake PUBLIC sd_vfs_fake ${SD_WEBDAV_SYSTEM_LIBS})
+target_link_libraries(sd_webdav_fake PUBLIC sd_vfs_fake sd_policy ${SD_WEBDAV_SYSTEM_LIBS})
 set_target_properties(sd_webdav_fake PROPERTIES FOLDER "tests")
 
-# Protocol helpers, the loopback server through raw sockets (client-side SSPI) and its limits.
+# Protocol helpers, the loopback server through raw sockets (client-side SSPI) and its limits, and the
+# token-only mode (TM-R19): decision matrix, token gate per mode, WinHTTP self-test.
 sd_add_unit_test(webdav
-  SOURCES main.c test_proto.c test_server.c wd_client_util.c wd_client_util.h
+  SOURCES main.c test_proto.c test_server.c test_tokenonly.c wd_client_util.c wd_client_util.h
   DEPS sd_webdav_fake secur32)
 
 # Integration: maps the fake-backed export through the real Windows WebDAV redirector (WebClient) on

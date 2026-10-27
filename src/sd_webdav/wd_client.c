@@ -14,6 +14,7 @@
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_time.h"
+#include "sd_policy/sd_policy.h"
 
 /* ---- WebClient ---- */
 
@@ -412,6 +413,23 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
       cfg->letter < L'A' || cfg->letter > L'Z')
     return SD_E_INVALID_PARAM;
   *out = NULL;
+  if (cfg->token_only) {
+    /* TM-R19: checked on every token-only mount, before anything is started or mapped */
+    sd_webdav_tok_input ti;
+    DWORD pv = 0;
+    sd_webdav_tok_verdict v;
+    memset(&ti, 0, sizeof(ti));
+    /* absent = default 1; a value above 1 is clamped to 2 so that it is refused, never read as absent */
+    ti.policy = sd_policy_get_dword(SD_POLICY_ALLOWWEBDAVTOKENONLY, &pv) ? (int)(pv > 1u ? 2u : pv) : -1;
+    ti.global = cfg->global;
+    ti.confirmed = cfg->token_only_confirmed;
+    sd_webdav_token_only_environment(&ti);
+    v = sd_webdav_token_only_decide(&ti);
+    if (v != SD_WD_TOK_OK) {
+      SD_LOGW(WD_LOG, "token-only mount refused: %s", sd_webdav_tok_verdict_name(v));
+      return SD_E_ACCESS_DENIED;
+    }
+  }
   sd_once_run(&g_mount_once, mount_init, NULL);
   m = (sd_webdav_mount *)sd_calloc(1, sizeof(*m));
   if (m == NULL)
@@ -434,13 +452,19 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
     ec.struct_size = sizeof(ec);
     ec.read_only = cfg->read_only;
     ec.label = cfg->label;
+    ec.token_only = cfg->token_only;
     e = sd_webdav_export_add(g_srv, vfs, &ec, &m->ex);
   }
   if (e == SD_OK) {
+    uint16_t port;
     g_refs++;
+    port = sd_webdav_server_port(g_srv);
     sd_mutex_unlock(&g_mount_mu);
-    /* the redirector connects back to our server while this runs: no lock held */
-    e = sd_webdav_map(m->ex, cfg->letter, &werr);
+    /* the redirector and the self-test connect back to our server while this runs: no lock held */
+    if (cfg->token_only)
+      e = sd_webdav_token_selftest(port, sd_webdav_export_prefix(m->ex));
+    if (e == SD_OK)
+      e = sd_webdav_map(m->ex, cfg->letter, &werr);
     sd_mutex_lock(&g_mount_mu);
     if (e != SD_OK) {
       sd_webdav_export_remove(m->ex);

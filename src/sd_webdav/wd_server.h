@@ -36,6 +36,7 @@ struct sd_webdav_export {
   char token[WD_TOKEN_CHARS + 1];
   char prefix[WD_TOKEN_CHARS + 4];   /* "/s-<token>" */
   BOOL read_only;
+  BOOL token_only;                /* TM-R19: the path token authenticates, no SSPI (02 §7.4) */
   WCHAR *label;
   volatile LONG busy;
   int removing;
@@ -78,6 +79,8 @@ typedef struct wd_conn {
   int exempt;                     /* WebClient service process */
   uint64_t accepted_at, last_at;
   int authed, unauth_counted;
+  int tok;                        /* a token-only export answered here: pre-auth limits end, but authed stays 0,
+                                     so every other export still requires SSPI (02 §7.4) */
   volatile LONG evict;
   wd_auth auth;
   PSID user;
@@ -112,6 +115,9 @@ int  wd_body_next(wd_rq *q, const char **p, size_t *n);
 int  wd_has_body(const wd_rq *q);
 /* Reads the whole body up to max bytes into b. 0 ok, 413 too large, 400 framing error. */
 int  wd_body_read_all(wd_rq *q, wd_sb *b, size_t max);
+
+/* wd_tokenonly.c: 1 when the self-test pair passes (token PROPFIND 2xx, token-less PROPFIND 4xx). */
+int  wd_selftest_verdict(int token_status, int plain_status);
 
 /* wd_methods.c */
 void wd_dispatch(wd_rq *q);
