@@ -158,18 +158,17 @@ static int ctl(const char *what)
  * pool members; an abandoned admission attempt is closed on this side and is not listed). */
 static int fixture_conn_ports(uint16_t *ports, int cap, int *count)
 {
-  DWORD size = 0, pid = GetCurrentProcessId(), i;
+  DWORD size = 64 * 1024, pid = GetCurrentProcessId(), i, rc;
   PMIB_TCPTABLE_OWNER_PID t;
-  int n = 0;
+  int n = 0, tries;
   *count = 0;
-  if (GetExtendedTcpTable(NULL, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) !=
-      ERROR_INSUFFICIENT_BUFFER)
-    return 0;
-  t = (PMIB_TCPTABLE_OWNER_PID)malloc(size);
-  if (!t) return 0;
-  if (GetExtendedTcpTable(t, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) != NO_ERROR) {
+  for (tries = 0;; tries++) {
+    t = (PMIB_TCPTABLE_OWNER_PID)malloc(size);
+    if (!t) return 0;
+    rc = GetExtendedTcpTable(t, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+    if (rc == NO_ERROR) break;
     free(t);
-    return 0;
+    if (rc != ERROR_INSUFFICIENT_BUFFER || tries == 3) return 0;
   }
   for (i = 0; i < t->dwNumEntries; i++) {
     const MIB_TCPROW_OWNER_PID *r = &t->table[i];

@@ -6,8 +6,9 @@
  * (UI thread -> agent calls) and the connection's event handle (agent -> UI events). Results travel back
  * to the UI thread as posted messages that own their sd_json payload.
  *
- * The prompt topic is subscribed without declaring prompts.ui, so the agent never routes a prompt here;
- * the prompt host is the next package. */
+ * The UI declares prompts.ui in hello and subscribes to "prompt": the agent routes prompt.request here, and
+ * the answers (prompt.answer) leave through this thread (ui_ipc_answer). A prompt-host process (--prompt-host)
+ * never starts an agent: its connect passes start_if_missing = 0 and it leaves when the agent is gone. */
 #include <windows.h>
 #include <string.h>
 #include <stdio.h>
@@ -89,12 +90,21 @@ static int pop_request(ui_ipc_req *out)
   return got;
 }
 
+/* Frees the parameters of a request. An answer carries a secret: its copy is wiped before it is freed. */
+static void free_params(ui_ipc_req *r)
+{
+  if (r->params != NULL && r->kind == UI_IPC_ANSWER)
+    SecureZeroMemory(r->params, strlen(r->params));
+  sd_free(r->params);
+  r->params = NULL;
+}
+
 static void fail_queued(void)
 {
   ui_ipc_req r;
   while (pop_request(&r)) {
     post_reply(r.kind, SD_E_DISCONNECTED, r.drive, NULL);
-    sd_free(r.params);
+    free_params(&r);
   }
 }
 
@@ -129,7 +139,7 @@ static int pump_requests(sd_ipc_conn *c)
     } else {
       post_reply(r.kind, e, r.drive, res);
     }
-    sd_free(r.params);
+    free_params(&r);
     if (e == SD_E_DISCONNECTED)
       return 0;
   }
@@ -178,6 +188,7 @@ static int serve(sd_ipc_conn *c)
 static DWORD WINAPI ipc_thread(void *arg)
 {
   int first = 1;
+  int failures = 0;
   (void)arg;
   for (;;) {
     sd_ipc_conn *c = NULL;
@@ -189,15 +200,16 @@ static DWORD WINAPI ipc_thread(void *arg)
     hello.client_kind = "ui";
     hello.client_version = SD_VERSION_STRING;
     hello.lang = sd_l10n_lang_code(sd_l10n_lang());
-    hello.caps = 0;                     /* prompts.ui is not declared yet (see the file comment) */
+    hello.caps = SD_IPC_CAP_PROMPTS_UI;
 
-    /* A prompt host (--prompt-host) was started by the agent: it never starts one itself (03 §2.5), and it
-       exits when the agent is gone (post_state(0) makes the UI thread quit). */
+    /* PROMPT-HOST RULE (03 §1.4): a --prompt-host process never starts the agent. The agent starts us, not
+       the other way round. */
     e = sd_ipc_connect(SD_IPC_AGENT, &hello, first && !g_app.prompt_host, UI_IPC_CONNECT_MS, &c);
     first = 0;
     if (e == SD_OK) {
       sd_json *res = NULL;
       sd_ipc_error err;
+      failures = 0;
       memset(&err, 0, sizeof(err));
       post_state(1);
       if (subscribe_topics(c) == SD_OK &&
@@ -206,6 +218,15 @@ static DWORD WINAPI ipc_thread(void *arg)
       } else {
         sd_json_free(res);
       }
+      /* the open prompts of the agent: dialogs for prompts it no longer holds are closed (ui_prompt.c) */
+      if (sd_ipc_conn_has_feature(c, "prompt.list")) {
+        res = NULL;
+        memset(&err, 0, sizeof(err));
+        if (sd_ipc_call_raw(c, "prompt.list", NULL, 0, UI_IPC_CALL_MS, &res, &err) == SD_OK)
+          post_json(UI_WM_IPC_PROMPTS, res);
+        else
+          sd_json_free(res);
+      }
       stop = serve(c) == 1;
       sd_ipc_close(c);
       post_state(0);
@@ -213,12 +234,13 @@ static DWORD WINAPI ipc_thread(void *arg)
     } else {
       SD_LOGD("ui", "agent not reachable (%s)", sd_err_name(e));
       fail_queued();
-      if (g_app.prompt_host) {
-        SD_LOGI("ui", "prompt host: no agent, exiting");
+      /* a prompt-host process whose agent does not answer twice has no work left: it leaves */
+      if (g_app.prompt_host && ++failures >= 2) {
         post_state(0);
+        break;
       }
     }
-    if (stop || g_app.prompt_host)
+    if (stop)
       break;
     if (WaitForSingleObject(g_ipc.stop, UI_IPC_RETRY_MS) == WAIT_OBJECT_0)
       break;
@@ -257,7 +279,7 @@ static sd_err enqueue(ui_ipc_kind kind, const char *method, const char *params, 
   }
   LeaveCriticalSection(&g_ipc.cs);
   if (e != SD_OK) {
-    sd_free(r.params);
+    free_params(&r);
     return e;
   }
   SetEvent(g_ipc.wake);
@@ -319,4 +341,13 @@ sd_err ui_ipc_mount(const char *profile_id)
     return SD_E_INVALID_PARAM;
   sprintf_s(params, sizeof(params), "{\"profile\":\"%s\"}", profile_id);
   return enqueue(UI_IPC_MOUNT, "mount", params, NULL);
+}
+
+/* prompt.answer: json is the complete request object, NUL-terminated, with len bytes. The queue keeps its own
+   copy, which is wiped after the call (free_params). The caller wipes its copy. */
+sd_err ui_ipc_answer(const char *json, size_t len)
+{
+  if (json == NULL || strlen(json) != len)
+    return SD_E_INVALID_PARAM;
+  return enqueue(UI_IPC_ANSWER, "prompt.answer", json, NULL);
 }

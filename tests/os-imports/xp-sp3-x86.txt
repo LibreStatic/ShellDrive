@@ -466,3 +466,31 @@ kernel32.dll!DisableThreadLibraryCalls
 ole32.dll!ReleaseStgMedium
 shell32.dll!DragQueryFileW
 user32.dll!InsertMenuItemW
+
+# UI prompt dialogs and the message-box font (apps/shelldrive-ui/ui_prompt.c, ui_dlg.c): all documented
+# as available since Windows 2000 or earlier, so present on XP. Review item of the floor-list rule above.
+gdi32.dll!CreateCompatibleDC
+gdi32.dll!DeleteDC
+gdi32.dll!GetTextExtentPoint32W
+gdi32.dll!GetTextMetricsW
+gdi32.dll!SelectObject
+kernel32.dll!MulDiv
+user32.dll!CreateDialogIndirectParamW
+user32.dll!DrawTextW
+user32.dll!FlashWindowEx
+user32.dll!GetDlgItem
+user32.dll!GetForegroundWindow
+user32.dll!GetWindowLongPtrW
+user32.dll!GetWindowLongW
+user32.dll!GetWindowTextLengthW
+user32.dll!GetWindowTextW
+user32.dll!IsDialogMessageW
+user32.dll!IsDlgButtonChecked
+user32.dll!KillTimer
+user32.dll!OffsetRect
+user32.dll!SetFocus
+user32.dll!SetRect
+user32.dll!SetTimer
+user32.dll!SetWindowLongPtrW
+user32.dll!SetWindowLongW
+user32.dll!SetWindowTextW
