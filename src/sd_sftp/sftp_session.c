@@ -2093,7 +2093,7 @@ static void reply(sd_sftp_session *s, sftp_req *r, sftp_wire *w, uint8_t type, s
       if (sftp_dec_attrs(rd, &r->c.u.open.attrs, s->scratch_ext, SFTP_MAX_EXT_PAIRS) != 0) { lose(s, SD_E_PROTOCOL); return; }
       if (f) { f->attrs_at_open = r->c.u.open.attrs; f->attrs_at_open.ext = NULL; f->attrs_at_open.ext_count = 0; }
     }
-    if (r->op == OP_REOPEN) { r->c.u.open.file = r->f; if (r->f->striped) stripe_quiescent(r->f); }
+    if (r->op == OP_REOPEN) { _Analysis_assume_(r->f != NULL); r->c.u.open.file = r->f; if (r->f->striped) stripe_quiescent(r->f); }
     else { r->c.u.open.file = r->newf; r->newf = NULL;
            if (r->c.u.open.file->striped) stripe_quiescent(r->c.u.open.file); }
     finish(s, r, SD_OK);
