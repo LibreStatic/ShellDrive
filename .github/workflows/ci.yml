@@ -1,7 +1,10 @@
 # CI (04 §11.2): build + unit tests + import audit for x64-modern, x64-xp, x86-ia32 and x86-sse2, plus the
 # x64-analysis (/analyze) build. The x86 flavours also run the ISA audit and the constant-time helper-call
 # gate (sd-isacheck) as post-build steps and CTests; their test binaries run under WOW64 on the x64
-# runner (Dokany tests skip there). TM-R39: first-party actions only, pinned by commit SHA; read-only token.
+# runner (Dokany tests skip there). The arm64 entry is build-only (M6, 04 §1.1): it cross-compiles on the
+# x64 runner, the build-time tools run from a nested x64 build, and no test runs (ARM64 binaries cannot run
+# there; the ARM64 test job belongs to windows-11-arm, §11.2). TM-R39: first-party actions only, pinned by
+# commit SHA; read-only token.
 name: ci
 
 on:
@@ -24,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [x64-modern, x64-xp, x86-ia32, x86-sse2]
+        preset: [x64-modern, x64-xp, x86-ia32, x86-sse2, arm64]
     env:
       SD_BUILD_NUMBER: ${{ github.run_number }}
     steps:
@@ -34,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up v141_xp toolset
-        if: matrix.preset != 'x64-modern'
+        if: matrix.preset != 'x64-modern' && matrix.preset != 'arm64'
         uses: ./.github/actions/setup-xp-toolset
 
       - name: Configure
@@ -51,11 +54,14 @@ jobs:
         shell: pwsh
         run: cmake --build --preset ${{ matrix.preset }}-debug
 
+      # arm64 is build-only (ARM64 test binaries cannot run on the x64 runner, 04 §11.4): ctest is skipped for it.
       - name: Test Release
+        if: matrix.preset != 'arm64'
         shell: pwsh
         run: ctest --preset ${{ matrix.preset }} --output-junit "${{ github.workspace }}/build/ctest-${{ matrix.preset }}.xml"
 
       - name: Test Debug
+        if: matrix.preset != 'arm64'
         shell: pwsh
         run: ctest --preset ${{ matrix.preset }}-debug
 

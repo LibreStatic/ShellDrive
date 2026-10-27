@@ -1,10 +1,12 @@
 # Flavour selection and compiler/linker flags. 04 §2.3, §3.1 and §3.2 are normative.
 #
 # SD_FLAVOUR is set by CMakePresets.json. Supported: x86-ia32, x86-sse2 (M1), x64-modern, x64-xp,
-# x64-analysis.
+# x64-analysis, arm64 (04 §1.1). arm32 waits for SDK 10.0.22621 (D5, D31).
 
-set(SD_FLAVOUR "" CACHE STRING "Build flavour (x86-ia32, x86-sse2, x64-modern, x64-xp, x64-analysis)")
-set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-xp x64-analysis)
+set(SD_FLAVOUR "" CACHE STRING "Build flavour (x86-ia32, x86-sse2, x64-modern, x64-xp, x64-analysis, arm64)")
+set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-xp x64-analysis arm64)
+# Internal: the nested x64 configure that builds the build-time tools for an ARM64 tree (cmake/SdHostTools.cmake).
+option(SD_HOST_TOOLS_ONLY "Internal: configure only the build-time tools for an ARM64 tree" OFF)
 set(SD_X86_ARCH "" CACHE STRING "x86 flavours: code generation floor (IA32 or SSE2, decisions.md D4)")
 option(SD_ENABLE_ASAN "x64-analysis: build with AddressSanitizer" OFF)
 option(SD_ENABLE_ANALYZE "Run the MSVC code analyzer (/analyze)" OFF)
@@ -72,8 +74,31 @@ elseif(SD_FLAVOUR STREQUAL "x64-modern" OR SD_FLAVOUR STREQUAL "x64-analysis")
   set(SD_NTDDI 0x0A000000)
   set(SD_SUBSYSTEM_VERSION "")  # linker default (6.00 for x64); floor enforced by setup (04 §3.2)
   set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-1507-x64.txt")
+elseif(SD_FLAVOUR STREQUAL "arm64")
+  # Native ARM64 (04 §1.1, §2.5): v143 with SDK 10.0.26100, cross-compiled on an x64 host. Build only: no
+  # ARM64 test runs on x64 machines (04 §11.4), and the build-time tools run from the x64 nested build.
+  if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+    message(FATAL_ERROR "arm64 needs the ARM64 platform (-A ARM64), got '${CMAKE_VS_PLATFORM_NAME}'.")
+  endif()
+  if(MSVC_VERSION LESS 1930)
+    message(FATAL_ERROR "arm64 needs the v143 toolset, got MSVC ${MSVC_VERSION}.")
+  endif()
+  set(SD_XP 0)
+  set(SD_WINNT 0x0A00)
+  set(SD_NTDDI 0x0A000000)
+  set(SD_SUBSYSTEM_VERSION "")  # linker default (6.00); the floor is Windows 10 1709 (04 §1.1, §3.2)
+  set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-arm64.txt")
 else()
   message(FATAL_ERROR "Unknown SD_FLAVOUR '${SD_FLAVOUR}'.")
+endif()
+
+# ARM64 targets cannot run on an x64 build host: the build-time tools (sdl10n, sd-admxgen, sd-importcheck,
+# sd-payload) are then built by a nested x64 configure (cmake/SdHostTools.cmake).
+set(SD_ARM64 0)
+set(SD_CROSS_HOST_TOOLS 0)
+if(SD_FLAVOUR STREQUAL "arm64")
+  set(SD_ARM64 1)
+  set(SD_CROSS_HOST_TOOLS 1)
 endif()
 
 # Application manifest processorArchitecture (res/manifest/app.manifest.in): the flavour's architecture.
@@ -88,6 +113,14 @@ endif()
 set(SD_MODERN_SECURITY 0)
 if(SD_FLAVOUR STREQUAL "x64-modern" OR (SD_FLAVOUR STREQUAL "x64-analysis" AND NOT SD_ENABLE_ASAN))
   set(SD_MODERN_SECURITY 1)    # /sdl, /guard:cf, /CETCOMPAT
+endif()
+if(SD_FLAVOUR STREQUAL "arm64")
+  set(SD_MODERN_SECURITY 1)    # /sdl, /guard:cf (04 §1.1); CET shadow stacks are x64 only, see SD_CET
+endif()
+# /CETCOMPAT (x64 only: the ARM64 linker has no such option, 04 §1.1 and §3.2).
+set(SD_CET 0)
+if(SD_MODERN_SECURITY AND NOT SD_ARM64)
+  set(SD_CET 1)
 endif()
 
 # Static CRT everywhere (04 §3.1).
@@ -117,6 +150,10 @@ add_compile_options(
   "$<$<COMPILE_LANGUAGE:C>:/W4;/WX;/utf-8;/Zi;/Gy;/Gw;/GS;/GF;/we4013;/we4047;/we4024;/Brepro>"
   "$<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Release>>:/O2>"
   "$<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:/Od>")
+# Volatile semantics (04 §1.1, M6): /volatile:ms makes every volatile access an acquire load or release store.
+# It is the default on x86 and x64 (no code change there); on ARM64 the default is /volatile:iso, which would
+# leave the volatile flags and sequence counters of sd_state, sd_ipc and the shell extension unordered.
+add_compile_options("$<$<COMPILE_LANGUAGE:C>:/volatile:ms>")
 if(NOT SD_XP)
   # v143 compiles C as C11 (04 §2.3: both toolsets must accept the code; v141 has no /std flag).
   add_compile_options("$<$<COMPILE_LANGUAGE:C>:/std:c11>")
@@ -168,7 +205,10 @@ else()
   add_link_options(/HIGHENTROPYVA)
 endif()
 if(SD_MODERN_SECURITY)
-  add_link_options(/guard:cf /CETCOMPAT)
+  add_link_options(/guard:cf)
+endif()
+if(SD_CET)
+  add_link_options(/CETCOMPAT)
 endif()
 
 message(STATUS "ShellDrive flavour: ${SD_FLAVOUR} (toolset ${SD_TOOLSET}, MSVC ${MSVC_VERSION}, "

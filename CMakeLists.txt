@@ -20,18 +20,37 @@ include(SdOptions)   # flavour, compiler and linker flags (04 §3.2)
 include(SdVersion)   # VERSION file, git commit, generated sd/version.h
 include(SdModule)    # sd_add_module, sd_add_unit_test, sd_add_app helpers
 include(SdL10n)      # sdl10n catalog generation (03 §9)
+include(SdHostTools) # build-time tools of cross-compiled (ARM64) trees (04 §2.5)
 
 # Group Policy headers and ADMX/ADML outputs (03 §3.5); generated under generated/policy/.
 set(SD_POLICY_DIR "${SD_GENERATED_DIR}/policy")
 
 enable_testing()
 
-# Build-time tools first: sdl10n, sd-importcheck and sd-isacheck run during the build.
-add_subdirectory(tools/sdl10n)
-add_subdirectory(tools/sd-importcheck)
-add_subdirectory(tools/sd-isacheck)
+if(SD_HOST_TOOLS_ONLY)
+  # Nested x64 configure of an ARM64 tree: only the tools that run during the build (cmake/SdHostTools.cmake).
+  add_subdirectory(tools/sdl10n)
+  add_subdirectory(tools/sd-importcheck)
+  add_subdirectory(tools/sd-admxgen)
+  add_subdirectory(tools/sd-payload)
+  return()
+endif()
+
+# Build-time tools first: sdl10n, sd-importcheck and sd-admxgen run during the build. An ARM64 tree takes them
+# from the nested x64 build instead of building ARM64 copies that cannot run here.
+if(SD_CROSS_HOST_TOOLS)
+  sd_host_tools_setup()
+else()
+  add_subdirectory(tools/sdl10n)
+  add_subdirectory(tools/sd-importcheck)
+  add_subdirectory(tools/sd-admxgen)
+  add_subdirectory(tools/sd-payload)
+endif()
+# sd-isacheck audits x86 code only (04 §2.4): not part of the ARM64 tree.
+if(NOT SD_ARM64)
+  add_subdirectory(tools/sd-isacheck)
+endif()
 add_subdirectory(tools/sd-updsign)
-add_subdirectory(tools/sd-admxgen)
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)
@@ -66,8 +85,7 @@ add_subdirectory(apps/shelldrive-host)
 add_subdirectory(apps/shelldrive-ui)
 add_subdirectory(apps/shelldrive-shellext)
 
-# Setup engine, stub and payload tool (04 §6; tools/sd-payload attaches the payload CAB).
-add_subdirectory(tools/sd-payload)
+# Setup engine, stub and payload (04 §6; tools/sd-payload attaches the payload CAB, added above).
 add_subdirectory(apps/shelldrive-setup)
 
 # Unit tests and other test suites.

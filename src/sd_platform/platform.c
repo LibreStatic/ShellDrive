@@ -93,32 +93,32 @@ static void detect_os(void)
 
 static void detect_cpu(void)
 {
-  int r[4];
-  uint32_t f = 0, max_leaf;
+  uint32_t f = 0;
   wchar_t env[32];
   DWORD n;
 
 #if defined(_M_IX86) && defined(SD_X86_ARCH_IA32)
   /* x86-ia32: no run-time detection and no vector code at all (01 §2.3); sd-isacheck rejects even the
      guarded XGETBV below in this flavour. */
-  max_leaf = 0;
-  (void)r;
-  (void)max_leaf;
 #elif defined(_M_X64) || defined(_M_IX86)
-  __cpuid(r, 0);
-  max_leaf = (uint32_t)r[0];
-  if (max_leaf >= 1) {
-    __cpuid(r, 1);
-    if (r[3] & (1 << 26)) f |= SD_CPU_SSE2;
-    if (r[2] & (1 << 9))  f |= SD_CPU_SSSE3;
-    if (r[2] & (1 << 25)) f |= SD_CPU_AESNI;
-    if (r[2] & (1 << 1))  f |= SD_CPU_PCLMUL;
-    if (max_leaf >= 7) {
-      int osxsave = (r[2] & (1 << 27)) != 0;
-      __cpuidex(r, 7, 0);
-      if (r[1] & (1 << 29)) f |= SD_CPU_SHANI;
-      /* AVX2 needs OS support for YMM state (XGETBV); XP never enables it. */
-      if (osxsave && (r[1] & (1 << 5)) && (_xgetbv(0) & 6) == 6) f |= SD_CPU_AVX2;
+  {
+    int r[4];
+    uint32_t max_leaf;
+    __cpuid(r, 0);
+    max_leaf = (uint32_t)r[0];
+    if (max_leaf >= 1) {
+      __cpuid(r, 1);
+      if (r[3] & (1 << 26)) f |= SD_CPU_SSE2;
+      if (r[2] & (1 << 9))  f |= SD_CPU_SSSE3;
+      if (r[2] & (1 << 25)) f |= SD_CPU_AESNI;
+      if (r[2] & (1 << 1))  f |= SD_CPU_PCLMUL;
+      if (max_leaf >= 7) {
+        int osxsave = (r[2] & (1 << 27)) != 0;
+        __cpuidex(r, 7, 0);
+        if (r[1] & (1 << 29)) f |= SD_CPU_SHANI;
+        /* AVX2 needs OS support for YMM state (XGETBV); XP never enables it. */
+        if (osxsave && (r[1] & (1 << 5)) && (_xgetbv(0) & 6) == 6) f |= SD_CPU_AVX2;
+      }
     }
   }
 #elif defined(_M_ARM64)

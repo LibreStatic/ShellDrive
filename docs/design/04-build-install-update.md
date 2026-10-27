@@ -62,7 +62,10 @@ Normative table (from `decisions.md`). A *flavour* is one compiled set of the fo
 | `x64-xp` | v141_xp, 7.1A | — | XP x64 SP2 / Vista+ | x64 OS below Windows 10 | No CFG, no CET |
 | `x64-modern` | v143, 10.0.26100 | `/guard:cf`, `/CETCOMPAT`, `/sdl` | Windows 10 | x64 OS, Windows 10 or later | Doubles x64 test runs |
 | `arm32` | v143, 10.0.22621 | `/guard:cf` | Windows 10 on ARM / Windows 11 ≤ 23H2 (ARM32 app support; RT 8.1 and 10 IoT Core not runnable, §5.1) | ARM32 setup EXE / MSI only | Best effort (D5): CLI + host in agent mode + WebDAV only; dropped if the toolchain breaks |
-| `arm64` | v143, 10.0.26100 | `/guard:cf` | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs |
+| `arm64` | v143, 10.0.26100 | `/guard:cf` (no `/CETCOMPAT`: x64 only) | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs. **Build only** on x64 hosts (M6): cross-compiled, build-time tools from a nested x64 build (§2.5), no test run (§11.4) |
+
+The `arm64` flavour (M6) is built with `cmake --preset arm64` (`arm64-debug` for Debug). `/volatile:ms` is set on every flavour
+(§3.2), so volatile flags and sequence counters are acquire/release on ARM64 as they are on x86 and x64.
 
 Flavours of the same architecture share all source code; the flavour only changes the configure preset. Every
 binary carries its flavour name in its version resource (`SD_FLAVOUR`, e.g. `"x64-modern"`; the same resource has
@@ -134,8 +137,9 @@ Rules (enforced by building every module with both v141_xp and v143 `/std:c11 /W
 - **Import audit tool** `tools/sd-importcheck` (C, part of the build) parses each PE import table and fails
   the build if any imported `dll!function` is not in the flavour's floor list:
   `tests/os-imports/xp-sp3-x86.txt` (both x86 flavours), `xp-sp2-x64.txt` (`x64-xp`), `win10-1507-x64.txt`
-  (`x64-modern`), `win10-arm32.txt` (ARM32, from the SysArm32 folder of Windows 10 on ARM), `win10-1709-arm64.txt`
-  (ARM64) — export lists captured from clean lab VMs, names only, no Microsoft binaries in the repo.
+  (`x64-modern`), `win10-arm32.txt` (ARM32, from the SysArm32 folder of Windows 10 on ARM), `win10-arm64.txt`
+  (ARM64, Windows 10 1709+; bootstrap list until the lab capture, M6) — export lists captured from clean lab VMs,
+  names only, no Microsoft binaries in the repo.
   Same tool checks the PE `MajorSubsystemVersion`, the absence of a TLS directory in DLLs, and the
   `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT` / `GUARD_CF` bits expected for the flavour.
 - **Setup stub and `uninstall.exe` import only KnownDLLs (TM-R33, T-62).** `sd-importcheck --stub` fails if
@@ -183,6 +187,13 @@ Decision: **CMake** (build-time tool, like WiX; nothing of it ships).
 The `arm32` preset builds only the targets D5 allows (`shelldrive.exe`, `shelldrive-host.exe`, the setup stub
 and `uninstall.exe`); `shelldrive-ui.exe` and `shelldrive-shellext.dll` are not built there.
 
+**ARM64 build tools (M6).** An ARM64 tree cannot run its own build-time tools on an x64 host, and Windows 11 on x64
+does not run ARM64 binaries. `cmake/SdHostTools.cmake` therefore builds `sdl10n`, `sd-importcheck`, `sd-admxgen` and
+`sd-payload` in a nested **x64** configure of the same source tree (`SD_HOST_TOOLS_ONLY=ON`, an ExternalProject target
+`sd_host_tools`); the ARM64 targets see them as imported executables. `sd-isacheck` (x86 audit) and `sd-updsign` are
+not part of the ARM64 tree (`sd-isacheck` is skipped, `sd-updsign` is built as an ARM64 target and not run at build
+time). The native flavours build their tools exactly as before.
+
 Configurations: `Debug`, `Release` (shipping = `Release` with PDBs). A repository-root **`.vsconfig`**
 pins the required VS components so developer machines and self-hosted runners are identical:
 `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`, `Microsoft.VisualStudio.Component.VC.v141.x86.x64`,
@@ -216,6 +227,13 @@ pins the required VS components so developer machines and self-hosted runners ar
 Compiler (all): `/W4 /WX /utf-8 /Zi /O2 /Gy /Gw /GS /GF /MT /we4013 /we4047 /we4024` (implicit
 declarations and pointer mismatches are errors) and `/Brepro` (§12). v143 flavours add `/sdl` and
 `/guard:cf`. This section is normative for all modules' flags (C36); 01 §12.1 refers to it.
+
+Memory model (M6, all flavours): `/volatile:ms` makes every `volatile` access an acquire load or release store. It is
+the default on x86 and x64, so those builds do not change; on ARM64 the default is `/volatile:iso`, which does not
+order volatile accesses. The atomics review that goes with it is in `docs/dev/m6-notes.md`.
+
+ARM64 (`arm64`, M6): `/guard:cf` and `/sdl`; no `/CETCOMPAT` (x64 only, `SD_CET` in `cmake/SdOptions.cmake`); the
+import audit requires CFG, not CET; no ISA audit (x86 only). The linker floor is Windows 10 1709.
 
 x86 CPU floor (D4): **two x86 flavours**.
 
@@ -1528,7 +1546,7 @@ else in the installer changes when it is OFF.
 | `unit-x86` matrix `{x86-ia32, x86-sse2}` | windows-2022 | download artifact → run `sd-test-*.exe` under WOW64 (CTest, JUnit XML). The IA32 run covers the scalar crypto paths; the SSE2 run additionally forces each SIMD path off and on (`SD_CPU_MASK`) |
 | `unit-x64` matrix `{x64-xp, x64-modern}` | windows-2022 | same; `x64-modern` also runs with process mitigation policy for CET shadow stacks requested **[verify]** whether the runner CPU/OS enforces it (the lab covers it otherwise) |
 | `crypto-diff` | windows-2022 | D1/D2: `sd-test-crypto --diff-cng` on `x64-modern` and `x86-sse2`: randomized differential tests of our SHA-2/HMAC, AES-CTR/GCM, ECDH/ECDSA P-256/384/521, RSA, X25519/Ed25519 (where CNG has them) against CNG, plus all Wycheproof and RFC vectors. CNG is a reference only, never linked into shipping code paths for hashes |
-| `unit-arm64` | windows-11-arm | same as `unit-x64` for `arm64` (+ `crypto-diff` on ARM64) |
+| `unit-arm64` | windows-11-arm | same as `unit-x64` for `arm64` (+ `crypto-diff` on ARM64). **Not yet in CI:** the `build` matrix entry for `arm64` is build-only (Release and Debug cross-compiled on windows-2022, no `ctest` step, because the test binaries cannot run there); this job is the one that runs them, once the windows-11-arm runner is in use (M6, §1.1). |
 | `integration` | windows-2022 | §11.3 (runs `x64-modern`; a reduced auth/transfer set also runs `x64-xp` and `x86-sse2`) |
 | `package` | windows-2022 | needs build: Dokany files verified against `dokany.lock` (size, SHA-256, signer; at embed time, also when served from the cache, TM-R23) → payload CABs (six flavours) → six MSIs (WiX 3.14, ICE validation) → `sd-msilang` transforms → `sd-msilang --dump-sequences` custom-action condition check (TM-R35, §8.3) → sparse MSIX (only with `SD_SPARSE_MSIX=ON`) → setup EXEs with a test-key payload-table signature → test-sign → `sd-release manifest --unsigned` → artifacts |
 | `release-checks` | windows-2022 | TST-30 on every Release build: no `none` cipher or test-only flags, no fuzz hooks, no test certificates or test keys (only `installer/keys/` public keys), no `__DATE__`/`__TIME__` strings; `sd-importcheck --stub` (KnownDLLs-only imports, no delay-load, TM-R33) |
