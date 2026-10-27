@@ -1,0 +1,12 @@
+PUT /dav/notes.txt HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+Destination: http://localhost/dav/x
+Timeout: Second-120
+If: (<opaquelocktoken:abc>)
+Range: bytes=0-99
+
+5
+hello
+0
+

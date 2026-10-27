@@ -106,7 +106,7 @@ endfunction()
 
 # Post-build ISA audit of a 32-bit executable (04 §2.4) + CTest isacheck.<name>.
 function(sd_add_isa_check target name)
-  if(NOT SD_X86 OR SD_ENABLE_ASAN)
+  if(NOT SD_X86 OR SD_ENABLE_ASAN OR SD_FUZZ)
     return()
   endif()
   if(SD_X86_IA32)

@@ -26,7 +26,8 @@ endif()
 set(SD_CT_SOURCES aes_ct ct curve25519 gcm chacha_poly hash)
 list(APPEND SD_CT_SOURCES sha3 mlkem des3 blake2b argon2)   # M2 symmetric/PQ (sources_pq.cmake)
 list(APPEND SD_CT_SOURCES bn rsa dh ec_p sha1)              # M2 public key (sources_pk.cmake; dh_gex is public-only)
-set(_ct_args --ct-lib "$<TARGET_FILE:sd_crypto>" --config "$<CONFIG>")   # Release only, see sd-isacheck.c
+set(_ct_args --ct-lib "$<TARGET_FILE:sd_crypto>" --config "$<CONFIG>"   # Release only, see sd-isacheck.c
+                 --ct-allow "${CMAKE_CURRENT_SOURCE_DIR}/ct-branch-allow.txt")
 foreach(_s IN LISTS SD_CT_SOURCES)
   list(APPEND _ct_args --ct-member "${_s}.obj")
 endforeach()
@@ -41,6 +42,7 @@ set_target_properties(sd_crypto_ctcheck PROPERTIES FOLDER "checks")
 add_test(NAME isacheck.ct_sd_crypto COMMAND sd-isacheck ${_ct_args})
 set_tests_properties(isacheck.ct_sd_crypto PROPERTIES LABELS isacheck)
 
+if(NOT SD_FUZZ)   # ISA and entry-thunk fixtures judge the x86-ia32 release code; ASan and libFuzzer code is not ISA-clean
 # Negative fixture for the ISA audit: one function compiled /arch:SSE2 with SSE2 intrinsics.
 add_executable(isacheck-fixture-sse2 fixtures/sse2_fixture.c)
 set_target_properties(isacheck-fixture-sse2 PROPERTIES FOLDER "tests" SD_X86_ARCH_OVERRIDE SSE2)
@@ -53,6 +55,8 @@ add_test(NAME isacheck.sse2_floor_accepts_sse2
                  "$<TARGET_FILE:isacheck-fixture-sse2>")
 set_tests_properties(isacheck.sse2_floor_accepts_sse2 PROPERTIES LABELS isacheck)
 
+endif()
+
 # Negative fixture for the constant-time gate: 64x64 multiply and a run-time 64-bit shift.
 add_library(isacheck-fixture-ct STATIC fixtures/ct_fixture.c)
 set_target_properties(isacheck-fixture-ct PROPERTIES FOLDER "tests")
@@ -61,6 +65,17 @@ add_test(NAME isacheck.detects_ct_helper_call
 set_tests_properties(isacheck.detects_ct_helper_call PROPERTIES LABELS isacheck
   PASS_REGULAR_EXPRESSION "isacheck_fixture_mul64 references compiler runtime helper _allmul")
 
+# Branch and divide rules (01 2.4.1, 2.4.3) on constant-time-named functions: a forward branch on data, and a DIV.
+add_test(NAME isacheck.detects_ct_forward_branch
+         COMMAND sd-isacheck --ct-lib "$<TARGET_FILE:isacheck-fixture-ct>" --ct-member ct_fixture.obj)
+set_tests_properties(isacheck.detects_ct_forward_branch PROPERTIES LABELS isacheck
+  PASS_REGULAR_EXPRESSION "isacheck_fixture_ct_branch: forward conditional branch")
+add_test(NAME isacheck.detects_ct_div
+         COMMAND sd-isacheck --ct-lib "$<TARGET_FILE:isacheck-fixture-ct>" --ct-member ct_fixture.obj)
+set_tests_properties(isacheck.detects_ct_div PROPERTIES LABELS isacheck
+  PASS_REGULAR_EXPRESSION "isacheck_fixture_ct_div: DIV/IDIV")
+
+if(NOT SD_FUZZ)
 # Entry-thunk fixture (x86-sse2 thunk, built on both x86 flavours): with the non-shipping test hook the
 # refusal path runs on any CPU; without it the program starts normally.
 add_executable(cpucheck-fixture fixtures/cpucheck_fixture.c "${CMAKE_SOURCE_DIR}/src/sd_platform/entry/sd_cpucheck.c")
@@ -79,3 +94,4 @@ add_test(NAME isacheck.entry_thunk_is_ia32
          COMMAND sd-isacheck --floor sse2 --allow "${CMAKE_CURRENT_SOURCE_DIR}/crt-allow.txt"
                  --entry sd_cpucheck_entry "$<TARGET_FILE:cpucheck-fixture>")
 set_tests_properties(isacheck.entry_thunk_is_ia32 PROPERTIES LABELS isacheck)
+endif()

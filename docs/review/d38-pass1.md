@@ -369,6 +369,8 @@ Negative self-test `isacheck.detects_ct_helper_call`: passes (the fixture's 64x6
 
 Scope of the gate (what it does not do): per `docs/dev/m1-notes.md` and 01 §2.7.5, the gate checks only
 calls to compiler helpers and calls outside the allow-list. The conditional-branch, `div`/`idiv`,
+*Pass 3 (section 9):* the conditional-branch and DIV/IDIV checks are implemented, and a dudect-style harness is in the tree (`tests/ct`). The text below describes the pass 2 state.
+
 secret-indexed memory-operand, and 64x64-multiply-sequence checks are **not implemented**. dudect
 (high-word-zero classes) is **not in the tree** (no test or tool contains "dudect"). The SSE2 flavour and ARM32
 are not gated in this pass. See F-5.
@@ -398,9 +400,9 @@ other module, listed for completeness).
 
 | TST | M / P | Requirement (short) | Evidence (suite, test, file) | Status |
 |---|---|---|---|---|
-| TST-01 | M0 / P1 | every 01 §12.2 fuzz target present (5 min per PR), WinAFL on x64-xp and x86 | none. No `fuzz_*` target, no fuzz harness, no `tests/fuzz` folder in the tree | **Gap** |
-| TST-02 | M1 / P1 | fuzzing of shared parsers (`fuzz_text_sanitize` and others) | no fuzz target. Unit-level sanitize cases exist (`tests/unit/sd_ssh/test_auth_flow.c`, `tests/unit/sd_base/test_utf.c`) | **Gap** (fuzz); unit partial |
-| TST-03 | M0 / P1 | constant-time gate on x86-ia32, x86-sse2, arm32: no `_all*`/`__rt_*` calls, no branch, div or 64x64 multiply in CT code; dudect from M1 | `isacheck.ct_sd_crypto` passes on x86-ia32 (16 objects). No branch, div or secret-index check. No dudect. x86-sse2 and arm32 not run | **Partial** |
+| TST-01 | M0 / P1 | every 01 §12.2 fuzz target present (5 min per PR), WinAFL on x64-xp and x86 | 13 harnesses in `tests/fuzz/harness` (json, ini, utf_names, text_sanitize, keyfile, known_hosts, cert, kexinit, sftp_reply, wd_http, wd_xml, state, manifest), replay in `ctest -L fuzz` (x64-modern and x86-fuzz, pass), libFuzzer 13 x 150 s on x86-fuzz (no crash). Not present: packet, kex reply, userauth, channel, agent, proxy, putty, mlkem, field/bn differential, `.sdmount`, keyset, WinAFL. Section 9 | **Partial** |
+| TST-02 | M1 / P1 | fuzzing of shared parsers (`fuzz_text_sanitize` and others) | `fuzz_text_sanitize`, `fuzz_utf_names` (TM-R09, TM-R11 invariants), `fuzz_json` (IPC), `fuzz_ini` (sd_ini, profiles), `fuzz_state` (snapshot reader), `fuzz_manifest`, `fuzz_wd_http`, `fuzz_wd_xml`: all in the replay and libFuzzer runs of section 9. `.sdmount` parser and method dispatch not fuzzed | **Partial** |
+| TST-03 | M0 / P1 | constant-time gate on x86-ia32, x86-sse2, arm32: no `_all*`/`__rt_*` calls, no branch, div or 64x64 multiply in CT code; dudect from M1 | `isacheck.ct_sd_crypto` on x86-ia32 (16 objects) now also reports DIV/IDIV and forward conditional branches in `*_ct*` functions (reviewed allow list, `tools/sd-isacheck/ct-branch-allow.txt`); dudect-style harness `tests/ct` run once (|t| max 2.31, section 9). Not done: secret-indexed operands, 64x64 sequence, x86-sse2 and ARM32 runs, high-word classes, 10^6 samples | **Partial** |
 | TST-04 | M0 / P1 | KAT, Wycheproof and CNG differential per primitive; negatives (all-zero X25519, invalid ECDH point, non-canonical Ed25519 S, tag bit flips, no release before MAC) | KAT and Wycheproof: `unit.crypto`, `unit.crypto_pk`, `unit.crypto_pq` pass. Non-canonical S: `ed25519_rejects_noncanonical_s` (`test_curve.c`). GCM tag bit flip: `test_sym.c:187-189`. Invalid ECDH point: `wycheproof_ecdh`. All-zero X25519: code at `curve25519.c:450-467`, test assertion to confirm in `wycheproof_x25519`. Release-before-MAC: `tr_packet_cbc_mac_failure_discards` (unit.ssh_transport, pass, F-1) and `gcm_pkt_roundtrip` (`test_sym.c:409-410`, both backends, no plaintext on a tag mismatch; F-7); by inspection `pktcipher.c:263`, `:283` | **Partial** |
 | TST-05 | M0 / P1 | name mapping (sd_vfs, sd_sftp dirents) | outside crypto and SSH | **Out of scope** |
 | TST-07 | M2 / P2 | symlink tests on the WSL fixture | sd_sftp / sd_vfs | **Out of scope** here |
@@ -595,3 +597,117 @@ standalone reruns. The owner of sd_vfs should wait for the close before the chec
 - **F-8** resolved: the fetch branch collects the key for review only; `tr_fetch_key_never_becomes_pinned` checks
   the pinned key is unchanged and the collected key is the one the server sent.
 - **F-9** resolved: `sd_pktcipher_open` keeps a sticky failure; tested by `gcm_pkt_roundtrip`.
+
+## 9. Pass 3: fuzz targets and constant-time checks (F-4, F-5)
+
+Scope: F-4 (no fuzz targets) and F-5 (constant-time gate partial), with TST-01, TST-02 and TST-03. F-3 (the interop
+flake) is not in this pass. Commands were run on 2026-10-27 at commit `c80ea7d` plus this change (uncommitted). Nothing
+here closes a finding for the human reviewer.
+
+### 9.1 What was built
+
+- **Harnesses:** 13 targets in `tests/fuzz/harness/` (see the TST-01 row). Each defines `sd_fuzz_one`, and each is
+  built twice: a replay driver `sd-fuzz-<t>.exe` (always: corpus plus 4000 deterministic mutations, or 200 for
+  `keyfile`) and a libFuzzer driver `sd-fuzz-<t>-libfuzzer.exe` (`-DSD_FUZZ=ON`, preset `x86-fuzz`). Seeds are
+  hand-written, or copies of our own `tests/unit/sd_ssh/fixtures` keys and known_hosts lines.
+- **libFuzzer on this host:** works on the x86 (Win32) v143 build with `/fsanitize=fuzzer /fsanitize=address /MD`.
+  The x64 runtime is not installed in this Visual Studio (`clang_rt.asan_static_runtime_thunk-x86_64.lib` is missing),
+  so the x64 libFuzzer build cannot link here. `docs/dev/m6-notes.md` lists the component to install.
+- **CT gate:** `tools/sd-isacheck` now classifies conditional branches and DIV/IDIV, and checks the functions named
+  `*_ct_*`, `*_ct` and `sd_ct_*` in the constant-time objects of sd_crypto (`--ct-allow` list with reasons).
+- **Timing harness:** `tests/ct/ct_dudect.c` (`SD_CT_TIMING=ON` only, label `ct`): Welch t-test, two input classes,
+  cycle counter, 99.5th-percentile cropping, for X25519, Ed25519 signing, AES-CTR, the MAC compare (`sd_ct_memeq`) and
+  RSA-1024 `sd_bn_ct_modexp`.
+
+### 9.2 Replay and libFuzzer results
+
+| Check | Command | Outcome |
+|---|---|---|
+| Replay, x86-fuzz (Debug, ASan) | `ctest --preset x86-fuzz -L fuzz` | 13 of 13 pass, about 20 s (keyfile 16 s) |
+| Replay, x64-modern (Debug) | `ctest --test-dir build/x64-modern -C Debug -L fuzz` | 13 of 13 pass, 1.8 s |
+| libFuzzer campaign | `sd-fuzz-<t>-libfuzzer.exe <scratch copy> -max_total_time=150 -timeout=20`, 13 targets | 13 runs finished, about 29.5 million executions in total, no crash, no timeout, no ASan report |
+| `unit.config` (sd_config, after the fix) | `ctest --test-dir build/x64-modern -C Debug -R unit.config` | pass |
+
+Executions per target in the campaign (150 s): cert 7.30 M, kexinit 4.90 M, manifest 4.41 M, wd_http 3.53 M,
+utf_names 1.47 M, text_sanitize 1.41 M, json 1.32 M, wd_xml 1.19 M, sftp_reply 1.17 M, known_hosts 1.05 M, ini 0.97 M,
+state 0.75 M, keyfile 0.03 M (KDF cost per input).
+
+### 9.3 Findings and fixes
+
+**Fuzz-1. Heap use-after-free in the INI reader (fixed).** `src/sd_config/ini.c`, the error path of `sd_ini_parse`
+(before the fix at lines 299-304). The reader converts input that is not UTF-8 from the ANSI code page into a heap
+buffer `conv` and points `data` at it. On a line that contains a NUL, or that fails to parse, the error path called
+`sd_free(conv)` and then ran `memchr(data + pos, 0, n)` to choose the error code, which read freed memory (ASan:
+heap-use-after-free, READ of size 2, in `sd_ini_parse`, reported by the replay driver on its first run with 4000
+mutations). Root cause: the error code was computed after the buffer it points into had been released. Fix: decide the
+error code before `sd_free(conv)` (`has_nul`). Impact: an INI file (profile, settings or override) that is not UTF-8
+and has a NUL in a line caused a read of freed heap memory in the agent or the shell. Regression:
+`tests/fuzz/corpus/ini/regress_ansi_nul_line` (`[s]`, a 0xE9 byte, `=`, NUL, `x`) runs in `fuzz.ini` on every run.
+
+**Fuzz-2. Name mapping: spec and gate disagree (no product change; reviewer decision).** `sd_name_to_wide` accepts remote
+bytes 0x00 and 0x2F, and `sd_name_from_wide` refuses them with `SD_E_INVALID_NAME` (`src/sd_base/utf.c:235`; the
+component invariant of TM-R11 and 01 section 10.7). 01 section 10.7 also says the round trip "is exact for every byte
+string". Both cannot hold. The harness asserts the component invariant: the round trip is exact for every string
+without NUL or `/`, and otherwise `sd_name_from_wide` refuses with `SD_E_INVALID_NAME`. No output may contain NUL or `/`.
+The spec sentence should say "every byte string that is a valid component". The reviewer decides whether the spec or
+the mapping changes.
+
+**Open, not a crash.** `fuzz.keyfile` costs seconds per KDF-protected input under ASan (Debug, x86). No bound on KDF
+work for a crafted key file was checked (the OpenSSH bcrypt rounds, the PPK v3 Argon2 memory and passes). 01 section
+12.2 asks for KDF rounds to be clamped in fuzz builds; the product has no such clamp, and the harness only limits the
+mutation count. Reviewer item: confirm the upper bounds for bcrypt rounds and Argon2 cost in the key loaders.
+
+### 9.4 Constant-time gate (F-5)
+
+Objects: the 16 `SD_CT_SOURCES` of sd_crypto, Release, x86-ia32 (`build/x86-ia32/lib/Release/sd_crypto.lib`).
+
+| Step | Result |
+|---|---|
+| New rules, no allow list | DIV/IDIV: none. Forward conditional branches: 57. Most are loop-entry guards of `for` loops with public bounds (`sd_ct_memeq`, `sd_ct_cmov`, `sd_ct_cswap_*`, most of `bn.obj`); the rest are argument and size checks |
+| Loop-entry guard rule (a forward branch that skips a loop whose back-edge lies inside the skipped region is accepted) | 28 violations, all in six functions |
+| Six reviewed functions in `tools/sd-isacheck/ct-branch-allow.txt`: `sd_bn_ct_mul`, `sd_bn_ct_mod`, `sd_bn_ct_modexp` (argument and size checks on public lengths), `sd_mp_modexp_ct` (`if (bit + 4 > ebits)`, public window position), `sd_aes_sbox_ct` (`if (inverse)`, public direction), `sd_bn_ct_modinv` (`if (!ok)`, invertibility) | 0 violations; gate exits 0 |
+
+Negative fixtures (`tools/sd-isacheck/fixtures/ct_fixture.c`, names with `_ct_`): `isacheck.detects_ct_forward_branch`
+and `isacheck.detects_ct_div`. Selftest with 13 branch-class vectors: `isacheck.selftest`. Run on x86-ia32 Release,
+these pass with the gate: `isacheck.selftest`, `isacheck.ct_sd_crypto`, `isacheck.detects_ct_forward_branch`,
+`isacheck.detects_ct_div`, `isacheck.detects_ct_helper_call`, `isacheck.detects_sse2`, `isacheck.sse2_floor_accepts_sse2`,
+`cpucheck.starts_with_sse2`, `isacheck.entry_thunk_is_ia32` (9 of 9). The app ISA audits (`isacheck.shelldrive` and the
+others) need the application binaries, which were not built in this pass, so they were not run.
+
+Limits (for the reviewer): the loop-guard rule cannot tell a public loop bound from a secret one, and an allow-list
+entry exempts a whole function, so a new branch on secret data inside one of the six functions is not caught. The
+reason on each allow-list line is the review record. Still missing: secret-indexed memory operands, the 64x64 multiply
+sequence check (only the helper-call form is checked), and the x86-sse2 and ARM32 gates.
+
+### 9.5 Timing harness (TST-03, dudect-style)
+
+Run once: `build/x86-ia32/bin/Release/sd-ct-dudect.exe` (x86-ia32 Release, default samples: 20000 per primitive, 4000
+for RSA), on the development host, with the other jobs idle.
+
+| Primitive | Samples used | max abs t | Verdict at this size (threshold 4.5) |
+|---|---|---|---|
+| X25519 scalar multiplication (fixed vs random scalar) | 19901 | 0.76 | no leak detected |
+| Ed25519 signing (fixed vs random seed) | 19901 | 2.05 | no leak detected |
+| AES-CTR (fixed vs random key) | 19901 | 0.42 | no leak detected |
+| MAC compare, `sd_ct_memeq` (equal vs one-byte difference) | 19901 | 0.63 | no leak detected |
+| RSA-1024 `sd_bn_ct_modexp` (all-ones vs random exponent) | 3981 | 2.31 | no leak detected |
+
+Harness note: the first MAC run gave |t| = 26.0 because the two classes performed different stores in preparation
+(class 1 flipped a byte). The harness now has both classes perform the same store and differ only in the value; two
+later runs gave 0.79 and 0.74. The 26.0 was a harness artifact, not a finding about `sd_ct_memeq`. It is recorded so
+that a new class does not repeat the asymmetry. `X25519` still prepares its inputs with `memset` in class 0 and
+`rng_fill` in class 1 (different store patterns). Its t is small, but the rule applies to any new class.
+
+Not done, required by 01 section 2.4 rule 9 and TST-03: 10^6 to 10^7 samples per class; the high-word-zero and
+all-ones classes on the 32-bit flavours; GHASH, Poly1305, DH, ML-KEM decapsulation, ECDSA and the RSA CRT paths;
+x86-sse2, x64 and ARM64 runs; the nightly `ct.yml` job on the lab machine. Five primitives at 2 x 10^4 samples show
+only that no leak appears at this size.
+
+### 9.6 Resolution of the findings
+
+- **F-4 (no fuzz targets):** partly resolved. 13 of the listed targets exist, with a replay driver in every run and a
+  libFuzzer driver on the x86 fuzz build. One finding fixed (Fuzz-1). Still open: the rest of the 01 section 12.2 list
+  (`docs/dev/m6-notes.md` lists it), the x64 libFuzzer runtime on this host, WinAFL, and the nightly `fuzz.yml` job.
+- **F-5 (constant-time gate partial):** partly resolved. The DIV/IDIV and forward-branch rules are in the gate, with a
+  reviewed allow list; a dudect-style harness exists and was run once with no leak at this sample size. Still open:
+  the secret-index and 64x64 checks, the x86-sse2 and ARM32 runs, the sample sizes, the high-word classes, and nightly CI.

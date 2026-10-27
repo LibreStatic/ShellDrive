@@ -30,6 +30,9 @@ typedef struct x86_insn {
   int is_call_rel32;   /* E8 rel32: target = address + len + rel */
   int is_jmp_rel32;    /* E9 rel32 */
   int rel32;
+  int is_jcc;          /* conditional branch: 70-7F, E0-E3 (LOOP*, JECXZ), 0F 80-8F (rel8 or rel32) */
+  int is_div;          /* DIV or IDIV (F6/F7 with ModRM.reg 6 or 7), any operand size */
+  int is_branch_rel;   /* a relative branch: rel8 (EB, 70-7F, E0-E3) or rel32 (E9, 0F 80-8F); rel is in rel32 */
 } x86_insn;
 
 const char *x86_isa_name(x86_isa isa);

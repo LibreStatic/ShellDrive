@@ -298,10 +298,12 @@ sd_err sd_ini_parse(const char *data, size_t len, sd_ini **out, uint32_t *flags)
     if (n && data[pos + n - 1] == '\r') n--;
     if (memchr(data + pos, 0, n) != NULL || !parse_line(data + pos, n, &l, &invalid) ||
         !insert_line(ini, ini->n, &l)) {
-      if (memchr(data + pos, 0, n) == NULL) line_clear(&l);
+      /* Decide the error before freeing conv: data may point into conv (ANSI-decoded input). */
+      int has_nul = memchr(data + pos, 0, n) != NULL;
+      if (!has_nul) line_clear(&l);
       sd_ini_free(ini);
       sd_free(conv);
-      return memchr(data + pos, 0, n) != NULL ? SD_E_INVALID_PARAM : SD_E_NO_MEMORY;
+      return has_nul ? SD_E_INVALID_PARAM : SD_E_NO_MEMORY;
     }
     if (invalid) f |= SD_INI_F_INVALID_LINES;
     pos = e < len ? e + 1 : e;

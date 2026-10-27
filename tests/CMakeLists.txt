@@ -6,6 +6,13 @@ endforeach()
 add_subdirectory(unit/sd_crypto_pk)
 add_subdirectory(unit/sd_update)
 
+# Opt-in constant-time timing tests (-DSD_CT_TIMING=ON, never in the default run).
+option(SD_CT_TIMING "Build the dudect-style timing tests (tests/ct), label ct, not part of the default run" OFF)
+if(SD_CT_TIMING)
+  add_subdirectory(ct)
+endif()
+
+add_subdirectory(fuzz)
 add_subdirectory(apps)
 add_subdirectory(l10n)
 add_subdirectory(policy)
