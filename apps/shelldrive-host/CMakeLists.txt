@@ -13,6 +13,8 @@ set(SD_HOST_AGENT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.c
   ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.h
   ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/update_ipc.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/update_ipc.h
   ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.h
   ${CMAKE_CURRENT_SOURCE_DIR}/host.h)
 
@@ -28,5 +30,5 @@ sd_add_app(shelldrive-host
   OUTPUT_NAME shelldrive-host
   DESCRIPTION "ShellDrive agent and service host"
   SOURCES main.c ${SD_HOST_AGENT_SOURCES} ${_backend}
-  DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_config sd_platform sd_base
+  DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_config sd_update sd_platform sd_base
        ole32 shell32 user32)

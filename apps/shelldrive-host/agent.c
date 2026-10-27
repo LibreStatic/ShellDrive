@@ -49,6 +49,7 @@
 #include "state_producer.h"
 #include "explorer_data.h"
 #include "config_watch.h"
+#include "update_ipc.h"
 #include "sd_state/sd_state.h"
 
 typedef struct work { struct work *next; void (*fn)(void *); void *arg; } work;
@@ -140,7 +141,7 @@ typedef struct host_mount {
 static const char *const k_agent_features[] = {
   "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued",
   "refresh", "cache.clear", "profile.test", "mount.attach_info", "status.stats", "status.proxy_legs",
-  "config.changed", "agent.stopping", NULL
+  "config.changed", "agent.stopping", "update", "update.check", "update.apply", NULL
 };
 
 #ifdef SD_HOST_TEST_HOOKS
@@ -2875,6 +2876,8 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "config.reload") == 0) return handle_config_reload(params, res, err);
   if (strcmp(method, "prompt.answer") == 0) return handle_prompt_answer(client, params, res, err);
   if (strcmp(method, "prompt.list") == 0) return handle_prompt_list(res);
+  if (strcmp(method, "update.check") == 0) return upd_method_check(g.srv, client, params, res, err);
+  if (strcmp(method, "update.apply") == 0) return upd_method_apply(g.srv, client, params, res, err);
   if (strcmp(method, "agent.shutdown") == 0) {
     post(NULL, work_shutdown, NULL);
     sd_jw_key(res, "stopping"); sd_jw_bool(res, 1);

@@ -1272,6 +1272,58 @@ do not apply to update traffic.
   reinstalls the previous one (an explicit uninstall+install, since `AllowDowngrades="no"`).
 - Cleanup: keep only the current and last-good versions; delete old `.sd-old-*` files at agent start.
 
+### 9.7 Decisions taken in M4 (`sd_update`)
+
+The engine is `src/sd_update` (pure verification, state, WinHTTP transport, engine); the agent methods are in
+`apps/shelldrive-host/update_ipc.c`; the release-side signing tool is `tools/sd-updsign`. Developer notes:
+`docs/dev/m4-notes.md`. Where §9.1–§9.6 left a choice, the following applies.
+
+- **Signature primitive:** ed25519 (`sd_ed25519_verify`, sd_crypto M0) for keyset and manifest. Message = domain string
+  || the exact bytes before the first `sig` line. The keyset may carry several `sig` lines (one per root); a sig whose key
+  id is not a current root is ignored, a sig by a current root that does not verify is a hard error.
+- **Keyset rules:** each `key` line carries the key id, which must equal the first 8 bytes of SHA-256 of the public key
+  (checked at parse); `revoke` applies to the keys listed in the same keyset; a keyset with `root` lines (rotation) needs
+  valid signatures by **both** current roots, and the `root` lines become the roots in effect. A keyset with a version lower
+  than the stored one is `keyset_rollback`; an equal one is accepted.
+- **Stored keyset:** `state\keyset` (the accepted keyset.txt bytes) and `state\roots` (40-byte records: key id, public key)
+  are written only after verification and are parsed without a second signature check, because a rotation keyset is
+  signed by the roots it replaces. Local state is trusted as far as local files are trusted (a user can already replace
+  the agent); the per-machine copy is written by elevated setup only.
+- **First run:** with no stored keyset the trust anchor is the compiled-in roots at keyset version 0; a manifest that
+  names keyset n ≥ 1 makes the agent fetch `keyset.txt` next to the manifest URL and verify it.
+- **Anti-rollback:** `serial` must be ≥ `last_serial.<channel>`. A serial equal to the last accepted one is accepted only
+  with the same bytes as `state\manifest.<channel>` (a re-signed manifest needs a new serial). Writes happen only after the
+  whole chain passed: serial, manifest bytes, then `last_verified`.
+- **Freshness:** `expires - released` ≤ 30 days (stable), ≤ 14 days (beta); `expires` in the past is `manifest_expired`.
+  `update.stale` is reported when the last successful verification is older than 14 days and the current check fails.
+- **Manifest syntax:** printable ASCII and LF only, one record per line, single spaces, final LF, the sig line last and
+  unique. Unknown keys are ignored. The `shelldrive-manifest` major must be 1, otherwise `format_version_unknown`
+  ("update the application manually"). A `dokany` line is stored as file `dokany-<arch>`; `dokany-deny` lines stay in the
+  stored manifest for the Dokany check (TM-R23).
+- **Transport (§9.4):** WinHTTP is loaded from System32 and every entry point is resolved at run time, so nothing post-XP
+  is imported statically. `WINHTTP_OPTION_SECURE_PROTOCOLS` requests TLS 1.2 where the option exists. Redirects are followed
+  by hand: a `Location` must name a host from the manifest's `base` lines or a GitHub release-asset host, and https to http
+  is refused. The manifest URL has an optional fallback (`manifest_alt`): the HTTP mirror is tried when the HTTPS URL fails
+  with a network error. A response over the manifest size (or over its declared Content-Length) is refused before the body
+  is used.
+- **Artifact selection:** `msi-<flavour>` for MSI installs, `portable-<flavour>` for portable, and for per-user EXE
+  installs `setup-universal` first, then `setup-<arch>` (`x86`, `x64`, `arm32`, `arm64`). `min-os` lines are checked
+  against the running OS. The flavour is detected at every check (§6.2): `x86-sse2` or `x86-ia32` from the CPU; on AMD64
+  `x64-xp` for NT 5.x and `x64-modern` otherwise; `arm32` and `arm64` from the native architecture.
+- **Staging and download:** `<staging>\<version>\<name>`. The bases are tried in manifest order; size and digest are checked
+  after the download and before the file is moved into place; a complete earlier download is reused. A file that fails the
+  check is deleted and never used.
+- **Apply:** setup mode runs the staged `setup.exe /update /passive` and waits (10 minutes) for exit code 0. The file-swap
+  mode (portable layouts and the engine tests) keeps the previous files in `install\.rollback\<old>\`, copies each new file
+  to `<name>.sd-new` and moves it over the old name with MoveFileEx, runs `--selftest` (60 s limit), and restores everything
+  on failure. A file in use cannot be replaced by this mode, so the agent uses the setup mode, which is the one that ships.
+- **Policy and settings:** `DisableUpdateCheck` (HKLM, then HKCU) disables checks with reason `policy`; `UpdateChannel` and
+  `UpdateUrl` override the settings. `[update] enabled = no` gives reason `settings`. A portable install (a
+  `data\settings.ini` next to the executable) may check, but `update.apply` refuses it (`update_disabled`) and the UI offers
+  the manual download. Defaults: enabled, channel `stable`, the GitHub bootstrap manifest.
+- **Trust in this build:** no release root is compiled in yet (the release build adds `installer/keys/`, §9.3). Without
+  roots every verification fails closed with `update_verify_failed`.
+
 ---
 
 ## 10. Authenticode signing of our binaries
