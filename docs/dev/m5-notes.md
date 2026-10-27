@@ -175,19 +175,86 @@ interactive-user ACE on the pipe (they accept a refused connect as the refusal).
 Build notes: `mc.exe` runs on the `.mc` file in ANSI mode (no `-u`; the file is ASCII and has no comments, because mc
 copies comment lines into the generated header). The message file is `MSG00409.bin` (named after the English LCID).
 
+## Part 3: service status and repair-data
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/svc_scm.c`, `svc_scm.h` | `svc_scm_status` (the rules, over the seam) and `svc_path_check_of`; the seam gets `query_service` and `query_source` (read-only); `svc_scm_real_ops` fills them |
+| `apps/shelldrive-host/svc_repair.c`, `svc_repair.h` | `svc_repair_data`: the machine data folder repair over a base folder, with the owner rule and the extra-ACE seam |
+| `apps/shelldrive/cli_service.c` | `service status` (no argument) and `service repair-data`; `service status <profile|X:>` is still the drive status |
+| `tests/unit/sd_svc/test_scm.c` (6 new), `test_repair.c` (8 new) | the status rules against the fake SCM; the repair on a temp folder under `%TEMP%` |
+| `l10n/cli/*.po` | 26 new `cli.service.*` entries per locale (status, state and start type words, repair messages); `cli.service.unimplemented` removed; `cli.help.service` lists `repair-data` |
+
+**Contract changes**
+
+- `svc_scm_ops` gets `query_service` and `query_source` (last members, additive). The fake fills them in the tests.
+- CLI: `service status` with no argument reports the service; exit 0 whenever the facts could be read, also when the
+  service is not installed. A failed SCM query is exit 1. `service repair-data` is exit 9 without elevation (before
+  anything else), 0 on success, 1 when the base is a link or a Win32 call fails.
+- JSON (`--json`), English keys: `installed`, `state` (`running`, `stopped`, `starting`, `stopping`, `paused`,
+  `unknown`, `not_installed`), `start_type` (`automatic`, `manual`, `disabled`, `unknown`), `program` (`path`, `check`:
+  `ok`, `unquoted`, `other`, `unknown`), `event_source` (`state`: `registered`, `missing`, `other`, `unknown`;
+  `message_file`), `pipe` (`null` unless running; else `reachable`, `healthy`, `global_drives`, `prompts`).
+  `repair-data --json`: `moved`, `moved_to`, `folders`.
+
+**Decisions taken in this part**
+
+- The program check is exact: the registered ImagePath must equal this install's `"<dir>\shelldrive-host.exe" service`
+  (case-insensitive). An unquoted path is its own result, because an unquoted service path is refused. The Event Log
+  source is `ok` only when its `EventMessageFile` is this install's `shelldrive-host.exe`.
+- Status of a running service asks the pipe: `selftest` for the layout (`healthy`), `list` for the global drives
+  (visible ones plus the reserved letters), and the content-free `attention` count for the open administrator prompts.
+  Subscribing to `attention` needs no elevation, so the count is shown to every user, not only admins. No new service
+  method was added.
+- `repair-data` works on the machine tree in this order: the vendor folder `LibreStatic` (its own DACL only), then
+  `ShellDrive` with the whole tree scanned (a link, a foreign-owned folder, an unreadable entry or more than 20000
+  entries makes the tree untrusted: fail closed), then the subfolders and stores at their 3.2 DACLs. An untrusted
+  folder is renamed to `<name>.untrusted-<n>` (a link is renamed itself, never followed) and a fresh one is created;
+  nothing from the renamed folder is imported. A link in the base folder itself refuses the repair (nothing changed).
+- Every check and every security change goes through one handle opened with `FILE_FLAG_OPEN_REPARSE_POINT`:
+  `GetFileInformationByHandle` and `GetSecurityInfo` for the owner, `SetSecurityInfo` for the DACL. Folders created by
+  the repair get the default owner of the creating token (Administrators under UAC, SYSTEM under the service); the
+  DACL text is not given an explicit owner, which keeps the XP and non-elevated paths simple.
+- The owner rule (shipping): SYSTEM or BUILTIN\Administrators (`IsWellKnownSid`). The tests replace it with a seam
+  that trusts every owner or none, and the owner rule itself is tested with the well-known SIDs.
+- The seam `extra_ace` (`svc_repair_ops`) is NULL in the shipping build. The tests set `(A;OICI;FA;;;OW)` so the
+  non-elevated test process, which owns the folders it creates, can build and remove the tree.
+- The repair does not stop the service. A running service that holds `service.log` open makes the rename fail
+  (sharing violation); the error is reported and nothing is changed. Stopping the service first is the documented way.
+
+**Tests and verification**
+
+| Check | Result |
+|---|---|
+| `unit.svc` (`sd-test-svc.exe`), 42 tests: the 28 of parts 1 and 2 (`main.c` lists 28 at the previous commit), 6 status tests in `test_scm.c` (missing service and source, our install as ok, unquoted and foreign paths, host program missing gives UNKNOWN, query failures passed through, the exact path check; none records a call) and 8 repair tests in `test_repair.c` (empty base builds the tree, sound tree kept, junction at `logs` moved aside and the sentinel untouched, junction at the vendor folder, untrusted owner moved aside and nothing imported, link as the base refused, missing base, owner rule with well-known SIDs) | pass in `x64-modern`, `x64-xp`, `x86-ia32` (Debug) |
+| `x64-modern` Debug, ctest `-LE "matrix|bench|interop|repro"`, 76 tests | 76 pass (`unit.crypto_pk` passed this time) |
+| `x64-xp` Debug, ctest, 76 tests | 76 pass; XP SP2 x64 import audit passes after `IsWellKnownSid`, `QueryServiceConfigW` and `lstrcmpW` were added to `xp-sp2-x64.txt` and `xp-sp3-x86.txt` (documented from Windows 2000 or earlier) |
+| `x86-ia32` Debug, ctest, 97 tests | 96 pass, 1 skipped (`dokany.mount`, always skipped under WOW64); IA32 ISA audit passes |
+| `sdl10n` (build) | the six `cli` catalogs are complete for the new entries (every CLDR form for es, fr, pt-BR, it; two forms for en, de) |
+
+The tests never query or change a real service and never touch the real `%ProgramData%`; the repair tests use a folder
+under `%TEMP%` that they create and remove, and they need no elevation.
+
+Manual check (read-only, not elevated, no service installed on this machine): `shelldrive service status` prints
+"The ShellDrive service is not installed." and "The Event Log source is not registered." and exits 0;
+`shelldrive --json service status` gives `installed: false`; `shelldrive service repair-data` exits 9 without changing
+anything.
+
 ## Left (not in this part)
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
-- `status` and `repair-data` (`shelldrive service ...`); the display name as an indirect string (`@<path>,-<id>`,
-  Vista+); the service's own re-set of the description at first start (1.3); the Event Log 3100 and 3101 to 3102 and
-  the other 2xxx/3xxx ids of 10.3 that depend on features not in this part.
+- The display name as an indirect string (`@<path>,-<id>`, Vista+); the service's own re-set of the description at
+  first start (1.3); the Event Log 3100 and 3101 to 3102 and the other 2xxx/3xxx ids of 10.3 that depend on features
+  not in this part. Event 3102 (machine folder refused) is not written yet; the service only logs it.
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store).
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).
 - Identity files: only the path rule (under `<machine root>\service\`). The ACL and handle-based checks of TM-R27 are not
   done. Passphrase secrets and `identity_store` keys for service profiles are not wired.
-- ACL repair and the owner check of the machine folders (3.2, TM-R34, Event 3102). Today a reparse point on a machine
-  folder makes the service idle; a foreign owner does not.
+- The owner check of the machine folders at service start (3.2, TM-R34, Event 3102). Today a reparse point on a machine
+  folder makes the service idle; a foreign owner does not. `service repair-data` (part 3) does both checks and the repair.
 - Non-admin 64 KiB cap separate from the admin cap, and the two reserved administrator slots of the service pipe
   (2.2, TM-R25). One 64 KiB cap applies to every client; the 4-per-SID and 10-per-second limits are in place.
 - Per-request access check in `sd_vfs` (`access_sids` / `write_sids` are passed in the options but not enforced); the

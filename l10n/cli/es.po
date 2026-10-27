@@ -823,8 +823,8 @@ msgid "Connect and sign in, then resolve the remote path, without mounting anyth
 msgstr "Conecta e inicia sesión, y después resuelve la ruta remota, sin montar nada."
 
 msgctxt "cli.help.service"
-msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start and stop. Changing them needs an elevated console."
-msgstr "Unidades globales (compartidas por todas las sesiones) y el servicio de ShellDrive: list, mount, unmount, status, install, uninstall, start y stop. Cambiarlas requiere una consola elevada."
+msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start, stop and repair-data. Changing them needs an elevated console."
+msgstr "Unidades globales (compartidas por todas las sesiones) y el servicio de ShellDrive: list, mount, unmount, status, install, uninstall, start, stop y repair-data. Cambiarlas requiere una consola elevada."
 
 msgctxt "cli.service.need_admin"
 msgid "Changing global drives needs an elevated console. Run it as administrator."
@@ -853,10 +853,6 @@ msgstr "{target} está montada."
 msgctxt "cli.service.unmounting"
 msgid "Unmounting {name}..."
 msgstr "Desmontando {name}..."
-
-msgctxt "cli.service.unimplemented"
-msgid "The service command {verb} is not part of this build yet."
-msgstr "El comando de servicio {verb} todavía no forma parte de esta versión."
 
 msgctxt "cli.service.state.connecting"
 msgid "connecting"
@@ -927,3 +923,126 @@ msgstr "El administrador de servicios de Windows rechazó la solicitud (error {c
 msgctxt "cli.service.description"
 msgid "Mounts ShellDrive drives shared by every user of this computer. Stays idle while no global drive is configured."
 msgstr "Monta las unidades de ShellDrive compartidas por todos los usuarios de este equipo. Queda inactivo mientras no haya ninguna unidad global configurada."
+
+msgctxt "cli.service.status.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "El servicio de ShellDrive no está instalado."
+
+msgctxt "cli.service.status.state_line"
+msgid "Service state: {state}."
+msgstr "Estado del servicio: {state}."
+
+msgctxt "cli.service.status.start_line"
+msgid "Start type: {type}."
+msgstr "Tipo de inicio: {type}."
+
+msgctxt "cli.service.status.program_line"
+msgid "Program: {path}"
+msgstr "Programa: {path}"
+
+msgctxt "cli.service.status.program_ok"
+msgid "The program path is quoted and points at this install."
+msgstr "La ruta del programa está entre comillas y apunta a esta instalación."
+
+msgctxt "cli.service.status.program_unquoted"
+msgid "The program path is not quoted. Remove the service and install it again."
+msgstr "La ruta del programa no tiene comillas. Quitá el servicio y volvé a instalarlo."
+
+msgctxt "cli.service.status.program_other"
+msgid "The program path points at another install. Remove the service and install it again from this one."
+msgstr "La ruta del programa apunta a otra instalación. Quitá el servicio y volvé a instalarlo desde esta."
+
+msgctxt "cli.service.status.program_unknown"
+msgid "The program path cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "No se puede comprobar la ruta del programa: shelldrive-host.exe no está junto a este programa."
+
+msgctxt "cli.service.status.source_ok"
+msgid "The Event Log source is registered for this install."
+msgstr "El origen del Registro de eventos está registrado para esta instalación."
+
+msgctxt "cli.service.status.source_missing"
+msgid "The Event Log source is not registered."
+msgstr "El origen del Registro de eventos no está registrado."
+
+msgctxt "cli.service.status.source_other"
+msgid "The Event Log source is registered for another program."
+msgstr "El origen del Registro de eventos está registrado para otro programa."
+
+msgctxt "cli.service.status.source_unknown"
+msgid "The Event Log source cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "No se puede comprobar el origen del Registro de eventos: shelldrive-host.exe no está junto a este programa."
+
+msgctxt "cli.service.status.pipe_down"
+msgid "The service is running but does not answer on its pipe."
+msgstr "El servicio está en ejecución, pero no responde por su canal."
+
+msgctxt "cli.service.status.healthy"
+msgid "The machine data folder is in order."
+msgstr "La carpeta de datos de la máquina está en orden."
+
+msgctxt "cli.service.status.idle"
+msgid "The machine data folder is refused, so the service stays idle. Run \"shelldrive service repair-data\" as administrator."
+msgstr "La carpeta de datos de la máquina fue rechazada, así que el servicio queda inactivo. Ejecutá \"shelldrive service repair-data\" como administrador."
+
+msgctxt "cli.service.status.prompts"
+msgid "{count} administrator prompt waiting."
+msgid_plural "{count} administrator prompts waiting."
+msgstr[0] "{count} solicitud de administrador pendiente."
+msgstr[1] "{count} de solicitudes de administrador pendientes."
+msgstr[2] "{count} solicitudes de administrador pendientes."
+
+msgctxt "cli.service.svc_state.running"
+msgid "running"
+msgstr "en ejecución"
+
+msgctxt "cli.service.svc_state.stopped"
+msgid "stopped"
+msgstr "detenido"
+
+msgctxt "cli.service.svc_state.starting"
+msgid "starting"
+msgstr "iniciando"
+
+msgctxt "cli.service.svc_state.stopping"
+msgid "stopping"
+msgstr "deteniéndose"
+
+msgctxt "cli.service.svc_state.paused"
+msgid "paused"
+msgstr "en pausa"
+
+msgctxt "cli.service.svc_state.unknown"
+msgid "unknown"
+msgstr "desconocido"
+
+msgctxt "cli.service.start_type.automatic"
+msgid "automatic"
+msgstr "automático"
+
+msgctxt "cli.service.start_type.manual"
+msgid "manual"
+msgstr "manual"
+
+msgctxt "cli.service.start_type.disabled"
+msgid "disabled"
+msgstr "deshabilitado"
+
+msgctxt "cli.service.start_type.unknown"
+msgid "unknown"
+msgstr "desconocido"
+
+msgctxt "cli.service.repair.ok"
+msgid "The machine data folder is in order. Its permissions were set again."
+msgstr "La carpeta de datos de la máquina está en orden. Se volvieron a aplicar sus permisos."
+
+msgctxt "cli.service.repair.moved"
+msgid "An untrusted machine data folder was moved to {path}. A new one was created. Nothing from the old folder is imported, so stored secrets and keys must be entered again."
+msgstr "La carpeta de datos de la máquina no era de confianza y se movió a {path}. Se creó una nueva. No se importa nada de la carpeta anterior, así que los secretos y las claves guardados hay que volver a ingresarlos."
+
+msgctxt "cli.service.repair.refused"
+msgid "{path} is a link or a junction, so nothing was changed. Remove it yourself, then run this command again."
+msgstr "{path} es un vínculo o una unión de directorios, así que no se cambió nada. Quitalo vos mismo y ejecutá este comando de nuevo."
+
+msgctxt "cli.service.repair.failed"
+msgid "The machine data folder could not be repaired (error {code})."
+msgstr "No se pudo reparar la carpeta de datos de la máquina (error {code})."

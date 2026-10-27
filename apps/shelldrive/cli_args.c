@@ -382,8 +382,8 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
     break;
   case CLI_CMD_SERVICE:
-    /* list | mount <profile> | unmount <profile|X:> | status <profile|X:>; install and the rest are parsed and
-       reported as not in this build (cli_service.c) */
+    /* list | mount <profile> | unmount <profile|X:> | status [<profile|X:>] | install | uninstall | start | stop |
+       repair-data (cli_service.c) */
     if (!a->positional)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
     if (wcscmp(a->positional, L"list") != 0 && wcscmp(a->positional, L"mount") != 0 &&
@@ -392,8 +392,8 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
         wcscmp(a->positional, L"start") != 0 && wcscmp(a->positional, L"stop") != 0 &&
         wcscmp(a->positional, L"repair-data") != 0)
       return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
-    if ((wcscmp(a->positional, L"mount") == 0 || wcscmp(a->positional, L"unmount") == 0 ||
-         wcscmp(a->positional, L"status") == 0) && !a->arg2)
+    /* status takes no argument (the service report) or a drive or profile (the drive status) */
+    if ((wcscmp(a->positional, L"mount") == 0 || wcscmp(a->positional, L"unmount") == 0) && !a->arg2)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
     break;
   case CLI_CMD_HOSTKEY:

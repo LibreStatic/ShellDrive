@@ -28,6 +28,20 @@ SD_TEST_DECL(scm_uninstall_tolerates_a_missing_event_source);
 SD_TEST_DECL(scm_start_and_stop_need_elevation);
 SD_TEST_DECL(scm_start_and_stop_pass_the_result_through);
 SD_TEST_DECL(scm_host_spec_points_at_the_host_next_to_the_program);
+SD_TEST_DECL(scm_status_reports_a_missing_service_and_source);
+SD_TEST_DECL(scm_status_reports_our_install_as_ok);
+SD_TEST_DECL(scm_status_flags_unquoted_and_foreign_paths);
+SD_TEST_DECL(scm_status_without_the_host_program_is_unknown);
+SD_TEST_DECL(scm_status_passes_query_failures_through);
+SD_TEST_DECL(scm_path_check_requires_the_exact_command);
+SD_TEST_DECL(repair_builds_the_tree_in_an_empty_base);
+SD_TEST_DECL(repair_keeps_a_sound_tree_and_its_stores);
+SD_TEST_DECL(repair_moves_a_junction_aside_and_never_follows_it);
+SD_TEST_DECL(repair_moves_a_junction_at_the_vendor_folder_aside);
+SD_TEST_DECL(repair_moves_an_untrusted_owner_aside_and_imports_nothing);
+SD_TEST_DECL(repair_refuses_a_link_as_the_base);
+SD_TEST_DECL(repair_reports_a_missing_base);
+SD_TEST_DECL(repair_owner_rule_trusts_only_system_and_administrators);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -58,6 +72,20 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(scm_start_and_stop_need_elevation),
   SD_TEST_ENTRY(scm_start_and_stop_pass_the_result_through),
   SD_TEST_ENTRY(scm_host_spec_points_at_the_host_next_to_the_program),
+  SD_TEST_ENTRY(scm_status_reports_a_missing_service_and_source),
+  SD_TEST_ENTRY(scm_status_reports_our_install_as_ok),
+  SD_TEST_ENTRY(scm_status_flags_unquoted_and_foreign_paths),
+  SD_TEST_ENTRY(scm_status_without_the_host_program_is_unknown),
+  SD_TEST_ENTRY(scm_status_passes_query_failures_through),
+  SD_TEST_ENTRY(scm_path_check_requires_the_exact_command),
+  SD_TEST_ENTRY(repair_builds_the_tree_in_an_empty_base),
+  SD_TEST_ENTRY(repair_keeps_a_sound_tree_and_its_stores),
+  SD_TEST_ENTRY(repair_moves_a_junction_aside_and_never_follows_it),
+  SD_TEST_ENTRY(repair_moves_a_junction_at_the_vendor_folder_aside),
+  SD_TEST_ENTRY(repair_moves_an_untrusted_owner_aside_and_imports_nothing),
+  SD_TEST_ENTRY(repair_refuses_a_link_as_the_base),
+  SD_TEST_ENTRY(repair_reports_a_missing_base),
+  SD_TEST_ENTRY(repair_owner_rule_trusts_only_system_and_administrators),
 };
 
 int main(int argc, char **argv)

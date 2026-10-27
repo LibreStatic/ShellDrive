@@ -82,6 +82,43 @@ DWORD svc_scm_stop(const svc_scm_ops *ops)
   return ops->stop_service(ops->ctx);
 }
 
+int svc_path_check_of(const wchar_t *image, const svc_install_spec *expect)
+{
+  if (expect == NULL || image == NULL)
+    return SVC_PATH_UNKNOWN;
+  if (image[0] != L'"')
+    return SVC_PATH_UNQUOTED;
+  if (lstrcmpiW(image, expect->command) == 0)
+    return SVC_PATH_OK;
+  return SVC_PATH_OTHER;
+}
+
+DWORD svc_scm_status(const svc_scm_ops *ops, const svc_install_spec *expect, svc_status_report *out)
+{
+  DWORD e;
+  memset(out, 0, sizeof(*out));
+  e = ops->query_service(ops->ctx, out);
+  if (e != 0)
+    return e;
+  out->binary_check = out->installed ? svc_path_check_of(out->binary, expect) : SVC_PATH_UNKNOWN;
+  out->message_file[0] = 0;
+  e = ops->query_source(ops->ctx, SVC_SCM_EVENT_SOURCE, out->message_file, SVC_SCM_COUNT(out->message_file));
+  if (e == ERROR_FILE_NOT_FOUND) {
+    out->message_file[0] = 0;
+    out->source_check = SVC_SRC_MISSING;
+    return 0;
+  }
+  if (e != 0)
+    return e;
+  if (expect == NULL)
+    out->source_check = SVC_SRC_UNKNOWN;
+  else if (lstrcmpiW(out->message_file, expect->message_file) == 0)
+    out->source_check = SVC_SRC_OK;
+  else
+    out->source_check = SVC_SRC_OTHER;
+  return 0;
+}
+
 DWORD svc_scm_host_spec(svc_install_spec *s, const wchar_t *description)
 {
   wchar_t exe[MAX_PATH];
@@ -363,6 +400,88 @@ static int scm_is_vista_or_later(void *ctx)
   return sd_os_at_least(6, 0, 0);
 }
 
+/* Read-only: OpenSCManager with SC_MANAGER_CONNECT and OpenService with the query rights, which the default service
+   security descriptor grants to every interactive user. A missing service is reported through out->installed. */
+static DWORD scm_query_service(void *ctx, svc_status_report *out)
+{
+  SC_HANDLE scm = NULL, svc = NULL;
+  SERVICE_STATUS st;
+  QUERY_SERVICE_CONFIGW *cfg = NULL;
+  DWORD e = 0, need = 0;
+  BOOL ok;
+  (void)ctx;
+  out->installed = 0;
+  scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+  if (scm == NULL)
+    return GetLastError();
+  svc = OpenServiceW(scm, SVC_SCM_SERVICE_NAME, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS);
+  if (svc == NULL) {
+    e = GetLastError();
+    CloseServiceHandle(scm);
+    return e == ERROR_SERVICE_DOES_NOT_EXIST ? 0 : e;
+  }
+  out->installed = 1;
+  if (!QueryServiceStatus(svc, &st)) {
+    e = GetLastError();
+  } else {
+    out->state = st.dwCurrentState;
+    ok = QueryServiceConfigW(svc, NULL, 0, &need);
+    if (!ok && GetLastError() == ERROR_INSUFFICIENT_BUFFER && need > 0) {
+      cfg = (QUERY_SERVICE_CONFIGW *)LocalAlloc(LMEM_FIXED, need);
+      if (cfg == NULL)
+        e = ERROR_NOT_ENOUGH_MEMORY;
+      else if (!QueryServiceConfigW(svc, cfg, need, &need))
+        e = GetLastError();
+      else {
+        out->start_type = cfg->dwStartType;
+        if (cfg->lpBinaryPathName != NULL)
+          (void)StringCchCopyW(out->binary, SVC_SCM_COUNT(out->binary), cfg->lpBinaryPathName);
+      }
+    } else {
+      e = ok ? ERROR_INVALID_DATA : GetLastError();
+    }
+  }
+  if (cfg != NULL)
+    LocalFree(cfg);
+  close_handles(scm, svc);
+  return e;
+}
+
+/* Read-only: HKLM\...\EventLog\Application\<source>\EventMessageFile. A missing source is ERROR_FILE_NOT_FOUND; a source
+   without a message file value gives an empty string (reported as another program's). */
+static DWORD scm_query_source(void *ctx, const wchar_t *source, wchar_t *message_file, size_t cch)
+{
+  HKEY key = NULL;
+  wchar_t path[256];
+  DWORD e, type = 0, bytes;
+  (void)ctx;
+  if (cch == 0)
+    return ERROR_INSUFFICIENT_BUFFER;
+  message_file[0] = 0;
+  if (FAILED(StringCchPrintfW(path, SVC_SCM_COUNT(path), L"%s\\%s", SVC_SCM_EVENTLOG_APP, source)))
+    return ERROR_BUFFER_OVERFLOW;
+  e = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &key);
+  if (e != ERROR_SUCCESS)
+    return e;
+  bytes = (DWORD)(cch * sizeof(wchar_t));
+  e = RegQueryValueExW(key, L"EventMessageFile", NULL, &type, (LPBYTE)message_file, &bytes);
+  RegCloseKey(key);
+  if (e == ERROR_FILE_NOT_FOUND || e == ERROR_MORE_DATA) {
+    message_file[0] = 0;
+    return ERROR_SUCCESS;
+  }
+  if (e != ERROR_SUCCESS)
+    return e;
+  if (type != REG_SZ && type != REG_EXPAND_SZ) {
+    message_file[0] = 0;
+    return ERROR_SUCCESS;
+  }
+  if (bytes / sizeof(wchar_t) < cch)
+    message_file[bytes / sizeof(wchar_t)] = 0;
+  message_file[cch - 1] = 0;
+  return ERROR_SUCCESS;
+}
+
 int svc_scm_real_ops(svc_scm_ops *out)
 {
   memset(out, 0, sizeof(*out));
@@ -378,5 +497,7 @@ int svc_scm_real_ops(svc_scm_ops *out)
   out->unregister_source = scm_unregister_source;
   out->is_elevated = scm_is_elevated;
   out->is_vista_or_later = scm_is_vista_or_later;
+  out->query_service = scm_query_service;
+  out->query_source = scm_query_source;
   return 0;
 }

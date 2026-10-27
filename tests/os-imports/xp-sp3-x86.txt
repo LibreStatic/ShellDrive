@@ -547,3 +547,8 @@ user32.dll!EndPaint
 user32.dll!FillRect
 user32.dll!UpdateWindow
 gdi32.dll!CreateSolidBrush
+
+# M5 part 3 (service status, repair-data): documented from Windows 2000, so present on XP SP2 and SP3.
+advapi32.dll!IsWellKnownSid
+advapi32.dll!QueryServiceConfigW
+kernel32.dll!lstrcmpW
