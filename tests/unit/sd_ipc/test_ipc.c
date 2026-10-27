@@ -74,6 +74,8 @@ SD_TEST(ipc_exit_codes_cover_every_err)
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("proto_unsupported"), 14);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("policy_denied"), 15);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("selftest_failed"), 17);
+  SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("prompt_unavailable"), 4);
+  SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("secret_not_found"), 3);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("no_such_code"), 1);
   {
     sd_ipc_error err;

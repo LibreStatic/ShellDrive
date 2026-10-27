@@ -8,10 +8,14 @@
 
 #include "sd/base.h"
 
-#define SD_L10N_CATALOG_ABI 1
+#define SD_L10N_CATALOG_ABI 2
 
-/* Canonical languages (03 §9.1); order is part of the ABI. */
-typedef enum sd_lang { SD_LANG_EN, SD_LANG_ES, SD_LANG_FR, SD_LANG_PT_BR, SD_LANG_IT, SD_LANG_DE, SD_LANG_COUNT } sd_lang;
+/* Canonical languages (03 §9.1); order is part of the ABI. SD_LANG_PSEUDO is the build-only qps-ploc
+   pseudo-locale (Debug builds, 03 §9.1): its table is NULL in every other build and it is never
+   chosen by the language resolution of 9.3 unless the catalog has it. */
+typedef enum sd_lang {
+  SD_LANG_EN, SD_LANG_ES, SD_LANG_FR, SD_LANG_PT_BR, SD_LANG_IT, SD_LANG_DE, SD_LANG_PSEUDO, SD_LANG_COUNT
+} sd_lang;
 
 /* CLDR plural categories (D26). Tables are indexed by category, not by PO msgstr index. */
 typedef enum sd_plural_cat {

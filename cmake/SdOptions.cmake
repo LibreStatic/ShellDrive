@@ -10,6 +10,8 @@ option(SD_ENABLE_ASAN "x64-analysis: build with AddressSanitizer" OFF)
 option(SD_ENABLE_ANALYZE "Run the MSVC code analyzer (/analyze)" OFF)
 option(SD_L10N_ALLOW_INCOMPLETE
        "Developer escape hatch: build even when a locale lacks strings (falls back to en). Never in CI." OFF)
+option(SD_L10N_QPS
+       "Debug builds only: include the qps-ploc pseudo-locale (accented, +40 % length) for layout tests (03 §9.1)." ON)
 
 if(SD_FLAVOUR STREQUAL "")
   message(FATAL_ERROR "SD_FLAVOUR is not set. Configure with a preset, e.g. cmake --preset x64-modern")
@@ -72,6 +74,15 @@ elseif(SD_FLAVOUR STREQUAL "x64-modern" OR SD_FLAVOUR STREQUAL "x64-analysis")
   set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-1507-x64.txt")
 else()
   message(FATAL_ERROR "Unknown SD_FLAVOUR '${SD_FLAVOUR}'.")
+endif()
+
+# Application manifest processorArchitecture (res/manifest/app.manifest.in): the flavour's architecture.
+if(SD_X86)
+  set(SD_MANIFEST_ARCH x86)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  set(SD_MANIFEST_ARCH arm64)
+else()
+  set(SD_MANIFEST_ARCH amd64)
 endif()
 
 set(SD_MODERN_SECURITY 0)

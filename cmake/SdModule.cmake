@@ -11,6 +11,10 @@
 #
 #   sd_add_app(<target> OUTPUT_NAME <exe name> DESCRIPTION <text> SOURCES ... DEPS ... [WINDOWS])
 #       Shipping executable with version resource, manifest and the post-build import audit (04 §2.4).
+#       WINDOWS: GUI subsystem, WIN32 target, comctl32 v6 dependency and DPI awareness in the manifest.
+#
+#   sd_add_dll(<target> OUTPUT_NAME <name> DESCRIPTION <text> SOURCES ... DEPS ... [DEF <file>])
+#       Shipping DLL with version resource, import audit and ISA audit; no embedded manifest.
 #       x86 flavours add the ISA audit (sd-isacheck); x86-sse2 executables also get the SSE2 entry thunk
 #       (src/sd_platform/entry/sd_cpucheck.c, /ENTRY:sd_cpucheck_entry, 04 §3.2). Apps use wmain /
 #       wWinMain (the thunk tail-calls wmainCRTStartup or wWinMainCRTStartup).
@@ -115,6 +119,30 @@ function(sd_add_isa_check target name)
   set_tests_properties(isacheck.${name} PROPERTIES LABELS isacheck)
 endfunction()
 
+# Instantiates res/manifest/app.manifest.in for one binary. gui (TRUE/FALSE) adds the comctl32 v6
+# dependency and the DPI awareness settings (03 §7.1, §7.3); console binaries get neither.
+# processorArchitecture follows the flavour (SD_MANIFEST_ARCH, cmake/SdOptions.cmake).
+function(sd_manifest_configure out_file name gui)
+  set(SD_MANIFEST_NAME "${name}")
+  if(gui)
+    set(SD_MANIFEST_DEPENDENCY [[  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>]])
+    set(SD_MANIFEST_DPI [[      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/PM</dpiAware>]])
+    if(NOT SD_XP)
+      # dpiAwareness (Windows 10 1703 PerMonitorV2, fallback PerMonitor) is in the 2016 namespace, which the
+      # SDK 7.1A of the XP flavours does not know (manifest warning 81010002). XP flavours keep dpiAware only.
+      string(APPEND SD_MANIFEST_DPI "\n      <dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2, PerMonitor</dpiAwareness>")
+    endif()
+  else()
+    set(SD_MANIFEST_DEPENDENCY "")
+    set(SD_MANIFEST_DPI "")
+  endif()
+  configure_file("${CMAKE_SOURCE_DIR}/res/manifest/app.manifest.in" "${out_file}" @ONLY)
+endfunction()
+
 function(sd_add_app target)
   cmake_parse_arguments(A "WINDOWS" "OUTPUT_NAME;DESCRIPTION" "SOURCES;DEPS" ${ARGN})
   if(NOT A_OUTPUT_NAME)
@@ -126,13 +154,14 @@ function(sd_add_app target)
   set(SD_RC_ORIGINAL_FILENAME "${A_OUTPUT_NAME}.exe")
   set(_rc "${CMAKE_CURRENT_BINARY_DIR}/${A_OUTPUT_NAME}.version.rc")
   set(_manifest "${CMAKE_CURRENT_BINARY_DIR}/${A_OUTPUT_NAME}.manifest")
-  set(SD_MANIFEST_NAME "${A_OUTPUT_NAME}")
+  sd_manifest_configure("${_manifest}" "${A_OUTPUT_NAME}" "${A_WINDOWS}")
   configure_file("${CMAKE_SOURCE_DIR}/res/version.rc.in" "${_rc}" @ONLY)
-  configure_file("${CMAKE_SOURCE_DIR}/res/manifest/app.manifest.in" "${_manifest}" @ONLY)
 
   if(A_WINDOWS)
     add_executable(${target} WIN32 ${A_SOURCES} "${_rc}" "${_manifest}")
     set(_subsystem WINDOWS)
+    # GUI applications: common controls v6 (XP+ through the manifest dependency, 03 §7.1).
+    target_link_libraries(${target} PRIVATE comctl32)
   else()
     add_executable(${target} ${A_SOURCES} "${_rc}" "${_manifest}")
     set(_subsystem CONSOLE)
@@ -151,27 +180,64 @@ function(sd_add_app target)
     target_link_options(${target} PRIVATE "/SUBSYSTEM:${_subsystem},${SD_SUBSYSTEM_VERSION}")
   endif()
 
-  # Import audit (04 §2.4): fails the build, and runs again under CTest.
-  if(NOT SD_ENABLE_ASAN)
-    set(_args --floor "${SD_OS_FLOOR_LIST}")
-    if(SD_SUBSYSTEM_VERSION)
-      list(APPEND _args --subsystem "${SD_SUBSYSTEM_VERSION}")
-    endif()
-    if(SD_MODERN_SECURITY)
-      list(APPEND _args --require-cfg --require-cet)
-    else()
-      list(APPEND _args --forbid-cfg)
-    endif()
-    if(SD_X86)
-      list(APPEND _args --require-safeseh)
-    endif()
-    add_dependencies(${target} sd-importcheck)
-    add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND "$<TARGET_FILE:sd-importcheck>" ${_args} "$<TARGET_FILE:${target}>"
-      COMMENT "Import audit of ${A_OUTPUT_NAME}.exe (${SD_FLAVOUR})" VERBATIM)
-    add_test(NAME importcheck.${A_OUTPUT_NAME}
-             COMMAND sd-importcheck ${_args} "$<TARGET_FILE:${target}>")
-    set_tests_properties(importcheck.${A_OUTPUT_NAME} PROPERTIES LABELS importcheck)
-  endif()
+  sd_add_import_audit(${target} ${A_OUTPUT_NAME})
   sd_add_isa_check(${target} ${A_OUTPUT_NAME} ${_isa_extra})
+endfunction()
+
+# Shipping DLL (03 §1.6, shell extension and later helpers): version resource, import audit and ISA
+# audit exactly like an executable. DLLs take the manifest of the host process, so none is embedded.
+#
+#   sd_add_dll(<target> OUTPUT_NAME <name> DESCRIPTION <text> SOURCES ... DEPS ... [DEF <file.def>])
+function(sd_add_dll target)
+  cmake_parse_arguments(D "" "OUTPUT_NAME;DESCRIPTION;DEF" "SOURCES;DEPS" ${ARGN})
+  if(NOT D_OUTPUT_NAME)
+    set(D_OUTPUT_NAME ${target})
+  endif()
+
+  set(SD_RC_DESCRIPTION "${D_DESCRIPTION}")
+  set(SD_RC_INTERNAL_NAME "${D_OUTPUT_NAME}")
+  set(SD_RC_ORIGINAL_FILENAME "${D_OUTPUT_NAME}.dll")
+  set(_rc "${CMAKE_CURRENT_BINARY_DIR}/${D_OUTPUT_NAME}.version.rc")
+  configure_file("${CMAKE_SOURCE_DIR}/res/version.rc.in" "${_rc}" @ONLY)
+
+  add_library(${target} SHARED ${D_SOURCES} "${_rc}")
+  set_target_properties(${target} PROPERTIES OUTPUT_NAME "${D_OUTPUT_NAME}" FOLDER "libs")
+  set(_isa_extra "")
+  target_link_libraries(${target} PRIVATE sd_headers ${D_DEPS})
+  target_include_directories(${target} PRIVATE "${SD_GENERATED_DIR}")
+  if(SD_SUBSYSTEM_VERSION)
+    target_link_options(${target} PRIVATE "/SUBSYSTEM:WINDOWS,${SD_SUBSYSTEM_VERSION}")
+  endif()
+  if(D_DEF)
+    target_link_options(${target} PRIVATE "/DEF:${D_DEF}")
+  endif()
+  sd_add_import_audit(${target} ${D_OUTPUT_NAME})
+  sd_add_isa_check(${target} ${D_OUTPUT_NAME} ${_isa_extra})
+endfunction()
+
+# Import audit (04 §2.4) of a shipping image: fails the build, and runs again under CTest
+# (importcheck.<file name>). The floor list is the flavour's (cmake/SdOptions.cmake).
+function(sd_add_import_audit target name)
+  if(SD_ENABLE_ASAN)
+    return()
+  endif()
+  set(_args --floor "${SD_OS_FLOOR_LIST}")
+  if(SD_SUBSYSTEM_VERSION)
+    list(APPEND _args --subsystem "${SD_SUBSYSTEM_VERSION}")
+  endif()
+  if(SD_MODERN_SECURITY)
+    list(APPEND _args --require-cfg --require-cet)
+  else()
+    list(APPEND _args --forbid-cfg)
+  endif()
+  if(SD_X86)
+    list(APPEND _args --require-safeseh)
+  endif()
+  add_dependencies(${target} sd-importcheck)
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND "$<TARGET_FILE:sd-importcheck>" ${_args} "$<TARGET_FILE:${target}>"
+    COMMENT "Import audit of ${name} (${SD_FLAVOUR})" VERBATIM)
+  add_test(NAME importcheck.${name}
+           COMMAND sd-importcheck ${_args} "$<TARGET_FILE:${target}>")
+  set_tests_properties(importcheck.${name} PROPERTIES LABELS importcheck)
 endfunction()

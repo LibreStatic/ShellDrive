@@ -52,6 +52,13 @@ typedef LONG (WINAPI *sd_pfn_BCryptDecrypt)(sd_bcrypt_handle key, PUCHAR in, ULO
                                             PUCHAR iv, ULONG cbiv, PUCHAR out, ULONG cbout,
                                             ULONG *result, ULONG flags);
 
+/* user32 DPI queries (10 1607). Resolved by the UI for per-window DPI (03 §7.3). */
+typedef UINT (WINAPI *sd_pfn_GetDpiForWindow)(HWND hwnd);
+typedef UINT (WINAPI *sd_pfn_GetDpiForSystem)(VOID);
+
+/* shcore.dll GetDpiForMonitor (8.1 and later; PROCESS_DPI_AWARENESS, MONITOR_DPI_TYPE as UINT). */
+typedef LONG (WINAPI *sd_pfn_GetDpiForMonitor)(HMONITOR monitor, UINT dpi_type, UINT *dpi_x, UINT *dpi_y);
+
 #ifndef BCRYPT_USE_SYSTEM_PREFERRED_RNG
 #define BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002
 #endif

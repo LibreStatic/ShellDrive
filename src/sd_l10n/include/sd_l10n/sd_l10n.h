@@ -17,7 +17,8 @@
 #include "sd_l10n/sd_l10n_catalog.h"
 
 /* Resolves the language (03 §9.3): override_code (--lang / SHELLDRIVE_LANG, "pt" = "pt-BR") ->
-   policy UILanguage -> settings -> GetUserDefaultUILanguage() -> en. override_code may be NULL. */
+   policy UILanguage -> settings -> GetUserDefaultUILanguage() -> en. override_code may be NULL.
+   "qps-ploc" selects the pseudo-locale only when the catalog has its table (Debug builds). */
 sd_lang        sd_l10n_init(const sd_l10n_catalog *catalog, const wchar_t *override_code);
 sd_lang        sd_l10n_lang(void);
 const char    *sd_l10n_lang_code(sd_lang lang);          /* "en", "es", "fr", "pt-BR", "it", "de" */

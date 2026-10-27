@@ -30,6 +30,8 @@
 typedef struct ipc_msg {
   struct ipc_msg *next;
   uint64_t client_id;                 /* 0 = broadcast */
+  uint32_t caps;                      /* broadcast: every bit must be in the client's caps */
+  uint64_t exclude;                   /* broadcast: client id that never receives it (0 = none) */
   char topic[IPC_TOPIC_LEN];
   size_t len;
   char data[1];
@@ -53,6 +55,7 @@ struct sd_ipc_client {
   uint32_t ntopics;
   uint32_t caps;
   char lang[8];
+  char kind[16];                      /* hello "client" */
   PSID sid;
   int elevated, admin;
   DWORD pid;
@@ -448,6 +451,11 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     memcpy(c->lang, lang, strlen(lang) + 1);
   }
   {
+    const char *kind = sd_json_get_str(msg, "client");
+    if (kind && strlen(kind) < sizeof(c->kind))
+      memcpy(c->kind, kind, strlen(kind) + 1);
+  }
+  {
     sd_wr w;
     sd_json_writer jw;
     sd_wr_init(&w, 4096);
@@ -460,6 +468,14 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     sd_jw_key(&jw, "proto"); sd_jw_int(&jw, chosen);
     sd_jw_key(&jw, "server_pid"); sd_jw_int(&jw, (int64_t)GetCurrentProcessId());
     sd_jw_key(&jw, "server_version"); sd_jw_cstr(&jw, SD_VERSION_STRING);
+    if (s->cfg.features) {
+      const char *const *f;
+      sd_jw_key(&jw, "features");
+      sd_jw_arr_begin(&jw);
+      for (f = s->cfg.features; *f; f++)
+        sd_jw_cstr(&jw, *f);
+      sd_jw_arr_end(&jw);
+    }
     sd_jw_obj_end(&jw);
     sd_jw_obj_end(&jw);
     if (sd_jw_finish(&jw) == SD_OK) {
@@ -491,14 +507,24 @@ static void handle_subscribe(sd_ipc_client *c, int64_t id, const sd_json *params
     size_t n;
     const char *t = sd_json_str(sd_json_at(topics, i), &n);
     uint32_t k, dup = 0;
-    if (t == NULL || n == 0 || n >= IPC_TOPIC_LEN)
+    int added = 0;
+    /* M3: syntactic validation; an invalid name is dropped from the accepted set, not an error */
+    if (t == NULL || n == 0 || n >= IPC_TOPIC_LEN || !sd_ipc_topic_valid(t))
       continue;
+    /* the topic list is read by the broadcast counts of other threads: change it under s->lock */
+    sd_mutex_lock(&c->srv->lock);
     for (k = 0; k < c->ntopics; k++)
       if (strcmp(c->topics[k], t) == 0) dup = 1;
     if (!dup && c->ntopics < IPC_MAX_TOPICS) {
       memcpy(c->topics[c->ntopics], t, n + 1);
       c->ntopics++;
+      added = 1;
     }
+    sd_mutex_unlock(&c->srv->lock);
+    /* the hook runs without s->lock: it may take the agent's lock, which other threads hold while they
+       call into the server */
+    if (added && c->srv->cfg.on_subscribe)
+      c->srv->cfg.on_subscribe(c->srv->cfg.ctx, c, c->topics[c->ntopics - 1]);
   }
   sd_wr_init(&w, 4096);
   sd_jw_init(&jw, &w);
@@ -698,6 +724,16 @@ static int client_subscribed(const sd_ipc_client *c, const char *topic)
   return 0;
 }
 
+/* Recipient rule of a broadcast, shared by the count (enqueue time) and the drain (pipe thread). */
+static int client_is_recipient(const sd_ipc_client *c, const char *topic, uint32_t caps, uint64_t exclude)
+{
+  if (!c->hello_done || c->closing || c->id == exclude)
+    return 0;
+  if ((c->caps & caps) != caps)
+    return 0;
+  return client_subscribed(c, topic);
+}
+
 static void drain_queue(sd_ipc_server *s)
 {
   ipc_msg *m;
@@ -716,14 +752,15 @@ static void drain_queue(sd_ipc_server *s)
       next = c->next;   /* client_queue may free c */
       if (!c->hello_done || c->closing)
         continue;
-      if (m->client_id ? c->id == m->client_id : client_subscribed(c, m->topic))
+      if (m->client_id ? c->id == m->client_id : client_is_recipient(c, m->topic, m->caps, m->exclude))
         client_queue(c, m->data, m->len);
     }
     sd_free(m);
   }
 }
 
-static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, const char *json, size_t len)
+static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, const char *json, size_t len,
+                      uint32_t caps, uint64_t exclude)
 {
   ipc_msg *m;
   if (s == NULL || json == NULL || len == 0 || len > s->cfg.max_message)
@@ -733,6 +770,8 @@ static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, c
     return SD_E_NO_MEMORY;
   memset(m, 0, sizeof(*m));
   m->client_id = client_id;
+  m->caps = caps;
+  m->exclude = exclude;
   if (topic) {
     size_t n = strlen(topic);
     if (n >= IPC_TOPIC_LEN) { sd_free(m); return SD_E_INVALID_PARAM; }
@@ -759,17 +798,69 @@ static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, c
   return SD_OK;
 }
 
+int sd_ipc_topic_valid(const char *topic)
+{
+  size_t i, n;
+  if (topic == NULL)
+    return 0;
+  n = strlen(topic);
+  if (n == 0 || n > SD_IPC_TOPIC_MAX)
+    return 0;
+  for (i = 0; i < n; i++) {
+    char ch = topic[i];
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
+      return 0;
+  }
+  return 1;
+}
+
+sd_err sd_ipc_broadcast_count(sd_ipc_server *s, const char *topic, const char *event_json, size_t len,
+                              uint32_t required_caps, uint64_t exclude_client, uint32_t *count)
+{
+  sd_ipc_client *c;
+  uint32_t n = 0;
+  sd_err e;
+  if (count)
+    *count = 0;
+  if (s == NULL || !sd_ipc_topic_valid(topic))
+    return SD_E_INVALID_PARAM;
+  sd_mutex_lock(&s->lock);
+  for (c = s->clients; c; c = c->next)
+    if (client_is_recipient(c, topic, required_caps, exclude_client))
+      n++;
+  sd_mutex_unlock(&s->lock);
+  if (n == 0)
+    return SD_OK;               /* nobody to deliver to: nothing is queued */
+  e = enqueue(s, 0, topic, event_json, len, required_caps, exclude_client);
+  if (e == SD_OK && count)
+    *count = n;
+  return e;
+}
+
 void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len)
 {
-  if (topic)
-    (void)enqueue(s, 0, topic, event_json, len);
+  (void)sd_ipc_broadcast_count(s, topic, event_json, len, 0, 0, NULL);
+}
+
+uint32_t sd_ipc_topic_subscribers(sd_ipc_server *s, const char *topic, uint32_t required_caps)
+{
+  sd_ipc_client *c;
+  uint32_t n = 0;
+  if (s == NULL || !sd_ipc_topic_valid(topic))
+    return 0;
+  sd_mutex_lock(&s->lock);
+  for (c = s->clients; c; c = c->next)
+    if (client_is_recipient(c, topic, required_caps, 0))
+      n++;
+  sd_mutex_unlock(&s->lock);
+  return n;
 }
 
 sd_err sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_json, size_t len)
 {
   if (client_id == 0)
     return SD_E_INVALID_PARAM;
-  return enqueue(s, client_id, NULL, event_json, len);
+  return enqueue(s, client_id, NULL, event_json, len, 0, 0);
 }
 
 /* ---- thread ---- */
@@ -952,6 +1043,7 @@ int sd_ipc_client_is_elevated(sd_ipc_client *client) { return client ? client->e
 int sd_ipc_client_is_admin(sd_ipc_client *client) { return client ? client->admin : 0; }
 DWORD sd_ipc_client_pid(sd_ipc_client *client) { return client ? client->pid : 0; }
 uint64_t sd_ipc_client_id(sd_ipc_client *client) { return client ? client->id : 0; }
+const char *sd_ipc_client_kind(sd_ipc_client *client) { return client ? client->kind : ""; }
 uint32_t sd_ipc_client_caps(sd_ipc_client *client) { return client ? client->caps : 0; }
 const char *sd_ipc_client_lang(sd_ipc_client *client) { return client ? client->lang : "en"; }
 

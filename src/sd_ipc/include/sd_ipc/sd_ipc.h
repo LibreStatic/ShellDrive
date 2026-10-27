@@ -9,6 +9,9 @@
  *   service pipe    \\.\pipe\com.librestatic.shelldrive.service
  *   agent ready     Local\com.librestatic.shelldrive.agent.ready.<UserSid>
  *   agent shutdown  Global\com.librestatic.shelldrive.agent.shutdown.<UserSid>.<SessionId>
+ *   UI mutex        Local\com.librestatic.shelldrive.ui.<UserSid>        (M3)
+ *   state section   Local\com.librestatic.shelldrive.state.<UserSid>     (M3, 256 KiB, 03 §8.2.1)
+ *   Object scope (03 §2.1): per-session objects are Local\, machine objects Global\.
  *
  * Security (03 §2.2): the client verifies the server's owner SID (and PID/session on Vista+) before
  * sending anything; the server checks every client.
@@ -93,6 +96,17 @@ int    sd_ipc_client_is_admin(sd_ipc_client *client);      /* elevated + BUILTIN
 DWORD  sd_ipc_client_pid(sd_ipc_client *client);
 /* Sends an event to every client subscribed to `topic`; `event_json` is a complete JSON object. */
 void   sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len);
+/* Same, and reports how many recipients were queued: subscribed clients that completed hello, have
+   every bit of `required_caps` and are not `exclude_client` (0 = none). `count` may be NULL. The
+   count is taken when the event is queued; a recipient that disconnects before the pipe thread
+   writes is counted but never receives it. */
+sd_err sd_ipc_broadcast_count(sd_ipc_server *s, const char *topic, const char *event_json, size_t len,
+                              uint32_t required_caps, uint64_t exclude_client, uint32_t *count);
+/* Number of hello-completed clients subscribed to `topic` with `required_caps` (thread-safe). */
+uint32_t sd_ipc_topic_subscribers(sd_ipc_server *s, const char *topic, uint32_t required_caps);
+/* Topic names: 1..SD_IPC_TOPIC_MAX bytes of [a-z0-9._-]. Invalid names are never kept in a subscription. */
+#define SD_IPC_TOPIC_MAX 23
+int    sd_ipc_topic_valid(const char *topic);
 
 /* ==== additive API (M0 implementation, docs/dev/m0-notes.md) ====
  *
@@ -114,6 +128,11 @@ typedef struct sd_ipc_server_cfg {
   uint32_t idle_timeout_ms;             /* non-subscribed clients; 0 = 10 min */
   uint32_t max_per_sid;                 /* 0 = unlimited (agent); service: 4 (TM-R25) */
   uint32_t max_requests_per_sec;        /* 0 = unlimited (agent); service non-admins: 10 */
+  /* M3: called on the pipe thread once per topic a client newly subscribes to, after the subscribe
+     request was accepted. It may call sd_ipc_send_to (events are queued, never written inline). */
+  void (*on_subscribe)(void *ctx, sd_ipc_client *client, const char *topic);
+  /* M3: feature names listed as "features" in the hello reply; NULL = none. Must outlive the server. */
+  const char *const *features;
 } sd_ipc_server_cfg;
 
 sd_err   sd_ipc_server_start_ex(sd_ipc_endpoint ep, const sd_ipc_server_cfg *cfg, sd_ipc_server **out);
@@ -125,6 +144,8 @@ const char *sd_ipc_client_lang(sd_ipc_client *client);       /* from hello; "en"
 sd_err   sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_json, size_t len);
 /* Number of clients that completed hello (thread-safe). */
 uint32_t sd_ipc_server_client_count(sd_ipc_server *s);
+/* "client" of the hello ("cli", "ui", "shellext"); "" before hello. */
+const char *sd_ipc_client_kind(sd_ipc_client *client);
 
 /* Builds {"type":"evt","event":<event>,"data":<data_json>} into `out` (an initialized sd_wr). */
 sd_err   sd_ipc_build_event(const char *event, const char *data_json, size_t data_len, sd_wr *out);
@@ -141,15 +162,30 @@ void     sd_ipc_error_set(sd_ipc_error *err, sd_err e, const char *code, const c
 typedef enum sd_ipc_object {
   SD_IPC_OBJ_AGENT_MUTEX,     /* Local\com.librestatic.shelldrive.agent.<SID> */
   SD_IPC_OBJ_AGENT_READY,     /* Local\com.librestatic.shelldrive.agent.ready.<SID> (manual reset) */
-  SD_IPC_OBJ_AGENT_STOP       /* Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session> */
+  SD_IPC_OBJ_AGENT_STOP,      /* Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session> */
+  SD_IPC_OBJ_UI_MUTEX,        /* Local\com.librestatic.shelldrive.ui.<SID>: held by a running UI (M3) */
+  SD_IPC_OBJ_STATE            /* Local\com.librestatic.shelldrive.state.<SID>: file mapping, see below (M3) */
 } sd_ipc_object;
 sd_err   sd_ipc_object_name(sd_ipc_object obj, wchar_t *out, size_t cch);
 /* Creates the object with the owner/DACL of 03 §2.2 (stop event: §1.2 DACL). *existed is set when
    it already existed with our owner (second instance). A foreign owner is squatting: the handle is
-   closed and SD_E_ACCESS_DENIED returned. */
+   closed and SD_E_ACCESS_DENIED returned. SD_IPC_OBJ_STATE is not a kernel event or mutex: use
+   sd_ipc_state_create (SD_E_INVALID_PARAM here). */
 sd_err   sd_ipc_object_create(sd_ipc_object obj, HANDLE *out, int *existed);
 /* Opens an existing object with SYNCHRONIZE (events) after the same owner check. */
 sd_err   sd_ipc_object_open(sd_ipc_object obj, HANDLE *out);
+
+/* State snapshot section (03 §1.6, §8.2; layout in docs/design/03-apps-platform.md §8.2): a fixed
+   256 KiB page-file mapping, owned by the agent. The creator gets PAGE_READWRITE; sd_ipc_state_open
+   opens it with FILE_MAP_READ | READ_CONTROL (the owner check needs READ_CONTROL; [verify] on XP,
+   7 and 10/11, 03 §2.2). Both verify the owner (our user SID) and the label (medium or none) on the
+   handle and fail closed: a squatted section is never returned. */
+#define SD_IPC_STATE_BYTES 262144u
+sd_err   sd_ipc_state_create(HANDLE *out, int *existed);
+sd_err   sd_ipc_state_open(HANDLE *out);
+
+/* Feature names of the hello reply, client side (the reply's "features" array). */
+int      sd_ipc_conn_has_feature(const sd_ipc_conn *c, const char *name);
 
 /* Agent auto-start: path of shelldrive-host.exe (default: next to the calling executable). The
    override is process-wide, set before the first sd_ipc_connect (tests and portable layouts). */

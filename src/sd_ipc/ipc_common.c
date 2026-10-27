@@ -202,6 +202,12 @@ sd_err sd_ipc_object_name(sd_ipc_object obj, wchar_t *out, size_t cch)
     ok = ipc_wcat(out, cch, L"Global\\com.librestatic.shelldrive.agent.shutdown.") && ipc_wcat(out, cch, sid) &&
          ipc_wcat(out, cch, L".") && ipc_wcat_u32(out, cch, session);
     break;
+  case SD_IPC_OBJ_UI_MUTEX:
+    ok = ipc_wcat(out, cch, L"Local\\com.librestatic.shelldrive.ui.") && ipc_wcat(out, cch, sid);
+    break;
+  case SD_IPC_OBJ_STATE:
+    ok = ipc_wcat(out, cch, L"Local\\com.librestatic.shelldrive.state.") && ipc_wcat(out, cch, sid);
+    break;
   default:
     return SD_E_INVALID_PARAM;
   }
@@ -327,7 +333,11 @@ sd_err sd_ipc_object_create(sd_ipc_object obj, HANDLE *out, int *existed)
   sa.nLength = sizeof(sa);
   sa.lpSecurityDescriptor = sd;
   sa.bInheritHandle = FALSE;
-  if (obj == SD_IPC_OBJ_AGENT_MUTEX)
+  if (obj == SD_IPC_OBJ_STATE) {
+    LocalFree(sd);
+    return SD_E_INVALID_PARAM;          /* sd_ipc_state_create */
+  }
+  if (obj == SD_IPC_OBJ_AGENT_MUTEX || obj == SD_IPC_OBJ_UI_MUTEX)
     h = CreateMutexW(&sa, FALSE, name);
   else
     h = CreateEventW(&sa, TRUE, FALSE, name);
@@ -360,7 +370,9 @@ sd_err sd_ipc_object_open(sd_ipc_object obj, HANDLE *out)
   e = sd_ipc_object_name(obj, name, SD_COUNTOF(name));
   if (e != SD_OK)
     return e;
-  if (obj == SD_IPC_OBJ_AGENT_MUTEX)
+  if (obj == SD_IPC_OBJ_STATE)
+    return SD_E_INVALID_PARAM;          /* sd_ipc_state_open */
+  if (obj == SD_IPC_OBJ_AGENT_MUTEX || obj == SD_IPC_OBJ_UI_MUTEX)
     h = OpenMutexW(SYNCHRONIZE | READ_CONTROL, FALSE, name);
   else
     h = OpenEventW(SYNCHRONIZE | READ_CONTROL | (obj == SD_IPC_OBJ_AGENT_STOP ? EVENT_MODIFY_STATE : 0), FALSE, name);
@@ -373,6 +385,72 @@ sd_err sd_ipc_object_open(sd_ipc_object obj, HANDLE *out)
   if (e != SD_OK) {
     CloseHandle(h);
     return SD_E_ACCESS_DENIED;
+  }
+  *out = h;
+  return SD_OK;
+}
+
+/* ---- state section (M3, 03 §8.2) ---- */
+
+sd_err sd_ipc_state_create(HANDLE *out, int *existed)
+{
+  wchar_t name[IPC_NAME_CCH], sddl[512];
+  PSECURITY_DESCRIPTOR sd = NULL;
+  SECURITY_ATTRIBUTES sa;
+  HANDLE h;
+  DWORD gle;
+  PSID me = NULL;
+  sd_err e;
+  *out = NULL;
+  if (existed) *existed = 0;
+  e = sd_ipc_object_name(SD_IPC_OBJ_STATE, name, SD_COUNTOF(name));
+  if (e == SD_OK) e = object_sddl(SD_IPC_OBJ_STATE, sddl, SD_COUNTOF(sddl));
+  if (e == SD_OK) e = ipc_sd_from_sddl(sddl, &sd);
+  if (e != SD_OK)
+    return e;
+  sa.nLength = sizeof(sa);
+  sa.lpSecurityDescriptor = sd;
+  sa.bInheritHandle = FALSE;
+  h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, 0, SD_IPC_STATE_BYTES, name);
+  gle = GetLastError();
+  LocalFree(sd);
+  if (h == NULL)
+    return gle == ERROR_ACCESS_DENIED ? SD_E_ACCESS_DENIED : SD_E_INTERNAL;
+  if (gle == ERROR_ALREADY_EXISTS) {
+    e = ipc_process_user_sid(&me);
+    if (e == SD_OK)
+      e = ipc_verify_object_owner(h, me, 1);
+    sd_free(me);
+    if (e != SD_OK) {
+      CloseHandle(h);
+      return SD_E_ACCESS_DENIED;        /* squatted: never shared with the caller */
+    }
+    if (existed) *existed = 1;
+  }
+  *out = h;
+  return SD_OK;
+}
+
+sd_err sd_ipc_state_open(HANDLE *out)
+{
+  wchar_t name[IPC_NAME_CCH];
+  HANDLE h;
+  PSID me = NULL;
+  sd_err e;
+  *out = NULL;
+  e = sd_ipc_object_name(SD_IPC_OBJ_STATE, name, SD_COUNTOF(name));
+  if (e != SD_OK)
+    return e;
+  h = OpenFileMappingW(FILE_MAP_READ | READ_CONTROL, FALSE, name);
+  if (h == NULL)
+    return GetLastError() == ERROR_FILE_NOT_FOUND ? SD_E_NOT_FOUND : SD_E_ACCESS_DENIED;
+  e = ipc_process_user_sid(&me);
+  if (e == SD_OK)
+    e = ipc_verify_object_owner(h, me, 1);
+  sd_free(me);
+  if (e != SD_OK) {
+    CloseHandle(h);
+    return SD_E_ACCESS_DENIED;          /* fail closed: "no data" for the reader */
   }
   *out = h;
   return SD_OK;
@@ -474,6 +552,7 @@ static const struct { const char *code; int exit_code; } k_codes[] = {
   { "proxy_unsupported", 16 },
   { "selftest_failed", 17 }, { "update_verify_failed", 17 },
   { "io_error", 1 }, { "prompt_unavailable", 4 },
+  { "secret_not_found", 3 },
 };
 
 int sd_ipc_exit_code_for_code(const char *code)

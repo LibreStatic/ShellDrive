@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Application manifest template (04 §3.3), instantiated per binary by sd_add_app.
-     trustInfo uses the asm.v2 namespace because the XP SP2 loader rejects the v3 form. -->
+<!-- Application manifest template (04 §3.3), instantiated per binary by sd_add_app and sd_add_dll.
+     trustInfo uses the asm.v2 namespace because the XP SP2 loader rejects the v3 form.
+     @SD_MANIFEST_ARCH@ follows the flavour (x86 for the x86 flavours, amd64 for x64, arm64 for ARM64).
+     @SD_MANIFEST_DEPENDENCY@ (comctl32 v6) and @SD_MANIFEST_DPI@ (DPI awareness) are empty for console
+     binaries and filled in for GUI applications only (sd_add_app WINDOWS, 03 §7.1 and §7.3). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="com.librestatic.shelldrive.@SD_MANIFEST_NAME@" version="@SD_VERSION_MAJOR@.@SD_VERSION_MINOR@.@SD_VERSION_PATCH@.@SD_BUILD_NUMBER@" processorArchitecture="amd64"/>
+  <assemblyIdentity type="win32" name="com.librestatic.shelldrive.@SD_MANIFEST_NAME@" version="@SD_VERSION_MAJOR@.@SD_VERSION_MINOR@.@SD_VERSION_PATCH@.@SD_BUILD_NUMBER@" processorArchitecture="@SD_MANIFEST_ARCH@"/>
+@SD_MANIFEST_DEPENDENCY@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges>
@@ -22,6 +26,7 @@
   </compatibility>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
+@SD_MANIFEST_DPI@
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
     </windowsSettings>
   </application>

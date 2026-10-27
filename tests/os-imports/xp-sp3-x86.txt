@@ -402,3 +402,59 @@ wintrust.dll!WinVerifyTrust
 mpr.dll!WNetAddConnection2W
 mpr.dll!WNetCancelConnection2W
 mpr.dll!WNetGetConnectionW
+
+# shelldrive-ui (M3 UI package, apps/shelldrive-ui). The entries below are from the Microsoft documentation of
+# each function (minimum client: Windows 2000 or Windows XP, as the documentation states). They are not captured
+# on the clean XP lab VM yet; each group is pending that capture (04 section 11.4). Per-monitor DPI, Vista+ and
+# 10+ APIs are never listed here: they are resolved with sd_platform_resolve (GetDpiForWindow, GetDpiForMonitor).
+
+# advapi32: token and SID helpers for the WM_COPYDATA sender check (documentation: Windows 2000). Pending capture.
+advapi32.dll!GetSidSubAuthority
+advapi32.dll!GetSidSubAuthorityCount
+
+# comctl32: common controls initialisation (documentation: Windows XP). Pending capture.
+comctl32.dll!InitCommonControlsEx
+
+# gdi32: fonts, the DIB icon bitmaps and the device caps of the system DPI (documentation: Windows 2000). Pending capture.
+gdi32.dll!CreateBitmap
+gdi32.dll!CreateDIBSection
+gdi32.dll!CreateFontIndirectW
+gdi32.dll!DeleteObject
+gdi32.dll!GetDeviceCaps
+gdi32.dll!GetObjectW
+gdi32.dll!GetStockObject
+
+# shell32: the notification area icon, balloons included (documentation: Windows 2000). Pending capture.
+shell32.dll!Shell_NotifyIconW
+
+# user32: windows, menus, icons and the message-only forwarding window (documentation: Windows 2000 or XP). Pending capture.
+user32.dll!AppendMenuW
+user32.dll!CreateIconIndirect
+user32.dll!CreatePopupMenu
+user32.dll!DestroyIcon
+user32.dll!DestroyMenu
+user32.dll!EnableWindow
+user32.dll!FindWindowExW
+user32.dll!GetClassInfoExW
+user32.dll!GetClientRect
+user32.dll!GetCursorPos
+user32.dll!GetDC
+user32.dll!GetSystemMetrics
+user32.dll!GetWindowRect
+user32.dll!GetWindowThreadProcessId
+user32.dll!InvalidateRect
+user32.dll!IsIconic
+user32.dll!IsWindow
+user32.dll!IsWindowVisible
+user32.dll!LoadCursorW
+user32.dll!MonitorFromWindow
+user32.dll!MoveWindow
+user32.dll!PostQuitMessage
+user32.dll!RegisterWindowMessageW
+user32.dll!ReleaseDC
+user32.dll!SetForegroundWindow
+user32.dll!SetMenuDefaultItem
+user32.dll!SetWindowPos
+user32.dll!ShowWindow
+user32.dll!SystemParametersInfoW
+user32.dll!TrackPopupMenu

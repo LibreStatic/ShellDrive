@@ -22,6 +22,11 @@
  * the new prompt kinds (password_change, legacy_ack, proxy_password) and UpdateHostKeys
  * announcements: "hostkeys.announced" events, hostkey.announced.list / .accept (5.6).
  *
+ * M3: the prompt broker (03 §2.5, §3.2, §3.3; docs/dev/m3-notes.md): every prompt has a record until its
+ * prompt.closed; routing to the initiator and the prompt UI subscribers with delivery accounting, a queue of 16
+ * drained on subscribe, deadlines checked by the control thread once a second, and the initiator-disconnect rule.
+ * Also the read-only methods status, selftest, log.tail (log_ring.c), config.reload, prompt.list and the warnings of list.
+ *
  * M0 gaps (documented in docs/dev/m0-notes.md by the lead): no hidden window (WM_ENDSESSION, WTS
  * and power notifications), no prompt queue while locked, no UI launch for prompts, no autostart. */
 #include <windows.h>
@@ -37,6 +42,8 @@
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
+
+#include "log_ring.h"
 
 typedef struct work { struct work *next; void (*fn)(void *); void *arg; } work;
 
@@ -95,7 +102,59 @@ typedef struct host_mount {
   char legacy_accepted[80];     /* security.legacy_accepted of the profile */
   wchar_t save_comment[256];    /* Credential Manager comment, localized by the client */
   uint32_t hop_count;
+  /* M3 */
+  uint32_t initiator_caps;      /* SD_IPC_CAP_* of the initiator when it asked for the mount */
 } host_mount;
+
+/* ---- M3 constants (03 §2.5, §3.3, 1.7.4) ---- */
+#define PROMPT_QUEUE_MAX      16u
+#define PROMPT_DEADLINE_MS    120000u     /* user-initiated prompts */
+#define PROMPT_RECONNECT_MS   600000u     /* prompts raised by a reconnect */
+#define UI_LAUNCH_INTERVAL_MS 30000u      /* at most one prompt-UI launch per 30 s */
+#define WARN_RING             32u         /* recent warnings kept for `list` */
+
+/* Feature names of the hello reply (03 §7): only what this build implements. */
+static const char *const k_agent_features[] = {
+  "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued", NULL
+};
+
+#ifdef SD_HOST_TEST_HOOKS
+/* tests: prompt deadlines and queue size can be shortened through the environment */
+static uint32_t env_u32(const wchar_t *name, uint32_t def)
+{
+  wchar_t v[16];
+  uint32_t n = 0;
+  const wchar_t *p;
+  if (GetEnvironmentVariableW(name, v, SD_COUNTOF(v)) - 1u >= SD_COUNTOF(v) - 1u)
+    return def;
+  for (p = v; *p >= L'0' && *p <= L'9'; p++)
+    n = n * 10u + (uint32_t)(*p - L'0');
+  return n ? n : def;
+}
+#endif
+
+typedef struct host_warn { char code[40]; char mount_id[16]; } host_warn;
+
+/* M3 prompt record (03 §3.2): from the sd_mount prompt until its prompt.closed. */
+typedef struct host_prompt {
+  struct host_prompt *next;
+  sd_mount *m;
+  uint32_t prompt_id;           /* sd_mount's id */
+  char pid[32];                 /* "p-<mount num>-<prompt id>" */
+  char mount_id[16];
+  char profile_id[33];
+  char kind[24];
+  uint64_t initiator;           /* client that asked for the mount when raised (0 = none) */
+  int queued;                   /* 1: not delivered to any client yet */
+  int expire;                   /* deadline passed or evicted: rejected by the next flush */
+  int answering;                /* a reject is in flight */
+  uint64_t deadline;            /* sd_tick_ms() */
+  uint64_t seq;                 /* queue order */
+  const char *reason;           /* answered | cancelled | timeout | superseded; NULL = cancelled */
+  const char *answered_by;      /* "cli" | "ui" once a client answered */
+  char *body;                   /* the prompt.request data object without its closing brace */
+  size_t body_len;
+} host_prompt;
 
 static struct {
   sd_mutex lock;
@@ -113,7 +172,21 @@ static struct {
   host_announce *announces;
   uint32_t next_announce;
   wchar_t user_kh[MAX_PATH];
+  /* M3 */
+  host_prompt *prompts;         /* open and queued prompts */
+  uint64_t prompt_seq;
+  uint32_t prompt_queue_max;    /* PROMPT_QUEUE_MAX (test hook: SHELLDRIVE_TEST_PROMPT_QUEUE_MAX) */
+  uint64_t prompt_ms, reconnect_prompt_ms;
+  int no_route;                 /* test hook: prompts are never routed (queue tests) */
+  uint64_t last_ui_launch;      /* tick of the last prompt-UI launch attempt; 0 = never */
+  host_warn warns[WARN_RING];
+  uint32_t warn_next, warn_count;
+  uint64_t boot_tick;           /* log.tail cursor boot id */
 } g;
+
+/* forward declarations: the prompt broker and the warning ring are defined further down */
+static void prompt_drop_mount(sd_mount *m);
+static void remember_warning(const char *code, const char *mount_id);
 
 /* ---- control queue ---- */
 
@@ -336,6 +409,7 @@ static void send_warning(host_mount *h, const char *code, const wchar_t *path, U
   if (detail) { sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, detail); }
   sd_jw_obj_end(&jw);
   sd_jw_obj_end(&jw);
+  remember_warning(code, h->id);
   if (sd_jw_finish(&jw) == SD_OK) {
     broadcast_data("mount", "warning", &d);
     broadcast_data("warning", "warning", &d);
@@ -350,7 +424,10 @@ static void destroy_record_locked(host_mount *h)
   host_mount **pp;
   for (pp = &g.mounts; *pp; pp = &(*pp)->next)
     if (*pp == h) { *pp = h->next; break; }
-  if (h->m) sd_mount_destroy(h->m);
+  if (h->m) {
+    prompt_drop_mount(h->m);
+    sd_mount_destroy(h->m);
+  }
   free_chain(h->chain);
   sd_free(h);
 }
@@ -443,6 +520,7 @@ static void on_warning(void *ctx, sd_mount *m, const char *code, uint32_t hop, c
       SD_LOGI("agent", "%s: legacy algorithms %s accepted by the profile", h->id, detail);
     } else {
       SD_LOGW("agent", "%s: warning %s (hop %u): %s", h->id, code, (unsigned)hop, detail ? detail : "");
+      remember_warning(code, h->id);
       sd_wr_init(&d, 16 * 1024);
       sd_jw_init(&jw, &d);
       sd_jw_obj_begin(&jw);
@@ -669,6 +747,218 @@ static int parse_prompt_id(const char *s, uint32_t *mnum, uint32_t *pid)
   return 1;
 }
 
+/* ---- M3 prompt broker (03 §2.5, §3.2, §3.3) ----
+ * Each prompt raised by sd_mount has a record in g.prompts until its prompt.closed. Routing: the
+ * initiator (when prompt-capable), then UI subscribers of "prompt" (cap prompts.ui); when nothing
+ * takes it the prompt is queued (PROMPT_QUEUE_MAX at most; the oldest queued prompt is evicted with
+ * reason superseded) and drained to the first UI that subscribes. Deadlines are checked by
+ * prompt_sweep once a second on the control thread. g.lock guards the list; sd_mount_answer is
+ * never called with g.lock held (it may run callbacks that take it), so rejects go through
+ * prompt_flush on the control queue. */
+
+static void wr_raw(sd_wr *w, const char *s)
+{
+  sd_wr_bytes(w, s, strlen(s));
+}
+
+static void wr_u64(sd_wr *w, uint64_t v)
+{
+  char tmp[24];
+  size_t n = 0;
+  do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+  while (n) {
+    char c = tmp[--n];
+    sd_wr_bytes(w, &c, 1);
+  }
+}
+
+/* prompt.request: the stored data object (without its closing brace) plus queued and the remaining
+   deadline in ms at send time (03 §2.5, 1.7.4). `out` must be initialized by the caller. */
+static sd_err prompt_request_event(const host_prompt *r, int queued, uint64_t now, sd_wr *out)
+{
+  sd_wr d;
+  sd_err e;
+  uint64_t remain = r->deadline > now ? r->deadline - now : 0;
+  sd_wr_init(&d, r->body_len + 128);
+  sd_wr_bytes(&d, r->body, r->body_len);
+  wr_raw(&d, queued ? ",\"queued\":true,\"deadline_ms\":" : ",\"queued\":false,\"deadline_ms\":");
+  wr_u64(&d, remain);
+  wr_raw(&d, "}");
+  e = sd_ipc_build_event("prompt.request", (const char *)d.p, d.len, out);
+  sd_wr_free(&d);
+  return e;
+}
+
+static void prompt_free(host_prompt *r)
+{
+  if (r->body) {
+    sd_secure_zero(r->body, r->body_len);
+    sd_free(r->body);
+  }
+  sd_free(r);
+}
+
+static void prompt_unlink(host_prompt *r)
+{
+  host_prompt **pp;
+  for (pp = &g.prompts; *pp; pp = &(*pp)->next)
+    if (*pp == r) {
+      *pp = r->next;
+      return;
+    }
+}
+
+/* g.lock held. Called before a mount is destroyed: its prompts are gone with it. */
+static void prompt_drop_mount(sd_mount *m)
+{
+  host_prompt *r, *next;
+  for (r = g.prompts; r; r = next) {
+    next = r->next;
+    if (r->m == m) {
+      prompt_unlink(r);
+      prompt_free(r);
+    }
+  }
+}
+
+/* prompt.closed to the initiator (once) and to UI subscribers of "prompt" that are not the initiator. */
+static void prompt_emit_closed(const host_prompt *r, const char *reason)
+{
+  sd_wr d, w;
+  sd_json_writer jw;
+  sd_wr_init(&d, 1024);
+  sd_jw_init(&jw, &d);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, r->pid);
+  sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, r->mount_id);
+  sd_jw_key(&jw, "reason"); sd_jw_cstr(&jw, reason);
+  if (r->answered_by) {
+    sd_jw_key(&jw, "answered_by");
+    sd_jw_cstr(&jw, r->answered_by);
+  }
+  sd_jw_obj_end(&jw);
+  if (sd_jw_finish(&jw) == SD_OK) {
+    sd_wr_init(&w, 4096);
+    if (sd_ipc_build_event("prompt.closed", (const char *)d.p, d.len, &w) == SD_OK) {
+      uint64_t skip = 0;
+      if (r->initiator && sd_ipc_send_to(g.srv, r->initiator, (const char *)w.p, w.len) == SD_OK)
+        skip = r->initiator;
+      (void)sd_ipc_broadcast_count(g.srv, "prompt", (const char *)w.p, w.len, SD_IPC_CAP_PROMPTS_UI, skip, NULL);
+    }
+    sd_wr_free(&w);
+  }
+  sd_wr_free(&d);
+}
+
+/* Starts the UI for prompts nobody took (03 §2.5 step 3). Rate-limited, skipped while a UI holds its
+   mutex, and a missing executable just leaves the prompts queued. Session lock state is not probed
+   in M3: a UI started while locked waits for its first subscription. g.lock held. */
+static void maybe_launch_ui(void)
+{
+  uint64_t now = sd_tick_ms();
+  wchar_t dir[MAX_PATH], exe[MAX_PATH], cmd[MAX_PATH + 32];
+  HANDLE ui = NULL;
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  DWORD n;
+  size_t i;
+  if (g.last_ui_launch && now - g.last_ui_launch < UI_LAUNCH_INTERVAL_MS)
+    return;
+  g.last_ui_launch = now;
+  if (sd_ipc_object_open(SD_IPC_OBJ_UI_MUTEX, &ui) == SD_OK) {
+    CloseHandle(ui);                  /* a UI runs and is not subscribed yet: it will drain the queue */
+    return;
+  }
+  n = GetModuleFileNameW(NULL, dir, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH)
+    return;
+  for (i = wcslen(dir); i > 0 && dir[i - 1] != L'\\'; i--)
+    ;
+  if (i == 0 || i + 20 >= MAX_PATH)
+    return;
+  dir[i - 1] = 0;
+  wcscpy_s(exe, MAX_PATH, dir);
+  wcscat_s(exe, MAX_PATH, L"\\shelldrive-ui.exe");
+  if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES)
+    return;                           /* not installed (yet): the prompts stay queued */
+  wcscpy_s(cmd, SD_COUNTOF(cmd), L"\"");
+  wcscat_s(cmd, SD_COUNTOF(cmd), exe);
+  wcscat_s(cmd, SD_COUNTOF(cmd), L"\" --prompt-host");
+  memset(&si, 0, sizeof(si));
+  memset(&pi, 0, sizeof(pi));
+  si.cb = sizeof(si);
+  if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) {
+    SD_LOGI("agent", "started the prompt UI");
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+  } else {
+    SD_LOGW("agent", "cannot start the prompt UI (%u)", (unsigned)GetLastError());
+  }
+}
+
+/* Marks queued prompts that nobody can answer any more and rejects them on the control thread. */
+static void prompt_flush(void)
+{
+  for (;;) {
+    host_prompt *r;
+    sd_mount *m = NULL;
+    uint32_t id = 0;
+    sd_err e;
+    sd_mutex_lock(&g.lock);
+    for (r = g.prompts; r; r = r->next)
+      if (r->expire && !r->answering)
+        break;
+    if (r == NULL) {
+      sd_mutex_unlock(&g.lock);
+      return;
+    }
+    r->answering = 1;
+    m = r->m;
+    id = r->prompt_id;
+    sd_mutex_unlock(&g.lock);
+    e = sd_mount_answer(m, id, SD_MA_REJECT, 0, NULL);
+    if (e == SD_E_NOT_FOUND) {
+      /* the mount no longer holds it and no close event will come: drop the record */
+      host_prompt *o;
+      sd_mutex_lock(&g.lock);
+      for (o = g.prompts; o; o = o->next)
+        if (o->m == m && o->prompt_id == id) {
+          prompt_unlink(o);
+          prompt_free(o);
+          break;
+        }
+      sd_mutex_unlock(&g.lock);
+    }
+  }
+}
+
+static void work_flush(void *arg)
+{
+  SD_UNUSED(arg);
+  prompt_flush();
+}
+
+/* Once a second on the control thread: prompts past their deadline are rejected (reason timeout). */
+static void prompt_sweep(void)
+{
+  uint64_t now = sd_tick_ms();
+  host_prompt *r;
+  int any = 0;
+  sd_mutex_lock(&g.lock);
+  for (r = g.prompts; r; r = r->next) {
+    if (!r->expire && now >= r->deadline) {
+      host_mount *h = find_by_mount(r->m);
+      r->expire = 1;
+      r->reason = "timeout";
+      if (h) scopy(h->fail_code, sizeof(h->fail_code), "prompt_unavailable");
+      any = 1;
+    }
+  }
+  sd_mutex_unlock(&g.lock);
+  if (any)
+    prompt_flush();
+}
+
 static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
 {
   host_mount *h;
@@ -676,7 +966,10 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
   sd_wr d, w;
   sd_json_writer jw;
   uint32_t i;
-  int delivered = 0;
+  uint64_t now = sd_tick_ms();
+  uint64_t to_initiator = 0;
+  uint32_t delivered = 0, queued_n = 0;
+  host_prompt *r = NULL;
   SD_UNUSED(ctx);
   sd_mutex_lock(&g.lock);
   h = find_by_mount(m);
@@ -697,6 +990,7 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
   sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, pid);
   sd_jw_key(&jw, "kind"); sd_jw_cstr(&jw, sd_mount_prompt_kind_name(p->kind));
   sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, h->id);
+  sd_jw_key(&jw, "profile_id"); sd_jw_cstr(&jw, h->profile_id);
   sd_jw_key(&jw, "profile_name"); sd_jw_cstr(&jw, h->profile_name);
   sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, p->host[0] ? p->host : h->host);
   sd_jw_key(&jw, "port"); sd_jw_int(&jw, p->port ? p->port : h->port);
@@ -748,59 +1042,139 @@ static void on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
     }
   }
   sd_jw_key(&jw, "can_save"); sd_jw_bool(&jw, p->can_save);
-  sd_jw_key(&jw, "deadline_ms"); sd_jw_int(&jw, 120000);
   sd_jw_obj_end(&jw);
-  sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
-  if (sd_jw_finish(&jw) == SD_OK && sd_ipc_build_event("prompt.request", (const char *)d.p, d.len, &w) == SD_OK) {
-    /* Routing (2.5): the initiating console client first, then UI subscribers of "prompt". */
-    if (h->initiator && sd_ipc_send_to(g.srv, h->initiator, (const char *)w.p, w.len) == SD_OK)
-      delivered = 1;
-    sd_ipc_broadcast(g.srv, "prompt", (const char *)w.p, w.len);
+  if (sd_jw_finish(&jw) != SD_OK || d.len < 2) {
+    sd_wr_free(&d);
+    sd_mutex_unlock(&g.lock);
+    scopy(h->fail_code, sizeof(h->fail_code), "prompt_required");
+    sd_mount_answer(m, p->id, SD_MA_REJECT, 0, NULL);
+    return;
   }
-  sd_wr_free(&w);
-  sd_wr_free(&d);
-  if (!delivered) {
-    /* No console client to answer and no UI launch/queue in M0: fail with prompt_required. */
-    scopy(h->fail_code, sizeof(h->fail_code), p->kind == SD_MP_HOSTKEY ? "host_key_unknown" : "prompt_required");
+  r = (host_prompt *)sd_calloc(1, sizeof(*r));
+  if (r != NULL)
+    r->body = (char *)sd_alloc(d.len);
+  if (r == NULL || r->body == NULL) {
+    if (r) sd_free(r);
+    sd_wr_free(&d);
     sd_mutex_unlock(&g.lock);
     sd_mount_answer(m, p->id, SD_MA_REJECT, 0, NULL);
     return;
   }
+  /* stored without the closing brace: prompt_request_event appends queued and deadline_ms */
+  memcpy(r->body, d.p, d.len - 1);
+  r->body_len = d.len - 1;
+  sd_wr_free(&d);
+  r->m = m;
+  r->prompt_id = p->id;
+  scopy(r->pid, sizeof(r->pid), pid);
+  scopy(r->mount_id, sizeof(r->mount_id), h->id);
+  scopy(r->profile_id, sizeof(r->profile_id), h->profile_id);
+  scopy(r->kind, sizeof(r->kind), sd_mount_prompt_kind_name(p->kind));
+  r->initiator = h->initiator;
+  r->deadline = now + (p->is_reconnect ? g.reconnect_prompt_ms : g.prompt_ms);
+  r->seq = ++g.prompt_seq;
+  r->next = g.prompts;
+  g.prompts = r;
+
+  /* step 1 and 2: the initiator (prompt-capable), then UI subscribers, the initiator excluded */
+  if (!g.no_route) {
+    sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+    if (prompt_request_event(r, 0, now, &w) == SD_OK) {
+      if (h->initiator && (h->initiator_caps & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI)) &&
+          sd_ipc_send_to(g.srv, h->initiator, (const char *)w.p, w.len) == SD_OK) {
+        delivered++;
+        to_initiator = h->initiator;
+      }
+      {
+        uint32_t n = 0;
+        if (sd_ipc_broadcast_count(g.srv, "prompt", (const char *)w.p, w.len, SD_IPC_CAP_PROMPTS_UI, to_initiator,
+                                   &n) == SD_OK)
+          delivered += n;
+      }
+    }
+    sd_wr_free(&w);
+  }
+  if (delivered) {
+    sd_mutex_unlock(&g.lock);
+    return;
+  }
+
+  /* step 3 and 4: nothing took it. Start a UI if that is possible, then queue (16 at most). */
+  r->queued = 1;
+  maybe_launch_ui();
+  {
+    host_prompt *o;
+    for (o = g.prompts; o; o = o->next)
+      if (o->queued && !o->expire) queued_n++;
+  }
+  while (queued_n > g.prompt_queue_max) {
+    host_prompt *old = NULL, *o;
+    for (o = g.prompts; o; o = o->next)
+      if (o->queued && !o->expire && o != r && (old == NULL || o->seq < old->seq)) old = o;
+    if (old == NULL)
+      break;
+    {
+      host_mount *oh = find_by_mount(old->m);
+      if (oh) scopy(oh->fail_code, sizeof(oh->fail_code), "prompt_unavailable");
+    }
+    old->expire = 1;
+    old->reason = "superseded";
+    queued_n--;
+    post(NULL, work_flush, NULL);
+  }
+  SD_LOGI("agent", "%s: prompt %s queued (no UI or console client)", h->id, pid);
   sd_mutex_unlock(&g.lock);
 }
 
 static void on_prompt_closed(void *ctx, sd_mount *m, uint32_t prompt_id)
 {
-  host_mount *h;
-  char pid[32];
+  host_prompt *r = NULL, **pp;
   SD_UNUSED(ctx);
   sd_mutex_lock(&g.lock);
-  h = find_by_mount(m);
-  if (h) {
-    sd_wr d;
-    sd_json_writer jw;
-    prompt_id_str(h, prompt_id, pid);
-    sd_wr_init(&d, 4096);
-    sd_jw_init(&jw, &d);
-    sd_jw_obj_begin(&jw);
-    sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, pid);
-    sd_jw_key(&jw, "mount_id"); sd_jw_cstr(&jw, h->id);
-    sd_jw_key(&jw, "reason"); sd_jw_cstr(&jw, "answered");
-    sd_jw_obj_end(&jw);
-    if (sd_jw_finish(&jw) == SD_OK) {
-      sd_wr w;
-      sd_wr_init(&w, 8192);
-      if (sd_ipc_build_event("prompt.closed", (const char *)d.p, d.len, &w) == SD_OK) {
-        if (h->initiator)
-          (void)sd_ipc_send_to(g.srv, h->initiator, (const char *)w.p, w.len);
-        sd_ipc_broadcast(g.srv, "prompt", (const char *)w.p, w.len);
-      }
-      sd_wr_free(&w);
+  for (pp = &g.prompts; *pp; pp = &(*pp)->next)
+    if ((*pp)->m == m && (*pp)->prompt_id == prompt_id) {
+      r = *pp;
+      *pp = r->next;
+      break;
     }
-    sd_wr_free(&d);
+  if (r) {
+    /* a prompt the agent did not answer or expire was closed by the mount itself: cancelled */
+    prompt_emit_closed(r, r->reason ? r->reason : "cancelled");
+    prompt_free(r);
   }
   sd_mutex_unlock(&g.lock);
 }
+
+/* A UI (or console) subscribed to "prompt": the queued prompts go to it first (oldest first), with
+   queued:true and the remaining deadline. Runs on the pipe thread. */
+static void ipc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic)
+{
+  uint64_t cid;
+  SD_UNUSED(ctx);
+  if (strcmp(topic, "prompt") != 0 || !(sd_ipc_client_caps(client) & SD_IPC_CAP_PROMPTS_UI))
+    return;
+  cid = sd_ipc_client_id(client);
+  sd_mutex_lock(&g.lock);
+  for (;;) {
+    host_prompt *r = NULL, *o;
+    sd_wr w;
+    uint64_t now = sd_tick_ms();
+    for (o = g.prompts; o; o = o->next)
+      if (o->queued && !o->expire && (r == NULL || o->seq < r->seq)) r = o;
+    if (r == NULL)
+      break;
+    sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+    if (prompt_request_event(r, 1, now, &w) != SD_OK || sd_ipc_send_to(g.srv, cid, (const char *)w.p, w.len) != SD_OK) {
+      sd_wr_free(&w);
+      break;
+    }
+    sd_wr_free(&w);
+    r->queued = 0;
+    SD_LOGI("agent", "%s: queued prompt %s delivered to a UI", r->mount_id, r->pid);
+  }
+  sd_mutex_unlock(&g.lock);
+}
+
 
 /* ---- control-thread work items ---- */
 
@@ -900,13 +1274,17 @@ static void work_cancel_client(void *arg)
 {
   uint64_t cid = *(uint64_t *)arg;
   host_mount *h;
+  int ui;
   sd_free(arg);
+  /* section 10, decision 5: cancel only when no prompt-capable client is subscribed; otherwise the
+     mount keeps routing its prompts to that client */
+  ui = sd_ipc_topic_subscribers(g.srv, "prompt", SD_IPC_CAP_PROMPTS_UI) > 0;
   sd_mutex_lock(&g.lock);
   for (h = g.mounts; h; h = h->next) {
     if (h->initiator == cid) {
       h->initiator = 0;
-      if (h->m && sd_mount_cancel_prompts(h->m) > 0)
-        scopy(h->fail_code, sizeof(h->fail_code), "prompt_required");
+      if (!ui && h->m && sd_mount_cancel_prompts(h->m) > 0)
+        scopy(h->fail_code, sizeof(h->fail_code), "cancelled");
     }
   }
   sd_mutex_unlock(&g.lock);
@@ -1142,6 +1520,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->read_only = prof->read_only;
   h->backend_req = (int)backend;
   h->initiator = sd_ipc_client_id(client);
+  h->initiator_caps = sd_ipc_client_caps(client);
   h->prompt_none = (pmode && strcmp(pmode, "none") == 0) ||
                    !(sd_ipc_client_caps(client) & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI));
   h->state = SD_MOUNT_CONNECTING;
@@ -1342,25 +1721,352 @@ static sd_err handle_unmount(const sd_json *params, sd_json_writer *res, sd_ipc_
   return SD_OK;
 }
 
+static void remember_warning(const char *code, const char *mount_id)   /* g.lock held */
+{
+  host_warn *w = &g.warns[g.warn_next];
+  scopy(w->code, sizeof(w->code), code);
+  scopy(w->mount_id, sizeof(w->mount_id), mount_id ? mount_id : "");
+  g.warn_next = (g.warn_next + 1u) % WARN_RING;
+  if (g.warn_count < WARN_RING)
+    g.warn_count++;
+}
+
 static sd_err handle_list(sd_json_writer *res)
 {
   host_mount *h;
+  uint32_t i, start;
   sd_mutex_lock(&g.lock);
   sd_jw_key(res, "mounts");
   sd_jw_arr_begin(res);
   for (h = g.mounts; h; h = h->next)
     write_mount_json(res, h);
   sd_jw_arr_end(res);
+  /* M3: the recent warnings of this agent, oldest first (codes of the warning events) */
+  sd_jw_key(res, "warnings");
+  sd_jw_arr_begin(res);
+  start = (g.warn_next + WARN_RING - g.warn_count) % WARN_RING;
+  for (i = 0; i < g.warn_count; i++) {
+    const host_warn *w = &g.warns[(start + i) % WARN_RING];
+    sd_jw_obj_begin(res);
+    sd_jw_key(res, "code"); sd_jw_cstr(res, w->code);
+    if (w->mount_id[0]) { sd_jw_key(res, "mount_id"); sd_jw_cstr(res, w->mount_id); }
+    sd_jw_obj_end(res);
+  }
+  sd_jw_arr_end(res);
   sd_mutex_unlock(&g.lock);
   return SD_OK;
 }
 
-static sd_err handle_prompt_answer(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+/* status {mount_id | target, stats?}: the list object, the last failure and the connection details.
+   Not in M3: stats (sd_vfs / sd_sftp counters) and proxy_legs; requesting stats is unsupported. */
+static sd_err handle_status(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *mid = sd_json_get_str(params, "mount_id");
+  const char *target = sd_json_get_str(params, "target");
+  int stats = 0;
+  host_mount *h;
+  if (mid == NULL && target == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "mount_id or target required");
+  sd_json_get_bool(params, "stats", &stats);
+  if (stats)
+    return fail(err, SD_E_UNSUPPORTED, "unsupported", "stats are not available in this build");
+  sd_mutex_lock(&g.lock);
+  for (h = g.mounts; h; h = h->next)
+    if (mount_matches(h, target, mid, NULL)) break;
+  if (h == NULL) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  }
+  sd_jw_key(res, "mount");
+  write_mount_json(res, h);
+  if (h->m && (h->state == SD_MOUNT_FAILED || h->state == SD_MOUNT_OFFLINE)) {
+    sd_mount_failure f;
+    sd_mount_get_failure(h->m, &f);
+    sd_jw_key(res, "last_error");
+    sd_jw_obj_begin(res);
+    sd_jw_key(res, "code"); sd_jw_cstr(res, final_code(h, &f));
+    sd_jw_key(res, "detail"); sd_jw_cstr(res, f.detail);
+    sd_jw_obj_end(res);
+  }
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
+/* selftest {}: the in-process checks of `shelldrive-host --selftest` plus the live pipe (03 §6.1). */
+static sd_err handle_selftest(sd_json_writer *res)
+{
+  wchar_t root[MAX_PATH];
+  sd_settings tmp;
+  int healthy = 1;
+  sd_jw_key(res, "checks");
+  sd_jw_arr_begin(res);
+#define SELFTEST_ROW(name_, ok_, code_, detail_)                                  \
+  do {                                                                            \
+    sd_jw_obj_begin(res);                                                         \
+    sd_jw_key(res, "name"); sd_jw_cstr(res, name_);                               \
+    sd_jw_key(res, "result"); sd_jw_cstr(res, (ok_) ? "pass" : "fail");           \
+    if (!(ok_)) { sd_jw_key(res, "code"); sd_jw_cstr(res, code_); healthy = 0; } \
+    sd_jw_key(res, "detail"); sd_jw_cstr(res, detail_);                           \
+    sd_jw_obj_end(res);                                                           \
+  } while (0)
+  {
+    int ok = sd_config_root(root, SD_COUNTOF(root)) == SD_OK;
+    SELFTEST_ROW("config_root", ok, "config_root_unavailable", ok ? "" : "no per-user root");
+  }
+  {
+    sd_err e = sd_settings_load(&tmp);
+    SELFTEST_ROW("settings", e == SD_OK, sd_err_name(e), e == SD_OK ? "" : "settings.ini cannot be read");
+  }
+  {
+    int ok = host_backend() != NULL && host_backend()->name != NULL;
+    SELFTEST_ROW("backend", ok, "backend_unavailable", ok ? host_backend()->name : "no backend");
+  }
+  {
+    int ok;
+    sd_mutex_lock(&g.lock);
+    ok = g.srv != NULL;
+    sd_mutex_unlock(&g.lock);
+    SELFTEST_ROW("pipe", ok, "internal", ok ? "" : "the agent pipe is not served");
+  }
+#undef SELFTEST_ROW
+  sd_jw_arr_end(res);
+  sd_jw_key(res, "healthy");
+  sd_jw_bool(res, healthy);
+  return SD_OK;
+}
+
+/* ---- log.tail (03 §2.1 row 17, decision 12) ---- */
+
+typedef struct tail_ctx {
+  sd_json_writer *jw;
+  const char *component;
+  uint32_t level_max;           /* sd_log_level: records with a higher level are skipped */
+  uint32_t lines;               /* records to return */
+  uint32_t skip;                /* matching records to skip first (tail mode) */
+  uint32_t matches;             /* matching records seen (counting pass, emit pass) */
+  uint32_t emitted;
+  uint64_t last_seq;
+} tail_ctx;
+
+static const char *const k_level_names[] = { "error", "warn", "info", "debug", "trace" };
+
+static int tail_match(const tail_ctx *t, const log_ring_rec *r)
+{
+  if (r->level < 0 || (uint32_t)r->level > t->level_max)
+    return 0;
+  return t->component == NULL || strcmp(r->component, t->component) == 0;
+}
+
+static int tail_count_cb(void *vctx, const log_ring_rec *r)
+{
+  tail_ctx *t = (tail_ctx *)vctx;
+  if (tail_match(t, r))
+    t->matches++;
+  return 1;
+}
+
+static int tail_emit_cb(void *vctx, const log_ring_rec *r)
+{
+  tail_ctx *t = (tail_ctx *)vctx;
+  if (!tail_match(t, r))
+    return 1;
+  if (t->matches++ < t->skip)
+    return 1;
+  sd_jw_obj_begin(t->jw);
+  sd_jw_key(t->jw, "seq"); sd_jw_int(t->jw, (int64_t)r->seq);
+  sd_jw_key(t->jw, "time"); sd_jw_cstr(t->jw, r->time);
+  sd_jw_key(t->jw, "level"); sd_jw_cstr(t->jw, k_level_names[r->level]);
+  sd_jw_key(t->jw, "component"); sd_jw_cstr(t->jw, r->component);
+  if (r->mount_id[0]) { sd_jw_key(t->jw, "mount_id"); sd_jw_cstr(t->jw, r->mount_id); }
+  sd_jw_key(t->jw, "text"); sd_jw_cstr(t->jw, r->text);
+  sd_jw_obj_end(t->jw);
+  t->emitted++;
+  t->last_seq = r->seq;
+  return t->emitted < t->lines;
+}
+
+static int noop_cb(void *ctx, const log_ring_rec *r)
+{
+  SD_UNUSED(ctx);
+  SD_UNUSED(r);
+  return 0;
+}
+
+static size_t put_hex(char *o, uint64_t v)
+{
+  char tmp[17];
+  size_t n = 0, k = 0;
+  do { tmp[n++] = "0123456789abcdef"[v & 15u]; v >>= 4; } while (v);
+  while (n) o[k++] = tmp[--n];
+  o[k] = 0;
+  return k;
+}
+
+static void put_cursor(char *o, size_t cap, uint64_t seq)
+{
+  size_t k = put_hex(o, (uint64_t)GetCurrentProcessId());
+  char tmp[24];
+  size_t n = 0;
+  if (k + 1 < cap) o[k++] = '.';
+  k += put_hex(o + k, g.boot_tick);
+  if (k + 1 < cap) o[k++] = '.';
+  do { tmp[n++] = (char)('0' + seq % 10u); seq /= 10u; } while (seq);
+  while (n && k + 1 < cap) o[k++] = tmp[--n];
+  o[k] = 0;
+}
+
+/* "<pid hex>.<boot hex>.<seq dec>": false on any other shape. */
+static int parse_cursor(const char *s, uint64_t *pid, uint64_t *boot, uint64_t *seq)
+{
+  uint64_t *field[3];
+  int part;
+  field[0] = pid;
+  field[1] = boot;
+  field[2] = seq;
+  for (part = 0; part < 3; part++) {
+    uint64_t v = 0;
+    int digits = 0, hex = part < 2;
+    while (*s && *s != '.') {
+      int d;
+      char c = *s;
+      if (c >= '0' && c <= '9') d = c - '0';
+      else if (hex && c >= 'a' && c <= 'f') d = c - 'a' + 10;
+      else if (hex && c >= 'A' && c <= 'F') d = c - 'A' + 10;
+      else return 0;
+      if (digits >= (hex ? 16 : 19)) return 0;
+      v = hex ? (v << 4) | (uint64_t)d : v * 10u + (uint64_t)d;
+      digits++;
+      s++;
+    }
+    if (digits == 0)
+      return 0;
+    *field[part] = v;
+    if (part < 2) {
+      if (*s != '.')
+        return 0;
+      s++;
+    }
+  }
+  return *s == 0;
+}
+
+static sd_err handle_log_tail(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  int64_t lines = 200;
+  int follow = 0;
+  const char *level = sd_json_get_str(params, "level");
+  const char *cursor = sd_json_get_str(params, "cursor");
+  tail_ctx t;
+  uint64_t oldest = 0, newest = 0, from = 0, dropped = 0, cpid = 0, cboot = 0, cseq = 0, next = 0;
+  int valid = 0, reset = 0;
+  char cur[80];
+  memset(&t, 0, sizeof(t));
+  t.level_max = (uint32_t)SD_LOG_TRACE;
+  if (sd_json_get(params, "lines") && (!sd_json_get_int64(params, "lines", &lines) || lines < 1 || lines > 2000))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "lines must be 1 to 2000");
+  sd_json_get_bool(params, "follow", &follow);
+  if (follow)
+    return fail(err, SD_E_UNSUPPORTED, "unsupported", "follow is not available in this build");
+  if (level) {
+    uint32_t i;
+    for (i = 0; i < SD_COUNTOF(k_level_names); i++)
+      if (strcmp(level, k_level_names[i]) == 0) break;
+    if (i == SD_COUNTOF(k_level_names))
+      return fail(err, SD_E_INVALID_PARAM, "usage", "level must be error, warn, info, debug or trace");
+    t.level_max = i;
+  }
+  t.component = sd_json_get_str(params, "component");
+  t.lines = (uint32_t)lines;
+  if (cursor) {
+    if (parse_cursor(cursor, &cpid, &cboot, &cseq) && cpid == (uint64_t)GetCurrentProcessId() && cboot == g.boot_tick)
+      valid = 1;
+    else
+      reset = 1;                  /* foreign, malformed or from an earlier agent: start at the oldest */
+  }
+  log_ring_scan(~(uint64_t)0, &oldest, &newest, noop_cb, NULL);   /* range only */
+  if (valid) {
+    from = cseq + 1;
+    if (newest && from < oldest) {
+      dropped = oldest - from;
+      from = oldest;
+      reset = 1;
+    }
+  } else if (cursor) {
+    from = 0;
+  } else {
+    /* tail: the last `lines` matching records */
+    log_ring_scan(0, NULL, NULL, tail_count_cb, &t);
+    t.skip = t.matches > t.lines ? t.matches - t.lines : 0;
+    t.matches = 0;
+  }
+  sd_jw_key(res, "records");
+  sd_jw_arr_begin(res);
+  t.jw = res;
+  log_ring_scan(from, NULL, NULL, tail_emit_cb, &t);
+  sd_jw_arr_end(res);
+  if (t.emitted && t.emitted >= t.lines) {
+    next = t.last_seq;                /* more may follow: continue right after the last one */
+  } else {
+    next = newest;                    /* everything up to the newest record was looked at */
+    if (valid && cseq > next)
+      next = cseq;
+  }
+  put_cursor(cur, sizeof(cur), next);
+  sd_jw_key(res, "cursor"); sd_jw_cstr(res, cur);
+  sd_jw_key(res, "reset"); sd_jw_bool(res, reset);
+  sd_jw_key(res, "dropped"); sd_jw_int(res, (int64_t)dropped);
+  return SD_OK;
+}
+
+/* ---- config.reload {scope?} (decision 3: the service only relies on this in M3) ---- */
+
+static int count_profile(void *ctx, const sd_profile *p, const wchar_t *path)
+{
+  SD_UNUSED(p);
+  SD_UNUSED(path);
+  (*(uint32_t *)ctx)++;
+  return 1;
+}
+
+static sd_err handle_config_reload(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *scope = sd_json_get_str(params, "scope");
+  sd_settings ns;
+  uint32_t profiles = 0;
+  int changed;
+  sd_err e;
+  if (scope && strcmp(scope, "machine") == 0)
+    return fail(err, SD_E_UNSUPPORTED, "unsupported", "machine scope is served by the service");
+  if (scope && strcmp(scope, "user") != 0)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "scope must be user or machine");
+  e = sd_settings_load(&ns);
+  if (e != SD_OK)
+    return fail(err, e, NULL, "settings.ini cannot be read");
+  sd_mutex_lock(&g.lock);
+  changed = memcmp(&g.settings, &ns, sizeof(ns)) != 0;
+  g.settings = ns;
+  sd_mutex_unlock(&g.lock);
+  if (changed)
+    sd_log_set_level((sd_log_level)ns.log_level);
+  (void)sd_profile_enum(count_profile, &profiles);
+  sd_jw_key(res, "profiles");
+  sd_jw_obj_begin(res);
+  sd_jw_key(res, "loaded"); sd_jw_int(res, profiles);
+  sd_jw_key(res, "errors"); sd_jw_arr_begin(res); sd_jw_arr_end(res);
+  sd_jw_obj_end(res);
+  sd_jw_key(res, "settings"); sd_jw_cstr(res, changed ? "reloaded" : "unchanged");
+  sd_jw_key(res, "restart_required"); sd_jw_arr_begin(res); sd_jw_arr_end(res);
+  return SD_OK;
+}
+
+/* prompt.answer {prompt_id, action, responses?, save?, save_comment?}: the first accepted answer wins.
+   The record gets its prompt.closed reason before sd_mount sees the answer (03 §3.3). */
+static sd_err handle_prompt_answer(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
 {
   const char *pid = sd_json_get_str(params, "prompt_id");
   const char *action = sd_json_get_str(params, "action");
   const sd_json *resp = sd_json_get(params, "responses");
-  const char *r[SD_MOUNT_PROMPT_MAX_ITEMS];
+  const char *rs[SD_MOUNT_PROMPT_MAX_ITEMS];
   uint32_t mnum = 0, id = 0, n = 0, i;
   sd_mount_answer_kind kind;
   host_mount *h;
@@ -1380,26 +2086,60 @@ static sd_err handle_prompt_answer(const sd_json *params, sd_json_writer *res, s
     if (n == 0 || n > SD_MOUNT_PROMPT_MAX_ITEMS)
       return fail(err, SD_E_INVALID_PARAM, "usage", "responses required");
     for (i = 0; i < n; i++) {
-      r[i] = sd_json_str(sd_json_at(resp, i), NULL);
-      if (r[i] == NULL)
+      rs[i] = sd_json_str(sd_json_at(resp, i), NULL);
+      if (rs[i] == NULL)
         return fail(err, SD_E_INVALID_PARAM, "usage", "responses must be strings");
     }
   }
   sd_mutex_lock(&g.lock);
-  for (h = g.mounts; h; h = h->next) {
-    if (h->num == mnum && h->m) {
-      if (kind == SD_MA_REJECT && strcmp(action, "cancel") == 0)
-        scopy(h->fail_code, sizeof(h->fail_code), "cancelled");
-      if (save && comment && !wide_from_utf8(comment, h->save_comment, SD_COUNTOF(h->save_comment)))
-        h->save_comment[0] = 0;
-      e = sd_mount_answer_ex(h->m, id, kind, n, r, save ? SD_MOUNT_ANSWER_SAVE : 0);
+  for (h = g.mounts; h && e == SD_E_NOT_FOUND; h = h->next) {
+    host_prompt *r;
+    if (h->num != mnum || h->m == NULL)
+      continue;
+    for (r = g.prompts; r; r = r->next)
+      if (r->m == h->m && r->prompt_id == id && !r->expire) break;
+    if (r == NULL)
       break;
+    if (kind == SD_MA_REJECT && strcmp(action, "cancel") == 0) {
+      scopy(h->fail_code, sizeof(h->fail_code), "cancelled");
+      r->reason = "cancelled";
+    } else {
+      r->reason = "answered";
     }
+    r->answered_by = strcmp(sd_ipc_client_kind(client), "ui") == 0 ? "ui" : "cli";
+    if (save && comment && !wide_from_utf8(comment, h->save_comment, SD_COUNTOF(h->save_comment)))
+      h->save_comment[0] = 0;
+    e = sd_mount_answer_ex(h->m, id, kind, n, rs, save ? SD_MOUNT_ANSWER_SAVE : 0);
   }
   sd_mutex_unlock(&g.lock);
   if (e == SD_E_NOT_FOUND)
     return fail(err, e, "not_found", "prompt not open");
   sd_jw_key(res, "accepted"); sd_jw_bool(res, e == SD_OK);
+  return SD_OK;
+}
+
+/* prompt.list {}: the open and queued prompts (03 §2.1 row 11). */
+static sd_err handle_prompt_list(sd_json_writer *res)
+{
+  host_prompt *r;
+  uint64_t now = sd_tick_ms();
+  sd_mutex_lock(&g.lock);
+  sd_jw_key(res, "prompts");
+  sd_jw_arr_begin(res);
+  for (r = g.prompts; r; r = r->next) {
+    if (r->expire)
+      continue;
+    sd_jw_obj_begin(res);
+    sd_jw_key(res, "prompt_id"); sd_jw_cstr(res, r->pid);
+    sd_jw_key(res, "mount_id"); sd_jw_cstr(res, r->mount_id);
+    sd_jw_key(res, "profile_id"); sd_jw_cstr(res, r->profile_id);
+    sd_jw_key(res, "kind"); sd_jw_cstr(res, r->kind);
+    sd_jw_key(res, "queued"); sd_jw_bool(res, r->queued);
+    sd_jw_key(res, "deadline_ms"); sd_jw_int(res, (int64_t)(r->deadline > now ? r->deadline - now : 0));
+    sd_jw_obj_end(res);
+  }
+  sd_jw_arr_end(res);
+  sd_mutex_unlock(&g.lock);
   return SD_OK;
 }
 
@@ -1463,7 +2203,12 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(params, res, err);
   if (strcmp(method, "list") == 0) return handle_list(res);
-  if (strcmp(method, "prompt.answer") == 0) return handle_prompt_answer(params, res, err);
+  if (strcmp(method, "status") == 0) return handle_status(params, res, err);
+  if (strcmp(method, "selftest") == 0) return handle_selftest(res);
+  if (strcmp(method, "log.tail") == 0) return handle_log_tail(params, res, err);
+  if (strcmp(method, "config.reload") == 0) return handle_config_reload(params, res, err);
+  if (strcmp(method, "prompt.answer") == 0) return handle_prompt_answer(client, params, res, err);
+  if (strcmp(method, "prompt.list") == 0) return handle_prompt_list(res);
   if (strcmp(method, "agent.shutdown") == 0) {
     post(NULL, work_shutdown, NULL);
     sd_jw_key(res, "stopping"); sd_jw_bool(res, 1);
@@ -1522,8 +2267,20 @@ int host_agent_run(const host_agent_opts *opts)
   sd_ipc_server_cfg cfg;
   sd_err e;
   uint64_t deadline;
+  uint64_t next_sweep = 0;
 
   memset(&g, 0, sizeof(g));
+  (void)log_ring_start();
+  g.prompt_queue_max = PROMPT_QUEUE_MAX;
+  g.prompt_ms = PROMPT_DEADLINE_MS;
+  g.reconnect_prompt_ms = PROMPT_RECONNECT_MS;
+#ifdef SD_HOST_TEST_HOOKS
+  g.prompt_ms = env_u32(L"SHELLDRIVE_TEST_PROMPT_MS", (uint32_t)g.prompt_ms);
+  g.reconnect_prompt_ms = env_u32(L"SHELLDRIVE_TEST_RECONNECT_PROMPT_MS", (uint32_t)g.reconnect_prompt_ms);
+  g.prompt_queue_max = env_u32(L"SHELLDRIVE_TEST_PROMPT_QUEUE_MAX", g.prompt_queue_max);
+  g.no_route = env_u32(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", 0) != 0;
+#endif
+  g.boot_tick = sd_tick_ms();
   (void)sd_settings_load(&g.settings);
   sd_log_set_level((sd_log_level)g.settings.log_level);
   {
@@ -1573,6 +2330,8 @@ int host_agent_run(const host_agent_opts *opts)
   cfg.struct_size = sizeof(cfg);
   cfg.handler = ipc_handler;
   cfg.on_disconnect = ipc_on_disconnect;
+  cfg.on_subscribe = ipc_on_subscribe;
+  cfg.features = k_agent_features;
   e = sd_ipc_server_start_ex(SD_IPC_AGENT, &cfg, &g.srv);
   if (e != SD_OK) {
     SD_LOGE("agent", "cannot serve the agent pipe (%s)", sd_err_name(e));
@@ -1602,6 +2361,10 @@ int host_agent_run(const host_agent_opts *opts)
       break;
     }
     drain();
+    if (sd_tick_ms() >= next_sweep) {
+      next_sweep = sd_tick_ms() + 1000;
+      prompt_sweep();
+    }
     if (!opts->logon && opts->idle_exit_ms) {
       uint64_t now = sd_tick_ms();
       if (!mounts_empty() || sd_ipc_server_client_count(g.srv) > 0)
@@ -1637,6 +2400,11 @@ int host_agent_run(const host_agent_opts *opts)
   /* mounts that did not finish their teardown in time must not leave a mapping behind (TM-R17) */
   cleanup_webdav_mappings("stop");
   SetUnhandledExceptionFilter(g_prev_filter);
+  while (g.prompts) {
+    host_prompt *r = g.prompts;
+    g.prompts = r->next;
+    prompt_free(r);
+  }
   while (g.announces) {
     host_announce *x = g.announces;
     g.announces = x->next;
@@ -1646,5 +2414,6 @@ int host_agent_run(const host_agent_opts *opts)
   if (stop_ev) CloseHandle(stop_ev);
   if (mutex) CloseHandle(mutex);
   SD_LOGI("agent", "agent stopped");
+  log_ring_stop();
   return 0;
 }

@@ -1,0 +1,563 @@
+/* M3 agent behaviour over the real IPC pipe, against the scripted fake backend (sd-test-host-fake.exe):
+ * UI-only prompt delivery with one copy per recipient, prompt deadlines (injected through
+ * SHELLDRIVE_TEST_PROMPT_MS), the queue (eviction with superseded, drain on subscribe with queued:true),
+ * the initiator-disconnect rule (decision 5), and the read-only methods (status, selftest, log.tail,
+ * config.reload, prompt.list, the warnings array of list, the features of hello).
+ *
+ * Every test runs its own agent: its own instance suffix, config root and environment (the agent reads
+ * its test hooks from the environment it inherits). agent.shutdown ends it. Hosts used:
+ *   new.test ... new7.test  unknown key (trust on first use), then a password prompt. */
+#include <windows.h>
+#include <string.h>
+
+#include "sd_test.h"
+#include "sd_base/sd_json.h"
+#include "sd_ipc/sd_ipc.h"
+#include "sd_platform/sd_time.h"
+
+#define M3_EVENTS 128
+
+static wchar_t g_dir[MAX_PATH];
+static unsigned g_tag;
+
+typedef struct evlog {
+  sd_json *ev[M3_EVENTS];
+  int n;
+} evlog;
+
+static void wcat_u(wchar_t *dst, size_t cch, unsigned v)
+{
+  wchar_t tmp[16], o[16];
+  size_t n = 0, i = 0;
+  do { tmp[n++] = (wchar_t)(L'0' + v % 10); v /= 10; } while (v);
+  while (n) o[i++] = tmp[--n];
+  o[i] = 0;
+  wcscat_s(dst, cch, o);
+}
+
+/* Fresh agent for this test: suffix and config root unique per process and test, test hooks set
+   or cleared. */
+static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar_t *queue_max, const wchar_t *no_route)
+{
+  wchar_t suffix[96], root[MAX_PATH], exe[MAX_PATH];
+  DWORD n = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
+  size_t i, slash = 0;
+  if (n == 0 || n >= MAX_PATH)
+    return 0;
+  for (i = 0; g_dir[i]; i++)
+    if (g_dir[i] == L'\\') slash = i;
+  g_dir[slash] = 0;
+  g_tag++;
+  wcscpy_s(suffix, SD_COUNTOF(suffix), L"m3");
+  wcat_u(suffix, SD_COUNTOF(suffix), (unsigned)GetCurrentProcessId());
+  wcscat_s(suffix, SD_COUNTOF(suffix), L"x");
+  wcscat_s(suffix, SD_COUNTOF(suffix), tag);
+  wcat_u(suffix, SD_COUNTOF(suffix), g_tag);
+  if (GetTempPathW(MAX_PATH, root) == 0)
+    return 0;
+  wcscat_s(root, MAX_PATH, L"sd-m3-");
+  wcat_u(root, MAX_PATH, (unsigned)GetCurrentProcessId());
+  wcscat_s(root, MAX_PATH, L"-");
+  wcscat_s(root, MAX_PATH, tag);
+  wcat_u(root, MAX_PATH, g_tag);
+  CreateDirectoryW(root, NULL);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_INSTANCE", suffix);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", root);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_IDLE_MS", L"60000");
+  SetEnvironmentVariableW(L"SHELLDRIVE_LANG", L"en");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_MS", prompt_ms);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_QUEUE_MAX", queue_max);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", no_route);
+  sd_ipc_set_instance_suffix(suffix);
+  wcscpy_s(exe, MAX_PATH, g_dir);
+  wcscat_s(exe, MAX_PATH, L"\\sd-test-host-fake.exe");
+  sd_ipc_set_agent_path(exe);
+  return GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES;
+}
+
+static sd_err connect_as(const char *kind, uint32_t caps, sd_ipc_conn **c)
+{
+  sd_ipc_hello h;
+  memset(&h, 0, sizeof(h));
+  h.client_kind = kind;
+  h.lang = "en";
+  h.caps = caps;
+  return sd_ipc_connect(SD_IPC_AGENT, &h, 1, 15000, c);
+}
+
+static sd_err call(sd_ipc_conn *c, const char *method, const char *params, sd_json **res, sd_ipc_error *err)
+{
+  *res = NULL;
+  return sd_ipc_call_raw(c, method, params, params ? strlen(params) : 0, 15000, res, err);
+}
+
+static void subscribe(sd_ipc_conn *c, const char *topics_json_items)
+{
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  char buf[160];
+  strcpy_s(buf, sizeof(buf), "{\"topics\":[");
+  strcat_s(buf, sizeof(buf), topics_json_items);
+  strcat_s(buf, sizeof(buf), "]}");
+  (void)call(c, "subscribe", buf, &res, &err);     /* a failed subscribe shows up as missing events */
+  sd_json_free(res);
+}
+
+static void shutdown_agent(sd_ipc_conn *c)
+{
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  (void)call(c, "agent.shutdown", "{}", &res, &err);
+  sd_json_free(res);
+}
+
+/* value of a bool or integer member, -1 when absent (the sd_json getters return a found flag) */
+static int jbool3(const sd_json *o, const char *k, void *unused)
+{
+  int v = -1;
+  SD_UNUSED(unused);
+  if (!sd_json_get_bool(o, k, &v))
+    return -1;
+  return v;
+}
+
+static int64_t jint3(const sd_json *o, const char *k, void *unused)
+{
+  int64_t v = -1;
+  SD_UNUSED(unused);
+  if (!sd_json_get_int64(o, k, &v))
+    return -1;
+  return v;
+}
+
+static int ev_named(const sd_json *ev, const char *name)
+{
+  const char *e = sd_json_get_str(ev, "event");
+  return e != NULL && strcmp(e, name) == 0;
+}
+
+static const sd_json *ev_data(const sd_json *ev)
+{
+  return sd_json_get(ev, "data");
+}
+
+static int ev_state_is(const sd_json *ev, const char *state)
+{
+  const char *s = sd_json_get_str(ev_data(ev), "state");
+  return s != NULL && strcmp(s, state) == 0;
+}
+
+static int count_ev(const evlog *l, const char *name, const char *state)
+{
+  int i, n = 0;
+  for (i = 0; i < l->n; i++)
+    if (ev_named(l->ev[i], name) && (state == NULL || ev_state_is(l->ev[i], state)))
+      n++;
+  return n;
+}
+
+static const sd_json *nth_ev(const evlog *l, const char *name, const char *state, int k)
+{
+  int i;
+  for (i = 0; i < l->n; i++)
+    if (ev_named(l->ev[i], name) && (state == NULL || ev_state_is(l->ev[i], state)) && k-- == 0)
+      return l->ev[i];
+  return NULL;
+}
+
+/* Reads events into the log until `want` events named `name` (and `state`) are there, or total_ms passes. */
+static int pump_until(sd_ipc_conn *c, evlog *l, const char *name, const char *state, int want, DWORD total_ms)
+{
+  uint64_t end = sd_tick_ms() + total_ms;
+  while (count_ev(l, name, state) < want) {
+    sd_json *ev = NULL;
+    uint64_t now = sd_tick_ms();
+    DWORD left = now >= end ? 0 : (DWORD)(end - now);
+    if (left == 0 || sd_ipc_next_event(c, left, &ev) != SD_OK)
+      return 0;
+    if (l->n < M3_EVENTS) l->ev[l->n++] = ev;
+    else sd_json_free(ev);
+  }
+  return 1;
+}
+
+/* Reads everything that arrives within idle_ms of the previous event. */
+static void pump_idle(sd_ipc_conn *c, evlog *l, DWORD idle_ms)
+{
+  for (;;) {
+    sd_json *ev = NULL;
+    if (sd_ipc_next_event(c, idle_ms, &ev) != SD_OK)
+      break;
+    if (l->n < M3_EVENTS) l->ev[l->n++] = ev;
+    else sd_json_free(ev);
+  }
+}
+
+static void free_log(evlog *l)
+{
+  int i;
+  for (i = 0; i < l->n; i++)
+    sd_json_free(l->ev[i]);
+  l->n = 0;
+}
+
+static void prompt_id_of(const evlog *l, const char *name, int k, char out[32])
+{
+  const sd_json *ev = nth_ev(l, name, NULL, k);
+  const char *s = ev ? sd_json_get_str(ev_data(ev), "prompt_id") : NULL;
+  out[0] = 0;
+  if (s) strcpy_s(out, 32, s);
+}
+
+/* {"prompt_id":"<pid>",<rest>} */
+static void answer_json(char *buf, size_t cap, const char *pid, const char *rest)
+{
+  strcpy_s(buf, cap, "{\"prompt_id\":\"");
+  strcat_s(buf, cap, pid);
+  strcat_s(buf, cap, "\",");
+  strcat_s(buf, cap, rest);
+  strcat_s(buf, cap, "}");
+}
+
+static int list_mounts(sd_ipc_conn *c)
+{
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  int n = -1;
+  if (call(c, "list", NULL, &res, &err) == SD_OK)
+    n = (int)sd_json_count(sd_json_get(res, "mounts"));
+  sd_json_free(res);
+  return n;
+}
+
+/* ---- tests ---- */
+
+/* A UI that is the only client: the prompts reach it once each, answers route back, the mount
+   completes, prompt.closed carries reason answered and answered_by ui. */
+SD_TEST(m3_ui_only_prompts_and_answers)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  char pid[32], buf[160];
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"ui", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  subscribe(c, "\"prompt\",\"mount\"");
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  SD_CHECK(sd_json_get_str(res, "mount_id") != NULL);
+  sd_json_free(res);
+  res = NULL;
+
+  /* the host key first (trust on first use), then the password */
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 1, 10000));
+  prompt_id_of(&l, "prompt.request", 0, pid);
+  SD_CHECK(strncmp(pid, "p-", 2) == 0);
+  SD_CHECK(jbool3(ev_data(nth_ev(&l, "prompt.request", NULL, 0)), "queued", NULL) == 0);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  SD_CHECK(jbool3(res, "accepted", NULL) == 1);
+  sd_json_free(res);
+  res = NULL;
+
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 2, 10000));
+  prompt_id_of(&l, "prompt.request", 1, pid);
+  SD_CHECK(strncmp(pid, "p-", 2) == 0);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"answer\",\"responses\":[\"secret\"]");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "mounted", 1, 15000));
+  SD_REQUIRE(pump_until(c, &l, "prompt.closed", NULL, 2, 5000));
+  /* one copy of each request, both closed as answered by the UI */
+  SD_CHECK(count_ev(&l, "prompt.request", NULL) == 2);
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&l, "prompt.closed", NULL, 0)), "reason"), "answered");
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&l, "prompt.closed", NULL, 1)), "answered_by"), "ui");
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
+
+/* Deadline: nobody answers, so the agent rejects at the injected deadline (1.5 s) with timeout, and the
+   mount fails with prompt_unavailable (exit 4). */
+SD_TEST(m3_prompt_deadline_timeout)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  uint64_t t_mount;
+  uint64_t elapsed;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"dead", L"1500", NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  subscribe(c, "\"prompt\",\"mount\"");
+  t_mount = sd_tick_ms();
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new7.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.closed", NULL, 1, 12000));
+  elapsed = sd_tick_ms() - t_mount;
+  SD_CHECK(elapsed >= 1500);                   /* not before the deadline */
+  SD_CHECK(elapsed < 6000);                    /* the sweep runs once a second */
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&l, "prompt.closed", NULL, 0)), "reason"), "timeout");
+  SD_CHECK(sd_json_get_str(ev_data(nth_ev(&l, "prompt.closed", NULL, 0)), "answered_by") == NULL);
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "failed", 1, 5000));
+  SD_CHECK_STR(sd_json_get_str(sd_json_get(ev_data(nth_ev(&l, "mount.state", "failed", 0)), "error"), "code"),
+               "prompt_unavailable");
+  SD_CHECK_EQ_INT((int)jint3(sd_json_get(ev_data(nth_ev(&l, "mount.state", "failed", 0)), "error"), "exit_code", NULL), 4);
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
+
+/* No routing at all (test hook: a locked session): the queue holds 3, the oldest is evicted with
+   superseded, a UI that subscribes later gets the rest with queued:true, and rejects end the mounts. */
+SD_TEST(m3_queue_evicts_and_drains_to_ui)
+{
+  sd_ipc_conn *c = NULL, *u = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog cl, ul;
+  char pid[32], buf[160];
+  int k;
+  memset(&cl, 0, sizeof(cl));
+  memset(&ul, 0, sizeof(ul));
+  SD_REQUIRE(setup_agent(L"queue", NULL, L"3", L"1"));
+  SD_REQUIRE(connect_as("cli", SD_IPC_CAP_PROMPTS_CONSOLE, &c) == SD_OK);
+  for (k = 1; k <= 4; k++) {
+    char params[96], n[2];
+    strcpy_s(params, sizeof(params), "{\"adhoc\":{\"host\":\"q");
+    n[0] = (char)('0' + k);
+    n[1] = 0;
+    strcat_s(params, sizeof(params), n);
+    strcat_s(params, sizeof(params), ".test\",\"user\":\"alice\"}}");
+    SD_REQUIRE(call(c, "mount", params, &res, &err) == SD_OK);
+    sd_json_free(res);
+    res = NULL;
+  }
+  /* the fourth raise evicts the oldest queued prompt */
+  SD_REQUIRE(pump_until(c, &cl, "prompt.closed", NULL, 1, 10000));
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&cl, "prompt.closed", NULL, 0)), "reason"), "superseded");
+  SD_CHECK(count_ev(&cl, "prompt.request", NULL) == 0);       /* routing is off */
+  SD_REQUIRE(call(c, "prompt.list", "{}", &res, &err) == SD_OK);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(res, "prompts")), 3);
+  {
+    const sd_json *p0 = sd_json_at(sd_json_get(res, "prompts"), 0);
+    SD_CHECK(jbool3(p0, "queued", NULL) == 1);
+    SD_CHECK(jint3(p0, "deadline_ms", NULL) >= 0);
+  }
+  sd_json_free(res);
+  res = NULL;
+  {
+    int waited = 0;
+    while (list_mounts(c) != 3 && waited < 5000) {      /* the failed mount is torn down by the control thread */
+      Sleep(200);
+      waited += 200;
+    }
+  }
+  SD_CHECK(list_mounts(c) == 3);
+
+  /* a UI subscribes: the three queued prompts are drained, oldest first */
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &u) == SD_OK);
+  subscribe(u, "\"prompt\"");
+  SD_REQUIRE(pump_until(u, &ul, "prompt.request", NULL, 3, 10000));
+  SD_CHECK(count_ev(&ul, "prompt.request", NULL) == 3);
+  {
+    int i;
+    for (i = 0; i < 3; i++)
+      SD_CHECK(jbool3(ev_data(nth_ev(&ul, "prompt.request", NULL, i)), "queued", NULL) == 1);
+  }
+  /* reject each one: the mounts end */
+  for (k = 0; k < 3; k++) {
+    prompt_id_of(&ul, "prompt.request", k, pid);
+    answer_json(buf, sizeof(buf), pid, "\"action\":\"reject\"");
+    SD_REQUIRE(call(u, "prompt.answer", buf, &res, &err) == SD_OK);
+    sd_json_free(res);
+    res = NULL;
+  }
+  SD_REQUIRE(pump_until(u, &ul, "prompt.closed", NULL, 3, 10000));
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&ul, "prompt.closed", NULL, 2)), "answered_by"), "ui");
+  {
+    int waited = 0;
+    while (list_mounts(c) != 0 && waited < 10000) {
+      Sleep(200);
+      waited += 200;
+    }
+  }
+  SD_CHECK(list_mounts(c) == 0);
+  free_log(&cl);
+  free_log(&ul);
+  shutdown_agent(c);
+  sd_ipc_close(u);
+  sd_ipc_close(c);
+}
+
+/* decision 5: the initiator goes away while a UI is subscribed: its prompt keeps routing to the UI,
+   which gets exactly one copy and decides; the initiator's copy went to the (gone) initiator only. */
+SD_TEST(m3_initiator_gone_keeps_prompts_for_ui)
+{
+  sd_ipc_conn *c = NULL, *u = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog ul;
+  char pid[32], buf[160];
+  memset(&ul, 0, sizeof(ul));
+  SD_REQUIRE(setup_agent(L"keep", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &u) == SD_OK);
+  subscribe(u, "\"prompt\",\"mount\"");
+  SD_REQUIRE(connect_as("cli", SD_IPC_CAP_PROMPTS_CONSOLE, &c) == SD_OK);
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new3.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(u, &ul, "prompt.request", NULL, 1, 10000));
+  sd_ipc_close(c);
+  c = NULL;
+  Sleep(300);
+  pump_idle(u, &ul, 300);
+  SD_CHECK(count_ev(&ul, "prompt.request", NULL) == 1);
+  prompt_id_of(&ul, "prompt.request", 0, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"reject\"");
+  SD_REQUIRE(call(u, "prompt.answer", buf, &res, &err) == SD_OK);
+  SD_CHECK(jbool3(res, "accepted", NULL) == 1);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(u, &ul, "mount.state", "failed", 1, 10000));
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&ul, "prompt.closed", NULL, 0)), "answered_by"), "ui");
+  free_log(&ul);
+  shutdown_agent(u);
+  sd_ipc_close(u);
+}
+
+/* decision 5, no prompt-capable client left: the initiator's disconnect cancels its mount. */
+SD_TEST(m3_initiator_gone_without_ui_cancels)
+{
+  sd_ipc_conn *c = NULL, *x = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"cancel", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("cli", SD_IPC_CAP_PROMPTS_CONSOLE, &c) == SD_OK);
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new4.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 1, 10000));
+  sd_ipc_close(c);
+  c = NULL;
+  SD_REQUIRE(connect_as("cli", 0, &x) == SD_OK);
+  {
+    int waited = 0;
+    while (list_mounts(x) != 0 && waited < 10000) {
+      Sleep(200);
+      waited += 200;
+    }
+  }
+  SD_CHECK(list_mounts(x) == 0);
+  free_log(&l);
+  shutdown_agent(x);
+  sd_ipc_close(x);
+}
+
+/* The read-only methods and the reply shapes that changed in M3, plus the hello features. */
+SD_TEST(m3_new_methods_and_list_warnings)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  char cur[80];
+  SD_REQUIRE(setup_agent(L"meth", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("cli", 0, &c) == SD_OK);
+  SD_CHECK(sd_ipc_conn_has_feature(c, "status"));
+  SD_CHECK(sd_ipc_conn_has_feature(c, "log.tail"));
+  SD_CHECK(sd_ipc_conn_has_feature(c, "selftest"));
+  SD_CHECK(sd_ipc_conn_has_feature(c, "prompt.list"));
+  SD_CHECK(!sd_ipc_conn_has_feature(c, "update.check"));    /* M4 */
+
+  /* selftest: four checks, all passing in a test root */
+  SD_REQUIRE(call(c, "selftest", "{}", &res, &err) == SD_OK);
+  SD_CHECK(jbool3(res, "healthy", NULL) == 1);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(res, "checks")), 4);
+  sd_json_free(res);
+  res = NULL;
+
+  /* status: usage without a target, mount_not_found for an unknown one, stats unsupported */
+  SD_CHECK(call(c, "status", "{}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  SD_CHECK_EQ_INT(err.exit_code, 2);
+  SD_CHECK(call(c, "status", "{\"mount_id\":\"m-99\"}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "mount_not_found");
+  SD_CHECK(call(c, "status", "{\"mount_id\":\"m-1\",\"stats\":true}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "unsupported");
+
+  /* config.reload: user scope reloads, machine scope belongs to the service */
+  SD_REQUIRE(call(c, "config.reload", "{}", &res, &err) == SD_OK);
+  SD_CHECK(jint3(sd_json_get(res, "profiles"), "loaded", NULL) == 0);
+  SD_CHECK(sd_json_get_str(res, "settings") != NULL);
+  sd_json_free(res);
+  res = NULL;
+  SD_CHECK(call(c, "config.reload", "{\"scope\":\"machine\"}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "unsupported");
+  SD_CHECK(call(c, "config.reload", "{\"scope\":\"both\"}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+
+  /* log.tail: the start-up records, a cursor that resumes, a foreign cursor that resets */
+  SD_REQUIRE(call(c, "log.tail", "{\"lines\":5}", &res, &err) == SD_OK);
+  SD_CHECK(sd_json_count(sd_json_get(res, "records")) >= 1);
+  SD_CHECK(sd_json_count(sd_json_get(res, "records")) <= 5);
+  SD_CHECK(jbool3(res, "reset", NULL) == 0);
+  {
+    const char *cs = sd_json_get_str(res, "cursor");
+    SD_REQUIRE(cs != NULL);
+    strcpy_s(cur, sizeof(cur), cs);
+  }
+  sd_json_free(res);
+  res = NULL;
+  {
+    char params[120];
+    strcpy_s(params, sizeof(params), "{\"cursor\":\"");
+    strcat_s(params, sizeof(params), cur);
+    strcat_s(params, sizeof(params), "\"}");
+    SD_REQUIRE(call(c, "log.tail", params, &res, &err) == SD_OK);
+    SD_CHECK(jbool3(res, "reset", NULL) == 0);
+    sd_json_free(res);
+    res = NULL;
+  }
+  SD_REQUIRE(call(c, "log.tail", "{\"cursor\":\"0.0.1\"}", &res, &err) == SD_OK);
+  SD_CHECK(jbool3(res, "reset", NULL) == 1);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(call(c, "log.tail", "{\"component\":\"agent\",\"level\":\"info\",\"lines\":50}", &res, &err) == SD_OK);
+  {
+    size_t i, n = sd_json_count(sd_json_get(res, "records"));
+    for (i = 0; i < n; i++) {
+      SD_CHECK_STR(sd_json_get_str(sd_json_at(sd_json_get(res, "records"), i), "component"), "agent");
+    }
+  }
+  sd_json_free(res);
+  res = NULL;
+  SD_CHECK(call(c, "log.tail", "{\"lines\":0}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  SD_CHECK(call(c, "log.tail", "{\"level\":\"loud\"}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  SD_CHECK(call(c, "log.tail", "{\"follow\":true}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "unsupported");
+
+  /* list carries the warnings array (empty here); prompt.list is empty */
+  SD_REQUIRE(call(c, "list", "{}", &res, &err) == SD_OK);
+  SD_CHECK(sd_json_type_of(sd_json_get(res, "warnings")) == SD_JSON_ARRAY);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(call(c, "prompt.list", "{}", &res, &err) == SD_OK);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(res, "prompts")), 0);
+  sd_json_free(res);
+  res = NULL;
+
+  /* methods that are not in this build keep the unknown-method answer */
+  SD_CHECK(call(c, "refresh", "{}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}

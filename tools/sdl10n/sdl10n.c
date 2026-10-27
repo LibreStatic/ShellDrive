@@ -1,11 +1,11 @@
 /* sdl10n: validates PO catalogs and compiles them into C message tables (03 §9.1, §9.2, §9.4; D26).
  *
  *   sdl10n --name <catalog> --out-c <file.c> --out-h <file.h> --domain <dir> [--domain <dir>...]
- *          [--allow-incomplete]
+ *          [--allow-incomplete] [--qps]
  *   sdl10n --check --domain <dir> [...] [--allow-incomplete]
  *
- * Each domain directory holds en.po (the source of truth) and es/fr/pt-BR/it/de.po. Checks (errors
- * fail with exit code 1):
+ * Each domain directory is l10n/<domain>/ and holds en.po (the source of truth) and es/fr/pt-BR/it/de.po.
+ * A domain may hold header-only files (an empty catalog). Checks (errors fail with exit code 1):
  *   - every en entry has a unique msgctxt (the symbolic id) and a non-empty msgid;
  *   - every other locale has every entry, with the same msgid/msgid_plural as en, not fuzzy, with
  *     non-empty msgstr, and exactly one msgstr[n] per CLDR category of that language;
@@ -13,9 +13,19 @@
  *   - placeholder sets ({name}; "{{" and "}}" are escapes) equal to the English ones (the plural
  *     argument may be omitted in a form);
  *   - the Plural-Forms header equals the canonical expression of 03 §9.4;
- *   - all text is valid UTF-8.
+ *   - all text is valid UTF-8;
+ *   - register (lint, per language, see k_register): a translation uses a word of the wrong
+ *     register; a per-entry opt-out is the translator comment "#. sdl10n:register-ok";
+ *   - mnemonics: a translation drops the "&X" mnemonic that the English source has (error);
+ *     within one mnemonic group, a letter used twice in one string or by two entries is a warning;
+ *   - length: "#. sdl10n:maxlen=N" on the en entry limits every translation of it to N-1 UTF-16 units
+ *     (N is the buffer size including the terminating NUL, as in 03 §7).
+ * Mnemonic group: the msgctxt prefix up to its last '.' ("menu.file.open" and "menu.file.save" are
+ * in group "menu.file"; "cli" entries without a dot share the group "").
  * --allow-incomplete downgrades only missing, empty, fuzzy and stale translations to warnings; those
  * slots are left NULL in the tables and fall back to English at run time.
+ * --qps adds the build-only pseudo-locale qps-ploc, generated from en (03 §9.1); --no-qps (the
+ * default, also written by CMake for Release) leaves it out.
  *
  * Plural argument: "#, plural-arg=<name>" on the en entry (default "count").
  * Build-time tool, never shipped: plain C with stdio. */
@@ -27,7 +37,9 @@
 
 #define MAX_FORMS 6
 #define MAX_DOMAINS 16
-#define NLANGS 6
+#define NPO_LANGS 6            /* languages read from l10n/<domain>/<lang>.po */
+#define LANG_QPS 6             /* the generated pseudo-locale, a table slot only */
+#define NLANGS 7
 
 enum { CAT_ZERO, CAT_ONE, CAT_TWO, CAT_FEW, CAT_MANY, CAT_OTHER };
 
@@ -50,6 +62,7 @@ static const lang_def g_langs[NLANGS] = {
   { "it",    "it",    3, { CAT_ONE, CAT_MANY, CAT_OTHER },
     "nplurals=3; plural=(n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);" },
   { "de",    "de",    2, { CAT_ONE, CAT_OTHER }, "nplurals=2; plural=(n != 1);" },
+  { "qps-ploc", "qps_ploc", 2, { CAT_ONE, CAT_OTHER }, "nplurals=2; plural=(n != 1);" },
 };
 
 /* ---- small utilities ---- */
@@ -139,6 +152,8 @@ typedef struct po_entry {
   int nstr;                    /* number of msgstr[n] (plural) or 1 (plain msgstr) */
   int plural_strs;             /* msgstr[n] syntax used */
   int fuzzy;
+  int register_ok;             /* translator comment sdl10n:register-ok */
+  int maxlen;                  /* translator comment sdl10n:maxlen=N, 0 = none */
   char *plural_arg;
 } po_entry;
 
@@ -260,6 +275,19 @@ static void po_push(po_file *f, po_entry *cur)
   memset(cur, 0, sizeof(*cur));
 }
 
+/* Translator comment "#. ...": sdl10n:register-ok and sdl10n:maxlen=N (03 §9.2). */
+static void po_comment(po_file *f, po_entry *cur, const char *text, int lineno)
+{
+  const char *m = strstr(text, "sdl10n:register-ok");
+  if (m) cur->register_ok = 1;
+  m = strstr(text, "sdl10n:maxlen=");
+  if (m) {
+    int v = atoi(m + 14);
+    if (v <= 0) diag(1, f->path, lineno, "sdl10n:maxlen needs a positive number");
+    else cur->maxlen = v;
+  }
+}
+
 enum { K_NONE, K_CTX, K_ID, K_IDP, K_STR };
 
 static void po_parse(po_file *f)
@@ -310,6 +338,7 @@ static void po_parse(po_file *f)
       if (p[1] == '~') continue;                       /* obsolete */
       if (have_str) { FLUSH_FIELD(); po_push(f, &cur); have_str = 0; }
       if (!cur.line) cur.line = lineno;
+      if (p[1] == '.') po_comment(f, &cur, p + 2, lineno);
       if (p[1] == ',') {
         char *tok = p + 2;
         while (*tok) {
@@ -429,6 +458,309 @@ static int ph_equal(const ph_set *want, const ph_set *got, const char *optional)
   return 1;
 }
 
+/* ---- register lint (03 §9.2, AGENTS.md) ---- */
+
+/* Conservative word lists. Words are ASCII-case-insensitive unless exact_case; sentence_start words
+   count only as the first word of a sentence. Non-ASCII bytes belong to words. "tu" and "tus"
+   (possessive, Rioplatense voseo) and "su" are not flagged. The lint warns about likely mistakes;
+   reviewers decide the rest. */
+typedef struct reg_rule {
+  const char *word;
+  int sentence_start;
+  int exact_case;
+} reg_rule;
+
+static const reg_rule k_reg_es[] = {          /* voseo: no tu/usted forms */
+  { "usted", 0, 0 }, { "ustedes", 0, 0 }, { "t\xc3\xba", 0, 0 },
+  { "elija", 0, 0 }, { "seleccione", 0, 0 }, { "haga", 0, 0 }, { "ingrese", 0, 0 },
+  { "intente", 0, 0 }, { "verifique", 0, 0 }, { "introduzca", 0, 0 },
+  { "elige", 1, 0 }, { "haz", 1, 0 }, { "pulsa", 1, 0 }, { "introduce", 1, 0 },
+  { "selecciona", 1, 0 }, { "ingresa", 1, 0 },
+};
+static const reg_rule k_reg_fr[] = {          /* vous */
+  { "tu", 0, 0 }, { "ton", 0, 0 }, { "ta", 0, 0 }, { "tes", 0, 0 },
+  { "s\xc3\xa9lectionne", 1, 0 }, { "saisis", 1, 0 }, { "clique", 1, 0 }, { "choisis", 1, 0 },
+  { "ouvre", 1, 0 }, { "tape", 1, 0 }, { "v\xc3\xa9rifie", 1, 0 },
+};
+static const reg_rule k_reg_de[] = {          /* Sie / Ihr: capitalized forms only */
+  { "Sie", 0, 1 }, { "Ihr", 0, 1 }, { "Ihre", 0, 1 }, { "Ihrem", 0, 1 }, { "Ihren", 0, 1 },
+  { "Ihrer", 0, 1 }, { "Ihres", 0, 1 }, { "Ihnen", 0, 1 },
+};
+static const reg_rule k_reg_it[] = {          /* informal imperative: Lei and formal imperatives */
+  { "Lei", 0, 1 }, { "prema", 0, 0 }, { "selezioni", 0, 0 }, { "inserisca", 0, 0 },
+  { "verifichi", 0, 0 }, { "scelga", 0, 0 }, { "digiti", 0, 0 }, { "immetta", 0, 0 },
+};
+
+typedef struct reg_set { const reg_rule *rules; size_t n; } reg_set;
+
+/* Indexed like g_langs; en and pt-BR have no rules. */
+static const reg_set k_register[NPO_LANGS] = {
+  { NULL, 0 },
+  { k_reg_es, sizeof(k_reg_es) / sizeof(k_reg_es[0]) },
+  { k_reg_fr, sizeof(k_reg_fr) / sizeof(k_reg_fr[0]) },
+  { NULL, 0 },
+  { k_reg_it, sizeof(k_reg_it) / sizeof(k_reg_it[0]) },
+  { k_reg_de, sizeof(k_reg_de) / sizeof(k_reg_de[0]) },
+};
+
+static int is_word_byte(unsigned char c)
+{
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c >= 0x80;
+}
+
+static int lower_ascii(int c)
+{
+  return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
+}
+
+static int word_equal(const char *a, const char *b, size_t n, int exact_case)
+{
+  size_t i;
+  for (i = 0; i < n; i++) {
+    int x = (unsigned char)a[i], y = (unsigned char)b[i];
+    if (!exact_case) { x = lower_ascii(x); y = lower_ascii(y); }
+    if (x != y) return 0;
+  }
+  return 1;
+}
+
+/* First rule that matches a word of s, or NULL. Text inside {placeholders} is skipped. */
+static const reg_rule *register_hit(const char *s, const reg_rule *rules, size_t nrules)
+{
+  const char *p = s;
+  int sent = 1;
+  while (*p) {
+    unsigned char c = (unsigned char)*p;
+    if (c == ' ' || c == '\t' || c == '"' || c == '\'' || c == '(' || c == '[') { p++; continue; }
+    if (c == '.' || c == '!' || c == '?' || c == ':' || c == ';' || c == '\n') { sent = 1; p++; continue; }
+    if (c == '{') {
+      while (*p && *p != '}') p++;
+      if (*p) p++;
+      sent = 0;
+      continue;
+    }
+    if (is_word_byte(c)) {
+      const char *b = p;
+      size_t i, n;
+      while (is_word_byte((unsigned char)*p)) p++;
+      n = (size_t)(p - b);
+      for (i = 0; i < nrules; i++) {
+        const reg_rule *r = &rules[i];
+        if (strlen(r->word) == n && (!r->sentence_start || sent) && word_equal(b, r->word, n, r->exact_case))
+          return r;
+      }
+      sent = 0;
+      continue;
+    }
+    sent = 0;
+    p++;
+  }
+  return NULL;
+}
+
+/* ---- mnemonics (03 §9.2) ---- */
+
+/* Bit of a mnemonic letter or digit: a-z = 0..25, 0-9 = 26..35; -1 for anything else. */
+static int mn_bit(int c)
+{
+  c = lower_ascii(c);
+  if (c >= 'a' && c <= 'z') return c - 'a';
+  if (c >= '0' && c <= '9') return 26 + c - '0';
+  return -1;
+}
+
+static char mn_char(int bit)
+{
+  return (char)(bit < 26 ? 'a' + bit : '0' + bit - 26);
+}
+
+/* Mnemonics of s as a bit set over mn_bit. "&&" is a literal ampersand. *dup receives the first bit
+   that s uses twice, or -1. */
+static unsigned long long mnemonic_mask(const char *s, int *dup)
+{
+  unsigned long long mask = 0;
+  const char *p;
+  *dup = -1;
+  for (p = s; *p; p++) {
+    int b;
+    if (*p != '&') continue;
+    if (p[1] == '&') { p++; continue; }
+    b = mn_bit((unsigned char)p[1]);
+    if (b < 0) continue;
+    if ((mask & (1ULL << b)) && *dup < 0) *dup = b;
+    mask |= 1ULL << b;
+    p++;
+  }
+  return mask;
+}
+
+static int has_mnemonic(const char *s)
+{
+  int dup;
+  return mnemonic_mask(s, &dup) != 0;
+}
+
+/* Mnemonic group of a msgctxt: the prefix up to its last '.' (length 0 when there is no dot). */
+static size_t group_len(const char *ctx)
+{
+  const char *dot = strrchr(ctx, '.');
+  return dot ? (size_t)(dot - ctx) : 0;
+}
+
+static int same_group(const char *a, const char *b)
+{
+  size_t n = group_len(a);
+  return n == group_len(b) && strncmp(a, b, n) == 0;
+}
+
+/* The texts of an entry: id and id_plural for the en source, the msgstr[] forms otherwise. */
+static int entry_forms(const po_entry *e, int is_source, const char **out)
+{
+  int n = 0, k;
+  if (is_source) {
+    out[n++] = e->id;
+    if (e->id_plural) out[n++] = e->id_plural;
+    return n;
+  }
+  for (k = 0; k < e->nstr && k < MAX_FORMS; k++)
+    if (e->str[k]) out[n++] = e->str[k];
+  return n;
+}
+
+/* Warns when one string uses a mnemonic twice, or two entries of one group share a mnemonic. */
+static void check_mnemonics(const po_file *f, int is_source)
+{
+  unsigned long long *masks;
+  int i, j, k, bit;
+  if (f->count == 0) return;
+  masks = (unsigned long long *)xmalloc((size_t)f->count * sizeof(*masks));
+  for (i = 0; i < f->count; i++) {
+    const po_entry *e = &f->e[i];
+    const char *forms[MAX_FORMS];
+    int n = entry_forms(e, is_source, forms);
+    masks[i] = 0;
+    if (!e->ctx) continue;
+    for (k = 0; k < n; k++) {
+      int dup;
+      masks[i] |= mnemonic_mask(forms[k], &dup);
+      if (dup >= 0)
+        diag(0, f->path, e->line, "'%s' uses the &%c mnemonic twice in one string", e->ctx, mn_char(dup));
+    }
+  }
+  for (i = 0; i < f->count; i++) {
+    for (j = 0; j < i; j++) {
+      const po_entry *a = &f->e[i], *b = &f->e[j];
+      unsigned long long common;
+      if (!a->ctx || !b->ctx || !same_group(a->ctx, b->ctx)) continue;
+      common = masks[i] & masks[j];
+      for (bit = 0; bit < 36; bit++)
+        if (common & (1ULL << bit)) {
+          diag(0, f->path, a->line, "'%s' and '%s' share the &%c mnemonic in group '%.*s'",
+               a->ctx, b->ctx, mn_char(bit), (int)group_len(a->ctx), a->ctx);
+          break;
+        }
+    }
+  }
+  free(masks);
+}
+
+/* ---- length limits (sdl10n:maxlen, 03 §7) ---- */
+
+/* UTF-16 code units of a UTF-8 string (NOTIFYICONDATAW sizes count these). */
+static size_t utf16_units(const char *s)
+{
+  const unsigned char *u = (const unsigned char *)s;
+  size_t n = 0;
+  for (; *u; u++) {
+    if ((*u & 0xC0) != 0x80) n++;
+    if (*u >= 0xF0) n++;
+  }
+  return n;
+}
+
+static void check_maxlen(const char *path, int line, const char *ctx, const char *text, int form, int maxlen)
+{
+  size_t units;
+  if (maxlen <= 0 || text == NULL) return;
+  units = utf16_units(text);
+  if (units > (size_t)(maxlen - 1))
+    diag(1, path, line, "'%s' form %d is %lu UTF-16 units; sdl10n:maxlen=%d allows %d (the limit counts the NUL)",
+         ctx, form, (unsigned long)units, maxlen, maxlen - 1);
+}
+
+/* ---- qps-ploc pseudo-locale (03 §9.1) ---- */
+
+/* Accented look-alikes of a-z and A-Z (code points, so this file stays ASCII). */
+static const unsigned short k_qps_lower[26] = {
+  0xE5, 0x180, 0xE7, 0xF0, 0xE9, 0x192, 0x11D, 0x125, 0xED, 0x135, 0x137, 0x13C, 0x1E3F,
+  0xF1, 0xF6, 0xFE, 'q', 0x155, 0x161, 0x163, 0xFC, 0x1E7D, 0x175, 0x1E8B, 0xFD, 0x17E
+};
+static const unsigned short k_qps_upper[26] = {
+  0xC5, 0x181, 0xC7, 0xD0, 0xC9, 0x191, 0x11C, 0x124, 0xCD, 0x134, 0x136, 0x13B, 0x1E3E,
+  0xD1, 0xD6, 0xDE, 'Q', 0x154, 0x160, 0x162, 0xDC, 0x1E7C, 0x174, 0x1E8A, 0xDD, 0x17D
+};
+
+static void sb_utf8(strbuf *b, unsigned cp)
+{
+  if (cp < 0x80) {
+    sb_putc(b, (char)cp);
+  } else if (cp < 0x800) {
+    sb_putc(b, (char)(0xC0 | (cp >> 6)));
+    sb_putc(b, (char)(0x80 | (cp & 0x3F)));
+  } else {
+    sb_putc(b, (char)(0xE0 | (cp >> 12)));
+    sb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+    sb_putc(b, (char)(0x80 | (cp & 0x3F)));
+  }
+}
+
+/* The pseudo-translation of one English template: "[" + accented text + ~ padding (40 %) + "]".
+   Placeholders, {{ and }} escapes and the letter after an & mnemonic are copied unchanged. */
+static char *qps_text(const char *src)
+{
+  strbuf b = { 0 };
+  const char *p = src;
+  size_t n = 0, pad, i;
+  sb_putc(&b, '[');
+  while (*p) {
+    unsigned char c = (unsigned char)*p;
+    if ((c == '{' && p[1] == '{') || (c == '}' && p[1] == '}')) {
+      sb_putc(&b, (char)c);
+      sb_putc(&b, (char)c);
+      p += 2;
+      n++;
+      continue;
+    }
+    if (c == '{') {
+      while (*p && *p != '}') sb_putc(&b, *p++);
+      if (*p) sb_putc(&b, *p++);
+      continue;
+    }
+    if (c == '&' && p[1] == '&') {
+      sb_putc(&b, '&');
+      sb_putc(&b, '&');
+      p += 2;
+      n++;
+      continue;
+    }
+    if (c == '&' && p[1]) {
+      sb_putc(&b, '&');
+      sb_putc(&b, p[1]);
+      p += 2;
+      continue;
+    }
+    if (c >= 'a' && c <= 'z') sb_utf8(&b, k_qps_lower[c - 'a']);
+    else if (c >= 'A' && c <= 'Z') sb_utf8(&b, k_qps_upper[c - 'A']);
+    else sb_putc(&b, (char)c);
+    if ((c & 0xC0) != 0x80) n++;
+    p++;
+  }
+  pad = (2 * n + 4) / 5;
+  for (i = 0; i < pad; i++) sb_putc(&b, '~');
+  sb_putc(&b, ']');
+  return sb_take(&b);
+}
+
 /* ---- catalog model ---- */
 
 typedef struct msg {
@@ -439,7 +771,8 @@ typedef struct msg {
 
 static msg *g_msgs;
 static int g_nmsgs, g_capmsgs;
-static unsigned g_complete_mask = (1u << NLANGS) - 1;
+static unsigned g_complete_mask = (1u << NPO_LANGS) - 1;
+static int g_qps;                 /* --qps: emit the qps-ploc table */
 
 static int find_entry(const po_file *f, const char *ctx)
 {
@@ -469,13 +802,20 @@ static void check_strings_utf8(const po_file *f)
   }
 }
 
+static void qps_forms(msg *m)
+{
+  int cat;
+  for (cat = 0; cat < MAX_FORMS; cat++)
+    if (m->forms[0][cat]) m->forms[LANG_QPS][cat] = qps_text(m->forms[0][cat]);
+}
+
 static void process_domain(const char *dir, int allow_incomplete)
 {
-  po_file files[NLANGS];
+  po_file files[NPO_LANGS];
   int li, i, j;
   memset(files, 0, sizeof(files));
 
-  for (li = 0; li < NLANGS; li++) {
+  for (li = 0; li < NPO_LANGS; li++) {
     size_t n = strlen(dir) + strlen(g_langs[li].code) + 8;
     char *path = (char *)xmalloc(n);
     snprintf(path, n, "%s/%s.po", dir, g_langs[li].code);
@@ -494,6 +834,9 @@ static void process_domain(const char *dir, int allow_incomplete)
       diag(1, path, files[li].header_line, "Plural-Forms must be \"%s\" (03 §9.4), got \"%s\"",
            g_langs[li].plural_forms, files[li].plural_forms);
   }
+  for (li = 0; li < NPO_LANGS; li++)
+    if (files[li].present) check_mnemonics(&files[li], li == 0);
+
   if (!files[0].present)
     return;
 
@@ -508,6 +851,8 @@ static void process_domain(const char *dir, int allow_incomplete)
       continue;
     }
     if (e->id[0] == 0) { diag(1, files[0].path, e->line, "empty msgid"); continue; }
+    check_maxlen(files[0].path, e->line, e->ctx, e->id, 0, e->maxlen);
+    if (e->id_plural) check_maxlen(files[0].path, e->line, e->ctx, e->id_plural, 1, e->maxlen);
     for (j = 0; j < g_nmsgs; j++)
       if (strcmp(g_msgs[j].key, e->ctx) == 0) diag(1, files[0].path, e->line, "duplicate id '%s'", e->ctx);
     if (e->fuzzy) diag(1, files[0].path, e->line, "fuzzy entry in the en source");
@@ -545,7 +890,7 @@ static void process_domain(const char *dir, int allow_incomplete)
     optional = m->plural_arg;
 
     /* Translations. */
-    for (li = 1; li < NLANGS; li++) {
+    for (li = 1; li < NPO_LANGS; li++) {
       po_file *f = &files[li];
       int k, missing = 0;
       po_entry *t;
@@ -585,6 +930,27 @@ static void process_domain(const char *dir, int allow_incomplete)
         g_complete_mask &= ~(1u << li);
         continue;
       }
+      /* Register, mnemonic and length rules (03 §9.2). */
+      if (k_register[li].n && !t->register_ok) {
+        for (j = 0; j < t->nstr; j++) {
+          const reg_rule *r = register_hit(t->str[j], k_register[li].rules, k_register[li].n);
+          if (r) {
+            diag(1, f->path, t->line, "'%s' form %d uses \"%s\", not the %s register; fix it or add #. sdl10n:register-ok",
+                 e->ctx, j, r->word, g_langs[li].code);
+            break;
+          }
+        }
+      }
+      if (has_mnemonic(e->id) || (e->id_plural && has_mnemonic(e->id_plural))) {
+        for (j = 0; j < t->nstr; j++)
+          if (!has_mnemonic(t->str[j])) {
+            diag(1, f->path, t->line, "'%s' form %d drops the &-mnemonic of the English source", e->ctx, j);
+            break;
+          }
+      }
+      for (j = 0; j < t->nstr; j++)
+        check_maxlen(f->path, t->line, e->ctx, t->str[j], j, e->maxlen);
+
       for (j = 0; j < t->nstr; j++) {
         ph_set ps;
         if (!ph_extract(t->str[j], &ps) || !ph_equal(&want, &ps, e->id_plural ? optional : NULL))
@@ -593,11 +959,12 @@ static void process_domain(const char *dir, int allow_incomplete)
         m->forms[li][e->id_plural ? g_langs[li].cats[j] : CAT_OTHER] = t->str[j];
       }
     }
+    if (g_qps) qps_forms(m);
     ph_free(&want);
   }
 
   /* Entries that en does not have. */
-  for (li = 1; li < NLANGS; li++) {
+  for (li = 1; li < NPO_LANGS; li++) {
     for (i = 0; i < files[li].count; i++) {
       po_entry *t = &files[li].e[i];
       if (!t->ctx || find_entry(&files[0], t->ctx) < 0)
@@ -609,14 +976,19 @@ static void process_domain(const char *dir, int allow_incomplete)
 
 /* ---- output ---- */
 
+/* Writes s as a C string literal. Bytes >= 0x7F and controls become 3-digit octal escapes; a digit that
+   follows such an escape starts a new adjacent literal, because MSVC warns (C4125) about it. */
 static void emit_cstr(FILE *o, const char *s)
 {
+  int after_escape = 0;
   if (!s) { fputs("NULL", o); return; }
   fputc('"', o);
   for (; *s; s++) {
     unsigned char c = (unsigned char)*s;
+    if (after_escape && c >= '0' && c <= '9') fputs("\" \"", o);
+    after_escape = 0;
     if (c == '"' || c == '\\') fprintf(o, "\\%c", c);
-    else if (c < 0x20 || c >= 0x7F) fprintf(o, "\\%03o", c);
+    else if (c < 0x20 || c >= 0x7F) { fprintf(o, "\\%03o", c); after_escape = 1; }
     else fputc(c, o);
   }
   fputc('"', o);
@@ -670,6 +1042,7 @@ static int write_outputs(const char *name, const char *out_c, const char *out_h)
   for (i = 0; i < g_nmsgs; i++) { fputs("  ", c); emit_cstr(c, g_msgs[i].plural_arg); fputs(",\n", c); }
   fprintf(c, "};\n");
   for (li = 0; li < NLANGS; li++) {
+    if (li == LANG_QPS && !g_qps) continue;
     fprintf(c, "\nstatic const char *const k_%s[] = {\n", g_langs[li].ident);
     if (g_nmsgs == 0) fprintf(c, "  NULL,\n");
     for (i = 0; i < g_nmsgs; i++) {
@@ -684,7 +1057,11 @@ static int write_outputs(const char *name, const char *out_c, const char *out_h)
   }
   fprintf(c, "\nconst sd_l10n_catalog sd_l10n_catalog_%s = {\n", name);
   fprintf(c, "  SD_L10N_CATALOG_ABI,\n  %d,\n  \"%s\",\n  k_keys,\n  k_plural_arg,\n  {", g_nmsgs, name);
-  for (li = 0; li < NLANGS; li++) fprintf(c, " k_%s%s", g_langs[li].ident, li + 1 < NLANGS ? "," : " ");
+  for (li = 0; li < NLANGS; li++) {
+    if (li == LANG_QPS && !g_qps) fputs(" NULL", c);
+    else fprintf(c, " k_%s", g_langs[li].ident);
+    fputs(li + 1 < NLANGS ? "," : " ", c);
+  }
   fprintf(c, "},\n  0x%02xu\n};\n", g_complete_mask);
   fclose(c);
   return 1;
@@ -693,7 +1070,7 @@ static int write_outputs(const char *name, const char *out_c, const char *out_h)
 static void usage(void)
 {
   fprintf(stderr,
-          "usage: sdl10n --name <catalog> --out-c <file.c> --out-h <file.h> --domain <dir>... [--allow-incomplete]\n"
+          "usage: sdl10n --name <catalog> --out-c <file.c> --out-h <file.h> --domain <dir>... [--allow-incomplete] [--qps | --no-qps]\n"
           "       sdl10n --check --domain <dir>... [--allow-incomplete]\n");
 }
 
@@ -701,7 +1078,7 @@ int main(int argc, char **argv)
 {
   const char *name = NULL, *out_c = NULL, *out_h = NULL;
   const char *domains[MAX_DOMAINS];
-  int ndomains = 0, check = 0, allow = 0, i;
+  int ndomains = 0, check = 0, allow = 0, qps = 0, i;
 
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
@@ -710,9 +1087,13 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--domain") == 0 && i + 1 < argc && ndomains < MAX_DOMAINS) domains[ndomains++] = argv[++i];
     else if (strcmp(argv[i], "--check") == 0) check = 1;
     else if (strcmp(argv[i], "--allow-incomplete") == 0) allow = 1;
+    else if (strcmp(argv[i], "--qps") == 0) qps = 1;
+    else if (strcmp(argv[i], "--no-qps") == 0) qps = 0;
     else { usage(); return 2; }
   }
   if (ndomains == 0 || (!check && (!name || !out_c || !out_h))) { usage(); return 2; }
+  g_qps = qps;
+  if (qps) g_complete_mask |= 1u << LANG_QPS;
   if (name) {
     const char *p;
     for (p = name; *p; p++)

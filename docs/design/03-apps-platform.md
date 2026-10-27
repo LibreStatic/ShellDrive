@@ -375,9 +375,18 @@ resolve profile + overrides + policy → secrets (4) → known_hosts store list 
 | Agent ready event | agent | `Local\com.librestatic.shelldrive.agent.ready.<UserSidString>` |
 | Agent shutdown event (manual reset, 1.2) | agent | `Global\com.librestatic.shelldrive.agent.shutdown.<UserSidString>.<SessionId>` |
 | State snapshot (read-only shared memory) | agent | `Local\com.librestatic.shelldrive.state.<UserSidString>` |
+| UI instance mutex | UI | `Local\com.librestatic.shelldrive.ui.<UserSidString>` (held while a UI runs; the agent starts a UI only when it is free) |
 | UI forwarding | UI | `WM_COPYDATA` to window class `com.librestatic.shelldrive.ui.<UserSidString>` (same session only) |
 
 `<UserSidString>` from `ConvertSidToStringSidW` (XP+), session ID from `ProcessIdToSessionId` (XP+).
+
+**Object scope rule (M3).** D45 fixes the name prefix `com.librestatic.shelldrive.` but not the namespace. Objects
+that exist once per logon session use `Local\`: the agent mutex, the agent ready event, the UI mutex and the state
+section. A second logon session of the same user therefore has its own instances. Objects that are machine-wide use
+`Global\`; the agent shutdown event is the only one, and it carries the session id in its name so that the installer
+and the service can signal one session's agent. `sd_ipc_object_name` produces these names; the state section is
+created and opened with `sd_ipc_state_create` and `sd_ipc_state_open` (file mapping, 8.2.1).
+
 
 ### 2.2 Security
 
@@ -474,39 +483,62 @@ Error `code` strings are stable English identifiers; `detail` is English (for lo
 
 ### 2.4 Methods and events (proto 1)
 
-| Method | Agent | Service | Notes |
-|---|---|---|---|
-| `hello` | x | x | version negotiation |
-| `subscribe` `{topics:[...]}` | x | x | topics: `mount`, `prompt`, `log`, `warning`, `config`, `hostkeys`, `update`, `attention` (service only); on the service, `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
-| `mount` `{profile_id \| adhoc:{...}, overrides, prompt_mode}` | x | x (admin) | returns `mount_id` immediately; completion via `mount.state` event or `wait:true` |
-| `unmount` `{mount_id \| target, force}` | x | x (admin) | |
-| `list` | x | x | mounts with state, backend, target, negotiated algorithm summary, warnings; service: filtered for non-admins (2.2, TM-R25) |
-| `status` `{mount_id, stats}` | x | x (admin, elevated, for details) | detailed: reconnect count, cache stats, last error, pool size and `pool_limited` reason, proxy legs in use; `stats:true` adds `sd_vfs_stats` and `sd_sftp_session_stats` (RTT, throughput) |
-| `refresh` `{mount_id \| target, path}` | x | x (admin) | drops metadata TTLs for a subtree (02 §4.1) |
-| `profile.test` `{profile_id \| adhoc:{...}}` | x | x (admin) | connect + auth + `realpath` without mounting ("Test connection", 7.5); prompts route as for `mount` |
-| `mount.attach_info` `{mount_id}` | x | x (read-only) | agent: elevated-view support (1.7.2). Service: global WebDAV drives in `attach` mode (1.3); returned only when the caller's SID is in the profile's `service_access`. WebDAV only; returns the UNC with the path token, never a credential |
-| `hostkey.announced.accept` `{announce_id, add[], remove[]}` | x | x (admin, elevated) | applies an UpdateHostKeys announcement (5.6) |
-| `update.check` `{manifest?}` / `update.apply` `{version}` | x | — | update flow owned by the agent (04 §9); `manifest` is the developer override of `update check --manifest` |
-| `selftest` | x | x | same checks as `shelldrive-host.exe --selftest`, as JSON |
-| `prompt.answer` `{prompt_id, action, responses[], save}` | x | x (admin, elevated) | first answer wins |
-| `cache.clear` `{profile_id \| all}` | x | x (admin) | |
-| `config.reload` | x | x (admin) | normally automatic |
-| `secret.set` / `secret.delete` `{target, kind, value}` | — | x (admin) | service secrets are write-only over IPC (4.5) |
-| `hostkey.trust` `{host, port, key}` | — | x (admin) | machine known_hosts edits by the service |
-| `log.tail` `{lines, follow}` | x | x (admin) | follow streams `log` events |
-| `diag.collect` | x | x (admin) | returns a JSON report (10.5) |
-| `agent.shutdown` `{unmount:true}` | x | — | |
+Every request is `{"type":"req","id":n,"method":...,"params":{...}}`. Unknown request fields are ignored; unknown reply
+fields and events are ignored by clients (2.3). Errors are `{"code","detail","exit_code"}` with the codes of 6.2 and the
+IPC-only codes of the table below. Unknown methods answer `usage` (exit 2). Methods marked **M4/M5** are not
+implemented in M3 and are not listed in `hello` `features` (2.8).
 
-Events: `mount.state {mount_id, state: connecting|authenticating|mounted|offline|auth_required|failed|unmounting|unmounted, error?}`,
-`prompt.request`, `prompt.closed {prompt_id, reason: answered|cancelled|timeout}`,
-`warning {code:"legacy_algorithms"|"terrapin_exposed"|"elevated_view_missing"|"write_failed"|"pool_limited"|"proxy_cleartext"|"hostkey_source_insecure"|"agent_untrusted"|"disk_cache_refused"|"named_object_squatted"|"dokany_denied"|..., mount_id, data}`,
-`hostkeys.announced {announce_id, mount_id, host, port, add:[{type, fp}], remove:[{type, fp}]}` (5.6),
-`update.available {version, notes_url}`, `update.stale {days}` (TM-R36, 7.7), `config.changed`, `log {line}`,
-`attention {count}` (service only: number of global mounts waiting for an administrator, no other content; 2.6).
-`hello` replies carry `server_pid` (used by the agent watch, 1.4).
+| Method | Agent | Service | Access and notes |
+|---|---|---|---|
+| `hello` | x | x | version negotiation; the reply carries `features` (2.8) |
+| `subscribe {topics}` | x | x | topic names must match `[a-z0-9._-]`, at most 23 bytes; invalid names are dropped from the reply, valid unknown names are kept. `prompt` needs cap `prompts.ui` to receive `prompt.request` (2.5). On the service `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
+| `mount {profile \| adhoc:{...}, target?, backend?, prompt_mode?}` | x | x (admin, M5) | returns `mount_id` at once; completion through `mount.state`. `wait` is not implemented |
+| `unmount {mount_id \| target \| profile \| all, force?}` | x | x (admin, M5) | `force` is accepted; the write-behind flush bypass is M4 |
+| `list` | x | x | `mounts` (write_mount_json) and `warnings`: the recent warning codes of this agent, oldest first, at most 32, `{code, mount_id?}`. Service: filtered for non-admins (2.2) |
+| `status {mount_id \| target, stats?}` | x | x (admin, M5) | the list object of the mount, and `last_error {code, detail}` when failed or offline. `stats: true` is `unsupported` in M3; proxy legs and pool limits are M4 |
+| `refresh {mount_id \| target, path}` | x | x (admin, M5) | M4: needs a VFS metadata-cache entry point (02 §4.1) |
+| `profile.test {profile_id \| adhoc}` | x | x (admin, M5) | M4: needs `test_only` in `sd_mount` (dependency D-c on sd_mount) |
+| `mount.attach_info {mount_id \| target}` | x | x (M5) | M5: needs the WebDAV UNC from `sd_webdav`; never a credential |
+| `cache.clear {profile_id \| all}` | x | x (admin, M5) | M4: needs the disk-cache clear entry point |
+| `config.reload {scope?}` | x (user) | x (admin, M5) | reloads `settings.ini` and counts the profiles. Reply `{profiles:{loaded, errors:[]}, settings: "reloaded"\|"unchanged", restart_required:[]}`. `scope: "machine"` on the agent is `unsupported`. `restart_required` is empty in M3 |
+| `prompt.answer {prompt_id, action, responses?, save?, save_comment?}` | x | x (admin, elevated, M5) | `action` accept, once, answer, reject or cancel. The first accepted answer wins; a second answer, or one for a prompt that is not open, is `not_found` (2.5) |
+| `prompt.list` | x | x (admin, M5) | `{prompts:[{prompt_id, mount_id, profile_id, kind, queued, deadline_ms}]}`, `deadline_ms` is the time left |
+| `log.tail {lines?, cursor?, level?, component?, follow?}` | x | x (admin, M5) | the ring of 4096 records (2.4.1). `follow: true` is `unsupported` in M3 (the `log` topic is M4) |
+| `selftest` | x | x | `{healthy, checks:[{name, result: pass\|fail\|skip, code?, detail}]}`; the CLI maps `healthy: false` to exit 17 |
+| `diag.collect` | x | x (admin, M5) | M4 (10.5) |
+| `agent.shutdown {unmount?}` | x | — | stops the agent; every mount is unmounted (1.2) |
+| `hostkey.announced.list` | x | x (admin, M5) | `{announcements:[{id, mount_id, host, lookup_name, hop, add, remove}]}` |
+| `hostkey.announced.accept {id, add_only}` | x | x (admin, elevated, M5) | applies an announcement (5.6). The argument shape is `{id, add_only}` (`add_only: true` skips the removals) |
+| `update.check`, `update.apply` | x | — | M4 (the updater engine, 04 §9). Settings shows the update group disabled while `update.check` is missing from `features` |
+| `secret.set`, `secret.delete` | — | x (admin, elevated) | M5 (4.5): in M3 machine passwords are CLI-only |
+
+Not on the pipe, by design: profile create/edit/delete, settings and overrides (direct `sd_config` writes under
+`sd_config_lock`, 3.6), host-key store list, import and remove (direct `sd_known_hosts`, 5.0), and `hostkey.trust`
+(dropped: machine store writes are direct and elevated).
+
+Events (`{"type":"evt","event":<name>,"data":{...}}`, after `subscribe`; the topic is in brackets):
+
+| Event | Topic | Data | When |
+|---|---|---|---|
+| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?}, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+| `prompt.request` | [prompt] | `prompt_id, mount_id, profile_id, profile_name, kind, host, port, user, hop, hops, via_host?, is_reconnect, hostkey_just_accepted, can_save, queued, deadline_ms`, and the kind-specific objects of 2.5 | a prompt is routed (2.5); again, with `queued: true`, when a UI subscribes and drains the queue |
+| `prompt.closed` | [prompt] (and the initiator) | `prompt_id, mount_id, reason: answered\|cancelled\|timeout\|superseded, answered_by?: cli\|ui` | the prompt leaves the open or queued state (2.5); once per recipient |
+| `warning` | [warning], and [mount] (proto 1) | `code, mount_id?, data` (codes of 2.4 and 7.6) | a warning is raised. The copy on [mount] stays through proto 1 (2.8) |
+| `hostkeys.announced` | [hostkeys], and [mount] (proto 1) | as 5.6 | an UpdateHostKeys announcement is ready for review |
+| `attention` | [attention] (service) | `{count}` | 2.6 rule 3 |
+| `config.changed`, `log`, `update.*`, `agent.stopping` | — | — | M4 (config watcher, `follow`, updater, shutdown reason) |
 
 `write_failed` (C45) is raised when data acknowledged to an application under write-behind could not be written
 (02 §4.4); it is always delivered, cannot be disabled and is mirrored in the event list (7.7).
+
+#### 2.4.1 Log ring and `log.tail` cursor
+
+The agent keeps the last 4096 log records in memory (about 4.5 MiB at most), fed from an `sd_log` sink, so each record is
+already formatted and redacted (10.1). A record is `{seq, time, level, component, mount_id?, text}`; `text` is at most 1 KiB.
+The cursor is `"<pid hex>.<boot tick hex>.<seq dec>"`. Without a cursor `log.tail` returns the last `lines` matching records.
+With a cursor it returns the records after `seq`, and `reset: true` with `dropped` = the number of records lost when the cursor is
+older than the ring, or when it names another agent process (a foreign or malformed cursor starts at the oldest record). The reply
+cursor is the position to resume from.
 
 ### 2.5 Prompt routing
 
@@ -548,19 +580,49 @@ automatically." with the saved value not pre-filled. Pool members are not opened
 (the pool stays at 1 until the next connection, which then verifies the stored key normally). The flag ends with the
 connection: a later reconnect that matches the now stored key behaves normally.
 
-**Agent routing order** (first that applies):
+**Agent routing (M3).** The agent keeps a record for every prompt from the moment sd_mount raises it until its
+`prompt.closed`. Each record is routed as follows:
 
-1. The client that initiated the operation, if it declared `prompts.console` in `hello` and is still connected
-   (CLI on an interactive console with `--prompt auto|console`). The CLI reads input with `ReadConsoleW` and echo
-   disabled via `SetConsoleMode`.
-2. All UI clients in the agent's session subscribed to `prompt` (normally exactly one tray).
-3. If none, and the session is active (not locked/disconnected), the agent launches `shelldrive-ui.exe
-   --prompt-host` in its own session (`CreateProcessW`, same token) and the prompt is delivered when it subscribes.
-4. Otherwise queue (1.7.4). If `prompt_mode = none` (CLI `--prompt none`, scripts) the operation fails immediately
-   with `prompt_required` (exit code 4 for auth, 5 for unknown host key).
+1. The initiator, when it is still connected and declared `prompts.console` or `prompts.ui` in `hello` (a CLI on an
+   interactive console with `--prompt auto|console`). Delivery is `sd_ipc_send_to`. The CLI reads input with `ReadConsoleW`
+   and echo disabled via `SetConsoleMode`.
+2. Every client subscribed to `prompt` with cap `prompts.ui`, except the initiator of step 1, so that no client receives
+   the same event twice. The broadcast returns `delivered`, the number of recipients queued.
+3. If `delivered` is 0 and no UI runs (the UI mutex `Local\com.librestatic.shelldrive.ui.<SID>` is not held), the agent
+   starts `shelldrive-ui.exe --prompt-host` from its own directory with its own token, at most once per 30 s. Session
+   lock state is not probed in M3 (a UI started while locked waits for its first subscription). A missing executable
+   is not an error.
+4. The prompt is queued. The queue holds 16 prompts; a 17th evicts the oldest queued one, which is rejected with
+   `prompt.closed` reason `superseded` and fails its mount with `prompt_unavailable`.
 
-Several clients may display the same prompt; the first `prompt.answer` wins and the others receive
-`prompt.closed`. Secrets in answers are wiped (`SecureZeroMemory`) after being handed to `sd_ssh`.
+When a client subscribes to `prompt` with `prompts.ui`, every queued prompt is sent to it first, oldest first, with
+`queued: true` and the remaining `deadline_ms`; each becomes open. No prompt is sent twice to one client. A
+`prompt_mode = none` mount (CLI `--prompt none`, scripts, clients without a prompt capability) fails at once with
+`prompt_required` (exit 4), or `host_key_unknown` (exit 5) for a host key.
+
+Accounting: `delivered` counts queued sends. A recipient that disconnects after it was counted but before the pipe
+thread writes never answers, and the deadline covers it. Enqueueing never blocks the agent.
+
+**Deadlines.** 120 000 ms for user-initiated operations and 600 000 ms for prompts raised by a reconnect (1.7.4). The
+deadline is an absolute tick kept by the agent; the control thread checks it once a second, so an expired prompt is
+rejected within about 1 s. Clients receive the remaining time as `deadline_ms`. There is no per-profile override in M3.
+
+**Answers and closing.** The first accepted `prompt.answer` wins. The agent sets the close reason before it hands the
+answer to sd_mount, so `prompt.closed` carries the right reason:
+
+| Reason | Set when | Mount outcome | `answered_by` |
+|---|---|---|---|
+| `answered` | a `prompt.answer` with action accept, once, answer or reject was accepted (a rejection is an answer) | continues, or fails with the sd_mount error (`host_key_rejected`, `prompt_required`, ...) | `cli` or `ui`, from the hello `client` |
+| `cancelled` | `prompt.answer` with action cancel; the mount is unmounted; the initiator disconnected with no prompt-capable UI subscribed (below); a prompt the agent did not answer was closed by sd_mount | exit 13 (`cancelled`) | — |
+| `timeout` | the deadline passed | `prompt_unavailable` (exit 4) | — |
+| `superseded` | evicted from the queue (16 entries) | `prompt_unavailable` | — |
+
+Clients treat an unknown reason as `cancelled`. `prompt.closed` goes to the initiator once and to the UI subscribers
+of `prompt` except the initiator.
+
+**Initiator disconnect (M3 lead decision, 2026-10-27).** When the initiator of a mount disconnects, its prompts are cancelled
+only if no client with `prompts.ui` is subscribed to `prompt`. Otherwise the mount keeps routing its prompts to that UI,
+so a tray restart does not kill a mount.
 
 **ProxyJump:** each hop prompts separately; the prompt carries `hop`/`hops` and the hop's host so the dialog says
 "Jump host 1 of 2: bastion.example.org". For hop i ≥ 1 (and the target behind jump hosts) prompts and the host key
@@ -653,6 +715,25 @@ int  sd_ipc_client_is_elevated(sd_ipc_client *client);   /* via impersonation; 0
 int  sd_ipc_client_is_admin(sd_ipc_client *client);      /* elevated + BUILTIN\Administrators */
 void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event);
 ```
+
+### 2.8 Versioning and features (M3)
+
+- **Proto stays 1.** M3 changes are additive in the sense of 2.3: new methods, optional request fields, reply fields,
+  events, topics, `features` strings, error codes and `prompt.closed` reasons, and `prompt.request` fields (`profile_id`,
+  `queued`). Behaviour changes without a wire change: prompts are queued instead of rejected, deadlines are enforced,
+  `prompt.closed` carries real reasons, the initiator is not sent a duplicate, and `mount` copies of warnings are kept.
+  Clients treat unknown `prompt.closed` reasons as `cancelled` and unknown error codes as exit 1.
+- **Features.** The `hello` reply carries `features: [...]` with the names this build implements: the methods `status`,
+  `config.reload`, `log.tail`, `selftest`, `prompt.list` and the behaviour `prompt.queued`. Planned names (`refresh`,
+  `profile.test`, `mount.attach_info`, `cache.clear`, `diag.collect`, `update.check`, `config.changed`, `agent.stopping`)
+  appear when implemented. A client calls a method only if its name is listed and degrades otherwise (the Logs viewer shows
+  that the agent is too old for log viewing without `log.tail`).
+- **Skew.** A server supports proto N and N-1 (2.3). An M3 UI talking to an M2 agent gets `features` without the M3 names
+  and degrades. An M2 UI talking to an M3 agent is unaffected: it ignores unknown events, and its `mount`-topic warnings
+  still arrive.
+- **Deprecation.** The `mount` copies of `warning` and `hostkeys.announced` are removed at proto 2.
+- **Shell extension and `--action`.** No IPC. The snapshot layout skew rules are in 8.2.1; `--action` verbs are additive
+  only (1.6).
 
 ---
 
@@ -1686,6 +1767,74 @@ transient balloon.
 - Robustness: no exception filters installed in the host, `__try/__except` only around our entry points, no
   static CRT state that blocks `DllCanUnloadNow`, no threads created.
 
+#### 8.2.1 State section layout v1 (M3, specification)
+
+The section `Local\com.librestatic.shelldrive.state.<UserSidString>` is written only by the agent. It is created by
+`sd_ipc_state_create` (256 KiB, `PAGE_READWRITE`, the owner and label DACL of 2.2) and read by the shell extension through
+`sd_ipc_state_open` with `FILE_MAP_READ | READ_CONTROL` [verify on XP, 7 and 10/11: a reader that cannot read the owner fails
+closed]. This section specifies the binary layout; the producer (`sd_state`) is a later package (M4). This binary layout supersedes the content summary given in 1.6 and 8.2.
+
+Header, 64 bytes. Integers are little-endian with fixed width; there are no pointers. Strings are UTF-16LE in fixed slots,
+measured in code units; a string is NUL-terminated when it fits, and a full slot without NUL means the slot length.
+
+| Offset | Size | Field | Rule |
+|---|---|---|---|
+| 0 | u32 | `magic` | `0x54534453` (bytes "SDST") |
+| 4 | u16 | `layout_version` | `1` |
+| 6 | u16 | `header_size` | `64` |
+| 8 | u32 | `total_size` | `header_size + entry_count * entry_size`, at most 262144 |
+| 12 | u32 | `entry_size` | `1792` |
+| 16 | u32 | `entry_count` | 0 to 128 |
+| 20 | u32 | `seq` | seqlock counter: even when stable, odd while a write is in progress |
+| 24 | u32 | `writer_pid` | agent process id (diagnostics only) |
+| 28 | u32 | `writer_session` | session id (diagnostics only) |
+| 32 | u64 | `published_filetime` | FILETIME (UTC) of the last completed publish |
+| 40 | u32 | `flags` | bit 0: the agent is shutting down (entries are advisory) |
+| 44 | u32 | `max_entries` | `128` (informational) |
+| 48 | 16 B | reserved | zero |
+
+Entry *i* starts at `64 + i * 1792`:
+
+| Offset | Size | Field | Rule |
+|---|---|---|---|
+| 0 | u32 | `flags` | bit 0 IN_USE, bit 1 GLOBAL, bit 2 READ_ONLY, bit 3 HAS_REMOTE_URL, bit 4 TRUNCATED, bit 5 NEEDS_ADMIN, bit 6 NETWORK_LOCATION; other bits zero |
+| 4 | u32 | `state` | 0 unknown, 1 connecting, 2 authenticating, 3 mounted, 4 offline, 5 auth_required, 6 failed, 7 unmounting, 8 unmounted; other values read as 0 |
+| 8 | u32 | `backend` | 0 unknown, 1 webdav, 2 dokany; other values read as 0 |
+| 12 | u32 | `mount_num` | agent-local number; 0 for global entries |
+| 16 | u16 | `letter` | `'A'`..`'Z'` for a drive letter, else 0 |
+| 18 | u16 | reserved | 0 |
+| 20 | u32 | reserved | 0 |
+| 24 | WCHAR[32] | `mount_id` | e.g. `m-3` |
+| 88 | WCHAR[32] | `profile_id` | 32 lowercase hex digits; empty for ad hoc mounts and for global entries the caller may not see |
+| 152 | WCHAR[128] | `profile_name` | display name |
+| 408 | WCHAR[260] | `target` | `X:`, a folder path, or the WebDAV UNC |
+| 928 | WCHAR[64] | `label` | drive label as Explorer shows it |
+| 1056 | WCHAR[320] | `remote_url` | `sftp://user@host:port/path`; never credentials |
+| 1696 | 96 B | reserved | zero |
+
+Global entries (service-owned, GLOBAL) carry only `letter`, `label`, `state` and `flags` when the caller is not in
+`service_access`; the shell extension offers "Open" only for them, never unmount (2.2).
+
+Writer rules (agent): one writer, under the agent's state lock. A publish sets `seq` odd (`InterlockedIncrement`) with a
+full barrier, writes the entries and header fields, sets a full barrier and makes `seq` even again. Publish on every
+`mount.state`, on mount add or remove, on a profile label change, on a change of the global view (at most every 30 s) and,
+empty with bit 0 set, at shutdown. Strings longer than their slot are cut and set TRUNCATED. Secrets, passwords, prompt
+text and host key material are never written; `remote_url` has the path only.
+
+Reader rules (shell extension, inside `QueryContextMenu`, never the network): open, verify the owner and label on the
+handle (failure is "no data"), map read-only, then up to three tries of: read `seq` (retry if odd), copy the header and
+`total_size` bytes into a local buffer, read `seq` again (retry if it changed). After three failures there are no drive
+items. Entries are parsed from the local copy and validated (magic, `layout_version` 1 or 2, `header_size` ≥ 64,
+`entry_size` ≥ 1792 and a multiple of 8 and at most 4096, `entry_count` ≤ 128, `total_size` consistent and at most 256 KiB;
+per entry: IN_USE, `state` ≤ 8, `backend` ≤ 2, `letter` valid, strings valid UTF-16, `profile_id` is 32 hex digits or
+empty). A bad header means no data; a bad entry is dropped. Bidi and zero-width characters are stripped before display
+(2.5). Actions pass only `--action <verb> <profile_id>` or `--action <verb> <letter>`, never a target or URL, and the UI
+checks them again (1.4).
+
+Version skew: a reader of layout N accepts N-1 and N+1 (where it can read the v1 fields at their v1 offsets; a v2 may only
+add fields in reserved areas or after the entry tail). A non-additive change needs a new magic and a `.v2` section name.
+The DLL reads the same layout on every architecture (fixed widths, no pointers).
+
 ### 8.3 Drive labels and icons
 
 Written by whoever owns the mount (agent for per-user, service for global), removed on unmount, and reconciled at
@@ -1825,10 +1974,11 @@ Design:
 
 ### 9.1 Decision: our own message catalog compiled into each binary
 
-Authoring format: **gettext PO files** `locale/<lang>/<domain>.po` with `msgctxt` = stable symbolic ID,
+Authoring format: **gettext PO files** `l10n/<domain>/<lang>.po` with `msgctxt` = stable symbolic ID,
 `msgid` = English source, `msgid_plural`, `msgstr[n]`, translator comments `#.`. The English `en` file is the source
 of truth; the other five are translations. A build tool `tools/sdl10n` (C, built for the build host) validates and
-compiles them into a generated C source per domain (`sd_l10n_<domain>.c`): for each language a table of UTF-8
+compiles them into a generated C source per catalog, one catalog per binary's domain set (`sd_l10n_<catalog>.c`, in the
+build tree under `generated/l10n/<config>/`): for each language a table of UTF-8
 strings indexed by an enum generated into `sd_l10n_ids.h`. The tables are compiled into the binaries that use the
 domain. Domains: `common`, `cli`, `ui`, `shell`, `svc`, `installer`.
 
@@ -1839,8 +1989,12 @@ ADMX template. Nothing is maintained by hand in `.wxl` or ADML. Canonical langua
 `pt` is accepted as an alias of `pt-BR` everywhere a code is typed (`--lang`, `/lang=`, settings, policy) (C42).
 The MSI embeds the `es` transform under LCIDs 11274 (es-AR), 3082, 2058 (es-MX), 21514 (es-US) and 1034, and the
 `pt-BR` transform under 1046 and 2070; the setup EXE always passes `TRANSFORMS` explicitly from its own language
-resolution (C43, packaging in 04). A build-only pseudo-locale `qps` (accented, +40 % length) exists for layout
-tests; it is never shipped and is not a supported language.
+resolution (C43, packaging in 04). A build-only pseudo-locale `qps-ploc` exists for layout tests. `sdl10n --qps`
+generates it from the English entries (accented letters, `[` `]` brackets, `~` padding to +40 % length; placeholders,
+`{{`/`}}` escapes and the letter after an `&` mnemonic are kept), so GUI truncation shows up in a Debug build. CMake
+passes `--qps` only for Debug configurations when `SD_L10N_QPS` is ON (the default); Release tables never contain it.
+The runtime selects it only with `--lang`/`SHELLDRIVE_LANG` `qps-ploc` and only when the catalog carries the table.
+It is never shipped and is not a supported language.
 
 Why not the alternatives:
 
@@ -1869,13 +2023,28 @@ AGENTS.md, C44; 10.3). The installer (MSI) consumes `.wxl` files generated from 
 
 Missing translation in any locale; `msgstr` placeholders not equal to the `msgid` placeholder set; plural entry
 missing any `msgstr[n]` the language's category list requires (9.4: three forms for es/fr/it/pt-BR, two for en/de);
-a `Plural-Forms` header that differs from the canonical one in 9.4; mnemonic `&` duplicated within one dialog/menu for the same language (dialog tables declare
-which IDs share a mnemonic scope); string longer than a declared hard limit (tray tooltip 127 chars incl. NUL, balloon
-title 63, balloon text 255 — `NOTIFYICONDATAW` field sizes); invalid UTF-8; fuzzy entries.
+a `Plural-Forms` header that differs from the canonical one in 9.4; invalid UTF-8; fuzzy entries. `sdl10n` also runs
+these checks (fixtures in `tests/l10n/fixtures`):
 
-Register (AGENTS.md) is a review rule enforced by a glossary and a lint: `es` voseo (lint flags `tú`-forms of common
-imperatives like "elige", "haz clic" and the `usted` forms "elija", "haga"), `fr` vous, `pt-BR`, `de`/`it` informal
-imperative (lint flags `Sie`/`Lei` imperative patterns). The lint is heuristic and warns; reviewers decide.
+- **Register (lint, error).** A translation uses a word of the wrong register (AGENTS.md). Rules are word lists in
+  `sdl10n.c` (`k_reg_*`), kept conservative: `es` (voseo) flags `usted`, `ustedes`, `tú` and the usted imperatives
+  `elija`, `seleccione`, `haga`, `ingrese`, `intente`, `verifique`, `introduzca`, plus tú imperatives at the start of a
+  sentence (`elige`, `haz`, `pulsa`, `introduce`, `selecciona`, `ingresa`); `fr` (vous) flags `tu`, `ton`, `ta`, `tes`
+  and tú imperatives at the start of a sentence (`sélectionne`, `saisis`, `clique`, `choisis`, `ouvre`, `tape`,
+  `vérifie`); `de` (Sie) flags the capitalized `Sie`, `Ihr`, `Ihre`, `Ihrem`, `Ihren`, `Ihrer`, `Ihres`, `Ihnen`
+  (lowercase `sie` and `ihr` are fine); `it` (informal) flags the capitalized `Lei` and the formal imperatives
+  `prema`, `selezioni`, `inserisca`, `verifichi`, `scelga`, `digiti`, `immetta`. `en` and `pt-BR` have no rules.
+  Words match ASCII-case-insensitively unless listed capitalized; text inside `{placeholders}` is skipped. A
+  translator comment `#. sdl10n:register-ok` on the entry opts it out. The lists are heuristics; reviewers decide
+  whatever they miss, and a list change needs a fixture.
+- **Mnemonics.** A translation drops the `&X` mnemonic that the English source has (error). A *mnemonic group* is the
+  set of entries whose msgctxt has the same prefix up to its last `.` (`menu.file.open` and `menu.file.save` share
+  `menu.file`; msgctxts without a dot share the group ""). Within one group and one language, a letter used twice in
+  one string, or by two entries, is a warning. `&&` is a literal ampersand and does not count. Groups replace the
+  earlier "dialog tables declare their scope" idea: name the entries of one dialog or menu with one prefix.
+- **Length.** `#. sdl10n:maxlen=N` on the en entry limits each translation (and the English text) to N-1 UTF-16 units,
+  because N is the buffer size including the terminating NUL, as in the `NOTIFYICONDATAW` field sizes (tray tooltip
+  127, balloon title 63, balloon text 255). A longer translation is an error.
 
 ### 9.3 Language selection
 
@@ -2507,3 +2676,16 @@ entropy strings `com.librestatic.shelldrive/...` (3.8, 4.2-4.4); ProgID `LibreSt
 identity `com.librestatic.shelldrive.shellext`, `PublisherDisplayName` `LibreStatic` (8.6); ADMX namespace
 `com.librestatic.shelldrive.policies` (3.5); ETW provider `com.librestatic.shelldrive` (10.2); Event Log source stays
 `ShellDrive` (10.3).
+
+## Changelog: M3 IPC, prompt routing and snapshot contracts (2026-10-27)
+
+- Object scope rule: `Local\` for per-session objects (agent mutex and ready event, UI mutex, state section), `Global\`
+  for machine objects (2.1). The UI mutex and the state section are new named objects (`SD_IPC_OBJ_UI_MUTEX`,
+  `SD_IPC_OBJ_STATE`).
+- Prompt routing: initiator, then UI subscribers with delivery accounting, a 16-entry queue drained on subscribe,
+  enforced deadlines (120 s, 600 s on reconnect) and the four `prompt.closed` reasons (2.5).
+- Initiator disconnect cancels its prompts only when no UI is subscribed to `prompt` (2.5).
+- Methods: `hostkey.announced.accept` takes `{id, add_only}`; `status`, `config.reload`, `log.tail`, `selftest` and
+  `prompt.list` are in M3; `refresh`, `profile.test`, `mount.attach_info`, `cache.clear`, `diag.collect`, `update.*` and
+  `secret.*` are planned for later milestones (2.4).
+- Snapshot section layout v1 specified in 8.2.1; the producer is a later package.

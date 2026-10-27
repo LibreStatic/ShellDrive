@@ -20,6 +20,10 @@ SD_TEST_DECL(ipc_client_rejects_foreign_owner);
 SD_TEST_DECL(ipc_client_rejects_squatted_pipe);
 SD_TEST_DECL(ipc_connect_without_server);
 SD_TEST_DECL(ipc_instance_turnover_under_load);
+SD_TEST_DECL(m3_topic_validation);
+SD_TEST_DECL(m3_subscribe_drops_invalid_topics_and_features_in_hello);
+SD_TEST_DECL(m3_broadcast_counts_recipients);
+SD_TEST_DECL(m3_state_section_create_open);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(json_parses_values),
@@ -42,6 +46,10 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ipc_client_rejects_squatted_pipe),
   SD_TEST_ENTRY(ipc_connect_without_server),
   SD_TEST_ENTRY(ipc_instance_turnover_under_load),
+  SD_TEST_ENTRY(m3_topic_validation),
+  SD_TEST_ENTRY(m3_subscribe_drops_invalid_topics_and_features_in_hello),
+  SD_TEST_ENTRY(m3_broadcast_counts_recipients),
+  SD_TEST_ENTRY(m3_state_section_create_open),
 };
 
 int main(int argc, char **argv)

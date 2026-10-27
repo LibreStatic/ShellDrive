@@ -10,7 +10,7 @@ set(_host_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
 set(_cli_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive")
 
 add_executable(sd-test-host-fake
-  "${_host_dir}/main.c" "${_host_dir}/agent.c" "${_host_dir}/host.h" host_fake_backend.c)
+  "${_host_dir}/main.c" "${_host_dir}/agent.c" "${_host_dir}/log_ring.c" "${_host_dir}/host.h" host_fake_backend.c)
 target_compile_definitions(sd-test-host-fake PRIVATE SD_HOST_TEST_HOOKS=1)
 target_include_directories(sd-test-host-fake PRIVATE "${_host_dir}")
 target_link_libraries(sd-test-host-fake PRIVATE sd_headers sd_mount_fake_backend sd_mount sd_ipc sd_secret sd_config
@@ -25,7 +25,7 @@ target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd
 set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps
-  SOURCES main.c test_cli_args.c test_smoke.c "${_cli_dir}/cli_args.c"
+  SOURCES main.c test_cli_args.c test_smoke.c test_agent_m3.c "${_cli_dir}/cli_args.c"
   DEPS sd_ipc sd_config sd_platform sd_base)
 target_include_directories(sd-test-apps PRIVATE "${_cli_dir}")
 add_dependencies(sd-test-apps sd-test-cli sd-test-host-fake)

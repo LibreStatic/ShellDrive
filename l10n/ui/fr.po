@@ -1,0 +1,173 @@
+# ShellDrive UI strings, fr (03 §9.1). msgctxt is the stable symbolic id; msgid is the English source.
+msgid ""
+msgstr ""
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=((n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+#. Tray icon tooltip when no drive is mounted.
+#. sdl10n:maxlen=128
+msgctxt "ui.tray.tip_none"
+msgid "ShellDrive: no drives mounted"
+msgstr "ShellDrive : aucun lecteur monté"
+
+#. Tray icon tooltip with the number of mounted drives.
+#. sdl10n:maxlen=128
+#, plural-arg=count
+msgctxt "ui.tray.tip_count"
+msgid "ShellDrive: {count} drive mounted."
+msgid_plural "ShellDrive: {count} drives mounted."
+msgstr[0] "ShellDrive : {count} lecteur monté."
+msgstr[1] "ShellDrive : {count} de lecteurs montés."
+msgstr[2] "ShellDrive : {count} lecteurs montés."
+
+#. Tray menu: opens the main window.
+msgctxt "ui.tray.open"
+msgid "Open ShellDrive"
+msgstr "Ouvrir ShellDrive"
+
+#. Tray menu: quits the tray application. Mounts and the agent keep running.
+msgctxt "ui.tray.exit"
+msgid "Exit"
+msgstr "Quitter"
+
+#. Tray menu: disabled item shown when no drive is mounted.
+msgctxt "ui.tray.no_drives"
+msgid "No drives mounted"
+msgstr "Aucun lecteur monté"
+
+#. Tray menu item for one mounted drive. {drive} is a letter such as E:, {profile} is the profile name.
+msgctxt "ui.tray.unmount"
+msgid "Unmount {drive} ({profile})"
+msgstr "Démonter {drive} ({profile})"
+
+#. Main window list column: profile name.
+msgctxt "ui.main.col_name"
+msgid "Name"
+msgstr "Nom"
+
+#. Main window list column: drive letter.
+msgctxt "ui.main.col_drive"
+msgid "Drive"
+msgstr "Lecteur"
+
+#. Main window list column: connection state.
+msgctxt "ui.main.col_state"
+msgid "State"
+msgstr "État"
+
+#. Main window list column: storage backend (product names Dokany or WebDAV).
+msgctxt "ui.main.col_backend"
+msgid "Backend"
+msgstr "Backend"
+
+#. Main window list column: server host name.
+msgctxt "ui.main.col_server"
+msgid "Server"
+msgstr "Serveur"
+
+#. Main window button that starts a new mount. The ellipsis marks a dialog.
+msgctxt "ui.main.mount"
+msgid "Mount…"
+msgstr "Monter…"
+
+#. Main window button that unmounts the selected drive.
+msgctxt "ui.main.unmount"
+msgid "Unmount"
+msgstr "Démonter"
+
+#. Main window button that asks the agent for the mount list again.
+msgctxt "ui.main.refresh"
+msgid "Refresh"
+msgstr "Actualiser"
+
+#. Status bar summary of the mounts.
+#, plural-arg=count
+msgctxt "ui.status.count"
+msgid "{count} drive mounted."
+msgid_plural "{count} drives mounted."
+msgstr[0] "{count} lecteur monté."
+msgstr[1] "{count} de lecteurs montés."
+msgstr[2] "{count} lecteurs montés."
+
+#. Status bar when the agent is not running.
+msgctxt "ui.status.agent_down"
+msgid "ShellDrive is not running."
+msgstr "ShellDrive n'est pas en cours d'exécution."
+
+#. Mount state in the list: the agent is opening the connection.
+msgctxt "ui.state.connecting"
+msgid "Connecting"
+msgstr "Connexion"
+
+#. Mount state in the list: signing in to the server.
+msgctxt "ui.state.authenticating"
+msgid "Signing in"
+msgstr "Authentification"
+
+#. Mount state in the list: the drive is mounted and usable.
+msgctxt "ui.state.mounted"
+msgid "Connected"
+msgstr "Connecté"
+
+#. Mount state in the list: the connection is lost and ShellDrive retries.
+msgctxt "ui.state.offline"
+msgid "Offline"
+msgstr "Hors ligne"
+
+#. Mount state in the list: the user has to sign in again.
+msgctxt "ui.state.auth_required"
+msgid "Sign-in required"
+msgstr "Connexion requise"
+
+#. Mount state in the list: the mount failed.
+msgctxt "ui.state.failed"
+msgid "Failed"
+msgstr "Échec"
+
+#. Mount state in the list: the drive is being unmounted.
+msgctxt "ui.state.unmounting"
+msgid "Disconnecting"
+msgstr "Démontage"
+
+#. Mount state in the list: the drive is no longer mounted.
+msgctxt "ui.state.unmounted"
+msgid "Not mounted"
+msgstr "Démonté"
+
+#. Balloon title for warnings from the agent.
+#. sdl10n:maxlen=64
+msgctxt "ui.warn.title"
+msgid "ShellDrive warning"
+msgstr "Avertissement ShellDrive"
+
+#. Balloon text: the connection uses outdated algorithms. {drive} is a drive letter such as E:.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.legacy"
+msgid "Drive {drive} uses outdated security. Open ShellDrive for details."
+msgstr "Le lecteur {drive} utilise une sécurité obsolète. Ouvrez ShellDrive pour les détails."
+
+#. Balloon text: the connection is open to a known attack until the server is updated.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.terrapin"
+msgid "Drive {drive} is open to a known attack until the server is updated."
+msgstr "Le lecteur {drive} est exposé à une attaque connue tant que le serveur n'est pas mis à jour."
+
+#. Balloon text: changes could not be written to the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.write_failed"
+msgid "Changes to drive {drive} could not be saved."
+msgstr "Les modifications du lecteur {drive} n'ont pas pu être enregistrées."
+
+#. Balloon text for any other warning.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.generic"
+msgid "Drive {drive} needs your attention. Open ShellDrive for details."
+msgstr "Le lecteur {drive} demande votre attention. Ouvrez ShellDrive pour les détails."
+
+#. Message box when the agent refuses to unmount a drive.
+msgctxt "ui.error.unmount"
+msgid "Could not unmount drive {drive}."
+msgstr "Impossible de démonter le lecteur {drive}."
