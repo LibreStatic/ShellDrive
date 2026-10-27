@@ -10,6 +10,9 @@
 
 #include "host.h"
 #include "sd/version.h"
+
+/* installer_hooks.c: hidden --installer-hook verbs (03 §6.1, 04 §8.3). */
+int sd_host_installer_hook(int argc, wchar_t **argv);
 #include "sd_config/sd_config.h"
 #include "sd_ipc/sd_ipc.h"
 #include "sd_platform/sd_log.h"
@@ -88,6 +91,8 @@ int wmain(int argc, wchar_t **argv)
   }
   if (argc >= 2 && wcscmp(argv[1], L"--selftest") == 0)
     return selftest();
+  if (argc >= 2 && wcscmp(argv[1], L"--installer-hook") == 0)
+    return sd_host_installer_hook(argc, argv);
   if (argc >= 2 && wcscmp(argv[1], L"agent") == 0) {
     memset(&opts, 0, sizeof(opts));
     opts.idle_exit_ms = 5u * 60u * 1000u;

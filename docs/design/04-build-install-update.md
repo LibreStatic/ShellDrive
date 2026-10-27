@@ -724,6 +724,73 @@ Per-machine mode (MSI does the file work):
 - **XP: no Restart Manager.** MSI shows its FilesInUse dialog (interactive) or uses
   `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` replacement (quiet) and returns 3010.
 
+### 6.10 Implementation decisions (M4, setup engine)
+
+Status of this build (`apps/shelldrive-setup`, tests in `tests/setup`, notes in `docs/dev/m4-notes.md`). Each
+decision implements §6.1–§6.9 or narrows it, and says which.
+
+- **Layout (6.1).** `sd_setup_core` is a static library (engine, all presets; the tests link it). The stub
+  `shelldrive-setup-stub.exe` (GUI subsystem, no comctl32 import) is built in the `x86-ia32` preset only. Its
+  payload CAB is `makecab` output of the same tree: `shelldrive.exe`, `shelldrive-host.exe`,
+  `shelldrive-ui.exe`, `shelldrive-shellext.dll`, and the payload-less stub as `uninstall.exe`.
+  `tools/sd-payload` attaches the CAB as `RT_RCDATA` `PAYLOAD_<FLAVOUR>`, plus `PAYLOAD_TABLE` (one line per
+  flavour: name, SHA-256, size), to a copy of the stub: `bin/<config>/shelldrive-setup.exe`.
+- **Signature not yet (6.1, TM-R38).** `PAYLOAD_SIG` is neither written nor checked: the repository has no release
+  keyset. Until it lands, the table is an integrity check only. The stub refuses to run without a table. Open item.
+- **Import rules (2.4, TM-R33).** The stub imports only `kernel32`, `user32`, `gdi32`, `advapi32`, `ole32` and
+  `shell32` (`tests/os-imports/knowndlls.txt`). `cabinet.dll`, the Toolhelp and Win8+ entry points and `ntdll`
+  are resolved at run time by full System32 path (`sd_setup_proc`). `sd-importcheck --knowndlls` runs as the CTest
+  `importcheck.stub.knowndlls`. The XP floor list gained ten Win32 1.0 names that the clean-VM capture lacks; the
+  XP lab capture (04 §11.4) must confirm them. The list is shared by every x86 binary.
+- **Flavour (6.2).** Native architecture from `IsWow64Process2`, falling back to `IsWow64Process` and
+  `GetNativeSystemInfo`; SSE2 from `IsProcessorFeaturePresent`; OS version from `RtlGetVersion`. A `/flavour=`
+  override is refused when the host cannot run it (for example `x86-*` on x64 or ARM64). The inputs and the
+  choice go to the setup log. ARM32 is refused with its own message.
+- **Modes (6.3).** Per-user install, repair and upgrade are implemented. Repair is a same-version reinstall; there
+  is no separate switch. An older version over a newer one is refused with exit 1638 unless `/update` is given.
+  Portable (`/portable=<dir>`) extracts into an empty folder, adds `data\` and `shelldrive.portable`, deletes
+  `uninstall.exe`, writes no registry value and warns on a volume without persistent ACLs. **Per-machine is not in
+  this build:** `/permachine` fails with the machine-unsupported message. It needs the MSI (WiX, outside this
+  milestone) and the two elevation stages. Until then administrators also get the per-user install by default,
+  which differs from the 6.3 default. Open item.
+- **Dokany (7, D32, D36).** `sd_setup_dokany_decide` implements the decision table: per-user never installs it;
+  per-machine installs unless `skip`; below 7 SP1 it is unavailable. No `DOKANY_<ARCH>` payload resource exists
+  yet, so the chaining waits for the per-machine path. The option page is the frontend's.
+- **Registration (6.6).** `packaging/registration.txt` is the single source. `cmake/SdPayload.cmake` generates
+  `sd_setup_regtable.c` at configure time, and the same file feeds the MSI tables later. Rows: the Uninstall entry
+  (HKCU), `Software\LibreStatic\ShellDrive` (`InstallDir`, `Version`, `Flavour`), App Paths, and the Run value
+  only for sign-in start (`/autostart=1`). Shell-extension COM and context-menu rows are not in the table yet;
+  they come with the shell extension's registration. Writes and removals touch only ShellDrive-owned keys, and a
+  shared key is never deleted.
+- **Start menu (6.6).** `Programs\ShellDrive.lnk` through `IShellLinkW`, target `shelldrive-ui.exe`. Uninstall
+  removes it.
+- **Uninstall (6.7).** `uninstall.exe` in the install folder copies itself to `%TEMP%\ShellDrive-uninstall-<hex>`.
+  The folder is created with a DACL for SYSTEM and the user only, in the same call. The copy is started with
+  `/waitpid=<parent>` and the parent returns. The copy waits for the parent to exit, then removes the registration,
+  the shortcut, the caches (`%LOCALAPPDATA%\LibreStatic\ShellDrive\cache`, no walk through reparse points) and the
+  install folder. Settings, profiles and `known_hosts` are kept. `/removedata` (the "also remove settings"
+  checkbox) is not implemented yet.
+- **Hooks (8.3).** `shelldrive-host.exe --installer-hook <name> --apply|--revert` exists. `signal-shutdown` is
+  implemented for the current account and session. `webdav-tune`, `user-cleanup`, `modern-menu` and
+  `programdata-secure` log "not yet implemented (M5)" and succeed. The uninstall runs `user-cleanup`.
+- **Upgrade with running processes (6.9).** The engine finds the account's `shelldrive-host.exe` processes
+  (Toolhelp, resolved at run time), signals `Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session>`,
+  waits up to 15 s, and refuses with exit 1603 if an agent still runs (unless `/force`). Files in use are renamed to
+  `*.sd-old-<n>` first (NTFS allows renaming a loaded image). The agent does not create its shutdown event yet
+  (03 §1.2, the M3 owner), so the signal currently reaches no agent and the wait ends at once. Open item.
+- **Not in this build.** Two-stage elevation and the `%ProgramData%\LibreStatic` checks (TM-R34); the `/extract=`
+  admin copy; the ARM64 stub; the `PAYLOAD_SIG` signature (above); the MSI; the frontend pages.
+- **Log (13).** English, UTF-8: `%TEMP%\ShellDrive-setup-<timestamp>.log`, or `/log=`. It records every file move,
+  registry step, hook exit code and the final result.
+- **Messages (8.6).** The installer domain (`l10n/installer`, 36 messages) is in all six locales, with CLDR plural
+  forms for `installer.summary.files`. The stub's window and message boxes use it.
+- **Engine details worth keeping.** FDI may open the cabinet a second time while it decodes a folder. Every open
+  needs its own read position. A shared one made the second reader hit the end of the payload, and FDI reported a
+  corrupt cabinet (any payload with more than one member failed; a single member worked). Test-only registry keys
+  are created one level deep under HKCU and non-volatile: a nested key created implicitly can come out volatile,
+  and a child of a volatile key cannot be persistent (error 1021). Test executables must not have "setup" in their
+  name: Windows applies installer detection and asks for elevation unless the manifest says `asInvoker`.
+
 ---
 
 ## 7. Dokany redistribution

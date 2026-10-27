@@ -1,0 +1,159 @@
+# Textos del instalador de ShellDrive, español rioplatense (voseo; 03 §9.1, 04 §8.6).
+msgid ""
+msgstr ""
+"Language: es\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+msgctxt "installer.window.title"
+msgid "ShellDrive Setup"
+msgstr "Instalación de ShellDrive"
+
+msgctxt "installer.progress.prepare"
+msgid "Preparing setup..."
+msgstr "Preparando la instalación..."
+
+msgctxt "installer.progress.check"
+msgid "Checking the installed version..."
+msgstr "Revisando la versión instalada..."
+
+msgctxt "installer.progress.stop"
+msgid "Closing running ShellDrive programs..."
+msgstr "Cerrando los programas de ShellDrive que están abiertos..."
+
+msgctxt "installer.progress.extract"
+msgid "Unpacking the files..."
+msgstr "Descomprimiendo los archivos..."
+
+msgctxt "installer.progress.copy"
+msgid "Copying files to {folder}..."
+msgstr "Copiando archivos a {folder}..."
+
+msgctxt "installer.progress.register"
+msgid "Registering ShellDrive for this account..."
+msgstr "Registrando ShellDrive para esta cuenta..."
+
+msgctxt "installer.progress.shortcut"
+msgid "Creating the Start menu shortcut..."
+msgstr "Creando el acceso directo del menú Inicio..."
+
+msgctxt "installer.progress.uninstall"
+msgid "Removing ShellDrive from {folder}..."
+msgstr "Quitando ShellDrive de {folder}..."
+
+msgctxt "installer.progress.portable"
+msgid "Unpacking the portable copy to {folder}..."
+msgstr "Descomprimiendo la copia portable en {folder}..."
+
+msgctxt "installer.done.install"
+msgid "ShellDrive {version} is installed in {folder}."
+msgstr "ShellDrive {version} está instalado en {folder}."
+
+msgctxt "installer.done.uninstall"
+msgid "ShellDrive has been removed. Your settings and profiles were kept."
+msgstr "ShellDrive se quitó. Tus configuraciones y perfiles se conservaron."
+
+msgctxt "installer.done.portable"
+msgid "The portable copy is ready in {folder}."
+msgstr "La copia portable está lista en {folder}."
+
+msgctxt "installer.summary.files"
+msgid "{count} file copied."
+msgid_plural "{count} files copied."
+msgstr[0] "Se copió {count} archivo."
+msgstr[1] "Se copiaron {count} archivos."
+msgstr[2] "Se copiaron {count} archivos."
+
+msgctxt "installer.log.saved"
+msgid "Details were written to {path}."
+msgstr "Los detalles se guardaron en {path}."
+
+msgctxt "installer.warn.volume"
+msgid "This drive may not keep file permissions, so anyone with it can change the files."
+msgstr "Este disco puede no conservar los permisos de archivo, así que cualquiera que lo tenga puede cambiar los archivos."
+
+msgctxt "installer.error.args"
+msgid "Unknown or invalid option: {option}. Run setup with /help for the options."
+msgstr "Opción desconocida o no válida: {option}. Ejecutá la instalación con /help para ver las opciones."
+
+msgctxt "installer.error.machine_unsupported"
+msgid "Installing for all users is not available in this version. Run setup without /permachine."
+msgstr "Instalar para todos los usuarios no está disponible en esta versión. Ejecutá la instalación sin /permachine."
+
+msgctxt "installer.error.flavour_sse2"
+msgid "This processor does not support SSE2, so the {flavour} build cannot run here."
+msgstr "Este procesador no admite SSE2, así que la versión {flavour} no puede ejecutarse acá."
+
+msgctxt "installer.error.flavour_os"
+msgid "The {flavour} build needs a newer version of Windows."
+msgstr "La versión {flavour} necesita una versión más nueva de Windows."
+
+msgctxt "installer.error.flavour_cpu"
+msgid "This processor is not supported by this setup program."
+msgstr "Este programa de instalación no admite este procesador."
+
+msgctxt "installer.error.flavour_arm32"
+msgid "Windows on ARM (32-bit) needs the ARM32 setup program."
+msgstr "Windows en ARM (32 bits) necesita el programa de instalación ARM32."
+
+msgctxt "installer.error.flavour_bitness"
+msgid "The {flavour} build cannot run on this version of Windows or this processor."
+msgstr "La versión {flavour} no puede ejecutarse en esta versión de Windows ni en este procesador."
+
+msgctxt "installer.error.payload_missing"
+msgid "This setup program does not include the files for {flavour}."
+msgstr "Este programa de instalación no incluye los archivos de {flavour}."
+
+msgctxt "installer.error.payload_damaged"
+msgid "The setup program is damaged. Download it again."
+msgstr "El programa de instalación está dañado. Descargalo de nuevo."
+
+msgctxt "installer.error.payload_unsafe"
+msgid "The setup package contains an unsafe file name: {name}."
+msgstr "El paquete de instalación contiene un nombre de archivo inseguro: {name}."
+
+msgctxt "installer.error.payload_too_big"
+msgid "The setup package is larger than the allowed size."
+msgstr "El paquete de instalación es más grande que el tamaño permitido."
+
+msgctxt "installer.error.payload_extract"
+msgid "The setup files could not be unpacked (error {code})."
+msgstr "No se pudieron descomprimir los archivos de instalación (error {code})."
+
+msgctxt "installer.error.newer_installed"
+msgid "A newer ShellDrive ({version}) is already installed. Use /update to replace it."
+msgstr "Ya está instalada una versión más nueva de ShellDrive ({version}). Usá /update para reemplazarla."
+
+msgctxt "installer.error.running"
+msgid "ShellDrive is still running. Close it and try again, or use /force."
+msgstr "ShellDrive sigue en ejecución. Cerralo e intentá de nuevo, o usá /force."
+
+msgctxt "installer.error.file_locked"
+msgid "Could not replace {file}. Close the programs that use it and try again."
+msgstr "No se pudo reemplazar {file}. Cerrá los programas que lo usan e intentá de nuevo."
+
+msgctxt "installer.error.write"
+msgid "Setup could not write to {path}."
+msgstr "La instalación no pudo escribir en {path}."
+
+msgctxt "installer.error.machine_exists"
+msgid "ShellDrive is installed for all users. Remove that copy first."
+msgstr "ShellDrive está instalado para todos los usuarios. Quitá esa copia primero."
+
+msgctxt "installer.error.not_installed"
+msgid "ShellDrive is not installed for this account."
+msgstr "ShellDrive no está instalado para esta cuenta."
+
+msgctxt "installer.error.portable_not_empty"
+msgid "The folder {folder} is not empty. Choose an empty folder."
+msgstr "La carpeta {folder} no está vacía. Elegí una carpeta vacía."
+
+msgctxt "installer.error.generic"
+msgid "Setup failed with error {code}."
+msgstr "La instalación falló con el error {code}."
+
+msgctxt "installer.help"
+msgid "Usage: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<folder>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<name>] [/log=<file>] [/lang=<code>]"
+msgstr "Uso: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<carpeta>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<nombre>] [/log=<archivo>] [/lang=<código>]"
