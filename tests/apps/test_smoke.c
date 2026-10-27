@@ -33,6 +33,7 @@ static void wcat_u(wchar_t *dst, size_t cch, unsigned v)
 
 static int setup(void)
 {
+  static unsigned stamp;   /* one root per process: PIDs repeat, and an old root keeps its profiles */
   wchar_t v[MAX_PATH];
   DWORD n = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
   size_t i, slash = 0;
@@ -47,6 +48,13 @@ static int setup(void)
     return 0;
   wcscat_s(g_root, MAX_PATH, L"sd-smoke-");
   wcat_u(g_root, MAX_PATH, (unsigned)GetCurrentProcessId());
+  if (stamp == 0) {
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    stamp = qpc.LowPart | 1u;
+  }
+  wcscat_s(g_root, MAX_PATH, L"-");
+  wcat_u(g_root, MAX_PATH, stamp);
   CreateDirectoryW(g_root, NULL);
   wcscpy_s(v, MAX_PATH, g_root);
   wcscat_s(v, MAX_PATH, L"\\profiles");

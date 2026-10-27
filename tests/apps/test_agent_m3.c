@@ -49,6 +49,11 @@ static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar
   for (i = 0; g_dir[i]; i++)
     if (g_dir[i] == L'\\') slash = i;
   g_dir[slash] = 0;
+  if (g_tag == 0) {   /* PIDs repeat and old roots stay in %TEMP%: start each process at a fresh tag */
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    g_tag = (qpc.LowPart & 0xFFFFFu) << 8;
+  }
   g_tag++;
   wcscpy_s(suffix, SD_COUNTOF(suffix), L"m3");
   wcat_u(suffix, SD_COUNTOF(suffix), (unsigned)GetCurrentProcessId());
