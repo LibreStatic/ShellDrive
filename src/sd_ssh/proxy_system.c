@@ -1,4 +1,5 @@
-/* System proxy resolution, the opt-in SD_PROXY_SYSTEM source (01 §5.2, D20).
+/* System proxy resolution, the opt-in SD_PROXY_SYSTEM source (01 §5.2, D20), and the opt-in
+ * decision of TM-R10 (ssh_sysproxy_decide).
  *
  * winhttp.dll is loaded by full System32 path and its functions are resolved at run time (no static
  * import; WinHTTP 5.1 exists on XP SP1+). User processes read the IE settings of the current user
@@ -209,4 +210,21 @@ done:
   if (ie.lpszProxyBypass) GlobalFree(ie.lpszProxyBypass);
   if (ie.lpszAutoConfigUrl) GlobalFree(ie.lpszAutoConfigUrl);
   return e;
+}
+
+/* The opt-in decision (01 §5.2, 03 §3.5/§3.8, TM-R10). See proxy_internal.h. */
+sd_err ssh_sysproxy_decide(int opt_in, int policy_system, int policy_sspi,
+                           const ssh_sysproxy *res, ssh_sys_decision *out)
+{
+  memset(out, 0, sizeof(*out));
+  if (!opt_in) return SD_OK;                             /* no opt-in: never a discovered proxy */
+  if (!policy_system) return SD_E_PROXY;                 /* refused: policy AllowSystemProxy = 0 */
+  out->kind = res->kind;
+  out->discovered = res->discovered;
+  out->sspi_allowed = res->kind != SD_PROXY_NONE && (!res->discovered || policy_sspi);   /* TM-R10 */
+  if (res->kind != SD_PROXY_NONE) {
+    memcpy(out->host, res->host, sizeof(out->host));
+    out->port = res->port;
+  }
+  return SD_OK;
 }

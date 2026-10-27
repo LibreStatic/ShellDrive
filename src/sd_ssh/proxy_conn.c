@@ -32,9 +32,12 @@ sd_err ssh_pxcfg_copy(ssh_pxcfg *d, const sd_proxy_cfg *s, uint32_t hop_index)
   if (s->kind == SD_PROXY_NONE) return SD_OK;
   if (s->kind != SD_PROXY_HTTP && s->kind != SD_PROXY_SOCKS5 && s->kind != SD_PROXY_SYSTEM) return SD_E_INVALID_PARAM;
   if (s->kind == SD_PROXY_SYSTEM && hop_index != 0) return SD_E_INVALID_PARAM;   /* the system proxy reaches hop 0 */
+  if (s->kind == SD_PROXY_SYSTEM && !s->allow_system)
+    return SD_E_PROXY;                     /* policy AllowSystemProxy = 0 refuses the opt-in (03 §3.8, TM-R10) */
   if (s->user && strlen(s->user) > 255) return SD_E_INVALID_PARAM;
   d->auth = s->auth;
   d->allow_discovered_sspi = s->allow_discovered_sspi;
+  d->allow_system = s->allow_system;
   d->remote_dns = s->remote_dns;
   d->fallback_direct = s->fallback_direct;
   if (s->user && s->user[0]) { d->user = dupn(s->user, strlen(s->user)); if (!d->user) return SD_E_NO_MEMORY; }
@@ -64,13 +67,12 @@ void ssh_pxcfg_free(ssh_pxcfg *d)
   memset(d, 0, sizeof(*d));
 }
 
-static void set_lower(sd_ssh_conn *c, sd_proxy_kind kind, const wchar_t *host, uint16_t port, int discovered)
+static void set_lower(sd_ssh_conn *c, sd_proxy_kind kind, const wchar_t *host, uint16_t port)
 {
   ssh_pxrun *x = &c->pxr;
   size_t n = wcslen(host), i, o = 0;
   x->kind = kind;
   x->port = port;
-  x->discovered = discovered;
   if (n >= SD_COUNTOF(x->host_w)) n = SD_COUNTOF(x->host_w) - 1;
   memcpy(x->host_w, host, n * sizeof(wchar_t));
   x->host_w[n] = 0;
@@ -103,8 +105,10 @@ void ssh_proxy_reset(sd_ssh_conn *c)
 {
   ssh_proxy_done_cleanup(c);
   memset(&c->pxr, 0, sizeof(c->pxr));
-  if (c->pxcfg.kind == SD_PROXY_HTTP || c->pxcfg.kind == SD_PROXY_SOCKS5)
-    set_lower(c, c->pxcfg.kind, c->pxcfg.host_w, c->pxcfg.port, 0);
+  if (c->pxcfg.kind == SD_PROXY_HTTP || c->pxcfg.kind == SD_PROXY_SOCKS5) {
+    set_lower(c, c->pxcfg.kind, c->pxcfg.host_w, c->pxcfg.port);
+    c->pxr.sspi_allowed = 1;               /* TM-R10: a proxy configured in the profile may use SSPI */
+  }
 }
 
 /* ---- system proxy step (worker) ---- */
@@ -156,10 +160,24 @@ static void sys_done(sd_ssh_conn *c, ssh_cmd *cmd)
     } else if (s->res.kind == SD_PROXY_NONE) {
       ssh_log(c, SD_LOG_INFO, "hop %u: system proxy: direct connection", c->hop_index);
     } else {
-      set_lower(c, s->res.kind, s->res.host, s->res.port, s->res.discovered);
-      ssh_log(c, SD_LOG_INFO, "hop %u: system proxy %s %s:%u (origin %s)", c->hop_index,
-              s->res.kind == SD_PROXY_SOCKS5 ? "socks5" : "http", c->pxr.host8, (unsigned)c->pxr.port,
-              s->res.discovered ? "discovered" : "configured");
+      ssh_sys_decision d;
+      /* ssh_pxcfg_copy already refused a policy-off opt-in; the decision is re-checked per
+         resolution so TM-R10 lives in one place (01 §5.2, 03 §3.8) */
+      if (ssh_sysproxy_decide(1, c->pxcfg.allow_system, c->pxcfg.allow_discovered_sspi, &s->res, &d) != SD_OK) {
+        ssh_log(c, SD_LOG_WARN, "hop %u: proxy = system refused by policy AllowSystemProxy", c->hop_index);
+        ssh_fail(c, SD_E_PROXY, 0, "system proxy refused by policy");
+        sd_free(s);
+        return;
+      }
+      if (d.kind == SD_PROXY_NONE) {
+        ssh_log(c, SD_LOG_INFO, "hop %u: system proxy: direct connection", c->hop_index);
+      } else {
+        set_lower(c, d.kind, d.host, d.port);
+        c->pxr.sspi_allowed = d.sspi_allowed;
+        ssh_log(c, SD_LOG_INFO, "hop %u: system proxy %s %s:%u (origin %s)", c->hop_index,
+                d.kind == SD_PROXY_SOCKS5 ? "socks5" : "http", c->pxr.host8, (unsigned)c->pxr.port,
+                d.discovered ? "discovered" : "configured");
+      }
     }
     proceed_lower(c);
   }
@@ -252,7 +270,7 @@ void ssh_proxy_start(sd_ssh_conn *c)
   sd_err e;
   if (x->px_active) { resume(c); return; }      /* reopened connection: continue with the next round */
   e = ssh_px_init(&x->px, x->kind, c->host_ascii, c->port, x->host8, x->port, c->pxcfg.auth,
-                  !x->discovered || c->pxcfg.allow_discovered_sspi, c->pxcfg.user, c->pxcfg.remote_dns);
+                  x->sspi_allowed, c->pxcfg.user, c->pxcfg.remote_dns);   /* TM-R10 verdict */
   if (e != SD_OK) { ssh_fail(c, e, 0, "proxy target"); return; }
   x->px_active = 1;
   if (ssh_px_wants_local_dns(&x->px)) {

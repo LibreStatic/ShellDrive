@@ -165,6 +165,8 @@ typedef struct sd_mount_proxy {
   const char *user;                     /* UTF-8; NULL/"" = none */
   uint32_t auth;                        /* SD_PROXY_AUTH_* */
   int allow_discovered_sspi;            /* policy AllowSystemProxySspi (TM-R10) */
+  int allow_system;                     /* policy AllowSystemProxy (TM-R10): 1 lets proxy = system
+                                           resolve; 0 (default) refuses the opt-in (03 §3.8) */
   int fallback_direct;                  /* system only */
 } sd_mount_proxy;
 

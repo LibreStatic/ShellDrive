@@ -88,7 +88,9 @@ typedef struct sd_ssh_auth_cfg {
  *   including WPAD / PAC (WinHttpGetProxyForUrl) and the bypass list. socks= gives SOCKS5, https= or
  *   a generic entry gives HTTP CONNECT. A proxy found by WPAD/PAC has origin DISCOVERED: SSPI is never
  *   used towards it unless allow_discovered_sspi (machine policy AllowSystemProxySspi, TM-R10).
- *   Discovery failure falls back to a direct connection only with fallback_direct.
+ *   Discovery failure falls back to a direct connection only with fallback_direct. The source itself
+ *   is used only when the profile opts in (kind = SD_PROXY_SYSTEM) and allow_system (machine policy
+ *   AllowSystemProxy) permits it; otherwise the connect is refused with SD_E_PROXY (03 §3.8, TM-R10).
  * Errors: SD_E_PROXY (refused, unreachable target, protocol error; reply code in the log),
  * SD_E_PROXY_AUTH (no acceptable method, rejected credentials, rounds exhausted), with failed_hop =
  * the hop the proxy leads to. Proxy passwords: prompt SD_PROMPT_PROXY_PASSWORD with proxy_host,
@@ -107,6 +109,8 @@ typedef struct sd_proxy_cfg {           /* M2 (D20) */
   const wchar_t *host; uint16_t port;   /* HTTP / SOCKS5: the proxy (name or literal, "[v6]" allowed) */
   uint32_t auth;                        /* SD_PROXY_AUTH_* allowed; 0 = none (SOCKS5: userpass if user) */
   int allow_discovered_sspi;            /* TM-R10 policy AllowSystemProxySspi = 1; default 0 */
+  int allow_system;                     /* TM-R10 policy AllowSystemProxy = 1 lets proxy = system resolve;
+                                           0 (default) refuses the opt-in with SD_E_PROXY */
   const char *user;                     /* UTF-8, <= 255 bytes; NULL/"" = none */
   int remote_dns;                       /* SOCKS5: 1 = the proxy resolves the name */
   int fallback_direct;                  /* SD_PROXY_SYSTEM: connect directly if discovery fails */

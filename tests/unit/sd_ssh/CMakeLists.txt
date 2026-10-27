@@ -6,7 +6,7 @@
 #                  exits 77 (CTest "skipped") when the fixture is not running or sd_crypto is incomplete.
 
 sd_add_unit_test(ssh
-  SOURCES main.c test_util.c test_negotiate.c test_packet.c test_known_hosts.c test_keyfile.c test_conn.c
+  SOURCES main.c test_util.c test_negotiate.c test_packet.c test_known_hosts.c test_keyfile.c test_conn.c test_proxy.c
   DEPS sd_ssh sd_crypto sd_base sd_platform)
 target_include_directories(sd-test-ssh PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_ssh")
 target_compile_definitions(sd-test-ssh PRIVATE

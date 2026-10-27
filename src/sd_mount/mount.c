@@ -39,7 +39,7 @@ typedef struct owned_hop {
   uint32_t agents; int ident_only;
   char agent_key[SD_MOUNT_MAX_AGENT_KEYS][72]; uint32_t nagent_keys;
   uint32_t methods; char *alias; int hku; int no_save;
-  int pkind; wchar_t *phost; uint16_t pport; char *puser; uint32_t pauth; int psspi, pfallback;
+  int pkind; wchar_t *phost; uint16_t pport; char *puser; uint32_t pauth; int psspi, psys, pfallback;
   char phost8[256];
 } owned_hop;
 
@@ -1343,6 +1343,7 @@ static int copy_hop(owned_hop *d, const sd_mount_hop *h)
     d->pport = h->proxy.port;
     d->pauth = h->proxy.auth;
     d->psspi = h->proxy.allow_discovered_sspi;
+    d->psys = h->proxy.allow_system;
     d->pfallback = h->proxy.fallback_direct;
     if (!utf8_of(h->proxy.host, d->phost8, sizeof(d->phost8)))
       return 0;
@@ -1527,6 +1528,7 @@ sd_err sd_mount_start(sd_mount *m)
       sh->proxy.port = oh->pport;
       sh->proxy.auth = oh->pauth;
       sh->proxy.allow_discovered_sspi = oh->psspi;
+      sh->proxy.allow_system = oh->psys;
       sh->proxy.user = oh->puser;
       sh->proxy.remote_dns = 1;                /* socks5h semantics (3.8) */
       sh->proxy.fallback_direct = oh->pfallback;

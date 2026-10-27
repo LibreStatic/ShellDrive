@@ -112,4 +112,20 @@ int    ssh_sysproxy_pick(const wchar_t *list, ssh_sysproxy *out);
 /* 1 if host matches the bypass list ("<local>", wildcards, ';' or ' ' separated). */
 int    ssh_sysproxy_bypassed(const wchar_t *bypass, const wchar_t *host);
 
+/* The opt-in decision (01 §5.2, 03 §3.5/§3.8, TM-R10), factored out of the connect path so the unit
+   tests drive it without WinHTTP: the system proxy is used only when the profile opts in AND the
+   policy allows it, and SSPI is used towards it only when its origin allows. */
+typedef struct ssh_sys_decision {
+  sd_proxy_kind kind;               /* SD_PROXY_NONE = connect directly */
+  wchar_t host[256]; uint16_t port;
+  int discovered;                   /* origin of the proxy (TM-R10) */
+  int sspi_allowed;                 /* TM-R10: SSPI towards the proxy */
+} ssh_sys_decision;
+/* opt_in: the profile asked for proxy = system. policy_system / policy_sspi: machine policy
+   AllowSystemProxy / AllowSystemProxySspi. res: the resolution result (kind = SD_PROXY_NONE when
+   nothing was found or discovery failed). Returns SD_OK and fills out, or SD_E_PROXY when the
+   opt-in is refused by policy AllowSystemProxy. */
+sd_err ssh_sysproxy_decide(int opt_in, int policy_system, int policy_sspi,
+                           const ssh_sysproxy *res, ssh_sys_decision *out);
+
 #endif /* SD_SSH_PROXY_INTERNAL_H */

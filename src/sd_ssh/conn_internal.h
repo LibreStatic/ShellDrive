@@ -254,14 +254,14 @@ typedef struct ssh_pxcfg {            /* deep copy of sd_proxy_cfg */
   sd_proxy_kind kind;
   wchar_t *host_w; char *host8; uint16_t port;
   uint32_t auth;
-  int allow_discovered_sspi, remote_dns, fallback_direct;
+  int allow_discovered_sspi, allow_system, remote_dns, fallback_direct;
   char *user;
 } ssh_pxcfg;
 
 typedef struct ssh_pxrun {            /* per connect attempt */
   sd_proxy_kind kind;                 /* effective (after system proxy resolution) */
   wchar_t host_w[256]; char host8[256]; uint16_t port;
-  int discovered;                     /* SD_PROXY_ORIGIN_DISCOVERED */
+  int sspi_allowed;                   /* TM-R10 verdict of ssh_sysproxy_decide for the resolved proxy */
   ssh_px px;
   int px_active;
   int pw_from_cache, pw_cache_tried;

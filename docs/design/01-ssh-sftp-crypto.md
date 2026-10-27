@@ -995,8 +995,14 @@ under the same rules as SSH passwords (section 7.4). In the service context SSPI
 proxies that need interactive credentials are unavailable to service profiles unless the password is stored.
 
 **System proxy (opt-in source).** `sd_ssh` is the only component that resolves the system proxy (03 §3.8 only
-selects `proxy = system` and enforces `AllowSystemProxy`), because the resolution must be repeated on every
-reconnect, which `sd_sftp` drives. `kind = SD_PROXY_SYSTEM` resolves the proxy on a worker thread at each connect:
+selects `proxy = system` and passes the policy verdict down), because the resolution must be repeated on every
+reconnect, which `sd_sftp` drives. The opt-in is enforced in the connect path (01 §5.2, TM-R10): the system proxy
+is used only when the profile opts in (`kind = SD_PROXY_SYSTEM`) **and** policy `AllowSystemProxy` allows it —
+`AllowSystemProxy = 0` refuses the opt-in with `SD_E_PROXY` at connect creation, before any resolution
+(`fallback_direct` does not rescue it: the policy forbids the source, not the destination). The per-resolution
+decision (use the resolved proxy / connect directly / refuse) and the SSPI verdict of the TM-R10 rules above live
+in one pure function that the unit tests drive without WinHTTP. `kind = SD_PROXY_SYSTEM` resolves the proxy on a
+worker thread at each connect:
 WinHTTP (`winhttp.dll` through `sd_platform_resolve`) `WinHttpGetIEProxyConfigForCurrentUser` in user processes,
 `WinHttpGetDefaultProxyConfiguration` (the `netsh winhttp` setting) in the service. A `socks=` entry selects SOCKS5,
 otherwise the `https=` or generic entry selects HTTP CONNECT; the bypass list (including `<local>`) is honored. If the
@@ -1571,6 +1577,8 @@ typedef struct sd_proxy_cfg {                    /* section 5.2 */
   const wchar_t *host; uint16_t port;            /* HTTP / SOCKS5 */
   uint32_t auth;                                 /* allowed schemes; 0 = none */
   int allow_discovered_sspi;                     /* machine policy AllowSystemProxySspi = 1 (TM-R10); default 0 */
+  int allow_system;                              /* machine policy AllowSystemProxy = 1 lets proxy = system
+                                                    resolve; 0 (default) refuses the opt-in (TM-R10) */
   const char *user;                              /* UTF-8; password via SD_PROMPT_PROXY_PASSWORD */
   int remote_dns;                                /* SOCKS5: send the name (default 1) */
   int fallback_direct;                           /* SD_PROXY_SYSTEM: connect directly if discovery fails (0) */

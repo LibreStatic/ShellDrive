@@ -28,6 +28,8 @@ SD_TEST_DECL(ssh_key_load_encrypted);
 SD_TEST_DECL(ssh_key_unsupported_and_malformed);
 SD_TEST_DECL(ssh_key_serialize_roundtrip);
 SD_TEST_DECL(ssh_conn_config_validation);
+SD_TEST_DECL(ssh_proxy_system_decision);
+SD_TEST_DECL(ssh_proxy_system_policy_boundary);
 SD_TEST_DECL(ssh_prompt_lifecycle);
 SD_TEST_DECL(ssh_secret_cache_roundtrip);
 SD_TEST_DECL(ssh_conn_connect_again_after_failure);
@@ -59,6 +61,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ssh_key_unsupported_and_malformed),
   SD_TEST_ENTRY(ssh_key_serialize_roundtrip),
   SD_TEST_ENTRY(ssh_conn_config_validation),
+  SD_TEST_ENTRY(ssh_proxy_system_decision),
+  SD_TEST_ENTRY(ssh_proxy_system_policy_boundary),
   SD_TEST_ENTRY(ssh_prompt_lifecycle),
   SD_TEST_ENTRY(ssh_secret_cache_roundtrip),
   SD_TEST_ENTRY(ssh_conn_connect_again_after_failure),
