@@ -18,12 +18,14 @@
  *       data. In a sized (compiler-generated) function the sweep stops there, because MSVC places switch
  *       tables after the function body; in an unsized (assembler) range the dword is skipped.
  *
- *   sd-isacheck --ct-lib <lib> --ct-member <object name>... [--config <cfg>] [--list]
- *       Constant-time gate (TM-R02): reads the COFF objects of the given members of a static library
- *       and fails if any code section has a relocation to a compiler runtime helper (_allmul, _alldiv,
- *       _aulldiv, _allrem, _aullrem, _alldvrm, _aulldvrm, _allshl, _allshr, _aullshr and the floating-
- *       point conversion helpers). With /Gy every function is its own COMDAT section, so the report names
- *       the calling function. --list also prints every external symbol those functions reference.
+ *   sd-isacheck --ct-lib <lib> --ct-member <object name>... [--config <cfg>] [--ct-allow <list>] [--list]
+ *       Constant-time gate (TM-R02): reads the COFF objects of the given members of a static library (I386 or
+ *       AMD64 objects) and fails if any code section has a relocation to a compiler runtime helper (_allmul,
+ *       _alldiv, _aulldiv, _allrem, _aullrem, _alldvrm, _aulldvrm, _allshl, _allshr, _aullshr and the floating-
+ *       point conversion helpers; x64 code has none of them). With /Gy every function is its own COMDAT section,
+ *       so the report names the calling function. --list also prints every external symbol those functions
+ *       reference, and every function the branch and divide rules judge (the names with the constant-time
+ *       convention, see is_ct_function). x86 objects are decoded in 32-bit mode, AMD64 objects in 64-bit mode.
  *       --config: the gate judges optimized (Release) objects only, as shipped (01 §2.7.5); with any other
  *       configuration it reports a skip and exits 0, because /Od turns even constant 64-bit shifts into
  *       _allshl/_aullshr calls.
@@ -470,11 +472,13 @@ typedef struct ct_jcc { long long at, to; } ct_jcc;
    - a backward conditional branch is a loop back-edge; its bound is public by 2.4 rule 1 and is not classified;
    - undecodable bytes are reported: a desynchronised sweep would hide the rest of the function. */
 static void scan_ct_function(const char *lib, const char *member, const unsigned char *code, size_t csz,
-                             const char *fname, const strlist *ct_allow)
+                             const char *fname, const strlist *ct_allow, int bits)
 {
   size_t off = 0, njcc = 0, cap = 64, k;
   ct_jcc *jcc = (ct_jcc *)malloc(cap * sizeof(*jcc));
   int allowed = list_match(ct_allow, fname);
+  if (g_list) printf("sd-isacheck: ct: scan %s: %s (%s, %s)\n", member, fname, bits == 64 ? "x64" : "x86",
+                     allowed ? "branch rule allow-listed" : "branch rule");
   if (!jcc) {
     g_violations++;
     fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: out of memory while scanning\n", lib, member, fname);
@@ -482,7 +486,7 @@ static void scan_ct_function(const char *lib, const char *member, const unsigned
   }
   while (off < csz) {
     x86_insn in;
-    x86_decode(code + off, csz - off, &in);
+    x86_decode_bits(code + off, csz - off, bits, &in);
     if (in.len == 0) {
       g_violations++;
       fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: undecodable bytes at +0x%lx (the sweep cannot be trusted)\n",
@@ -546,13 +550,16 @@ static const char *const k_helpers[] = {
   NULL
 };
 
-/* Undecorated C name of an x86 COFF symbol: drops the leading '_' (cdecl/stdcall) and "@n". */
-static void undecorate(const char *in, char *out, size_t cap)
+/* Undecorated C name of a COFF symbol. IA-32 names drop the leading '_' (cdecl/stdcall) and "@n"; AMD64 names
+   are not decorated and are copied as they are. */
+static void undecorate(const char *in, char *out, size_t cap, int x86)
 {
-  const char *at;
+  const char *at = NULL;
   size_t n;
-  if (*in == '_' || *in == '@') in++;
-  at = strchr(in, '@');
+  if (x86) {
+    if (*in == '_' || *in == '@') in++;
+    at = strchr(in, '@');
+  }
   n = at ? (size_t)(at - in) : strlen(in);
   if (n >= cap) n = cap - 1;
   memcpy(out, in, n);
@@ -580,9 +587,15 @@ static void check_object(const char *lib, const char *member, const unsigned cha
   const IMAGE_SECTION_HEADER *sec;
   const IMAGE_SYMBOL *syms;
   DWORD strtab, nsym, si;
-  int s;
-  if (size < sizeof(*fh) || fh->Machine != IMAGE_FILE_MACHINE_I386) {
-    fprintf(stderr, "sd-isacheck: %s(%s): not an x86 COFF object (/GL objects are not supported)\n", lib, member);
+  int s, x86, bits;
+  if (size >= sizeof(*fh) && fh->Machine == IMAGE_FILE_MACHINE_AMD64) {
+    x86 = 0;
+    bits = 64;
+  } else if (size >= sizeof(*fh) && fh->Machine == IMAGE_FILE_MACHINE_I386) {
+    x86 = 1;
+    bits = 32;
+  } else {
+    fprintf(stderr, "sd-isacheck: %s(%s): not an x86 or x64 COFF object (/GL objects are not supported)\n", lib, member);
     g_violations++;
     return;
   }
@@ -605,12 +618,12 @@ static void check_object(const char *lib, const char *member, const unsigned cha
     for (si = 0; si < nsym; si += 1 + syms[si].NumberOfAuxSymbols) {
       const IMAGE_SYMBOL *y = &syms[si];
       if (y->SectionNumber == s + 1 && ISFCN(y->Type)) {
-        undecorate(coff_sym_name(obj, size, y, strtab, buf), fname, sizeof(fname));
+        undecorate(coff_sym_name(obj, size, y, strtab, buf), fname, sizeof(fname), x86);
         break;
       }
     }
     if (is_ct_function(fname) && sc->SizeOfRawData && (size_t)sc->PointerToRawData + sc->SizeOfRawData <= size)
-      scan_ct_function(lib, member, obj + sc->PointerToRawData, sc->SizeOfRawData, fname, &g_ct_allow);
+      scan_ct_function(lib, member, obj + sc->PointerToRawData, sc->SizeOfRawData, fname, &g_ct_allow, bits);
     if (!sc->NumberOfRelocations) continue;
     r = (const IMAGE_RELOCATION *)(obj + sc->PointerToRelocations);
     if ((size_t)sc->PointerToRelocations + (size_t)sc->NumberOfRelocations * sizeof(IMAGE_RELOCATION) > size) continue;
@@ -621,7 +634,7 @@ static void check_object(const char *lib, const char *member, const unsigned cha
       if (r[k].SymbolTableIndex >= nsym) continue;
       t = &syms[r[k].SymbolTableIndex];
       if (t->StorageClass != IMAGE_SYM_CLASS_EXTERNAL || t->SectionNumber != IMAGE_SYM_UNDEFINED) continue;
-      undecorate(coff_sym_name(obj, size, t, strtab, buf), tname, sizeof(tname));
+      undecorate(coff_sym_name(obj, size, t, strtab, buf), tname, sizeof(tname), x86);
       for (h = 0; k_helpers[h]; h++)
         if (strcmp(tname, k_helpers[h]) == 0) break;
       if (k_helpers[h]) {
@@ -768,13 +781,41 @@ static const branch_vec k_branch_vectors[] = {
   { NULL, 0, 0, 0 }
 };
 
-static int selftest(void)
+/* 64-bit mode (AMD64 objects): REX, REX.W imm64, 8-byte moffs, RIP-relative, the 64-bit invalid opcodes. */
+static const vec k64_vectors[] = {
+  { "488B45F8", 4, X86_ISA_BASE },               /* mov rax,[rbp-8] */
+  { "4889C8", 3, X86_ISA_BASE },                 /* mov rax,rcx */
+  { "41B800000000", 6, X86_ISA_BASE },           /* mov r8d,imm32 (REX.B, no REX.W) */
+  { "48B80102030405060708", 10, X86_ISA_BASE },  /* mov rax,imm64 (REX.W B8) */
+  { "B801000000", 5, X86_ISA_BASE },             /* mov eax,imm32 (no REX.W) */
+  { "66B83412", 4, X86_ISA_BASE },               /* mov ax,imm16 */
+  { "A10102030405060708", 9, X86_ISA_BASE },     /* mov eax,[moffs64] */
+  { "67A10102030405", 6, X86_ISA_BASE },         /* mov eax,[moffs32] (67 prefix) */
+  { "488B0500000000", 7, X86_ISA_BASE },         /* mov rax,[rip+0] */
+  { "4C8D0424", 4, X86_ISA_BASE },               /* lea r8,[rsp] (REX.WRB, SIB) */
+  { "E800000000", 5, X86_ISA_BASE },             /* call rel32 */
+  { "0FAE5DFC", 4, X86_ISA_SSE },                /* stmxcsr [rbp-4] */
+  { "660FEFC0", 4, X86_ISA_SSE2 },               /* pxor xmm0,xmm0 */
+  { "66480F6EC0", 5, X86_ISA_SSE2 },             /* movq xmm0,rax (66 REX.W 0F 6E) */
+  { "410F2800", 4, X86_ISA_SSE },                /* movaps xmm0,[r8] (REX.B) */
+  { "0F38CBC1", 4, X86_ISA_SSE3PLUS },           /* sha256rnds2 xmm0,xmm1,xmm0 */
+  { "0F3A0FC108", 5, X86_ISA_SSE3PLUS },         /* palignr xmm0,xmm1,8 */
+  { "C5F9EFC0", 4, X86_ISA_AVX },                /* vpxor xmm0,xmm0,xmm0 (VEX always in 64-bit) */
+  { "62F17D48EFC0", 6, X86_ISA_AVX512 },         /* vpxord zmm0,zmm0,zmm0 */
+  { "0FAE00", 3, X86_ISA_SYSEXT },               /* fxsave [rax] */
+  { "06", 0, X86_ISA_BASE },                     /* push es: invalid in 64-bit mode */
+  { "9A00000000", 0, X86_ISA_BASE },             /* call far ptr16:32: invalid in 64-bit mode */
+  { NULL, 0, X86_ISA_BASE }
+};
+
+/* Runs one table of vectors through the decoder in the given mode; returns the number of failures. */
+static int run_vectors(const vec *v, int bits, int *n)
 {
-  int i, fails = 0, n = 0;
-  for (i = 0; k_vectors[i].hex; i++) {
+  int i, fails = 0;
+  for (i = 0; v[i].hex; i++) {
     unsigned char b[32];
     size_t k, len = 0;
-    const char *h = k_vectors[i].hex;
+    const char *h = v[i].hex;
     x86_insn in;
     for (k = 0; h[k] && h[k + 1] && len < sizeof(b) - 1; k += 2) {
       char t[3];
@@ -784,14 +825,22 @@ static int selftest(void)
       b[len++] = (unsigned char)strtoul(t, NULL, 16);
     }
     b[len] = 0x90;                     /* a following byte, so a too-long decode is visible */
-    x86_decode(b, len + 1, &in);
-    n++;
-    if (in.len != k_vectors[i].len || in.isa != k_vectors[i].isa) {
+    x86_decode_bits(b, len + 1, bits, &in);
+    (*n)++;
+    if (in.len != v[i].len || in.isa != v[i].isa) {
       fails++;
-      fprintf(stderr, "sd-isacheck: selftest: %s: got len %u isa %s, want len %u isa %s\n", h, in.len,
-              x86_isa_name(in.isa), k_vectors[i].len, x86_isa_name(k_vectors[i].isa));
+      fprintf(stderr, "sd-isacheck: selftest: %d-bit %s: got len %u isa %s, want len %u isa %s\n", bits, h, in.len,
+              x86_isa_name(in.isa), v[i].len, x86_isa_name(v[i].isa));
     }
   }
+  return fails;
+}
+
+static int selftest(void)
+{
+  int fails = 0, n = 0;
+  fails += run_vectors(k_vectors, 32, &n);
+  fails += run_vectors(k64_vectors, 64, &n);
   printf("sd-isacheck: selftest: %d vectors, %d failures\n", n, fails);
   return fails ? 1 : 0;
 }
