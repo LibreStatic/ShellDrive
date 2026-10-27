@@ -1,0 +1,32 @@
+# OS import floor for the arm64 flavour: Windows 10 on ARM64, version 1709 (the first release that ran ARM64
+# desktop apps natively, 04 section 1.1, section 2.4).
+#
+# BOOTSTRAP LIST (M6): whole system DLLs present on every Windows 10 ARM64 1709+ install, the same DLL set as
+# the x64-modern floor (win10-1507-x64.txt). It still catches the important mistakes for this flavour: a
+# dynamic CRT (vcruntime140.dll, ucrtbase.dll, api-ms-win-crt-*), third-party or non-system DLLs, and new DLLs
+# linked without review. Replace with the per-function export capture from a Windows 10 ARM64 lab VM
+# (04 section 2.4, 11.4); until then the arm64 build is build-only (no ARM64 test runs on x64 hosts).
+#
+# Format: dll!function | dll!#ordinal | dll!* (whole DLL); '#' starts a comment.
+
+advapi32.dll!*
+bcrypt.dll!*
+comctl32.dll!*
+comdlg32.dll!*
+crypt32.dll!*
+gdi32.dll!*
+iphlpapi.dll!*
+kernel32.dll!*
+mpr.dll!*
+ole32.dll!*
+oleaut32.dll!*
+rpcrt4.dll!*
+secur32.dll!*
+shell32.dll!*
+shlwapi.dll!*
+user32.dll!*
+userenv.dll!*
+uxtheme.dll!*
+winhttp.dll!*
+wintrust.dll!*
+ws2_32.dll!*

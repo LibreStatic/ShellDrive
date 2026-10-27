@@ -43,17 +43,47 @@ static SD_FORCEINLINE uint64_t sd_mul64_lo(uint64_t a, uint64_t b)
   return lo + ((uint64_t)cross << 32);
 }
 
-/* Full 128-bit product. */
+/* Full 128-bit product. x64: _umul128; ARM64: MUL + UMULH (01 §2.4 rule 3: both are constant time on the
+   cores that run Windows on ARM); other targets: 32x32 pieces. */
 static SD_FORCEINLINE void sd_mul64_wide(uint64_t a, uint64_t b, uint64_t *lo, uint64_t *hi)
 {
 #if defined(_M_X64)
   *lo = _umul128(a, b, hi);
+#elif defined(_M_ARM64)
+  *lo = a * b;
+  *hi = __umulh(a, b);
 #else
   uint32_t al = (uint32_t)a, ah = (uint32_t)(a >> 32), bl = (uint32_t)b, bh = (uint32_t)(b >> 32);
   uint64_t ll = SD_MUL32(al, bl), lh = SD_MUL32(al, bh), hl = SD_MUL32(ah, bl), hh = SD_MUL32(ah, bh);
   uint64_t mid = (ll >> 32) + (uint32_t)lh + (uint32_t)hl;
   *lo = (mid << 32) | (uint32_t)ll;
   *hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
+#endif
+}
+
+/* 64-bit carry and borrow chains (cin, bin are 0 or 1). x64 uses the intrinsics; the other 64-bit targets
+   (ARM64 has no _addcarry_u64) use branch-free arithmetic. The result may alias an input. */
+static SD_FORCEINLINE unsigned char sd_addcarry64(unsigned char cin, uint64_t a, uint64_t b, uint64_t *r)
+{
+#if defined(_M_X64)
+  return _addcarry_u64(cin, a, b, (unsigned __int64 *)r);
+#else
+  uint64_t t = a + b, s = t + cin;
+  unsigned char c1 = (unsigned char)(t < a), c2 = (unsigned char)(s < t);
+  *r = s;
+  return (unsigned char)(c1 | c2);
+#endif
+}
+
+static SD_FORCEINLINE unsigned char sd_subborrow64(unsigned char bin, uint64_t a, uint64_t b, uint64_t *r)
+{
+#if defined(_M_X64)
+  return _subborrow_u64(bin, a, b, (unsigned __int64 *)r);
+#else
+  uint64_t t = a - b, s = t - bin;
+  unsigned char b1 = (unsigned char)(a < b), b2 = (unsigned char)(t < bin);
+  *r = s;
+  return (unsigned char)(b1 | b2);
 #endif
 }
 

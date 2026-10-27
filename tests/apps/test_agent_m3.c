@@ -1175,3 +1175,48 @@ SD_TEST(m4_update_consent_and_disabled_check)
   shutdown_agent(c);
   sd_ipc_close(c);
 }
+
+/* Shutdown event (04 §6.9 step 1, 03 §1.2, C3): setup and signal-shutdown set the agent's manual-reset event
+   Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session>. The agent must then start the shutdown
+   sequence (agent.stopping with reason "event") and exit: the process is gone when its session mutex is. */
+SD_TEST(agent_shutdown_event_stops_agent)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *ev = NULL;
+  HANDLE stop = NULL;
+  wchar_t name[256];
+  uint64_t end;
+  int gone = 0;
+  static const wchar_t prefix[] = L"Global\\com.librestatic.shelldrive.agent.shutdown.";
+
+  SD_REQUIRE(setup_agent(L"stopev", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("cli", 0, &c) == SD_OK);
+  SD_REQUIRE(sd_ipc_object_name(SD_IPC_OBJ_AGENT_STOP, name, SD_COUNTOF(name)) == SD_OK);
+  SD_CHECK(wcsncmp(name, prefix, SD_COUNTOF(prefix) - 1) == 0);
+  SD_REQUIRE(sd_ipc_object_open(SD_IPC_OBJ_AGENT_STOP, &stop) == SD_OK);
+  SD_REQUIRE(SetEvent(stop));
+  CloseHandle(stop);
+
+  SD_CHECK(wait_event(c, "agent.stopping", NULL, 5000, &ev));
+  if (ev) {
+    SD_CHECK_STR(sd_json_get_str(ev_data(ev), "reason"), "event");
+    sd_json_free(ev);
+    ev = NULL;
+  }
+  end = sd_tick_ms() + 15000;
+  for (;;) {
+    HANDLE m = NULL;
+    sd_err e = sd_ipc_object_open(SD_IPC_OBJ_AGENT_MUTEX, &m);
+    if (e == SD_E_NOT_FOUND) {
+      gone = 1;
+      break;
+    }
+    if (e == SD_OK)
+      CloseHandle(m);
+    if (sd_tick_ms() >= end)
+      break;
+    Sleep(100);
+  }
+  SD_CHECK(gone);      /* the agent exited after the event: its session mutex is released with the process */
+  sd_ipc_close(c);
+}

@@ -26,11 +26,12 @@ not supported for the XP preset (it ignores the toolset).
 | `x86-ia32` | v141_xp, SDK 7.1A, Win32 | XP SP3 x86, `/arch:IA32` (no SSE/SSE2), `/SAFESEH /LARGEADDRESSAWARE`, `,5.01` |
 | `x86-sse2` | v141_xp, SDK 7.1A, Win32 | XP SP3 x86, `/arch:SSE2`, same linker flags, SSE2 entry thunk on every EXE |
 | `x64-analysis` | v143 | `/analyze` (warnings are errors); add `-DSD_ENABLE_ASAN=ON` for AddressSanitizer |
+| `arm64` | v143, SDK 10.0.26100, ARM64 | Cross-compiled from x64 (build only, no tests; see `docs/dev/m6-notes.md`) |
 
 Build presets: `x64-modern`, `x64-modern-debug`, `x64-xp`, `x64-xp-debug`, `x86-ia32`, `x86-ia32-debug`,
-`x86-sse2`, `x86-sse2-debug`, `x64-analysis` (Debug).
-Test presets have the same names. Build trees go to `build/<configure preset>/`; executables to
-`build/<preset>/bin/<Debug|Release>/`.
+`x86-sse2`, `x86-sse2-debug`, `x64-analysis` (Debug), `arm64`, `arm64-debug`.
+Test presets have the same names. `arm64` has a test preset that selects no tests (`ctest --preset arm64` exits 0). Build trees go to `build/<configure preset>/`;
+executables to `build/<preset>/bin/<Debug|Release>/`.
 
 ## Commands
 

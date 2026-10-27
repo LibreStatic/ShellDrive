@@ -18,15 +18,17 @@ foreach(_c IN LISTS _cultures)
   list(APPEND _dirs "${SD_POLICY_DIR}/${_c}")
 endforeach()
 
+sd_tool_depends(sd-admxgen _tool_dep)
 add_custom_command(
   OUTPUT ${_outputs}
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${SD_POLICY_DIR}" ${_dirs}
   COMMAND "$<TARGET_FILE:sd-admxgen>"
           --table "${_table}" --po-dir "${_po_dir}"
           --out-dir "${SD_POLICY_DIR}" --header-dir "${SD_POLICY_DIR}"
-  DEPENDS sd-admxgen "${_table}" ${_po}
+  DEPENDS ${_tool_dep} "${_table}" ${_po}
   COMMENT "sd-admxgen: ShellDrive.admx, ADML for six cultures, policy headers"
   VERBATIM)
 
 add_custom_target(sd_policy_gen ALL DEPENDS ${_outputs})
+sd_add_tool_dependency(sd_policy_gen sd-admxgen)
 set_target_properties(sd_policy_gen PROPERTIES FOLDER "policy")

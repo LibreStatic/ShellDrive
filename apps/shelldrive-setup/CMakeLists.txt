@@ -1,9 +1,12 @@
 # shelldrive-setup (docs/design/04 §6): the setup engine, the setup stub and its payload.
 #
 #   sd_setup_core      engine library (all presets; tests/setup links it)
-#   shelldrive-setup-stub  the stub without payload (x86-ia32 preset only: an x86 program that runs
-#                      on every x86 and x64 CPU, 04 §6.1). It is also uninstall.exe inside the payload.
-#   shelldrive-setup   the stub with the payload of this preset attached (tools/sd-payload).
+#   shelldrive-setup-stub  the stub without payload (x86-ia32 preset: an x86 program that runs on every x86 and
+#                      x64 CPU, 04 §6.1; arm64 preset: the native ARM64 stub, §1.1). It is also uninstall.exe
+#                      inside the payload.
+#   shelldrive-setup   the stub with the payload of this preset attached (tools/sd-payload). The arm64 CAB holds the
+#                      ARM64 binaries only; the x86-sse2 and x64-modern shell DLLs that the ARM64 payload also
+#                      carries (04 §6.1) are added by the release pipeline, not by this preset.
 
 include(SdPayload)
 
@@ -28,7 +31,7 @@ target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer)
 set_target_properties(sd_setup_core PROPERTIES FOLDER "apps")
 
-if(SD_FLAVOUR STREQUAL "x86-ia32")
+if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64")
   set(SD_RC_DESCRIPTION "ShellDrive setup")
   set(SD_RC_INTERNAL_NAME "shelldrive-setup")
   set(SD_RC_ORIGINAL_FILENAME "shelldrive-setup.exe")
@@ -49,7 +52,7 @@ if(SD_FLAVOUR STREQUAL "x86-ia32")
 
   # Only KnownDLLs may be imported by the stub and uninstall.exe (TM-R33, TST-30).
   add_test(NAME importcheck.stub.knowndlls
-           COMMAND sd-importcheck --floor "${CMAKE_SOURCE_DIR}/tests/os-imports/xp-sp3-x86.txt"
+           COMMAND sd-importcheck --floor "${SD_OS_FLOOR_LIST}"
                    --knowndlls "${CMAKE_SOURCE_DIR}/tests/os-imports/knowndlls.txt" --no-delayload
                    "$<TARGET_FILE:shelldrive-setup-stub>")
   set_tests_properties(importcheck.stub.knowndlls PROPERTIES LABELS importcheck)

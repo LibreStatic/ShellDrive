@@ -24,7 +24,7 @@
 #define SD_PORTABLE_MARK    L"shelldrive.portable"
 #define SD_FILE_PERSISTENT_ACLS 0x00000008
 
-static void logf(const char *event, const wchar_t *fmt, ...)
+static void setup_logf(const char *event, const wchar_t *fmt, ...)
 {
   wchar_t buf[1024];
   va_list ap;
@@ -123,10 +123,10 @@ static int stop_agents(int force, int skip, sd_setup_progress_fn fn, void *ctx, 
   report(fn, ctx, SD_MSG_INSTALLER_PROGRESS_STOP, NULL, 10);
   sd_setup_signal_agents(NULL, &signalled);
   if (signalled > 0)
-    logf("agents.signalled", L"%u agent(s) asked to exit", signalled);
+    setup_logf("agents.signalled", L"%u agent(s) asked to exit", signalled);
   sd_setup_wait_agents(SD_AGENT_WAIT_MS, &still);
   if (still > 0) {
-    logf("agents.running", L"%u agent(s) still running after %u ms", still, SD_AGENT_WAIT_MS);
+    setup_logf("agents.running", L"%u agent(s) still running after %u ms", still, SD_AGENT_WAIT_MS);
     if (!force) {
       sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_RUNNING, 0);
       return 1;
@@ -217,7 +217,7 @@ static int place_tree(const wchar_t *src, const wchar_t *dst, unsigned *files, u
     err = move_over(from, to, aside);
     if (err != 0) {
       FindClose(find);
-      logf("file.replace", L"%s (error %lu)", to, (unsigned long)err);
+      setup_logf("file.replace", L"%s (error %lu)", to, (unsigned long)err);
       if (r != NULL)
         StringCchCopyW(r->text, SD_SETUP_COUNTOF(r->text), fd.cFileName);
       return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_FILE_LOCKED, (long)err);
@@ -290,7 +290,7 @@ static void run_host_hook(const wchar_t *install_dir, const wchar_t *hook)
   if (sd_setup_path_join(exe, MAX_PATH, install_dir, SD_HOST_EXE) != 0)
     return;
   if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES) {
-    logf("hook.skipped", L"%s not found", exe);
+    setup_logf("hook.skipped", L"%s not found", exe);
     return;
   }
   StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" --installer-hook %s --apply", exe, hook);
@@ -303,7 +303,7 @@ static void run_host_hook(const wchar_t *install_dir, const wchar_t *hook)
   }
   WaitForSingleObject(pi.hProcess, 60000);
   GetExitCodeProcess(pi.hProcess, &code);
-  logf("hook.done", L"%s exit %lu", hook, (unsigned long)code);
+  setup_logf("hook.done", L"%s exit %lu", hook, (unsigned long)code);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
 }
@@ -341,12 +341,12 @@ static int stage_and_place(const sd_setup_install_opts *o, const wchar_t *dst, s
     sd_setup_remove_tree(staging, NULL);
     return rc;
   }
-  logf("payload.extracted", L"%u member(s) into staging", extracted);
+  setup_logf("payload.extracted", L"%u member(s) into staging", extracted);
 
   report(o->progress, o->progress_ctx, SD_MSG_INSTALLER_PROGRESS_COPY, dst, 60);
   rc = place_tree(staging, dst, files, bytes, &aside, r);
   if (aside > 0)
-    logf("file.aside", L"%u file(s) renamed aside (in use)", aside);
+    setup_logf("file.aside", L"%u file(s) renamed aside (in use)", aside);
   sd_setup_remove_tree(staging, NULL);
   return rc;
 }
@@ -358,7 +358,7 @@ static int verify_payload(const sd_setup_install_opts *o, sd_setup_result *r)
     return 0;
   sd_setup_sha256(o->payload->data, o->payload->size, sha);
   if (memcmp(sha, o->expected_sha256, 32) != 0) {
-    logf("payload.hash_mismatch", L"the embedded package does not match its recorded SHA-256");
+    setup_logf("payload.hash_mismatch", L"the embedded package does not match its recorded SHA-256");
     return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED, 0);
   }
   return 0;
@@ -381,21 +381,21 @@ static int install_user(const sd_setup_install_opts *o, sd_setup_result *r)
     return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE, 0);
 
   if (exists_key(HKEY_LOCAL_MACHINE, SD_UNINSTALL_SUBKEY)) {
-    logf("install.refused", L"a per-machine ShellDrive is registered");
+    setup_logf("install.refused", L"a per-machine ShellDrive is registered");
     return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MACHINE_EXISTS, 0);
   }
 
   report(o->progress, o->progress_ctx, SD_MSG_INSTALLER_PROGRESS_CHECK, NULL, 5);
   if (reg_read_sz(HKEY_CURRENT_USER, SD_STATE_SUBKEY, L"Version", installed, sizeof(installed)) == 0) {
     int cmp = sd_setup_version_compare(installed, version);
-    logf("install.previous", L"installed %s, this setup %s", installed, version);
+    setup_logf("install.previous", L"installed %s, this setup %s", installed, version);
     if (cmp > 0 && !o->update) {
       StringCchCopyW(r->version, SD_SETUP_COUNTOF(r->version), installed);
       return sd_setup_fail(r, SD_SETUP_EXIT_NEWER, SD_MSG_INSTALLER_ERROR_NEWER_INSTALLED, 0);
     }
-    logf("install.kind", cmp == 0 ? L"repair (same version)" : (cmp < 0 ? L"upgrade" : L"downgrade (/update)"));
+    setup_logf("install.kind", cmp == 0 ? L"repair (same version)" : (cmp < 0 ? L"upgrade" : L"downgrade (/update)"));
   } else {
-    logf("install.kind", L"new install");
+    setup_logf("install.kind", L"new install");
   }
 
   if (stop_agents(o->force, o->skip_agents, o->progress, o->progress_ctx, r) != 0)
@@ -432,16 +432,16 @@ static int install_user(const sd_setup_install_opts *o, sd_setup_result *r)
         sd_setup_path_join(lnk, MAX_PATH, programs, SD_SHORTCUT_NAME) == 0 &&
         sd_setup_path_join(target, MAX_PATH, dir, SD_UI_EXE) == 0) {
       if (sd_setup_shortcut_create(lnk, target, dir, L"ShellDrive", target) != 0)
-        logf("shortcut.failed", L"could not create %s", lnk);
+        setup_logf("shortcut.failed", L"could not create %s", lnk);
       else
-        logf("shortcut.created", L"%s", lnk);
+        setup_logf("shortcut.created", L"%s", lnk);
     }
   }
 
   fill_done_fields(r, dir, version, files);
   r->exit_code = SD_SETUP_EXIT_OK;
   r->msg = SD_MSG_INSTALLER_DONE_INSTALL;
-  logf("install.done", L"ShellDrive %s in %s, %u file(s), %I64u bytes", version, dir, files, bytes);
+  setup_logf("install.done", L"ShellDrive %s in %s, %u file(s), %I64u bytes", version, dir, files, bytes);
   report(o->progress, o->progress_ctx, 0, dir, 100);
   return 0;
 }
@@ -478,7 +478,7 @@ static int install_portable(const sd_setup_install_opts *o, sd_setup_result *r)
     StringCchPrintfW(root, SD_SETUP_COUNTOF(root), L"%c:\\", dir[0]);
     if (GetVolumeInformationW(root, NULL, 0, NULL, NULL, &flags, NULL, 0) && !(flags & SD_FILE_PERSISTENT_ACLS)) {
       r->warn_volume = 1;
-      logf("portable.volume", L"%s has no persistent ACLs", root);
+      setup_logf("portable.volume", L"%s has no persistent ACLs", root);
     }
   }
 
@@ -503,7 +503,7 @@ static int install_portable(const sd_setup_install_opts *o, sd_setup_result *r)
   fill_done_fields(r, dir, o->version != NULL ? o->version : L"0.0.0", files);
   r->exit_code = SD_SETUP_EXIT_OK;
   r->msg = SD_MSG_INSTALLER_DONE_PORTABLE;
-  logf("portable.done", L"%s, %u file(s)", dir, files);
+  setup_logf("portable.done", L"%s, %u file(s)", dir, files);
   report(o->progress, o->progress_ctx, 0, dir, 100);
   return 0;
 }
@@ -539,7 +539,7 @@ int sd_setup_install(const sd_setup_install_opts *o, sd_setup_result *r)
 
   open_log_for(o->log_path);
   sd_setup_detect_host(&host);
-  logf("setup.start", L"mode=%d flavour=%s version=%s native=0x%04x sse2=%d os=%u.%u admin=%d",
+  setup_logf("setup.start", L"mode=%d flavour=%s version=%s native=0x%04x sse2=%d os=%u.%u admin=%d",
        (int)o->mode, sd_setup_flavour_name(o->flavour) ? sd_setup_flavour_name(o->flavour) : L"none",
        o->version ? o->version : L"0.0.0", (unsigned)host.native_machine, host.sse2, host.os_major, host.os_minor,
        host.is_admin);
@@ -558,9 +558,9 @@ int sd_setup_install(const sd_setup_install_opts *o, sd_setup_result *r)
 
   if (r->exit_code != SD_SETUP_EXIT_OK) {
     if (r->msg != 0)
-      logf("setup.failed", L"message %lu, code %ld", (unsigned long)r->msg, r->code);
+      setup_logf("setup.failed", L"message %lu, code %ld", (unsigned long)r->msg, r->code);
     else
-      logf("setup.failed", L"exit %d", r->exit_code);
+      setup_logf("setup.failed", L"exit %d", r->exit_code);
   }
   finish_log(r);
   sd_setup_log_close();
@@ -588,7 +588,7 @@ int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r)
   r->exit_code = SD_SETUP_EXIT_FATAL;
 
   open_log_for(o->log_path);
-  logf("uninstall.start", L"force=%d", o->force);
+  setup_logf("uninstall.start", L"force=%d", o->force);
 
   if (o->install_dir != NULL && o->install_dir[0] != L'\0') {
     StringCchCopyW(dir, SD_SETUP_COUNTOF(dir), o->install_dir);
@@ -617,7 +617,7 @@ int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r)
   memset(&rc, 0, sizeof(rc));
   rc.root = HKEY_CURRENT_USER;
   sd_setup_reg_remove(&rc);
-  logf("uninstall.registration", L"account registration removed");
+  setup_logf("uninstall.registration", L"account registration removed");
 
   if (!o->skip_shortcut && resolve_programs_dir(o->programs_dir, programs, SD_SETUP_COUNTOF(programs)) == 0 &&
       sd_setup_path_join(lnk, MAX_PATH, programs, SD_SHORTCUT_NAME) == 0) {
@@ -633,14 +633,14 @@ int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r)
   report(o->progress, o->progress_ctx, SD_MSG_INSTALLER_PROGRESS_UNINSTALL, dir, 70);
   sd_setup_remove_tree(dir, &failed);
   if (failed > 0)
-    logf("uninstall.incomplete", L"%u item(s) could not be removed", failed);
+    setup_logf("uninstall.incomplete", L"%u item(s) could not be removed", failed);
 
   if (sd_setup_special_folder(CSIDL_APPDATA, roaming, SD_SETUP_COUNTOF(roaming)) == 0)
-    logf("uninstall.kept", L"settings and profiles kept under %s\\LibreStatic\\ShellDrive", roaming);
+    setup_logf("uninstall.kept", L"settings and profiles kept under %s\\LibreStatic\\ShellDrive", roaming);
 
   r->exit_code = failed > 0 ? SD_SETUP_EXIT_REBOOT : SD_SETUP_EXIT_OK;
   r->msg = SD_MSG_INSTALLER_DONE_UNINSTALL;
-  logf("uninstall.done", L"exit %d", r->exit_code);
+  setup_logf("uninstall.done", L"exit %d", r->exit_code);
   report(o->progress, o->progress_ctx, 0, dir, 100);
   finish_log(r);
   sd_setup_log_close();

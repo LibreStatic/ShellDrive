@@ -36,14 +36,16 @@ function(sd_add_l10n_catalog name)
   else()
     list(APPEND _args --no-qps)
   endif()
+  sd_tool_depends(sdl10n _tool_dep)
   add_custom_command(
     OUTPUT "${_c}" "${_h}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_outdir}"
     COMMAND "$<TARGET_FILE:sdl10n>" ${_args}
-    DEPENDS sdl10n ${_deps}
+    DEPENDS ${_tool_dep} ${_deps}
     COMMENT "sdl10n: catalog '${name}' (${L_DOMAINS})"
     VERBATIM)
   add_library(sd_l10n_catalog_${name} STATIC "${_c}" "${_h}")
+  sd_add_tool_dependency(sd_l10n_catalog_${name} sdl10n)
   target_include_directories(sd_l10n_catalog_${name} PUBLIC "${_outdir}")
   target_link_libraries(sd_l10n_catalog_${name} PUBLIC sd_l10n)
   set_target_properties(sd_l10n_catalog_${name} PROPERTIES FOLDER "l10n")

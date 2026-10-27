@@ -114,14 +114,16 @@ function(sd_setup_add_payload stub_target out_exe flavour)
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
 
   set(_final "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shelldrive-setup.exe")
+  sd_tool_depends(sd-payload _tool_dep)
   add_custom_command(
     OUTPUT "${_final}"
     COMMAND $<TARGET_FILE:sd-payload> --base "$<TARGET_FILE:${stub_target}>" --out "${_final}"
             --flavour ${flavour} --cab "${_cab}"
-    DEPENDS sd-payload ${stub_target} "${_cab}"
+    DEPENDS ${_tool_dep} ${stub_target} "${_cab}"
     COMMENT "shelldrive-setup.exe: attach payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup ALL DEPENDS "${_final}")
+  sd_add_tool_dependency(shelldrive-setup sd-payload)
   # The payload target builds the CAB after the four shipping binaries of this preset (its dependencies).
   add_dependencies(shelldrive-setup shelldrive-setup-payload-${flavour})
   set_target_properties(shelldrive-setup PROPERTIES FOLDER "apps")

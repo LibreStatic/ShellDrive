@@ -17,29 +17,31 @@
 #include "sd_ct64.h"
 
 #if SD_LIMB_BITS == 64
-#include <intrin.h>
 static SD_FORCEINLINE sd_limb barrier(sd_limb x) { return sd_ct_barrier64(x); }
-/* (hi:lo) = a*b + c + d; cannot overflow two limbs. */
+/* (hi:lo) = a*b + c + d; cannot overflow two limbs. The carry chains and the 128-bit product come from
+   sd_ct64.h (intrinsics on x64, portable arithmetic and __umulh on ARM64). */
 static SD_FORCEINLINE sd_limb mac(sd_limb a, sd_limb b, sd_limb c, sd_limb d, sd_limb *hi)
 {
-  unsigned __int64 h, l = _umul128(a, b, &h);
-  unsigned char cf = _addcarry_u64(0, l, c, &l);
-  (void)_addcarry_u64(cf, h, 0, &h);
-  cf = _addcarry_u64(0, l, d, &l);
-  (void)_addcarry_u64(cf, h, 0, &h);
+  uint64_t h, l;
+  unsigned char cf;
+  sd_mul64_wide(a, b, &l, &h);
+  cf = sd_addcarry64(0, l, c, &l);
+  (void)sd_addcarry64(cf, h, 0, &h);
+  cf = sd_addcarry64(0, l, d, &l);
+  (void)sd_addcarry64(cf, h, 0, &h);
   *hi = h;
   return l;
 }
 static SD_FORCEINLINE sd_limb adc(sd_limb a, sd_limb b, sd_limb cin, sd_limb *cout)
 {
-  unsigned __int64 r;
-  *cout = _addcarry_u64((unsigned char)cin, a, b, &r);
+  uint64_t r;
+  *cout = sd_addcarry64((unsigned char)cin, a, b, &r);
   return r;
 }
 static SD_FORCEINLINE sd_limb sbb(sd_limb a, sd_limb b, sd_limb bin, sd_limb *bout)
 {
-  unsigned __int64 r;
-  *bout = _subborrow_u64((unsigned char)bin, a, b, &r);
+  uint64_t r;
+  *bout = sd_subborrow64((unsigned char)bin, a, b, &r);
   return r;
 }
 #else

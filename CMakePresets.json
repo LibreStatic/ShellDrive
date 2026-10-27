@@ -104,6 +104,23 @@
         "SD_FUZZ": "ON",
         "SD_ENABLE_ASAN": "OFF"
       }
+    },
+    {
+      "name": "arm64",
+      "displayName": "ARM64 (v143, SDK 10.0.26100; cross-compiled, build only, no tests)",
+      "inherits": "base",
+      "architecture": {
+        "value": "ARM64",
+        "strategy": "set"
+      },
+      "toolset": {
+        "value": "v143",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "SD_FLAVOUR": "arm64",
+        "CMAKE_SYSTEM_VERSION": "10.0.26100.0"
+      }
     }
   ],
   "buildPresets": [
@@ -155,6 +172,16 @@
     {
       "name": "x64-analysis",
       "configurePreset": "x64-analysis",
+      "configuration": "Debug"
+    },
+    {
+      "name": "arm64",
+      "configurePreset": "arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "arm64-debug",
+      "configurePreset": "arm64",
       "configuration": "Debug"
     }
   ],
@@ -231,6 +258,20 @@
       "inherits": "base",
       "configurePreset": "x64-analysis",
       "configuration": "Debug"
+    },
+    {
+      "name": "arm64",
+      "description": "Build-only flavour: ARM64 test binaries cannot run on x64 hosts (04 section 11.4). This preset selects no tests, so ctest exits 0 and reports nothing to run.",
+      "configurePreset": "arm64",
+      "configuration": "Release",
+      "filter": {
+        "include": {
+          "name": "^$"
+        }
+      },
+      "execution": {
+        "noTestsAction": "ignore"
+      }
     }
   ]
 }
