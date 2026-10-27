@@ -1,0 +1,4 @@
+example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILO9jOQUWOlPtO1RYYsZu8lxP0C6ko2cTVXLYbk8VRVA
+# comment
+@revoked * ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILO9jOQUWOlPtO1RYYsZu8lxP0C6ko2cTVXLYbk8VRVA
+*.example.org,[host.example]:2222 ssh-rsa AAAAB3NzaC1yc2E

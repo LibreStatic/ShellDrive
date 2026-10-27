@@ -1,0 +1,8 @@
+[profile]
+host = example.com
+port = 22
+timeout = 30s
+cache = 64M
+
+[settings]
+keep_alive = yes

@@ -299,6 +299,7 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
       unsigned reg;
       if (i >= n) return;
       reg = (p[i] >> 3) & 7;
+      if ((op == 0xF6 || op == 0xF7) && reg >= 6) out->is_div = 1;
       m = modrm_len(p + i, n - i, p67);
       if (m < 0) return;
       i += (size_t)m;
@@ -313,6 +314,17 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
     if (i > n) return;
     if (op == 0xE8 && !p66) { out->is_call_rel32 = 1; memcpy(&out->rel32, p + i - 4, 4); }
     if (op == 0xE9 && !p66) { out->is_jmp_rel32 = 1; memcpy(&out->rel32, p + i - 4, 4); }
+    /* Short forms: rel8 is the last byte. Conditional: Jcc (70-7F) and LOOP/LOOPE/LOOPNE/JECXZ (E0-E3). */
+    if ((op & 0xF0) == 0x70 || (op >= 0xE0 && op <= 0xE3)) {
+      out->is_jcc = 1;
+      out->is_branch_rel = 1;
+      out->rel32 = (signed char)p[i - 1];
+    } else if (op == 0xEB) {
+      out->is_branch_rel = 1;
+      out->rel32 = (signed char)p[i - 1];
+    } else if (op == 0xE9) {
+      out->is_branch_rel = 1;
+    }
     out->len = (unsigned)i;
     out->isa = X86_ISA_BASE;
     return;
@@ -351,5 +363,10 @@ void x86_decode(const unsigned char *p, size_t n, x86_insn *out)
     if (i > n) return;
     out->len = (unsigned)i;
     out->isa = classify_0f(op, p66, pf2, pf3, modrm);
+    if ((op & 0xF0) == 0x80 && !p66) {          /* Jcc rel32 (0F 80-8F) */
+      out->is_jcc = 1;
+      out->is_branch_rel = 1;
+      memcpy(&out->rel32, p + i - 4, 4);
+    }
   }
 }

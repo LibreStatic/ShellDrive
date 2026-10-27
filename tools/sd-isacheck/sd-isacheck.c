@@ -445,6 +445,98 @@ static int check_image(const char *path, int floor_sse2, const strlist *allow, c
   return 1;
 }
 
+static strlist g_ct_allow;     /* ct-branch-allow.txt: functions whose forward branches are on public data */
+
+/* ---------------------------------------------------------------- constant-time branch and divide rules */
+
+/* Functions the branch rules apply to: the constant-time naming convention of 01 section 2.4 and 2.7.5
+   (sd_ct_*, sd_bn_ct_*, *_ct_*, *_ct). */
+static int is_ct_function(const char *name)
+{
+  size_t n = strlen(name);
+  return strstr(name, "_ct_") != NULL || (n >= 3 && strcmp(name + n - 3, "_ct") == 0) ||
+         strncmp(name, "sd_ct_", 6) == 0;
+}
+
+/* Conditional branches of one function: offset and target (relative to the section start). */
+typedef struct ct_jcc { long long at, to; } ct_jcc;
+
+/* Scans the code of one COMDAT function section (01 section 2.4 rules 1, 3; 2.7.5 "disassembly check"):
+   - DIV and IDIV (any operand size) are forbidden: their latency depends on the operands on every target;
+   - a forward conditional branch is a branch on data unless its condition is public. A forward branch that
+     skips a loop (the loop-entry guard of a for loop with a public bound, e.g. "if (n == 0) goto end") is
+     accepted: the loop's own back-edge lies between the branch and its target. Every other forward branch is
+     reported, unless the function is listed in ct-branch-allow.txt with a reason (public condition);
+   - a backward conditional branch is a loop back-edge; its bound is public by 2.4 rule 1 and is not classified;
+   - undecodable bytes are reported: a desynchronised sweep would hide the rest of the function. */
+static void scan_ct_function(const char *lib, const char *member, const unsigned char *code, size_t csz,
+                             const char *fname, const strlist *ct_allow)
+{
+  size_t off = 0, njcc = 0, cap = 64, k;
+  ct_jcc *jcc = (ct_jcc *)malloc(cap * sizeof(*jcc));
+  int allowed = list_match(ct_allow, fname);
+  if (!jcc) {
+    g_violations++;
+    fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: out of memory while scanning\n", lib, member, fname);
+    return;
+  }
+  while (off < csz) {
+    x86_insn in;
+    x86_decode(code + off, csz - off, &in);
+    if (in.len == 0) {
+      g_violations++;
+      fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: undecodable bytes at +0x%lx (the sweep cannot be trusted)\n",
+              lib, member, fname, (unsigned long)off);
+      free(jcc);
+      return;
+    }
+    if (in.is_div) {
+      g_violations++;
+      fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: DIV/IDIV at +0x%lx (01 2.4.3: no division on secrets)\n",
+              lib, member, fname, (unsigned long)off);
+    }
+    if (in.is_jcc) {
+      if (njcc == cap) {
+        ct_jcc *g;
+        cap *= 2;
+        g = (ct_jcc *)realloc(jcc, cap * sizeof(*jcc));
+        if (!g) {
+          g_violations++;
+          fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: out of memory while scanning\n", lib, member, fname);
+          free(jcc);
+          return;
+        }
+        jcc = g;
+      }
+      jcc[njcc].at = (long long)off;
+      jcc[njcc].to = (long long)off + (long long)in.len + (long long)in.rel32;
+      njcc++;
+    }
+    off += in.len;
+  }
+  if (allowed) {
+    free(jcc);
+    return;
+  }
+  for (k = 0; k < njcc; k++) {
+    size_t j;
+    int loop_guard = 0;
+    if (jcc[k].to <= jcc[k].at) continue;                       /* backward: loop back-edge */
+    for (j = 0; j < njcc; j++) {                                /* a loop inside the skipped region? */
+      if (jcc[j].to <= jcc[j].at && jcc[j].at > jcc[k].at && jcc[j].at < jcc[k].to && jcc[j].to > jcc[k].at) {
+        loop_guard = 1;
+        break;
+      }
+    }
+    if (loop_guard) continue;
+    g_violations++;
+    fprintf(stderr, "sd-isacheck: ct: %s(%s): %s: forward conditional branch at +0x%llx -> +0x%llx "
+            "(01 2.4.1: a branch on data; list the function in ct-branch-allow.txt if the condition is public)\n",
+            lib, member, fname, jcc[k].at, jcc[k].to);
+  }
+  free(jcc);
+}
+
 /* ---------------------------------------------------------------- constant-time gate */
 
 static const char *const k_helpers[] = {
@@ -508,7 +600,7 @@ static void check_object(const char *lib, const char *member, const unsigned cha
     const IMAGE_RELOCATION *r;
     char fname[256] = "<section>", buf[9];
     WORD k;
-    if (!(sc->Characteristics & IMAGE_SCN_CNT_CODE) || !sc->NumberOfRelocations) continue;
+    if (!(sc->Characteristics & IMAGE_SCN_CNT_CODE)) continue;
     /* The function this COMDAT section holds: a function-typed symbol defined in it. */
     for (si = 0; si < nsym; si += 1 + syms[si].NumberOfAuxSymbols) {
       const IMAGE_SYMBOL *y = &syms[si];
@@ -517,6 +609,9 @@ static void check_object(const char *lib, const char *member, const unsigned cha
         break;
       }
     }
+    if (is_ct_function(fname) && sc->SizeOfRawData && (size_t)sc->PointerToRawData + sc->SizeOfRawData <= size)
+      scan_ct_function(lib, member, obj + sc->PointerToRawData, sc->SizeOfRawData, fname, &g_ct_allow);
+    if (!sc->NumberOfRelocations) continue;
     r = (const IMAGE_RELOCATION *)(obj + sc->PointerToRelocations);
     if ((size_t)sc->PointerToRelocations + (size_t)sc->NumberOfRelocations * sizeof(IMAGE_RELOCATION) > size) continue;
     for (k = 0; k < sc->NumberOfRelocations; k++) {
@@ -653,6 +748,26 @@ static const vec k_vectors[] = {
   { NULL, 0, X86_ISA_BASE }
 };
 
+typedef struct branch_vec { const char *hex; int jcc; int div; int rel; } branch_vec;
+
+static const branch_vec k_branch_vectors[] = {
+  { "7405", 1, 0, 5 },              /* je rel8 */
+  { "7F0A", 1, 0, 10 },             /* jg rel8 */
+  { "E2FE", 1, 0, -2 },             /* loop rel8 (backward) */
+  { "E3FA", 1, 0, -6 },             /* jecxz rel8 */
+  { "EB05", 0, 0, 0 },              /* jmp rel8: unconditional */
+  { "0F8400000000", 1, 0, 0 },      /* je rel32 */
+  { "0F8F00010000", 1, 0, 256 },    /* jg rel32 */
+  { "E900000000", 0, 0, 0 },        /* jmp rel32: unconditional */
+  { "F7F1", 0, 1, 0 },              /* div ecx */
+  { "F7F8", 0, 1, 0 },              /* idiv eax */
+  { "F6F1", 0, 1, 0 },              /* div cl */
+  { "F7E1", 0, 0, 0 },              /* mul ecx (32x32 -> 64 MUL: allowed on the floor) */
+  { "F7D8", 0, 0, 0 },              /* neg eax */
+  { "0F44C1", 0, 0, 0 },            /* cmove: no branch */
+  { NULL, 0, 0, 0 }
+};
+
 static int selftest(void)
 {
   int i, fails = 0, n = 0;
@@ -700,6 +815,8 @@ int main(int argc, char **argv)
       if (!load_allow(&allow, argv[++i])) return 2;
     } else if (strcmp(a, "--entry") == 0 && i + 1 < argc) {
       entry = argv[++i];
+    } else if (strcmp(a, "--ct-allow") == 0 && i + 1 < argc) {
+      if (!load_allow(&g_ct_allow, argv[++i])) return 2;
     } else if (strcmp(a, "--ct-lib") == 0 && i + 1 < argc) {
       ct_lib = argv[++i];
     } else if (strcmp(a, "--ct-member") == 0 && i + 1 < argc) {

@@ -89,6 +89,21 @@
         "SD_ENABLE_ANALYZE": "ON",
         "SD_ENABLE_ASAN": "OFF"
       }
+    },
+    {
+      "name": "x86-fuzz",
+      "displayName": "x86 fuzz (v143 Win32, libFuzzer + ASan, DLL CRT; tests/fuzz, never shipped)",
+      "inherits": "x86-base",
+      "toolset": {
+        "value": "v143",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "SD_FLAVOUR": "x86-ia32",
+        "SD_X86_ARCH": "IA32",
+        "SD_FUZZ": "ON",
+        "SD_ENABLE_ASAN": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -133,12 +148,26 @@
       "configuration": "Debug"
     },
     {
+      "name": "x86-fuzz",
+      "configurePreset": "x86-fuzz",
+      "configuration": "Debug"
+    },
+    {
       "name": "x64-analysis",
       "configurePreset": "x64-analysis",
       "configuration": "Debug"
     }
   ],
   "testPresets": [
+    {
+      "name": "x86-fuzz",
+      "inherits": "base",
+      "configurePreset": "x86-fuzz",
+      "configuration": "Debug",
+      "environment": {
+        "PATH": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x86;$penv{PATH}"
+      }
+    },
     {
       "name": "base",
       "hidden": true,

@@ -1,0 +1,4 @@
+GET /dav/a HTTP/1.0
+Sec-Fetch-Mode: no-cors
+Sec-Fetch-Site: cross-site
+

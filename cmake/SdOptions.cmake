@@ -8,6 +8,8 @@ set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-
 set(SD_X86_ARCH "" CACHE STRING "x86 flavours: code generation floor (IA32 or SSE2, decisions.md D4)")
 option(SD_ENABLE_ASAN "x64-analysis: build with AddressSanitizer" OFF)
 option(SD_ENABLE_ANALYZE "Run the MSVC code analyzer (/analyze)" OFF)
+option(SD_FUZZ "Fuzz build (tests/fuzz): libFuzzer + AddressSanitizer on every module, v143 toolset, DLL CRT. Never shipped."
+       OFF)
 option(SD_L10N_ALLOW_INCOMPLETE
        "Developer escape hatch: build even when a locale lacks strings (falls back to en). Never in CI." OFF)
 option(SD_L10N_QPS
@@ -42,7 +44,21 @@ if(SD_TOOLSET STREQUAL "")
   set(SD_TOOLSET "${CMAKE_GENERATOR_TOOLSET}")
 endif()
 
-if(SD_X86)
+if(SD_FUZZ)
+  # Fuzz builds run on the build host, so the XP floor (v141_xp, SDK 7.1A, _WIN32_WINNT 0x0501) does not apply.
+  # The libFuzzer and ASan runtimes come with the v143 toolset (docs/dev/m6-notes.md lists the VS components).
+  if(NOT SD_TOOLSET STREQUAL "v143")
+    message(FATAL_ERROR "SD_FUZZ=ON needs the v143 toolset (-T v143), got '${SD_TOOLSET}'.")
+  endif()
+  if(SD_FLAVOUR STREQUAL "x64-xp")
+    message(FATAL_ERROR "SD_FUZZ=ON is not compatible with the x64-xp flavour.")
+  endif()
+  set(SD_XP 0)
+  set(SD_WINNT 0x0A00)
+  set(SD_NTDDI 0x0A000000)
+  set(SD_SUBSYSTEM_VERSION "")
+  set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-1507-x64.txt")
+elseif(SD_X86)
   if(NOT SD_TOOLSET STREQUAL "v141_xp")
     message(FATAL_ERROR "${SD_FLAVOUR} needs the v141_xp toolset (-T v141_xp), got '${SD_TOOLSET}'.")
   endif()
@@ -90,8 +106,13 @@ if(SD_FLAVOUR STREQUAL "x64-modern" OR (SD_FLAVOUR STREQUAL "x64-analysis" AND N
   set(SD_MODERN_SECURITY 1)    # /sdl, /guard:cf, /CETCOMPAT
 endif()
 
-# Static CRT everywhere (04 §3.1).
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# Static CRT everywhere (04 §3.1). Fuzz builds use the DLL CRT: the ASan and libFuzzer runtimes ship only in
+# their clang_rt.*_dynamic and MD variants, and the static CRT would not match them.
+if(SD_FUZZ)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+else()
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # Drop CMake's default MSVC flags so ours are the only ones (/W3, /Ob, /RTC1 and friends).
 foreach(cfg C_FLAGS C_FLAGS_DEBUG C_FLAGS_RELEASE C_FLAGS_RELWITHDEBINFO C_FLAGS_MINSIZEREL)
@@ -148,6 +169,23 @@ if(SD_ENABLE_ASAN)
     message(FATAL_ERROR "AddressSanitizer is available on the v143 flavours only.")
   endif()
   add_compile_options("$<$<COMPILE_LANGUAGE:C>:/fsanitize=address>")
+endif()
+if(SD_FUZZ)
+  # libFuzzer needs coverage instrumentation in every module it drives, and ASan finds the memory bugs (01 12.2).
+  add_compile_options("$<$<COMPILE_LANGUAGE:C>:/fsanitize=fuzzer;/fsanitize=address>")
+  # Some MSVC toolsets ship the coverage runtime as libsancov.lib while the runtime's auto-link directive names
+  # sancov.lib. Link the file that exists and stop the directive from pulling in a missing one.
+  if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(_sd_fuzz_arch x86)
+  else()
+    set(_sd_fuzz_arch x64)
+  endif()
+  get_filename_component(_sd_fuzz_cl_dir "${CMAKE_C_COMPILER}" DIRECTORY)
+  get_filename_component(_sd_fuzz_msvc_lib "${_sd_fuzz_cl_dir}/../../../lib/${_sd_fuzz_arch}" ABSOLUTE)
+  find_file(SD_FUZZ_SANCOV_LIB NAMES libsancov.lib NO_DEFAULT_PATH PATHS "${_sd_fuzz_msvc_lib}")
+  if(SD_FUZZ_SANCOV_LIB)
+    add_link_options("/NODEFAULTLIB:sancov.lib" "${SD_FUZZ_SANCOV_LIB}")
+  endif()
 endif()
 
 # Librarian (lib.exe) for static libraries: /Brepro keeps the archive member timestamps fixed (04 §12.2).
