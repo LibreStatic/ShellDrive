@@ -341,6 +341,7 @@ sd_limb sd_mp_modinv_ct(sd_limb *r, const sd_limb *a, const sd_limb *m, size_t n
   sd_limb ok, one;
   memcpy(u, a, n * sizeof(sd_limb));
   memcpy(v, m, n * sizeof(sd_limb));
+  SD_CT_NO_VECTOR
   for (i = 0; i < n; i++)
     x1[i] = x2[i] = 0;
   x1[0] = 1;

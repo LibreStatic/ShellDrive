@@ -19,9 +19,11 @@ int sd_fuzz_one(const uint8_t *data, size_t size)
   e = ssh_kexinit_parse(data, size, &k);
   if (e != SD_OK) return 0;
   {
-    const sd_span *spans[] = { &k.kex, &k.hostkey, &k.enc_c2s, &k.enc_s2c, &k.mac_c2s, &k.mac_s2c,
-                               &k.comp_c2s, &k.comp_s2c, &k.lang_c2s, &k.lang_s2c };
+    const sd_span *spans[10];   /* filled at run time: v141 refuses addresses of locals in initializers */
     size_t i;
+    spans[0] = &k.kex; spans[1] = &k.hostkey; spans[2] = &k.enc_c2s; spans[3] = &k.enc_s2c;
+    spans[4] = &k.mac_c2s; spans[5] = &k.mac_s2c; spans[6] = &k.comp_c2s; spans[7] = &k.comp_s2c;
+    spans[8] = &k.lang_c2s; spans[9] = &k.lang_s2c;
     for (i = 0; i < sizeof(spans) / sizeof(spans[0]); i++) {
       if (spans[i]->n == 0) continue;
       SD_FUZZ_CHECK((const uint8_t *)spans[i]->p >= data);

@@ -21,6 +21,15 @@
 #include <intrin.h>
 #endif
 
+/* Put before a loop that handles a secret mask. MSVC vectorizes such loops at /arch:SSE2 and emits a
+   pointer-overlap check and a length split (forward branches on addresses and public sizes) around the vector
+   body. Keeping the scalar body alone leaves one straight-line sequence per element (sd-isacheck, 01 2.4.1). */
+#if defined(_MSC_VER)
+#define SD_CT_NO_VECTOR __pragma(loop(no_vector))
+#else
+#define SD_CT_NO_VECTOR
+#endif
+
 /* Value barrier: the optimizer cannot see through a volatile round trip, so masks stay masks. */
 static SD_FORCEINLINE uint32_t sd_ct_barrier32(uint32_t x)
 {

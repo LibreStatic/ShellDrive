@@ -37,6 +37,7 @@ void sd_ct_cswap_u32(uint32_t bit, uint32_t *a, uint32_t *b, size_t n)
 {
   uint32_t m = sd_ct_barrier32(0u - (bit & 1u));
   size_t i;
+  SD_CT_NO_VECTOR
   for (i = 0; i < n; i++) {
     uint32_t t = m & (a[i] ^ b[i]);
     a[i] ^= t;
@@ -48,6 +49,7 @@ void sd_ct_cswap_u64(uint64_t bit, uint64_t *a, uint64_t *b, size_t n)
 {
   uint64_t m = sd_ct_barrier64(0u - (bit & 1u));
   size_t i;
+  SD_CT_NO_VECTOR
   for (i = 0; i < n; i++) {
     uint64_t t = m & (a[i] ^ b[i]);
     a[i] ^= t;
@@ -61,6 +63,7 @@ void sd_ct_cmov(uint8_t *dst, const uint8_t *src, size_t n, uint8_t mask)
   uint32_t m32 = (uint32_t)mask;
   uint8_t m = (uint8_t)sd_ct_barrier32(0u - ((m32 | (0u - m32)) >> 31));
   size_t i;
+  SD_CT_NO_VECTOR
   for (i = 0; i < n; i++)
     dst[i] = (uint8_t)(dst[i] ^ (m & (dst[i] ^ src[i])));
 }

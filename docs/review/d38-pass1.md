@@ -677,7 +677,36 @@ others) need the application binaries, which were not built in this pass, so the
 Limits (for the reviewer): the loop-guard rule cannot tell a public loop bound from a secret one, and an allow-list
 entry exempts a whole function, so a new branch on secret data inside one of the six functions is not caught. The
 reason on each allow-list line is the review record. Still missing: secret-indexed memory operands, the 64x64 multiply
-sequence check (only the helper-call form is checked), and the x86-sse2 and ARM32 gates.
+sequence check (only the helper-call form is checked), and the ARM32 gate.
+
+**x86-sse2 run (v141_xp, `/arch:SSE2`), 2026-10-27.** The gate first failed on four forward branches that the ia32
+objects do not have. The disassembly (`dumpbin -disasm`, from MSVC 14.44 `Hostx64\x86`, which ships `msvcdis140.dll`;
+the 14.16 copy in the same tree does not) shows that all four are vectorizer code, emitted around the loops that take
+a secret mask. None tests the mask or any secret value:
+
+| Function (object) | Branch | What it tests |
+|---|---|---|
+| `sd_ct_cswap_u32` (ct.obj) `+0x3e -> +0x4a` | `cmp edx,eax; ja` after `lea eax,[edi+eax*4]` | Overlap of `a` and `b` (`b > &a[n-1]`). Pointers and public `n`. |
+| `sd_ct_cswap_u64` (ct.obj) `+0x58 -> +0x5e` | `cmp esi,eax; ja`, with `esi` = `b` and `eax` = `&a[n-1]` | Same overlap check for the 64-bit form. |
+| `sd_ct_cmov` (ct.obj) `+0x51 -> +0x60` | `cmp edx,eax; ja` (`dst` against `src + n - 1`) | Overlap of `dst` and `src`. Pointers and public `n`. |
+| `sd_mp_modinv_ct` (bn.obj) `+0x74 -> +0x7a` | `cmp edi,eax; ja` (`x1` against `&x2[n-1]`) | Overlap of the `x1` and `x2` zeroing loop `x1[i] = x2[i] = 0`. Work-buffer offsets for public `n`. |
+
+The masks reach only `pand`/`pxor`. The `cmp n, 64` (cmov) and `cmp esi, 4` / `cmp ebx, 2` (cswap) guards that
+come before the vector body test public lengths. Those guards were not reported, because each skips a loop whose
+back-edge is inside the skipped region.
+
+Fix (source, not allow-list): `SD_CT_NO_VECTOR` (`src/sd_crypto/sd_ct64.h`, expands to `__pragma(loop(no_vector))` on
+MSVC) before the four loops above (`ct.c`: `sd_ct_cswap_u32`, `sd_ct_cswap_u64`, `sd_ct_cmov`; `bn.c`:
+`sd_mp_modinv_ct` zeroing loop). The loops keep one scalar body per element, and the re-disassembly of `ct.obj` and
+`bn.obj` has no overlap or length branches left in those functions. The allow list is unchanged. Gate results after
+the fix: x86-sse2 `sd_crypto_ctcheck` and x86-ia32 `sd_crypto_ctcheck` both exit 0 with no violation. The vector
+speed of the cswap and cmov paths is given up; they run on fixed-size field elements (X25519, 10 limbs) and on
+MLKEM/RSA-size buffers, so the cost is small and was not measured.
+
+`ctest --preset x86-sse2 -R "crypto|isacheck"` after the fix: 17 of 17 pass (unit.crypto_pk 75 s, unit.crypto 2.9 s,
+unit.crypto_pq 1.6 s, `isacheck.ct_sd_crypto` and the other isacheck tests).
+
+Still open for this flavour: the ARM32 gate, and the x86-sse2 timing run (9.5).
 
 ### 9.5 Timing harness (TST-03, dudect-style)
 

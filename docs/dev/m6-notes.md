@@ -94,7 +94,7 @@ Gate (every x86-ia32 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_sd_c
   `tools/sd-isacheck/ct-branch-allow.txt` with the reason. The list is exempt from the forward-branch rule only.
   A change to a listed function needs its branches reviewed again.
 
-Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the x86-sse2 and ARM32 runs.
+Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the ARM32 run. The x86-sse2 run is in place: the vectorizer's overlap checks are kept out of CT loops with `SD_CT_NO_VECTOR` (d38-pass1 section 9.4).
 
 dudect-style timing (opt-in, once per release candidate and nightly on a quiet machine):
 
