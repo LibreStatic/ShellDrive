@@ -274,12 +274,12 @@ Per-machine MSI packages (04 §8; decisions and open items in 04 §8.7). Opt-in:
 
 | Path | What |
 |---|---|
-| `packaging/msi/ShellDrive.wxs` | the package for every flavour (defines from `build-msi.cmake`), WixUI_Minimal, features, hooks |
+| `packaging/msi/ShellDrive.wxs` | the package for every flavour (defines from `build-msi.cmake`), the `ShellDriveUI` dialog set (WixUI_Common dialogs, feature tree, options page), features, hooks |
 | `packaging/msi/build-msi.cmake` | one flavour: sd-msigen, candle, light (ICE), torch per language, sd-msiembed |
 | `packaging/msi/CMakeLists.txt` | the `msi` target, per-flavour table (family, platform, UpgradeCode, launch condition) |
 | `tools/sd-msigen/` | GUIDs, `Registry.wxi` from `packaging/registration.txt`, `.wxl` from the `msi.*` entries of `l10n/installer` |
 | `tools/sd-msiembed/` | embeds a language transform under its LCIDs through `msi.dll` and updates the Template summary |
-| `packaging/msi/wixui/` | WixUI string overrides, one complete `WixUI_<culture>.wxl` per culture (es-es voseo, de-de `du`, it-it informal), and `dialog-set.txt` (the 183 WixUI ids the package shows) |
+| `packaging/msi/wixui/` | WixUI string overrides, one complete `WixUI_<culture>.wxl` per culture (es-es voseo, de-de `du`, it-it informal), and `dialog-set.txt` (the 212 WixUI ids the package shows) |
 | `tests/msi/` | `sd-test-msi`: `tables` (package contents, transforms with the language check) and `admin` (`msiexec /a`); `check-wixui.cmake` (`msi.<flavour>.wixui`: every id of `dialog-set.txt` in every override, Spanish register lint) |
 
 Checks: `ctest -L msi` (after the `msi` target). Light runs ICE validation on the base package; the suppressions and
@@ -294,10 +294,21 @@ were taken from the built package: every WixUI `loc.*` reference of the Control,
 To rebuild the list, replace each WixUI string with a marker in a copy of `WixUI_en-us.wxl`, light the English package
 with it and read the `@@` markers back from the tables (`WindowsInstaller.Installer`); overrides are then regenerated.
 
-`ARPNOMODIFY` is `1`. Design 04 §6.7 says `0`, but the package has no modify UI (WixUI_Minimal has no feature tree), so
-`0` would offer "Change" with nothing behind it. Revisit with a feature-tree dialog (open item 7 below).
+Dialog set (`ShellDriveUI`, 04 §6.7 and §8.7): the flow of `WixUI_FeatureTree` on the stock `WixUI_Common` dialogs, with
+`OptionsDlg` after the customize page. Maintenance (Change, Repair, Remove) comes from the maintenance dialogs of the same set.
+`ARPNOMODIFY` is `0`, set explicitly (Property table checked with `WindowsInstaller.Installer`), so "Change" is offered and
+runs the feature tree and the options page. The install folder is no longer configurable in the dialogs (no
+`ConfigurableDirectory`). The license page shows the repository `LICENSE`, converted to RTF by `build-msi.cmake` (candle gets
+`-dSD_LICENSE_RTF`). The `DOKANY` and `ENABLELINKEDCONNECTIONS` checkboxes are bound to the public properties: unchecked gives
+`DOKANY=""` (the `[backend] dokany = no` line, which is `DOKANY <> "1"`) and `ENABLELINKEDCONNECTIONS=""`.
+Interactive maintenance preselects the installed choices (`SD_DOKANY_INI` through `IniFileSearch` on
+`[SD_PRODUCT_DATA]settings.ini`, `SD_ELC_EXISTS`), so Next does not change them. The condition of `C_LinkedConn` also accepts
+the value this package wrote (`Installed AND SD_ELC_EXISTS = "1"`), so a Change keeps it and unchecking removes it.
+The strings of the options page are `msi.options.*` in all six catalogs of `l10n/installer` (`WiX` ids `OptionsTitle`,
+`OptionsDokanyCheckbox`, ...); the WixUI ids of the set are in the overrides, and `dialog-set.txt` lists them.
 
 Open items: DEFAULTPROFILES (no MSI MoveFile authoring in WiX 3.14), `programdata-secure` runs after InstallFiles, hook
-rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, Add/Remove "Change"
-disabled by WixUI_Minimal (ARPNOMODIFY=1, see above), timestamps in the summary information (12.2). The installed
-behaviour is for the lab (11.4).
+rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, timestamps in the summary
+information (12.2), and the silent maintenance defaults: `msiexec /f /qn` or `/i /qn` without `DOKANY` and
+`ENABLELINKEDCONNECTIONS` resets them to the defaults (pass the same public properties again). The Dokany driver is not installed
+or removed by the MSI (setup does that). The installed behaviour, including the Change run, is for the lab (11.4).

@@ -8,7 +8,8 @@
 
   Defines: SD_VERSION, SD_FLAVOUR, SD_PRODUCT_CODE, SD_PACKAGE_CODE, SD_UPGRADE_CODE, SD_INSTALLER_VERSION,
   SD_PF_DIR (ProgramFilesFolder or ProgramFiles64Folder), SD_WIN64 (yes/no), SD_BIN_DIR, SD_ICON,
-  SD_LAUNCH (none or win10), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6).
+  SD_LAUNCH (none or win10), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6), SD_LICENSE_RTF (the
+  LICENSE of the repository converted to RTF by build-msi.cmake, shown by the license page).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <?include Guids.wxi?>
@@ -24,8 +25,9 @@
 
     <Icon Id="ShellDriveIcon" SourceFile="$(var.SD_ICON)" />
     <Property Id="ARPPRODUCTICON" Value="ShellDriveIcon" />
-    <!-- ARPNOMODIFY=1 comes from WixUI_Minimal (no feature tree, so no modify UI). Do not set it here too: WiX 3.14
-         rejects the duplicate Property (LGHT0091). -->
+    <!-- ARPNOMODIFY=0: Add/Remove Programs offers "Change", which runs the feature tree and the options page of the
+         ShellDriveUI dialog set below (04 §6.7). Explicit so that the Property table shows it. -->
+    <Property Id="ARPNOMODIFY" Value="0" />
 
     <!-- Public properties for silent configuration (04 §8.4). Empty means "not given". -->
     <Property Id="AUTOSTART" Value="1" />
@@ -49,6 +51,16 @@
       <RegistrySearch Id="SD_ELC_EXISTS_RS" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
                       Name="EnableLinkedConnections" Type="raw" Win64="$(var.SD_WIN64)" />
     </Property>
+    <!-- The state of an installed product, read for the Change options page only (see the SetProperty rows below). -->
+    <!-- IniFileSearch takes no path (no backslash in Name), so the product data folder comes from a property first. -->
+    <SetProperty Id="SD_PRODUCT_DATA" Value="[CommonAppDataFolder]LibreStatic\ShellDrive\" Sequence="first" Before="AppSearch"><![CDATA[1]]></SetProperty>
+    <Property Id="SD_DOKANY_INI">
+      <IniFileSearch Id="SD_DOKANY_INI_IS" Name="[SD_PRODUCT_DATA]settings.ini" Section="backend" Key="dokany" />
+    </Property>
+    <!-- Interactive maintenance (UILevel above /qn, Installed) starts the options page with the installed choices, so that
+         Next keeps them: the first sequence runs once, before the dialogs, and a silent run keeps the public properties. -->
+    <SetProperty Id="DOKANY" Value="0" Sequence="first" After="AppSearch"><![CDATA[UILevel > 2 AND Installed AND SD_DOKANY_INI = "no" AND DOKANY = "1"]]></SetProperty>
+    <SetProperty Id="ENABLELINKEDCONNECTIONS" Value="1" Sequence="first" After="AppSearch"><![CDATA[UILevel > 2 AND Installed AND SD_ELC_EXISTS = "1" AND ENABLELINKEDCONNECTIONS <> "1"]]></SetProperty>
 
     <?if $(var.SD_LAUNCH) = "win10" ?>
     <!-- Windows 10 or later: CurrentMajorVersionNumber exists only there (04 §8.2). -->
@@ -127,7 +139,8 @@
                Section="update" Key="manifest_url" Value="[UPDATEURL]" />
     </Component>
     <Component Id="C_Ini_Backend" Guid="$(var.G_C_Ini_Backend)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
-      <Condition><![CDATA[DOKANY = "0"]]></Condition>
+      <!-- Unchecked on the options page (DOKANY becomes empty) and DOKANY=0 on the command line both mean "no". -->
+      <Condition><![CDATA[DOKANY <> "1"]]></Condition>
       <CreateFolder />
       <IniFile Id="SD_INI_BACKEND_DOKANY" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
                Section="backend" Key="dokany" Value="no" />
@@ -138,7 +151,9 @@
 
     <!-- ENABLELINKEDCONNECTIONS (D24): written only when the admin has not set the value already. -->
     <Component Id="C_LinkedConn" Guid="$(var.G_C_LinkedConn)" Directory="TARGETDIR" Win64="$(var.SD_WIN64)">
-      <Condition><![CDATA[ENABLELINKEDCONNECTIONS = "1" AND VersionNT >= 600 AND SD_ELC_EXISTS = ""]]></Condition>
+      <!-- Written when the value does not exist. On a maintenance run the value that this component wrote stays (Installed):
+           unchecking the option removes the component and with it the value. -->
+      <Condition><![CDATA[ENABLELINKEDCONNECTIONS = "1" AND VersionNT >= 600 AND (SD_ELC_EXISTS = "" OR (Installed AND SD_ELC_EXISTS = "1"))]]></Condition>
       <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
                      Name="EnableLinkedConnections" Type="integer" Value="1" KeyPath="yes" />
     </Component>
@@ -181,7 +196,7 @@
     </Component>
 
     <!-- Feature tree (04 §8.3). Core is always installed; the others are on by default. -->
-    <Feature Id="ShellDrive" Title="ShellDrive" Level="1" Display="expand" ConfigurableDirectory="INSTALLDIR">
+    <Feature Id="ShellDrive" Title="ShellDrive" Level="1" Display="expand">
       <Feature Id="Core" Title="!(loc.FeatureCoreTitle)" Description="!(loc.FeatureCoreDesc)" Level="1" Absent="disallow" AllowAdvertise="no">
         <ComponentRef Id="C_Core_Cli" />
         <ComponentRef Id="C_Core_Host" />
@@ -232,7 +247,80 @@
       <Custom Action="CA_UserCleanup" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
     </InstallExecuteSequence>
 
-    <UIRef Id="WixUI_Minimal" />
+    <!-- Dialog set (04 §6.7, 04 §8.4): the WixUI_FeatureTree flow with an options page after the feature tree. The dialogs
+         are the stock WixUI_Common ones (ids and loc.* strings of packaging/msi/wixui/dialog-set.txt); the flow is ours.
+         Install: Welcome, License (the repository LICENSE), Customize (features), Options (DOKANY, ENABLELINKEDCONNECTIONS),
+         Verify, Progress, Exit. Maintenance (Add/Remove Programs "Change", msiexec /i): MaintenanceWelcome, MaintenanceType
+         (Change, Repair, Remove); Change goes through Customize and Options, Repair and Remove go to Verify. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.SD_LICENSE_RTF)" />
+    <UI Id="ShellDriveUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="FeatureTree" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="OptionsDlg" Width="370" Height="270" Title="!(loc.OptionsWindowTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}!(loc.OptionsTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.OptionsDescription)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="DokanyCheckBox" Type="CheckBox" X="20" Y="62" Width="330" Height="18" CheckBoxValue="1" Property="DOKANY"
+                 Text="!(loc.OptionsDokanyCheckbox)" />
+        <Control Id="DokanyHint" Type="Text" X="38" Y="82" Width="312" Height="36" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.OptionsDokanyHint)" />
+        <Control Id="LinkedConnectionsCheckBox" Type="CheckBox" X="20" Y="130" Width="330" Height="18" CheckBoxValue="1"
+                 Property="ENABLELINKEDCONNECTIONS" Text="!(loc.OptionsLinkedCheckbox)" />
+        <Control Id="LinkedConnectionsHint" Type="Text" X="38" Y="150" Width="312" Height="48" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.OptionsLinkedHint)" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg">NOT Installed</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg">LicenseAccepted = "1"</Publish>
+
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1">Installed</Publish>
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2">NOT Installed</Publish>
+      <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="OptionsDlg">1</Publish>
+
+      <Publish Dialog="OptionsDlg" Control="Back" Event="NewDialog" Value="CustomizeDlg">1</Publish>
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1">NOT Installed OR WixUI_InstallMode = "Change"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3">Installed AND PATCH</Publish>
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+
+      <Publish Dialog="MaintenanceTypeDlg" Control="ChangeButton" Event="NewDialog" Value="CustomizeDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg">1</Publish>
+    </UI>
+    <UIRef Id="WixUI_Common" />
   </Product>
 
   <?include Registry.wxi?>

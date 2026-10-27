@@ -65,6 +65,7 @@ set(_msi_out "${_msi_dir}/ShellDrive-${_msi_version}-${SD_FLAVOUR}.msi")
 set(_msi_gen "${CMAKE_BINARY_DIR}/generated/msi/$<CONFIG>")
 
 file(GLOB _msi_po "${CMAKE_SOURCE_DIR}/l10n/installer/*.po")
+file(GLOB _msi_wixui "${CMAKE_CURRENT_SOURCE_DIR}/wixui/*")
 add_custom_command(
   OUTPUT "${_msi_out}"
   COMMAND "${CMAKE_COMMAND}"
@@ -86,12 +87,13 @@ add_custom_command(
           "-DSD_MSI_REG=${CMAKE_SOURCE_DIR}/packaging/registration.txt"
           "-DSD_MSI_PO=${CMAKE_SOURCE_DIR}/l10n/installer"
           "-DSD_MSI_WIX=${SD_WIX_DIR}"
+          "-DSD_MSI_LICENSE=${CMAKE_SOURCE_DIR}/LICENSE"
           "-DSD_MSIGEN=$<TARGET_FILE:sd-msigen>"
           "-DSD_MSIEMBED=$<TARGET_FILE:sd-msiembed>"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake"
   DEPENDS sd-msigen sd-msiembed shelldrive shelldrive-host shelldrive-ui shelldrive-shellext
           "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake" "${CMAKE_CURRENT_SOURCE_DIR}/ShellDrive.wxs"
-          "${CMAKE_SOURCE_DIR}/packaging/registration.txt" ${_msi_po}
+          "${CMAKE_SOURCE_DIR}/packaging/registration.txt" "${CMAKE_SOURCE_DIR}/LICENSE" ${_msi_po} ${_msi_wixui}
   COMMENT "msi: ShellDrive ${SD_FLAVOUR} ${_msi_version}"
   VERBATIM)
 

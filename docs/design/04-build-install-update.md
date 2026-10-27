@@ -635,7 +635,8 @@ by installers.
 ### 6.7 Uninstall entry (Add/Remove Programs)
 
 - Per-machine: provided by MSI (`Package Manufacturer="LibreStatic"`, which ARP shows as publisher, D45; `ARPPRODUCTICON`, `ARPURLINFOABOUT`, `ARPNOMODIFY=0` so "Change" offers
-  feature selection).
+  the feature tree and the options page of the maintenance dialog set, 8.7: features (Start at sign-in, File Explorer menu, Start menu
+  shortcut), then `DOKANY` and `ENABLELINKEDCONNECTIONS` as checkboxes; Repair and Remove as in 8.7).
 - Per-user: `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive` with `DisplayName`,
   `DisplayVersion`, `Publisher` = `LibreStatic` (D45), `DisplayIcon`, `InstallLocation`, `UninstallString` = `"<root>\uninstall.exe"
   /uninstall`, `QuietUninstallString`, `EstimatedSize`, `NoModify=1`, `NoRepair=1`. **[lab-verify]** that XP
@@ -1183,9 +1184,17 @@ ICE clean with the suppressions below). ARM32 is authored but has no preset, so 
   and OS messages), generated to `.wxl` by `sd-msigen wxl` (plural, fuzzy and placeholder entries are errors). The WixUI dialogs use
   WiX's own `WixUI_*.wxl`, which 8.1 allows. For Spanish that is `WixUI_es-es.wxl` (Spain Spanish), not the voseo of our strings:
   open item 6.
-- **Dialogs:** `WixUI_Minimal` (welcome, verify, progress, finish). The repository has no license text, so the license page of
-  `WixUI_InstallDir` is not used. `WixUI_Minimal` sets `ARPNOMODIFY=1`, so Add/Remove Programs does not offer "Change" (6.7 expects
-  `0`): open item 7.
+- **Dialogs:** the `ShellDriveUI` set of `ShellDrive.wxs` (the `WixUI_Common` dialogs in the `WixUI_FeatureTree` flow, our own
+  `OptionsDlg` after the feature tree). Install: welcome, license, customize (features), options, verify, progress, finish.
+  Maintenance (Add/Remove Programs, `msiexec /i` of the product): maintenance welcome, Change / Repair / Remove. Change goes through
+  customize and options, Repair and Remove go to verify. The options page has two checkboxes on the public properties: "Use Dokany
+  for global drives (recommended)" (`DOKANY`, unchecked writes `[backend] dokany = no` to `settings.ini`) and "Let elevated programs
+  see mapped drives" (`ENABLELINKEDCONNECTIONS`, written as the `EnableLinkedConnections` value of 6.7 and D24). The package does not
+  install or remove the Dokany driver (setup does, 7.3). The license page shows the repository `LICENSE` (MIT), converted to RTF
+  by `build-msi.cmake` at build time (no RTF copy is kept). The install folder is fixed (no `ConfigurableDirectory`, 8.2).
+  `ARPNOMODIFY=0` is explicit, so "Change" is offered. Interactive maintenance starts the options page with the installed choices
+  (`SD_DOKANY_INI` reads `settings.ini`, `SD_ELC_EXISTS` the registry value); silent runs keep the public property defaults
+  (open item 7). The strings are in `packaging/msi/wixui` (overrides) and `l10n/installer` (`msi.options.*`).
 - **Registry (6.6):** `packaging/registration.txt` generates one component per row, in HKLM: `SD_RegCore` (`core` rows) and
   `SD_RegAutostart` (`autostart` rows). The `Uninstall\ShellDrive` rows are skipped because Windows Installer writes the Add/Remove
   entry of an MSI itself. `Software\LibreStatic\ShellDrive\Version` is written by the MSI for Intune detection (8.3).
@@ -1229,7 +1238,10 @@ to the lab (11.4).
    fragment), so the DLL is installed but not registered. The x64 packages do not carry the x86 copy of the DLL (8.3).
 6. Spanish WiX dialog strings are Spain Spanish (`WixUI_es-es.wxl`), not Rioplatense. Either provide the dialog buttons from our
    catalog with voseo, or accept WiX's text for the standard buttons and dialogs only.
-7. Add/Remove Programs "Change" is disabled by `WixUI_Minimal`. `WixUI_FeatureTree` or a custom dialog would restore it.
+7. Options without the dialog: the options page (8.7) starts with the installed choices only in interactive maintenance. A Repair or
+   Change without UI (`msiexec /f` or `/i` with `/qn`) takes the public property defaults: `DOKANY` back to 1 (the `settings.ini`
+   line is removed with its component) and `ENABLELINKEDCONNECTIONS` to 0 (the value is removed with its component). Pass the same
+   properties again, or persist the choices (lab check needed). The package also does not install or remove the Dokany driver.
 8. Reproducibility (12.2): the summary `Created` and `LastSaved` times vary between builds; `SOURCE_DATE_EPOCH` is not applied yet.
 9. ARM32 (D31): no `arm32` preset, so the package is not built. The ARM64 package needs the M6 host-tools path, because an ARM64
    tree cannot run the MSI tools. `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM64 trees.
