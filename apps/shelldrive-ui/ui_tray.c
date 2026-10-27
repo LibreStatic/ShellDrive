@@ -121,7 +121,11 @@ static void fill_nid(ui_nid *nid)
   nid->uCallbackMessage = UI_WM_TRAY;
   nid->hIcon = ui_icon_get(n > 0 && g_app.agent_up ? UI_ICON_CONNECTED : UI_ICON_IDLE,
                            GetSystemMetrics(SM_CXSMICON));
-  if (n == 0) {
+  if (g_app.attention > 0) {
+    /* a global drive waits for an administrator: the warning icon and its text take precedence (03 §2.6 rule 3) */
+    nid->hIcon = ui_icon_get(UI_ICON_WARNING, GetSystemMetrics(SM_CXSMICON));
+    copy_text(nid->szTip, SD_COUNTOF(nid->szTip), sd_l10n_get(SD_MSG_UI_TRAY_ADMIN_TIP));
+  } else if (n == 0) {
     copy_text(nid->szTip, SD_COUNTOF(nid->szTip), sd_l10n_get(SD_MSG_UI_TRAY_TIP_NONE));
   } else {
     count_text = ui_format_count(SD_MSG_UI_TRAY_TIP_COUNT, (long long)n);
@@ -359,6 +363,12 @@ static void show_menu(void)
   menu = CreatePopupMenu();
   if (menu == NULL)
     return;
+  if (g_app.attention > 0) {
+    wchar_t *t = ui_format_count(SD_MSG_UI_TRAY_ADMIN_PROMPTS, (long long)g_app.attention);
+    AppendMenuW(menu, MF_STRING, UI_CMD_ADMIN, t != NULL ? t : sd_l10n_get(SD_MSG_UI_TRAY_ADMIN_TIP));
+    sd_free(t);
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+  }
   for (i = 0; i < n; i++) {
     wchar_t *t = unmount_item_text(g_app.model.items[i].drive, g_app.model.items[i].profile);
     wcscpy_s(drives[i], SD_COUNTOF(drives[i]), g_app.model.items[i].drive);
@@ -391,6 +401,8 @@ static void show_menu(void)
     ui_main_show();
   } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_ABOUT) {
     ui_windows_command(cmd);
+  } else if (cmd == UI_CMD_ADMIN) {
+    (void)ui_svc_launch_admin(g_app.main);
   } else if (cmd == UI_CMD_EXIT) {
     ui_app_quit();
   } else if (cmd >= UI_CMD_UNMOUNT_BASE && cmd < UI_CMD_UNMOUNT_BASE + n) {

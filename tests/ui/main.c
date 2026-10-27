@@ -94,6 +94,14 @@ SD_TEST_DECL(dark_stays_light_on_older_systems);
 SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
 SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
 
+/* test_admin.c: the service prompts of the administrator (attention count, answer route, relaunch verb). */
+SD_TEST_DECL(admin_attention_count_parses_from_the_event);
+SD_TEST_DECL(admin_pending_count_drives_the_attention_state);
+SD_TEST_DECL(admin_answers_go_to_the_service_only_from_the_admin_mode);
+SD_TEST_DECL(admin_relaunch_verb_is_runas_on_vista_and_open_on_xp);
+SD_TEST_DECL(admin_elevated_verb_is_exact);
+SD_TEST_DECL(admin_prompt_list_entry_becomes_a_prompt);
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(dlg_empty_template_parses),
   SD_TEST_ENTRY(dlg_items_aligned_and_counted),
@@ -179,6 +187,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(dark_stays_light_on_older_systems),
   SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
   SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),
+  SD_TEST_ENTRY(admin_attention_count_parses_from_the_event),
+  SD_TEST_ENTRY(admin_pending_count_drives_the_attention_state),
+  SD_TEST_ENTRY(admin_answers_go_to_the_service_only_from_the_admin_mode),
+  SD_TEST_ENTRY(admin_relaunch_verb_is_runas_on_vista_and_open_on_xp),
+  SD_TEST_ENTRY(admin_elevated_verb_is_exact),
+  SD_TEST_ENTRY(admin_prompt_list_entry_becomes_a_prompt),
 };
 
 int main(int argc, char **argv)

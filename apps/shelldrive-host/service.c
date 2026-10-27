@@ -609,6 +609,48 @@ static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   announce_state(id, letter, state);
 }
 
+/* ---- attention (2.6 rule 3) ---- */
+
+/* Number of open routed prompts. Takes g.lock: never call it with g.lock held. */
+static uint32_t svc_open_prompts(void)
+{
+  uint32_t i, n = 0;
+  sd_mutex_lock(&g.lock);
+  for (i = 0; i < SVC_MAX_PROMPTS; i++)
+    if (g.prompts[i].used)
+      n++;
+  sd_mutex_unlock(&g.lock);
+  return n;
+}
+
+/* Builds the attention event {count} into w (initialized by the caller). Content-free: only the number. */
+static sd_err build_attention(uint32_t count, sd_wr *w)
+{
+  sd_wr d;
+  sd_json_writer jw;
+  sd_err e = SD_E_FAILURE;
+  sd_wr_init(&d, 64);
+  sd_jw_init(&jw, &d);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "count");
+  sd_jw_int(&jw, (int64_t)count);
+  sd_jw_obj_end(&jw);
+  if (sd_jw_finish(&jw) == SD_OK)
+    e = sd_ipc_build_event("attention", (const char *)d.p, d.len, w);
+  sd_wr_free(&d);
+  return e;
+}
+
+/* Sent whenever the number of open prompts changes, 0 included, so an admin UI clears its state. Not with g.lock held. */
+static void svc_broadcast_attention(void)
+{
+  sd_wr w;
+  sd_wr_init(&w, 128);
+  if (g.srv != NULL && build_attention(svc_open_prompts(), &w) == SD_OK)
+    sd_ipc_broadcast(g.srv, "attention", (const char *)w.p, w.len);
+  sd_wr_free(&w);
+}
+
 /* Hands the prompt to an elevated administrator that subscribed to `prompt` (2.5, 2.6 rule 3); refuses it otherwise. */
 static void svc_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
 {
@@ -682,18 +724,7 @@ static void svc_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
     sd_jw_obj_end(&jw);
     if (sd_jw_finish(&jw) == SD_OK) {
       broadcast_event("prompt", "prompt.request", &d);
-      {
-        sd_wr a;
-        sd_json_writer aw;
-        sd_wr_init(&a, 128);
-        sd_jw_init(&aw, &a);
-        sd_jw_obj_begin(&aw);
-        sd_jw_key(&aw, "count"); sd_jw_int(&aw, 1);
-        sd_jw_obj_end(&aw);
-        if (sd_jw_finish(&aw) == SD_OK)
-          broadcast_event("attention", "attention", &a);
-        sd_wr_free(&a);
-      }
+      svc_broadcast_attention();
     }
     sd_wr_free(&d);
   }
@@ -731,6 +762,7 @@ static void svc_on_prompt_closed(void *ctx, sd_mount *m, uint32_t prompt_id)
     if (sd_jw_finish(&jw) == SD_OK)
       broadcast_event("prompt", "prompt.closed", &d);
     sd_wr_free(&d);
+    svc_broadcast_attention();
   }
 }
 
@@ -955,16 +987,22 @@ static void reap_mount(svc_mount *r)
 {
   sd_mount *m;
   uint32_t i;
+  int reaped_prompts = 0;
   sd_mutex_lock(&g.reap);
   sd_mutex_lock(&g.lock);
   m = r->m;
   r->m = NULL;
-  for (i = 0; i < SVC_MAX_PROMPTS; i++)
-    if (g.prompts[i].used && g.prompts[i].mount == r)
+  for (i = 0; i < SVC_MAX_PROMPTS; i++) {
+    if (g.prompts[i].used && g.prompts[i].mount == r) {
       g.prompts[i].used = 0;
+      reaped_prompts = 1;
+    }
+  }
   sd_mutex_unlock(&g.lock);
   if (m)
     sd_mount_destroy(m);
+  if (reaped_prompts)
+    svc_broadcast_attention();
   sd_mutex_unlock(&g.reap);
   sd_mutex_lock(&g.lock);
   for (i = 0; i < SVC_MAX_MOUNTS; i++)
@@ -1010,6 +1048,8 @@ static void svc_tick(void)
       (void)sd_mount_answer(expired[i].m, expired[i].mprompt, SD_MA_REJECT, 0, NULL);
     SD_LOGW("svc", "a service prompt expired without an answer (%s)", expired[i].mid);
   }
+  if (nexp > 0)
+    svc_broadcast_attention();
   for (i = 0; i < n; i++) {
     svc_mount *r = reap[i];
     if (r->m == NULL || sd_mount_is_final(r->m))
@@ -1405,7 +1445,13 @@ static sd_err handle_prompt_list(sd_ipc_client *c, sd_json_writer *res, sd_ipc_e
     sd_jw_key(res, "prompt_id"); sd_jw_cstr(res, pidstr);
     sd_jw_key(res, "mount_id"); sd_jw_cstr(res, s->mount_id);
     sd_jw_key(res, "profile_id"); sd_jw_cstr(res, s->profile_id);
-    sd_jw_key(res, "kind"); sd_jw_int(res, s->kind);
+    /* the same fields as prompt.request (2.5), so an administrator UI that connects late can show the dialog */
+    sd_jw_key(res, "kind"); sd_jw_cstr(res, sd_mount_prompt_kind_name((sd_mount_prompt_kind)s->kind));
+    sd_jw_key(res, "host"); sd_jw_cstr(res, s->host);
+    sd_jw_key(res, "port"); sd_jw_int(res, s->port);
+    sd_jw_key(res, "user"); sd_jw_cstr(res, s->user);
+    sd_jw_key(res, "is_reconnect"); sd_jw_bool(res, s->is_reconnect);
+    sd_jw_key(res, "can_save"); sd_jw_bool(res, 0);
     sd_jw_key(res, "queued"); sd_jw_bool(res, 0);
     sd_jw_key(res, "deadline_ms"); sd_jw_int(res, s->deadline > now ? (int64_t)(s->deadline - now) : 0);
     sd_jw_obj_end(res);
@@ -1464,6 +1510,7 @@ static sd_err handle_prompt_answer(sd_ipc_client *c, const sd_json *params, sd_j
     }
     sd_mutex_unlock(&g.reap);
   }
+  svc_broadcast_attention();
   (void)res;
   return SD_OK;
 }
@@ -1509,6 +1556,19 @@ static int svc_topic_allowed(void *ctx, sd_ipc_client *client, const char *topic
   if (strcmp(topic, "prompt") == 0 || strcmp(topic, "log") == 0 || strcmp(topic, "hostkeys") == 0)
     return caller_is_admin(client);
   return 1;
+}
+
+/* attention: a new subscriber gets the current count at once, so a UI that starts after a prompt knows about it. */
+static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic)
+{
+  sd_wr w;
+  (void)ctx;
+  if (strcmp(topic, "attention") != 0 || g.srv == NULL)
+    return;
+  sd_wr_init(&w, 128);
+  if (build_attention(svc_open_prompts(), &w) == SD_OK)
+    (void)sd_ipc_send_to(g.srv, sd_ipc_client_id(client), (const char *)w.p, w.len);
+  sd_wr_free(&w);
 }
 
 static const char *const k_service_features[] = {
@@ -1575,6 +1635,7 @@ int svc_run(const svc_opts *o)
   cfg.max_requests_per_sec = 10;          /* TM-R25; admins are exempt in the server */
   cfg.features = k_service_features;
   cfg.topic_allowed = svc_topic_allowed;
+  cfg.on_subscribe = svc_on_subscribe;
   e = sd_ipc_server_start_ex(SD_IPC_SERVICE, &cfg, &g.srv);
   if (e != SD_OK) {
     SD_LOGE("svc", "the control pipe did not start (%s)", sd_err_name(e));

@@ -25,6 +25,7 @@
 #define UI_WM_IPC_REPLY  (WM_APP + 4)   /* lParam: ui_ipc_reply* (owned by the UI) */
 #define UI_WM_TRAY       (WM_APP + 5)   /* tray icon callback: lParam is the mouse message */
 #define UI_WM_IPC_PROMPTS (WM_APP + 6)  /* lParam: sd_json* result of "prompt.list" (owned by the UI) */
+#define UI_WM_SVC_ATTENTION (WM_APP + 7) /* wParam: count of prompts waiting for an administrator (ui_svc.c) */
 
 /* Timer of the prompt host (--prompt-host): once a second, the idle exit of 60 s is counted. */
 #define UI_TIMER_PROMPT_IDLE  1
@@ -46,6 +47,7 @@
 #define UI_CMD_OPEN_DRIVE    3008
 #define UI_CMD_QUICK_MOUNT   3009
 #define UI_CMD_IMPORT        3010
+#define UI_CMD_ADMIN         1003       /* tray: relaunch elevated to answer the service prompts (ui_svc.c) */
 #define UI_CTL_LIST          4001
 #define UI_CTL_STATUS        4002
 
@@ -103,6 +105,9 @@ typedef struct ui_app {
   int quit;
   int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
   unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
+  int elevated_admin;           /* --elevated-admin: service prompts only (ui_svc.c), no agent, no tray, prompt_host set too */
+  int user_admin;               /* the logged-on user is an administrator (linked token on Vista+), see ui_svc_user_is_admin */
+  int attention;                /* prompts waiting for an administrator on the service (0 unless user_admin) */
   ui_model model;
 } ui_app;
 
@@ -110,6 +115,7 @@ extern ui_app g_app;
 
 /* ---- main.c ---- */
 void ui_app_handle_request(const ui_request *req);
+void ui_app_on_attention(int count);
 void ui_app_on_agent_state(int up);
 void ui_app_on_list(sd_json *result);
 void ui_app_on_event(sd_json *event);
@@ -146,6 +152,19 @@ sd_err ui_ipc_answer(const char *json, size_t len);
 /* Generic call for the secondary windows: the reply comes back as UI_WM_IPC_REPLY with this kind. params may be
    NULL. */
 sd_err ui_ipc_call(ui_ipc_kind kind, const char *method, const char *params);
+
+/* ---- ui_svc.c: the service pipe client (03 §2.6 rule 3): the attention watch of administrators and the
+   elevated admin mode (--elevated-admin). Neither starts the service. ---- */
+/* admin 0: the attention watch (subscribes to attention only). admin 1: prompts and answers (prompts.ui). */
+sd_err ui_svc_start(int admin);
+void   ui_svc_stop(void);
+/* prompt.answer on the service pipe (admin mode). The JSON is copied; the caller wipes its own copy. */
+sd_err ui_svc_answer(const char *json, size_t len);
+/* 1 when the logged-on user is a member of BUILTIN\Administrators (the linked, elevated token on Vista and later). */
+int    ui_svc_user_is_admin(void);
+/* Relaunches this executable with --elevated-admin (UAC on Vista and later). Returns 1 when one is running or
+   was started; the window owner gets a message only when the launch itself fails. */
+int    ui_svc_launch_admin(HWND owner);
 
 /* ---- ui_tray.c: notification area icon ---- */
 sd_err ui_tray_add(void);

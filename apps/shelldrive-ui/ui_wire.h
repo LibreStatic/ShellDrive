@@ -31,7 +31,8 @@ typedef enum ui_verb {
   UI_VERB_MOUNT_FILE,     /* --action mount-file <absolute path> */
   UI_VERB_UNMOUNT,        /* --action unmount <drive> */
   UI_VERB_RECONNECT,      /* --action reconnect <drive or profile id> */
-  UI_VERB_OPEN            /* --action open <drive>: the shell extension's "Open" verb (03 §8.2) */
+  UI_VERB_OPEN,           /* --action open <drive>: the shell extension's "Open" verb (03 §8.2) */
+  UI_VERB_ELEVATED_ADMIN  /* --elevated-admin: answers the service prompts as an administrator (03 §2.6 rule 3) */
 } ui_verb;
 
 typedef enum ui_target_kind {

@@ -149,6 +149,8 @@ sd_err ui_request_from_args(int argc, const wchar_t *const *argv, ui_request *re
     r.verb = UI_VERB_TRAY;
   } else if (argc == 1 && wcscmp(argv[0], L"--prompt-host") == 0) {
     r.verb = UI_VERB_PROMPT_HOST;
+  } else if (argc == 1 && wcscmp(argv[0], L"--elevated-admin") == 0) {
+    r.verb = UI_VERB_ELEVATED_ADMIN;
   } else if (argc >= 2 && wcscmp(argv[0], L"--action") == 0 && wcscmp(argv[1], L"show") == 0) {
     if (argc != 2)
       return SD_E_INVALID_PARAM;
