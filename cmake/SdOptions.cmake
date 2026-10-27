@@ -1,12 +1,12 @@
 # Flavour selection and compiler/linker flags. 04 §2.3, §3.1 and §3.2 are normative.
 #
 # SD_FLAVOUR is set by CMakePresets.json. Supported: x86-ia32, x86-sse2 (M1), x64-modern, x64-xp,
-# x64-analysis, arm64 (04 §1.1). arm32 waits for SDK 10.0.22621 (D5, D31).
+# x64-analysis, arm64 (04 §1.1), arm32 (best effort, D5; SDK 10.0.22621, D31).
 
-set(SD_FLAVOUR "" CACHE STRING "Build flavour (x86-ia32, x86-sse2, x64-modern, x64-xp, x64-analysis, arm64)")
-set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-xp x64-analysis arm64)
-# Internal: the nested x64 configure that builds the build-time tools for an ARM64 tree (cmake/SdHostTools.cmake).
-option(SD_HOST_TOOLS_ONLY "Internal: configure only the build-time tools for an ARM64 tree" OFF)
+set(SD_FLAVOUR "" CACHE STRING "Build flavour (x86-ia32, x86-sse2, x64-modern, x64-xp, x64-analysis, arm64, arm32)")
+set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-xp x64-analysis arm64 arm32)
+# Internal: the nested x64 configure that builds the build-time tools for an ARM64 or ARM32 tree (cmake/SdHostTools.cmake).
+option(SD_HOST_TOOLS_ONLY "Internal: configure only the build-time tools for an ARM64 or ARM32 tree" OFF)
 set(SD_X86_ARCH "" CACHE STRING "x86 flavours: code generation floor (IA32 or SSE2, decisions.md D4)")
 option(SD_ENABLE_ASAN "x64-analysis: build with AddressSanitizer" OFF)
 option(SD_ENABLE_ANALYZE "Run the MSVC code analyzer (/analyze)" OFF)
@@ -22,7 +22,13 @@ if(SD_FLAVOUR STREQUAL "")
 endif()
 
 set(SD_X86 0)
-if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "x86-sse2")
+if(SD_FLAVOUR STREQUAL "arm32")
+  # 32-bit ARM (04 §1.1, §5.1): 4-byte pointers and 32-bit limbs (sd_ct64.h, bn.c). The pointer size is not
+  # checked here: the arm32 presets skip CMake's compiler ABI probe (see CMakePresets.json), so it is unset.
+  if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL "ARM")
+    message(FATAL_ERROR "arm32 is a 32-bit ARM flavour (-A ARM), got '${CMAKE_VS_PLATFORM_NAME}'.")
+  endif()
+elseif(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "x86-sse2")
   set(SD_X86 1)
   if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "${SD_FLAVOUR} is a 32-bit flavour (-A Win32), got a ${CMAKE_SIZEOF_VOID_P}-byte pointer build.")
@@ -104,16 +110,40 @@ elseif(SD_FLAVOUR STREQUAL "arm64")
   set(SD_NTDDI 0x0A000000)
   set(SD_SUBSYSTEM_VERSION "")  # linker default (6.00); the floor is Windows 10 1709 (04 §1.1, §3.2)
   set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-arm64.txt")
+elseif(SD_FLAVOUR STREQUAL "arm32")
+  # Native ARM32 (04 §1.1, §5.1, D5, D31): v143 with SDK 10.0.22621, the last SDK with ARM32 libraries (VS2026 has
+  # no ARM32 toolset). Cross-compiled on an x64 host; build only, no ARM32 test run on x64 machines (04 §11.4).
+  # Best effort: CLI, agent and WebDAV only, so the UI and the shell extension are not built (SD_ARM32 below).
+  if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL "ARM")
+    message(FATAL_ERROR "arm32 needs the ARM platform (-A ARM), got '${CMAKE_VS_PLATFORM_NAME}'.")
+  endif()
+  if(NOT SD_TOOLSET STREQUAL "v143")
+    message(FATAL_ERROR "arm32 needs the v143 toolset, got '${SD_TOOLSET}'.")
+  endif()
+  if(NOT CMAKE_SYSTEM_VERSION STREQUAL "10.0.22621.0")
+    message(FATAL_ERROR "arm32 needs CMAKE_SYSTEM_VERSION=10.0.22621.0 (SDK 10.0.26100 ships no ARM libraries), "
+                        "got '${CMAKE_SYSTEM_VERSION}'.")
+  endif()
+  set(SD_XP 0)
+  set(SD_WINNT 0x0602)        # 04 §2.3: the ARM32 header floor; behaviour is detected at run time
+  set(SD_NTDDI 0x06020000)
+  set(SD_SUBSYSTEM_VERSION 6.02)  # 04 §3.2 table
+  set(SD_OS_FLOOR_LIST "${CMAKE_SOURCE_DIR}/tests/os-imports/win10-arm32.txt")
 else()
   message(FATAL_ERROR "Unknown SD_FLAVOUR '${SD_FLAVOUR}'.")
 endif()
 
-# ARM64 targets cannot run on an x64 build host: the build-time tools (sdl10n, sd-admxgen, sd-importcheck,
+# ARM64 and ARM32 targets cannot run on an x64 build host: the build-time tools (sdl10n, sd-admxgen, sd-importcheck,
 # sd-payload) are then built by a nested x64 configure (cmake/SdHostTools.cmake).
+# SD_ARM64 / SD_ARM32: the native ARM flavours. SD_ARM32 also leaves out the UI and the shell extension (04 §5.1).
 set(SD_ARM64 0)
+set(SD_ARM32 0)
 set(SD_CROSS_HOST_TOOLS 0)
 if(SD_FLAVOUR STREQUAL "arm64")
   set(SD_ARM64 1)
+  set(SD_CROSS_HOST_TOOLS 1)
+elseif(SD_FLAVOUR STREQUAL "arm32")
+  set(SD_ARM32 1)
   set(SD_CROSS_HOST_TOOLS 1)
 endif()
 
@@ -122,6 +152,8 @@ if(SD_X86)
   set(SD_MANIFEST_ARCH x86)
 elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
   set(SD_MANIFEST_ARCH arm64)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM")
+  set(SD_MANIFEST_ARCH arm)
 else()
   set(SD_MANIFEST_ARCH amd64)
 endif()
@@ -130,12 +162,12 @@ set(SD_MODERN_SECURITY 0)
 if(SD_FLAVOUR STREQUAL "x64-modern" OR (SD_FLAVOUR STREQUAL "x64-analysis" AND NOT SD_ENABLE_ASAN))
   set(SD_MODERN_SECURITY 1)    # /sdl, /guard:cf, /CETCOMPAT
 endif()
-if(SD_FLAVOUR STREQUAL "arm64")
+if(SD_FLAVOUR STREQUAL "arm64" OR SD_FLAVOUR STREQUAL "arm32")
   set(SD_MODERN_SECURITY 1)    # /sdl, /guard:cf (04 §1.1); CET shadow stacks are x64 only, see SD_CET
 endif()
-# /CETCOMPAT (x64 only: the ARM64 linker has no such option, 04 §1.1 and §3.2).
+# /CETCOMPAT (x64 only: the ARM64 and ARM32 linkers have no such option, 04 §1.1 and §3.2).
 set(SD_CET 0)
-if(SD_MODERN_SECURITY AND NOT SD_ARM64)
+if(SD_MODERN_SECURITY AND NOT SD_ARM64 AND NOT SD_ARM32)
   set(SD_CET 1)
 endif()
 
@@ -239,8 +271,8 @@ add_link_options(
 if(SD_X86)
   # SD_SAFESEH_NO (target property) exists only for the sd-importcheck negative fixture.
   add_link_options("$<IF:$<BOOL:$<TARGET_PROPERTY:SD_SAFESEH_NO>>,/SAFESEH:NO,/SAFESEH>" /LARGEADDRESSAWARE)
-else()
-  add_link_options(/HIGHENTROPYVA)
+elseif(NOT SD_ARM32)
+  add_link_options(/HIGHENTROPYVA)   # 64-bit images only: ARM32 is a 32-bit image (04 §3.2)
 endif()
 if(SD_MODERN_SECURITY)
   add_link_options(/guard:cf)

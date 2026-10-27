@@ -10,9 +10,15 @@
 
 #include "sd/base.h"
 
+/* 32x32->64 product, one MUL instruction on every 32-bit target: __emulu on x86 (MUL), _arm_umull on ARM32
+   (UMULL). The portable expression is the fallback for other targets (64-bit ones use 64-bit limbs and never
+   reach SD_MUL32 with secrets, see bn.c). Rule 01 2.4.3: no 64x64 multiply on 32-bit targets. */
 #if defined(_M_IX86)
 #include <intrin.h>
 #define SD_MUL32(a, b) __emulu((unsigned int)(a), (unsigned int)(b))
+#elif defined(_M_ARM)
+#include <intrin.h>
+#define SD_MUL32(a, b) _arm_umull((unsigned int)(a), (unsigned int)(b))
 #else
 #define SD_MUL32(a, b) ((uint64_t)(uint32_t)(a) * (uint64_t)(uint32_t)(b))
 #endif

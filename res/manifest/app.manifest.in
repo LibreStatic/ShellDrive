@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- Application manifest template (04 §3.3), instantiated per binary by sd_add_app and sd_add_dll.
      trustInfo uses the asm.v2 namespace because the XP SP2 loader rejects the v3 form.
-     @SD_MANIFEST_ARCH@ follows the flavour (x86 for the x86 flavours, amd64 for x64, arm64 for ARM64).
+     @SD_MANIFEST_ARCH@ follows the flavour (x86 for the x86 flavours, amd64 for x64, arm64 for ARM64, arm for ARM32).
      @SD_MANIFEST_DEPENDENCY@ (comctl32 v6) and @SD_MANIFEST_DPI@ (DPI awareness) are empty for console
      binaries and filled in for GUI applications only (sd_add_app WINDOWS, 03 §7.1 and §7.3).
      longPathAware (2016 namespace) is left out on the XP flavours, whose SDK 7.1A does not know that

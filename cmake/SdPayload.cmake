@@ -82,6 +82,14 @@ function(sd_setup_add_payload stub_target out_exe flavour)
   set(_inf "${_dir}/payload.inf")
   file(MAKE_DIRECTORY "${_dir}")
 
+  # ARM32 ships the CLI and the host only (04 §5.1): no UI and no shell extension, so no such members or dependencies.
+  set(_ui_members "")
+  set(_ui_deps "")
+  if(NOT SD_ARM32)
+    set(_ui_members "\"$<TARGET_FILE:shelldrive-ui>\" shelldrive-ui.exe\n\"$<TARGET_FILE:shelldrive-shellext>\" shelldrive-shellext.dll\n")
+    set(_ui_deps shelldrive-ui shelldrive-shellext)
+  endif()
+
   # The member list is generated per configuration: the binaries of this tree, and the stub as uninstall.exe.
   file(GENERATE OUTPUT "${_dir}/payload-$<CONFIG>.ddf" CONTENT
 ".OPTION EXPLICIT
@@ -96,9 +104,7 @@ function(sd_setup_add_payload stub_target out_exe flavour)
 .Set MaxDiskSize=0
 \"$<TARGET_FILE:shelldrive>\" shelldrive.exe
 \"$<TARGET_FILE:shelldrive-host>\" shelldrive-host.exe
-\"$<TARGET_FILE:shelldrive-ui>\" shelldrive-ui.exe
-\"$<TARGET_FILE:shelldrive-shellext>\" shelldrive-shellext.dll
-\"$<TARGET_FILE:${stub_target}>\" uninstall.exe
+${_ui_members}\"$<TARGET_FILE:${stub_target}>\" uninstall.exe
 ")
 
   find_program(SD_MAKECAB makecab REQUIRED)
@@ -109,8 +115,7 @@ function(sd_setup_add_payload stub_target out_exe flavour)
     COMMENT "makecab: payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup-payload-${flavour} DEPENDS "${_cab}")
-  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host shelldrive-ui
-                   shelldrive-shellext ${stub_target})
+  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target})
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
 
   set(_final "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shelldrive-setup.exe")

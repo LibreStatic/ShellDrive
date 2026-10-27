@@ -20,7 +20,7 @@ include(SdOptions)   # flavour, compiler and linker flags (04 §3.2)
 include(SdVersion)   # VERSION file, git commit, generated sd/version.h
 include(SdModule)    # sd_add_module, sd_add_unit_test, sd_add_app helpers
 include(SdL10n)      # sdl10n catalog generation (03 §9)
-include(SdHostTools) # build-time tools of cross-compiled (ARM64) trees (04 §2.5)
+include(SdHostTools) # build-time tools of cross-compiled (ARM64, ARM32) trees (04 §2.5)
 
 # Group Policy headers and ADMX/ADML outputs (03 §3.5); generated under generated/policy/.
 set(SD_POLICY_DIR "${SD_GENERATED_DIR}/policy")
@@ -28,7 +28,7 @@ set(SD_POLICY_DIR "${SD_GENERATED_DIR}/policy")
 enable_testing()
 
 if(SD_HOST_TOOLS_ONLY)
-  # Nested x64 configure of an ARM64 tree: only the tools that run during the build (cmake/SdHostTools.cmake).
+  # Nested x64 configure of an ARM64 or ARM32 tree: only the tools that run during the build (cmake/SdHostTools.cmake).
   add_subdirectory(tools/sdl10n)
   add_subdirectory(tools/sd-importcheck)
   add_subdirectory(tools/sd-admxgen)
@@ -36,8 +36,8 @@ if(SD_HOST_TOOLS_ONLY)
   return()
 endif()
 
-# Build-time tools first: sdl10n, sd-importcheck and sd-admxgen run during the build. An ARM64 tree takes them
-# from the nested x64 build instead of building ARM64 copies that cannot run here.
+# Build-time tools first: sdl10n, sd-importcheck and sd-admxgen run during the build. An ARM64 or ARM32 tree takes
+# them from the nested x64 build instead of building ARM copies that cannot run here.
 if(SD_CROSS_HOST_TOOLS)
   sd_host_tools_setup()
 else()
@@ -46,8 +46,8 @@ else()
   add_subdirectory(tools/sd-admxgen)
   add_subdirectory(tools/sd-payload)
 endif()
-# sd-isacheck audits x86 code only (04 §2.4): not part of the ARM64 tree.
-if(NOT SD_ARM64)
+# sd-isacheck audits x86 code only (04 §2.4): not part of the ARM64 or ARM32 trees.
+if(NOT SD_ARM64 AND NOT SD_ARM32)
   add_subdirectory(tools/sd-isacheck)
 endif()
 add_subdirectory(tools/sd-updsign)
@@ -79,11 +79,14 @@ add_subdirectory(src/sd_update)
 # Localized catalogs (PO sources under l10n/).
 add_subdirectory(l10n)
 
-# Applications.
+# Applications. ARM32 ships no UI and no shell extension (D5, 04 §5.1: Windows RT runs no third-party desktop code and
+# IoT images have no Explorer), so those two are not built there.
 add_subdirectory(apps/shelldrive)
 add_subdirectory(apps/shelldrive-host)
-add_subdirectory(apps/shelldrive-ui)
-add_subdirectory(apps/shelldrive-shellext)
+if(NOT SD_ARM32)
+  add_subdirectory(apps/shelldrive-ui)
+  add_subdirectory(apps/shelldrive-shellext)
+endif()
 
 # Setup engine, stub and payload (04 §6; tools/sd-payload attaches the payload CAB, added above).
 add_subdirectory(apps/shelldrive-setup)

@@ -18,8 +18,11 @@ add_subdirectory(l10n)
 add_subdirectory(policy)
 add_subdirectory(repro)
 add_subdirectory(importcheck)
-add_subdirectory(ui)
-add_subdirectory(shellext)
+# The UI and the shell extension are not built for ARM32 (04 §5.1), so their tests are not either.
+if(NOT SD_ARM32)
+  add_subdirectory(ui)
+  add_subdirectory(shellext)
+endif()
 add_subdirectory(setup)
 add_subdirectory(unit/sd_svc)
 

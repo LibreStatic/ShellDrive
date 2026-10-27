@@ -15,11 +15,12 @@
 /* ------------------------------------------------------------------ flavours */
 
 static const wchar_t *const k_flavour_names[] = {
-  NULL, L"x86-ia32", L"x86-sse2", L"x64-xp", L"x64-modern", L"arm64"
+  NULL, L"x86-ia32", L"x86-sse2", L"x64-xp", L"x64-modern", L"arm64", L"arm32"
 };
 
 static const wchar_t *const k_payload_names[] = {
-  NULL, L"PAYLOAD_X86_IA32", L"PAYLOAD_X86_SSE2", L"PAYLOAD_X64_XP", L"PAYLOAD_X64_MODERN", L"PAYLOAD_ARM64"
+  NULL, L"PAYLOAD_X86_IA32", L"PAYLOAD_X86_SSE2", L"PAYLOAD_X64_XP", L"PAYLOAD_X64_MODERN", L"PAYLOAD_ARM64",
+  L"PAYLOAD_ARM32"
 };
 
 const wchar_t *sd_setup_flavour_name(sd_setup_flavour f)
@@ -298,8 +299,13 @@ void sd_setup_detect_host(sd_setup_host *h)
     BOOL is_wow = FALSE;
     wow = (sd_IsWow64Process_t)sd_setup_proc(L"kernel32.dll", "IsWow64Process");
     if (wow == NULL || !wow(GetCurrentProcess(), &is_wow) || !is_wow) {
+#if defined(_M_ARM)
+      /* A 32-bit process on a 32-bit ARM OS: the ARM32 stub (04 §5.1). */
+      h->native_machine = IMAGE_FILE_MACHINE_ARMNT;
+#else
       /* A 32-bit process on a 32-bit OS (this stub is always x86 code). */
       h->native_machine = IMAGE_FILE_MACHINE_I386;
+#endif
     } else {
       gnsi = (sd_GetNativeSystemInfo_t)sd_setup_proc(L"kernel32.dll", "GetNativeSystemInfo");
       if (gnsi != NULL) {
@@ -333,6 +339,20 @@ void sd_setup_detect_host(sd_setup_host *h)
 int sd_setup_select_flavour(const sd_setup_host *h, sd_setup_flavour override, sd_setup_flavour *out,
                             sd_msg_id *reason)
 {
+#if defined(_M_ARM)
+  /* The ARM32 stub is ARM32 code (04 §1.1, §6.2). Every ARM host runs it, natively or emulated on ARM64, and the
+     only flavour it installs is arm32. The universal x86 stub never takes this path. */
+  if (h->native_machine != IMAGE_FILE_MACHINE_ARMNT && h->native_machine != IMAGE_FILE_MACHINE_ARM64) {
+    *reason = SD_MSG_INSTALLER_ERROR_FLAVOUR_CPU;
+    return 1;
+  }
+  if (override != SD_SETUP_FL_NONE && override != SD_SETUP_FL_ARM32) {
+    *reason = SD_MSG_INSTALLER_ERROR_FLAVOUR_BITNESS;
+    return 1;
+  }
+  *out = SD_SETUP_FL_ARM32;
+  return 0;
+#else
   sd_setup_flavour base = SD_SETUP_FL_NONE;
 
   switch (h->native_machine) {
@@ -390,6 +410,7 @@ int sd_setup_select_flavour(const sd_setup_host *h, sd_setup_flavour override, s
 
   *out = base;
   return 0;
+#endif
 }
 
 /* ------------------------------------------------------------------ Dokany and versions */

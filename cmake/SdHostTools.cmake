@@ -1,12 +1,12 @@
-# Build-time tools for cross-compiled trees (ARM64, 04 §1.1, §2.5).
+# Build-time tools for cross-compiled trees (ARM64 and ARM32, 04 §1.1, §2.5).
 #
 # The tools that run during the build (sdl10n, sd-importcheck, sd-admxgen, sd-payload) must run on the build
-# host. An ARM64 tree cannot run them: its executables are ARM64 and Windows 11 on x64 does not run ARM64
-# binaries. So an ARM64 configure builds them in a nested x64 configure of this same source tree
+# host. An ARM64 or ARM32 tree cannot run them: its executables are ARM and Windows 11 on x64 does not run ARM
+# binaries. So an ARM64 or ARM32 configure builds them in a nested x64 configure of this same source tree
 # (SD_HOST_TOOLS_ONLY=ON, see the root CMakeLists.txt) through the ExternalProject target sd_host_tools, and the
 # tool names become imported executables that point at the x64 binaries. The native flavours do not use this.
 #
-#   sd_host_tools_setup()                     called once by the root CMakeLists.txt (ARM64 trees only).
+#   sd_host_tools_setup()                     called once by the root CMakeLists.txt (ARM64 and ARM32 trees only).
 #   sd_add_tool_dependency(<target> <tool>)   <target> runs <tool> in a build step: build it first.
 #   sd_tool_depends(<tool> <out_var>)         DEPENDS list for a custom command that runs <tool>.
 
