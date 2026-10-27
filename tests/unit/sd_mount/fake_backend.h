@@ -74,4 +74,12 @@ uint32_t fake_backend_applied(uint32_t *removed, const char **lookup_name);   /*
 uint32_t fake_backend_apply_calls(void);
 const char *fake_backend_last_new_password(void);
 
+/* M3. Write-behind bytes the fake vfs reports as queued (cache.clear busy). Counters of refresh and cache
+   clear calls since reset; the disk flag of the last clear; the budget of the last vfs quiesce (-1 = none).
+   profile.test: a host prefixed "probefail" fails the realpath. */
+void     fake_backend_set_wb_dirty(UINT64 bytes);
+uint32_t fake_backend_refresh_calls(void);
+uint32_t fake_backend_cache_clears(int *disk_too);
+int      fake_backend_last_quiesce_budget(void);
+
 #endif /* SD_FAKE_BACKEND_H */

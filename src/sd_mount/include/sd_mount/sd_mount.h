@@ -71,6 +71,48 @@ typedef enum sd_mount_state {
 } sd_mount_state;
 const char *sd_mount_state_name(sd_mount_state st);    /* IPC spelling: "connecting", ... */
 
+typedef enum sd_mount_backend_kind {
+  SD_MOUNT_BACKEND_AUTO = 0, SD_MOUNT_BACKEND_DOKANY = 1, SD_MOUNT_BACKEND_WEBDAV = 2
+} sd_mount_backend_kind;
+
+/* M3 profile.test result: the negotiated algorithms, the target's host-key fingerprint and the realpath
+   of the remote path (UTF-8). Strings are NUL-terminated and empty when unknown. */
+typedef struct sd_mount_probe {
+  char kex[64], hostkey[64], cipher_c2s[64], cipher_s2c[64], mac_c2s[64], mac_s2c[64];
+  char hostkey_fp[64];
+  char server_version[128];
+  char remote_real[1024];
+  int legacy;                           /* an outdated algorithm was negotiated on some hop */
+} sd_mount_probe;
+
+/* One SFTP connection of the pool (member 0 is the primary). */
+typedef struct sd_mount_member {
+  int ready;
+  uint32_t srtt_ms, inflight, queued;
+  uint64_t rx_total, tx_total;
+} sd_mount_member;
+
+/* M3 status stats (any thread, read under the mount's lock). has_session / has_vfs say which parts are
+   valid. Rates are EWMA of about 2 s (02 R16); totals are bytes of the current generation. The total
+   latency and rates come from the session; member[] holds the pool connections (members of 0..members-1). */
+typedef struct sd_mount_stats {
+  int has_session, has_vfs;
+  uint32_t srtt_ms, rttvar_ms, inflight, queued, channels, generation, reconnect_attempts;
+  uint64_t rx_bps, tx_bps, rx_total, tx_total;
+  uint32_t members;                     /* 0..4 */
+  sd_mount_member member[4];
+  uint64_t cache_hits, cache_misses, bytes_rd, bytes_wr, write_failed, wb_bytes, reconnects;
+} sd_mount_stats;
+
+/* M3 mount.attach_info: the backend in use (requested before MOUNTED) and, for WebDAV, the loopback port of
+   the export. The export token is never reported. */
+typedef struct sd_mount_attach {
+  sd_mount_backend_kind backend;
+  wchar_t letter;
+  int mounted;
+  uint16_t webdav_port;                 /* 0 unless the backend is WebDAV and the export exists */
+} sd_mount_attach;
+
 typedef struct sd_mount_backend {
   const char *name;
   sd_err (*ssh_global_init)(void);
@@ -108,11 +150,16 @@ typedef struct sd_mount_backend {
   sd_err (*kh_apply_hostkeys)(sd_known_hosts *kh, sd_kh_store_kind target, const char *lookup_name,
                               const sd_hk_key *add, uint32_t add_count, const sd_hk_key *remove, uint32_t remove_count);
   sd_err (*key_dpapi_unprotect)(const uint8_t *bytes, size_t len, const char *id, sd_secbuf **out);
+  /* M3 (NULL in older fakes: the matching call answers SD_E_UNSUPPORTED or reports nothing) */
+  sd_err (*session_probe)(sd_sftp_session *s, const char *remote, uint32_t timeout_ms, sd_mount_probe *out);
+  void   (*session_stats)(const sd_sftp_session *s, sd_mount_stats *out);
+  void   (*vfs_stats)(sd_vfs *v, sd_mount_stats *out);
+  void   (*vfs_refresh)(sd_vfs *v, const wchar_t *subtree);
+  void   (*vfs_cache_clear)(sd_vfs *v, int disk_too);
+  UINT64 (*vfs_write_behind_bytes)(sd_vfs *v);
+  uint16_t (*webdav_port)(const sd_webdav_mount *m);
 } sd_mount_backend;
 
-typedef enum sd_mount_backend_kind {
-  SD_MOUNT_BACKEND_AUTO = 0, SD_MOUNT_BACKEND_DOKANY = 1, SD_MOUNT_BACKEND_WEBDAV = 2
-} sd_mount_backend_kind;
 const char *sd_mount_backend_kind_name(sd_mount_backend_kind k);         /* "auto", "dokany", "webdav" */
 int sd_mount_backend_kind_parse(const char *s, sd_mount_backend_kind *out);   /* 1 on success */
 
@@ -156,7 +203,11 @@ typedef struct sd_mount_params {
   const wchar_t *profile_name;          /* shown in Credential Manager comments */
   const sd_kh_store *kh_stores;         /* store list (5.1); NULL = the user store at known_hosts_path */
   uint32_t kh_store_count;
+  /* M3: 1 = connect, authenticate and realpath only (profile.test): no vfs, no backend, no drive letter
+     needed. The result is read with sd_mount_get_probe() once the mount reports UNMOUNTED. */
+  int test_only;
 } sd_mount_params;
+
 
 /* One leg's proxy (3.8); kind SD_PROXY_NONE = direct. */
 typedef struct sd_mount_proxy {
@@ -344,5 +395,20 @@ sd_err sd_mount_answer_ex(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind 
                           const char *const *utf8_responses, uint32_t flags);
 /* Cancels every open prompt (e.g. the requesting client went away). Any thread. */
 uint32_t sd_mount_cancel_prompts(sd_mount *m);   /* returns how many were open */
+
+/* M3. sd_mount_stop_ex(force): the unmount does not wait for the write-behind drain; queued data left at
+   that moment is reported as write_failed (02 §4.4). Control thread, like sd_mount_stop. */
+sd_err sd_mount_stop_ex(sd_mount *m, int force);
+/* refresh: invalidates the attribute and directory caches under subtree (NULL = all). SD_E_UNSUPPORTED
+   when the mount has no vfs yet. Called with the host's lock that guards sd_mount_destroy. */
+sd_err sd_mount_refresh(sd_mount *m, const wchar_t *subtree);
+/* cache.clear: drops this mount's memory blocks and, when disk_too, its disk tier. SD_E_BUSY while
+   write-behind data is queued, unless force (the queued data is not dropped either way). */
+sd_err sd_mount_cache_clear(sd_mount *m, int disk_too, int force);
+/* Stats and attach info: callable while the mount object exists (same lock rule as refresh). */
+void   sd_mount_get_stats(const sd_mount *m, sd_mount_stats *out);
+void   sd_mount_get_attach(const sd_mount *m, sd_mount_attach *out);
+/* profile.test: 1 and the probe when the test_only mount reached READY and completed; 0 otherwise. */
+int    sd_mount_get_probe(const sd_mount *m, sd_mount_probe *out);
 
 #endif /* SD_MOUNT_H */

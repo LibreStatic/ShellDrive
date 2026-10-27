@@ -240,43 +240,59 @@ static DWORD sid_last_rid(PSID p)
   return s->SubAuthority[s->SubAuthorityCount - 1];
 }
 
+/* The decision of the owner and label check (TM-R26), separate from the API calls so that the unit test can
+   drive every branch. owner_ok: the owner is the expected SID. want_label: Vista+ and the caller asked for the
+   label. label_read: the label could be read (GetSecurityInfo succeeded with LABEL_SECURITY_INFORMATION).
+   label_present / label_rid: the mandatory label ACE of the SACL, if any. Fail closed: with want_label, a label
+   that cannot be read refuses the object (no owner-only fallback). XP (no labels) decides on the owner alone. */
+sd_err ipc_owner_decision(int owner_ok, int want_label, int label_read, int label_present, DWORD label_rid)
+{
+  if (!owner_ok)
+    return SD_E_ACCESS_DENIED;
+  if (!want_label)
+    return SD_OK;
+  if (!label_read)
+    return SD_E_ACCESS_DENIED;      /* TM-R26: an unreadable label is not an owner-only success */
+  if (label_present && label_rid < 0x2000)
+    return SD_E_ACCESS_DENIED;      /* below medium: planted by a low-integrity process */
+  return SD_OK;
+}
+
 sd_err ipc_verify_object_owner(HANDLE h, PSID expected, int check_label)
 {
   PSID owner = NULL;
   PACL sacl = NULL;
   PSECURITY_DESCRIPTOR sd = NULL;
   SECURITY_INFORMATION si = OWNER_SECURITY_INFORMATION;
-  int vista = sd_os_at_least(6, 0, 0);
-  sd_err e = SD_E_ACCESS_DENIED;
-  if (check_label && vista)
+  int want_label = check_label && sd_os_at_least(6, 0, 0);
+  int owner_ok = 0, label_present = 0;
+  DWORD label_rid = 0;
+  sd_err e;
+  if (want_label)
     si |= LABEL_SECURITY_INFORMATION;
-  if (GetSecurityInfo(h, SE_KERNEL_OBJECT, si, &owner, NULL, NULL, check_label && vista ? &sacl : NULL,
-                      &sd) != ERROR_SUCCESS) {
-    /* Without the label right, fall back to the owner alone. */
-    if (!(si & LABEL_SECURITY_INFORMATION) ||
-        GetSecurityInfo(h, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &sd) !=
-            ERROR_SUCCESS)
-      return SD_E_ACCESS_DENIED;
-    sacl = NULL;
+  /* One read for owner and label. A failure of any part (the label included) ends in a refusal on Vista+. */
+  if (GetSecurityInfo(h, SE_KERNEL_OBJECT, si, &owner, NULL, NULL, want_label ? &sacl : NULL, &sd) != ERROR_SUCCESS) {
+    if (sd)
+      LocalFree(sd);
+    return SD_E_ACCESS_DENIED;
   }
-  if (owner && IsValidSid(owner) && EqualSid(owner, expected)) {
-    e = SD_OK;
-    if (sacl) {
-      ACL_SIZE_INFORMATION info;
-      DWORD i;
-      if (GetAclInformation(sacl, &info, sizeof(info), AclSizeInformation)) {
-        for (i = 0; i < info.AceCount; i++) {
-          ACE_HEADER *ace = NULL;
-          if (GetAce(sacl, i, (LPVOID *)&ace) && ace->AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE) {
-            /* SYSTEM_MANDATORY_LABEL_ACE: header, mask, SID */
-            PSID label = (PSID)((uint8_t *)ace + sizeof(ACE_HEADER) + sizeof(DWORD));
-            if (sid_last_rid(label) < 0x2000)
-              e = SD_E_ACCESS_DENIED;   /* below medium: planted by a low-integrity process */
-          }
+  owner_ok = owner != NULL && IsValidSid(owner) && EqualSid(owner, expected);
+  if (want_label && sacl) {
+    ACL_SIZE_INFORMATION info;
+    DWORD i;
+    if (GetAclInformation(sacl, &info, sizeof(info), AclSizeInformation)) {
+      for (i = 0; i < info.AceCount && !label_present; i++) {
+        ACE_HEADER *ace = NULL;
+        if (GetAce(sacl, i, (LPVOID *)&ace) && ace->AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE) {
+          /* SYSTEM_MANDATORY_LABEL_ACE: header, mask, SID */
+          PSID label = (PSID)((uint8_t *)ace + sizeof(ACE_HEADER) + sizeof(DWORD));
+          label_present = 1;
+          label_rid = sid_last_rid(label);
         }
       }
     }
   }
+  e = ipc_owner_decision(owner_ok, want_label, 1, label_present, label_rid);
   LocalFree(sd);
   return e;
 }
@@ -537,13 +553,13 @@ int sd_ipc_exit_code_for_err(sd_err e)
 
 static const struct { const char *code; int exit_code; } k_codes[] = {
   { "usage", 2 }, { "service_access_required", 2 }, { "invalid_target", 2 },
-  { "profile_not_found", 3 }, { "mount_not_found", 3 },
+  { "profile_not_found", 3 }, { "mount_not_found", 3 }, { "not_mounted", 3 },
   { "host_key_not_found", 3 }, { "announcement_not_found", 3 },
   { "session_not_found", 3 }, { "putty_not_found", 3 }, { "file_not_found", 3 },
   { "host_key_unknown", 5 },
   { "connect_failed", 7 },
   { "agent_unavailable", 8 }, { "service_not_installed", 8 }, { "too_many_connections", 8 },
-  { "rate_limited", 8 },
+  { "rate_limited", 8 }, { "write_behind_pending", 8 },
   { "elevation_required", 9 },
   { "target_in_use", 10 }, { "already_mounted", 10 },
   { "backend_unavailable", 11 }, { "webclient_disabled", 11 },
@@ -587,4 +603,9 @@ void sd_ipc_error_set(sd_ipc_error *err, sd_err e, const char *code, const char 
   copy_ascii(err->code, sizeof(err->code), code ? code : sd_err_name(err->err));
   copy_ascii(err->detail, sizeof(err->detail), detail ? detail : "");
   err->exit_code = code ? sd_ipc_exit_code_for_code(code) : sd_ipc_exit_code_for_err(err->err);
+}
+
+sd_err sd_ipc_test_owner_decision(int owner_ok, int want_label, int label_read, int label_present, DWORD label_rid)
+{
+  return ipc_owner_decision(owner_ok, want_label, label_read, label_present, label_rid);
 }

@@ -423,6 +423,7 @@ uint64_t vc_new_mount_id(void);
 void     vfs_disk_open(sd_vfs *v, const sd_vfs_options *o, const char *host_fp);
 void     vfs_disk_close(sd_vfs *v);
 void     vfs_disk_trim(sd_vfs *v);
+void     vfs_disk_clear(sd_vfs *v);          /* M3 cache.clear: every entry no vfs entry holds open */
 BOOL     vfs_disk_enabled(sd_vfs *v);
 /* Per-node entry: opened on the first data access, closed at the last handle close. NULL when the
    tier is off or the entry cannot be opened. */

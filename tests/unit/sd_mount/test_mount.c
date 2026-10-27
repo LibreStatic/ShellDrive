@@ -178,6 +178,9 @@ static void h_free(harness *h)
   sd_mutex_destroy(&h->lock);
 }
 
+/* M3: the next h_create_b makes a test-only mount (profile.test) when set */
+static int h_test_only;
+
 static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter, int backend)
 {
   sd_mount_params p;
@@ -190,6 +193,7 @@ static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identit
   p.letter = letter;
   p.remote_path = "/srv/data";
   p.backend = backend;
+  p.test_only = h_test_only;
   memset(&cb, 0, sizeof(cb));
   cb.ctx = h;
   cb.post = h_post;
@@ -584,4 +588,138 @@ SD_TEST(mount_backend_selection)
   SD_CHECK_STR(sd_mount_backend_kind_name(SD_MOUNT_BACKEND_WEBDAV), "webdav");
   SD_CHECK(sd_mount_backend_kind_parse("dokany", &k) && k == SD_MOUNT_BACKEND_DOKANY);
   SD_CHECK(!sd_mount_backend_kind_parse("smb", &k));
+}
+
+/* M3 (sd_mount): profile.test (connect, authenticate, realpath; no vfs), refresh, cache clear with queued
+   write-behind data, stats, attach info and the forced stop. */
+SD_TEST(mount_m3_test_only_probe)
+{
+  harness h;
+  sd_mount_probe p;
+  uint32_t vfs0;
+  fake_backend_reset();
+  vfs0 = fake_backend_vfs_mounts();
+  h_init(&h);
+  h_test_only = 1;
+  SD_REQUIRE(h_create(&h, L"probe.test", NULL, L'Z') == SD_OK);
+  h_test_only = 0;
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_UNMOUNTED);
+  /* the result: realpath of the remote path, the negotiated summary and the host-key fingerprint */
+  SD_REQUIRE(sd_mount_get_probe(h.m, &p) == 1);
+  SD_CHECK_STR(p.remote_real, "/srv/data");
+  SD_CHECK_STR(p.kex, "curve25519-sha256");
+  SD_CHECK_STR(p.hostkey, "ssh-ed25519");
+  SD_CHECK_STR(p.hostkey_fp, FAKE_FP);
+  SD_CHECK_STR(p.server_version, "FakeSSH_1.0");
+  SD_CHECK(p.legacy == 0);
+  /* no drive, no vfs, no backend: the test left nothing mapped */
+  SD_CHECK_EQ_U64(fake_backend_vfs_mounts(), vfs0);
+  SD_CHECK(!fake_backend_letter_mounted(L'Z'));
+  /* the mount is over: refresh and cache clear find no file system */
+  SD_CHECK(sd_mount_refresh(h.m, NULL) == SD_E_NOT_FOUND);
+  SD_CHECK(sd_mount_cache_clear(h.m, 1, 0) == SD_E_NOT_FOUND);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  SD_CHECK_EQ_INT(fake_backend_live_sessions(), 0);
+
+  /* a realpath failure fails the test (FAILED), and no result is reported */
+  h_init(&h);
+  h_test_only = 1;
+  SD_REQUIRE(h_create(&h, L"probefail.test", NULL, L'Z') == SD_OK);
+  h_test_only = 0;
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  SD_CHECK(sd_mount_get_probe(h.m, &p) == 0);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_m3_refresh_stats_cache_and_stop)
+{
+  harness h;
+  sd_mount_stats st;
+  sd_mount_attach a;
+  int disk = -1;
+  fake_backend_reset();
+  h_init(&h);
+  SD_REQUIRE(h_create(&h, L"m3.test", NULL, L'Q') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_REQUIRE(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+
+  /* refresh: a subtree, then the whole mount */
+  SD_CHECK(sd_mount_refresh(h.m, L"dir") == SD_OK);
+  SD_CHECK(sd_mount_refresh(h.m, NULL) == SD_OK);
+  SD_CHECK_EQ_INT(fake_backend_refresh_calls(), 2);
+
+  /* stats of a mounted mount: session, pool member and cache counters */
+  memset(&st, 0, sizeof(st));
+  sd_mount_get_stats(h.m, &st);
+  SD_CHECK(st.has_session == 1 && st.has_vfs == 1);
+  SD_CHECK_EQ_INT(st.srtt_ms, 12);
+  SD_CHECK_EQ_INT(st.members, 1);
+  SD_CHECK(st.member[0].ready == 1);
+  SD_CHECK_EQ_U64(st.cache_hits, 7);
+  SD_CHECK_EQ_U64(st.wb_bytes, 0);
+
+  /* attach info: the backend in use, the drive and no WebDAV port on Dokany */
+  memset(&a, 0, sizeof(a));
+  sd_mount_get_attach(h.m, &a);
+  SD_CHECK(a.backend == SD_MOUNT_BACKEND_DOKANY);
+  SD_CHECK(a.mounted == 1 && a.letter == L'Q');
+  SD_CHECK_EQ_INT(a.webdav_port, 0);
+
+  /* cache clear: plain, then refused while write-behind data is queued (kept), then forced */
+  SD_CHECK(sd_mount_cache_clear(h.m, 1, 0) == SD_OK);
+  SD_CHECK_EQ_INT(fake_backend_cache_clears(&disk), 1);
+  SD_CHECK_EQ_INT(disk, 1);
+  fake_backend_set_wb_dirty(4096);
+  SD_CHECK(sd_mount_cache_clear(h.m, 1, 0) == SD_E_BUSY);
+  SD_CHECK_EQ_INT(fake_backend_cache_clears(NULL), 1);
+  SD_CHECK(sd_mount_cache_clear(h.m, 0, 1) == SD_OK);
+  SD_CHECK_EQ_INT(fake_backend_cache_clears(&disk), 2);
+  SD_CHECK_EQ_INT(disk, 0);
+  memset(&st, 0, sizeof(st));
+  sd_mount_get_stats(h.m, &st);
+  SD_CHECK_EQ_U64(st.wb_bytes, 4096);
+  fake_backend_set_wb_dirty(0);
+
+  /* a forced stop gives the drain no budget; the normal stop waits its 10 s */
+  SD_CHECK(sd_mount_stop_ex(h.m, 1) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(fake_backend_last_quiesce_budget(), 0);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+
+  h_init(&h);
+  SD_REQUIRE(h_create(&h, L"m3b.test", NULL, L'R') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_REQUIRE(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(fake_backend_last_quiesce_budget(), 10000);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_m3_webdav_attach_port)
+{
+  harness h;
+  sd_mount_attach a;
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  h_init(&h);
+  SD_REQUIRE(h_create_b(&h, L"nodokany-m3.test", NULL, L'S', SD_MOUNT_BACKEND_AUTO) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_REQUIRE(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  memset(&a, 0, sizeof(a));
+  sd_mount_get_attach(h.m, &a);
+  SD_CHECK(a.backend == SD_MOUNT_BACKEND_WEBDAV);
+  SD_CHECK_EQ_INT(a.webdav_port, 49321);
+  sd_mount_stop(h.m);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
 }

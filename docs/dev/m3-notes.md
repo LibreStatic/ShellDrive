@@ -65,17 +65,58 @@ Each item is in the code of this package (sd_ipc, the agent) unless marked other
 - Test hooks (SD_HOST_TEST_HOOKS builds only): `SHELLDRIVE_TEST_UI_LAUNCH` (0 by default: no `shelldrive-ui.exe` launch),
   `SHELLDRIVE_TEST_EXPLORER_KEY` and `SHELLDRIVE_TEST_NETHOOD` (test locations for icons and Network locations).
 
+### Contract changes (M3 agent methods, WP-A part 3)
+
+Implemented in this package and advertised in `features`: `refresh`, `cache.clear`, `profile.test`, `mount.attach_info`,
+the status details `status.stats` and `status.proxy_legs`, and the events `config.changed` and `agent.stopping` (03 §2.4,
+§2.8). The table rows of 2.4 say what each returns.
+
+- sd_vfs: `sd_vfs_write_behind_bytes` (queued write-behind bytes), `sd_vfs_cache_clear(v, disk_too)` (this mount's memory
+  blocks; the disk tier through `vfs_disk_clear`, which skips entries in use). A clear never drops queued write-behind data.
+- sd_mount: `sd_mount_refresh`, `sd_mount_cache_clear(m, disk_too, force)` (`SD_E_BUSY` while write-behind data is queued,
+  unless forced), `sd_mount_get_stats` (session, vfs, pool members, write-behind bytes), `sd_mount_get_attach` (backend,
+  drive, WebDAV loopback port), `sd_mount_stop_ex(m, force)` (a forced stop gives the write-behind drain no budget: what is
+  queued is reported as `write_failed`), and `sd_mount_get_probe` for the `test_only` mount of `sd_mount_params`.
+  `profile.test` is the `test_only` mount: connect, authenticate, realpath of `remote_path` (`session_probe`), then
+  UNMOUNTED with a probe. No vfs, no drive. `sd_mount_backend` has seven new pointers at the end (NULL-tolerant).
+  Stats and cache calls count themselves in `m->readers`; the control thread drains them before it frees the session or the
+  vfs (no backend call runs under `m->lock`).
+- sd_mount: the proxy hops of the chain are copied by the host before `sd_mount_create` (`host_leg`), so `status` reports
+  them without the hops being kept.
+- sd_ipc: `sd_ipc_defer(client, &id)` inside a handler makes the pipe thread send no reply; `sd_ipc_reply_deferred` sends
+  it later from any thread (`profile.test` runs for seconds, prompts included). `sd_ipc_broadcast_all` sends an event to
+  every client that completed hello (`config.changed`, `agent.stopping`); the topic `*` is not a valid topic name, so no
+  subscription matches it.
+- sd_ipc, TM-R26 (lead decision): `ipc_verify_object_owner` fails closed on Vista+ when the label cannot be read; there is
+  no owner-only fallback. XP keeps the owner check alone. The decision is `ipc_owner_decision` (exposed as
+  `sd_ipc_test_owner_decision` for the unit test).
+- Exit codes: `not_mounted` (3) and `write_behind_pending` (8, busy). Clients that do not know these codes exit 1 (the
+  table of 6.2 needs the two rows; the CLI mapping and its localized texts are the CLI package's job, see below).
+- Agent: `unmount {force}` applies to the first unmount of a mount (a second request does not re-stop it). Test mounts
+  are not in `list`, `status`, `unmount`, the snapshot, Explorer data or `mount.state`; their warnings still go to `warning`.
+- `config.changed` (`apps/shelldrive-host/config_watch.c`): one thread, two overlapped `ReadDirectoryChangesW` watches
+  (the config root for `settings.ini` and the creation of the profiles folder, the profiles folder for `*.ini`), one stop
+  event, 500 ms debounce, XP-compatible (no post-XP import). `ids` are read from the changed files with
+  `sd_profile_load_file`; a removed profile is not named. Nothing is reloaded in flight.
+- `agent.stopping {reason}`: `request` (`agent.shutdown`), `event` (the shutdown event) or `idle`. It goes out at the start
+  of the shutdown sequence, after the watch stops; the agent then waits 100 ms so the pipe thread writes it (there is no flush
+  call in sd_ipc).
+- `status {stats: true}` returns `stats.session` (srtt, rates, byte totals, inflight, queued, channels, generation, reconnect
+  attempts), `stats.pool` (`ready`, `wanted`, `members[]` per SFTP connection), `stats.cache` (vfs hits, misses, bytes,
+  write_failed, write_behind_bytes, reconnects). The counters are per mount; the process-wide memory tier is not included.
+
 ## Left for later milestones
 
 Not implemented in this package, and not advertised in `features`:
 
-- `refresh` and `cache.clear`: need a VFS metadata-cache and a disk-cache clear entry point (not in `sd_mount`).
-- `profile.test`: needs the `test_only` option of `sd_mount` (dependency D-c).
-- `mount.attach_info`: needs the WebDAV UNC from `sd_webdav`. Service side is M5.
-- `diag.collect`: M4 (10.5).
-- `status` details: `stats` (sd_vfs and sd_sftp counters) and `proxy_legs` (the chain is freed after `sd_mount_create`).
-- `unmount {force}`: accepted and ignored; the write-behind flush bypass needs an sd_mount entry point.
-- `log.tail {follow}` and the `log` topic: M4. `config.changed` and `agent.stopping`: M4.
+- `diag.collect`: M4 (10.5). Not started: the anonymization rules (10.5) and the bundle layout need the lead's review first.
+- `log.tail {follow}` and the `log` topic: M4 (2.4.1). `follow: true` stays `unsupported`.
+- `mount.attach_info` WebDAV port is read from the fake in the tests; the real `sd_webdav_mount_port` path is not exercised
+  by the harness (lab: a WebDAV mount with the WebClient service).
+- Service side of `refresh`, `cache.clear`, `profile.test`, `mount.attach_info` and `status stats`: M5 (the service
+  mutating methods need the elevated admin check; the non-admin list rules of 2.2 apply to them).
+- CLI: `not_mounted` and `write_behind_pending` need a row in the CLI exit-code table and localized messages in the six
+  languages (AGENTS.md). Not done here (the CLI package).
 - `update.check` / `update.apply`: M4 (decision 10). `secret.set` / `secret.delete`: M5 (decision 4).
 - Session lock state is not probed before a UI launch (the UI would start while locked and wait for a subscription).
 - `config.reload` returns `restart_required: []`; the restart-required keys are not computed yet (decision 9 lists them).
@@ -102,6 +143,8 @@ Not implemented in this package, and not advertised in `features`:
   icon on real Explorer are not checked (lab).
 - The CLI is unchanged. Its replies gained only additive fields (`queued`, `deadline_ms` on `prompt.request`,
   `warnings` on `list`, `features` on hello), which the CLI ignores.
+
+- M3 agent methods (WP-A part 3): `tests/apps/test_agent_m3.c` (`m3_profile_test_results_and_errors`, `m3_config_changed_and_agent_stopping`, `m3_refresh_cache_attach_and_status_stats`, `m3_cache_clear_refuses_queued_writes`; the agent runs against the fake backend, `SHELLDRIVE_TEST_UI_LAUNCH` stays 0), `tests/unit/sd_mount/test_mount.c` (`mount_m3_*`), and `tests/unit/sd_ipc` (`ipc_deferred_reply_roundtrip`, `m3_owner_label_fails_closed`).
 
 ## Shell extension (`shelldrive-shellext.dll`, 03 §1.6, §8.2, §8.5)
 

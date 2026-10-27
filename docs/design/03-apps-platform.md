@@ -498,13 +498,13 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `hello` | x | x | version negotiation; the reply carries `features` (2.8) |
 | `subscribe {topics}` | x | x | topic names must match `[a-z0-9._-]`, at most 23 bytes; invalid names are dropped from the reply, valid unknown names are kept. `prompt` needs cap `prompts.ui` to receive `prompt.request` (2.5). On the service `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
 | `mount {profile \| adhoc:{...}, target?, backend?, prompt_mode?}` | x | x (admin, M5) | returns `mount_id` at once; completion through `mount.state`. `wait` is not implemented |
-| `unmount {mount_id \| target \| profile \| all, force?}` | x | x (admin, M5) | `force` is accepted; the write-behind flush bypass is M4 |
+| `unmount {mount_id \| target \| profile \| all, force?}` | x | x (admin, M5) | `force` (M3, first unmount of the mount): the write-behind drain gets no budget, data still queued is reported as `write_failed` (02 §4.4). Test mounts (`profile.test`) are never unmounted |
 | `list` | x | x | `mounts` (write_mount_json) and `warnings`: the recent warning codes of this agent, oldest first, at most 32, `{code, mount_id?}`. Service: filtered for non-admins (2.2) |
-| `status {mount_id \| target, stats?}` | x | x (admin, M5) | the list object of the mount, and `last_error {code, detail}` when failed or offline. `stats: true` is `unsupported` in M3; proxy legs and pool limits are M4 |
-| `refresh {mount_id \| target, path}` | x | x (admin, M5) | M4: needs a VFS metadata-cache entry point (02 §4.1) |
-| `profile.test {profile_id \| adhoc}` | x | x (admin, M5) | M4: needs `test_only` in `sd_mount` (dependency D-c on sd_mount) |
-| `mount.attach_info {mount_id \| target}` | x | x (M5) | M5: needs the WebDAV UNC from `sd_webdav`; never a credential |
-| `cache.clear {profile_id \| all}` | x | x (admin, M5) | M4: needs the disk-cache clear entry point |
+| `status {mount_id \| target, stats?}` | x | x (admin, M5) | the list object of the mount, `last_error {code, detail}` when failed or offline, and `proxy_legs` (`[{hop, kind, host, port}]`, no credentials). `stats: true` (M3) adds `stats`: `session` (srtt, rttvar, rx/tx rates and totals, inflight, queued, channels, generation, reconnect attempts), `pool` (`ready`, `wanted`, `members[]` with one entry per SFTP connection), `cache` (hits, misses, bytes, write_failed, `write_behind_bytes`, reconnects). Pool limits are still M4 |
+| `refresh {mount_id \| target, path}` | x | x (admin, M5) | M3 (agent): drops the attribute and listing caches under `path` (`""` or `"/"` = the whole mount). `not_mounted` (exit 3) before MOUNTED |
+| `profile.test {profile_id \| adhoc}` | x | x (admin, M5) | M3 (agent): connect, authenticate and realpath of `remote_path`, no drive, no vfs. The prompts go through the normal broker. The reply is deferred until the test ends (`sd_ipc_defer`). Result: `{profile, host, port, user, remote_path, hostkey_fingerprint, server_version, algorithms{kex, hostkey, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c}, legacy, hops}` |
+| `mount.attach_info {mount_id \| target}` | x | x (M5) | M3 (agent): `backend`, `state`, `mounted` and, for WebDAV, `webdav {host, port, unc_root, xp_url}` with the loopback port and the share root only (`\\localhost@<port>\DavWWWRoot`). The export token (`s-<token>`) is never returned; never a credential |
+| `cache.clear {profile_id \| mount_id \| target \| all, force?}` | x | x (admin, M5) | M3 (agent): drops the memory blocks and the disk-tier files of the matching mounts. While write-behind data is queued on one of them the whole request is refused with `write_behind_pending` (busy, exit 8) unless `force`; queued data is never dropped by a clear |
 | `config.reload {scope?}` | x (user) | x (admin, M5) | reloads `settings.ini` and counts the profiles. Reply `{profiles:{loaded, errors:[]}, settings: "reloaded"\|"unchanged", restart_required:[]}`. `scope: "machine"` on the agent is `unsupported`. `restart_required` is empty in M3 |
 | `prompt.answer {prompt_id, action, responses?, save?, save_comment?}` | x | x (admin, elevated, M5) | `action` accept, once, answer, reject or cancel. The first accepted answer wins; a second answer, or one for a prompt that is not open, is `not_found` (2.5) |
 | `prompt.list` | x | x (admin, M5) | `{prompts:[{prompt_id, mount_id, profile_id, kind, queued, deadline_ms}]}`, `deadline_ms` is the time left |
@@ -531,7 +531,9 @@ Events (`{"type":"evt","event":<name>,"data":{...}}`, after `subscribe`; the top
 | `warning` | [warning], and [mount] (proto 1) | `code, mount_id?, data` (codes of 2.4 and 7.6) | a warning is raised. The copy on [mount] stays through proto 1 (2.8) |
 | `hostkeys.announced` | [hostkeys], and [mount] (proto 1) | as 5.6 | an UpdateHostKeys announcement is ready for review |
 | `attention` | [attention] (service) | `{count}` | 2.6 rule 3 |
-| `config.changed`, `log`, `update.*`, `agent.stopping` | — | — | M4 (config watcher, `follow`, updater, shutdown reason) |
+| `config.changed` | — (every client that completed hello) | `{what: "settings" \| "profiles", ids?}` | M3: the profiles folder or `settings.ini` changed. One event per debounced batch (500 ms of quiet). `ids` (profiles only) are the profile ids of the changed files that still exist. Nothing is reloaded in flight: clients call `config.reload` |
+| `agent.stopping` | — (every client that completed hello) | `{reason: "request" \| "event" \| "idle"}` | M3: the shutdown sequence starts |
+| `log`, `update.*` | — | — | M4 (`follow`, the updater) |
 
 `write_failed` (C45) is raised when data acknowledged to an application under write-behind could not be written
 (02 §4.4); it is always delivered, cannot be disabled and is mirrored in the event list (7.7).
@@ -731,9 +733,11 @@ void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event)
   `prompt.closed` carries real reasons, the initiator is not sent a duplicate, and `mount` copies of warnings are kept.
   Clients treat unknown `prompt.closed` reasons as `cancelled` and unknown error codes as exit 1.
 - **Features.** The `hello` reply carries `features: [...]` with the names this build implements: the methods `status`,
-  `config.reload`, `log.tail`, `selftest`, `prompt.list` and the behaviour `prompt.queued`. Planned names (`refresh`,
-  `profile.test`, `mount.attach_info`, `cache.clear`, `diag.collect`, `update.check`, `config.changed`, `agent.stopping`)
-  appear when implemented. A client calls a method only if its name is listed and degrades otherwise (the Logs viewer shows
+  `config.reload`, `log.tail`, `selftest`, `prompt.list` and the behaviour `prompt.queued`. M3 adds the methods `refresh`,
+  `cache.clear`, `profile.test` and `mount.attach_info`, the status details `status.stats` and `status.proxy_legs`, and
+  the events `config.changed` and `agent.stopping` (listed as names, as the others). Still planned: `diag.collect`,
+  `update.check`, `log.follow` and the `log` topic (M4). A client calls a method only if its name is listed and degrades
+  otherwise (the Logs viewer shows
   that the agent is too old for log viewing without `log.tail`).
 - **Skew.** A server supports proto N and N-1 (2.3). An M3 UI talking to an M2 agent gets `features` without the M3 names
   and degrades. An M2 UI talking to an M3 agent is unaffected: it ignores unknown events, and its `mount`-topic warnings
