@@ -11,6 +11,8 @@
 /* Bounded wide-string builder: appends and always NUL-terminates; returns 0 on truncation. */
 int ipc_wcat(wchar_t *dst, size_t cch, const wchar_t *src);
 int ipc_wcat_u32(wchar_t *dst, size_t cch, uint32_t v);
+/* TEST HOOK (sd_ipc_test_set_service_owner): service pipe owner override; NULL = SYSTEM. */
+const wchar_t *ipc_service_owner_override(void);
 
 /* User SID of a token / of this process, copied into sd_alloc memory (free with sd_free). */
 sd_err ipc_token_user_sid(HANDLE token, PSID *out);

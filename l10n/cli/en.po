@@ -879,3 +879,69 @@ msgstr ""
 msgctxt "cli.help.profile_test"
 msgid "Connect and sign in, then resolve the remote path, without mounting anything."
 msgstr ""
+
+#. Help line of "shelldrive --help" and "shelldrive help service" for the service command.
+msgctxt "cli.help.service"
+msgid "Global drives (shared by every session): list, mount, unmount and status. Changing them needs an elevated console."
+msgstr ""
+
+#. Printed when mount or unmount runs from a console that is not elevated (exit 9).
+msgctxt "cli.service.need_admin"
+msgid "Changing global drives needs an elevated console. Run it as administrator."
+msgstr ""
+
+#. Printed when the service pipe cannot be reached (exit 8).
+msgctxt "cli.service.unavailable"
+msgid "The ShellDrive service is not running or not installed."
+msgstr ""
+
+#. Printed by "shelldrive service list" when no global drive is mounted.
+msgctxt "cli.service.none"
+msgid "No global drives are mounted."
+msgstr ""
+
+#. One line of "shelldrive service list" and "status". {state} is a localized state word.
+msgctxt "cli.service.list_item"
+msgid "{target}  {label}  {state}"
+msgstr ""
+
+#. Printed when "shelldrive service mount" starts the drive.
+msgctxt "cli.service.connecting"
+msgid "Connecting {target}..."
+msgstr ""
+
+#. Printed when "shelldrive service mount" sees the drive mounted.
+msgctxt "cli.service.mounted"
+msgid "{target} is mounted."
+msgstr ""
+
+#. Printed after "shelldrive service unmount" asked the service to stop the drive.
+msgctxt "cli.service.unmounting"
+msgid "Unmounting {name}..."
+msgstr ""
+
+#. Printed for service verbs that this build does not provide yet (exit 1).
+msgctxt "cli.service.unimplemented"
+msgid "The service command {verb} is not part of this build yet."
+msgstr ""
+
+#. State words shown by "shelldrive service list" and "status".
+msgctxt "cli.service.state.connecting"
+msgid "connecting"
+msgstr ""
+
+msgctxt "cli.service.state.mounted"
+msgid "mounted"
+msgstr ""
+
+msgctxt "cli.service.state.failed"
+msgid "failed"
+msgstr ""
+
+msgctxt "cli.service.state.offline"
+msgid "offline"
+msgstr ""
+
+msgctxt "cli.service.state.unmounting"
+msgid "unmounting"
+msgstr ""

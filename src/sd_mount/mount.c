@@ -73,6 +73,10 @@ struct sd_mount {
   int read_only, symlinks, write_mode;
   sd_mount_tuning tune;           /* M3 vfs and session tuning (copied) */
   PSID owner_sid;
+  /* M5: global mount (service, D35): no per-session drive, volume SD copied from the params */
+  int global_mount;
+  uint8_t *volume_sd;
+  uint32_t volume_sd_len;
   /* M1 parameters */
   UINT64 cache_mem;
   uint32_t disk_mb, offline_wait, grace, channels;
@@ -260,6 +264,7 @@ static void free_mount(sd_mount *m)
   sd_free(m->user);
   sd_free(m->remote);
   sd_free(m->owner_sid);
+  sd_free(m->volume_sd);
   sd_free(m->disk_dir);
   sd_mutex_destroy(&m->lock);
   sd_free(m);
@@ -636,6 +641,7 @@ static void on_ready(sd_mount *m)
   vo.request_timeout_ms = use == SD_MOUNT_BACKEND_WEBDAV ? 50000 : 25000;
   vo.volume_label = m->label ? m->label : m->host;
   vo.owner_sid = m->owner_sid;
+  vo.global_mount = m->global_mount ? TRUE : FALSE;
   vo.offline_wait_ms = m->offline_wait;
   vo.reconnect_grace_ms = m->grace;
   vo.attr_ttl_ms = m->tune.attr_ttl_ms;
@@ -703,7 +709,11 @@ static void on_ready(sd_mount *m)
     memset(&dc, 0, sizeof(dc));
     dc.struct_size = sizeof(dc);
     dc.mount_point = mp;
-    dc.current_session = TRUE;
+    /* M5: a service mount is global (no DOKAN_OPTION_CURRENT_SESSION, D35 and 03 §1.3) */
+    dc.current_session = m->global_mount ? FALSE : TRUE;
+    dc.global_mount = m->global_mount ? TRUE : FALSE;
+    dc.volume_sd = m->volume_sd;
+    dc.volume_sd_len = m->volume_sd_len;
     dc.read_only = m->read_only ? TRUE : FALSE;
     e = m->be->dokan_mount_start(m->vfs, &dc, dokan_on_unmounted, m, &m->dm);
     if (e != SD_OK) {
@@ -1450,6 +1460,9 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
       p->host == NULL || p->host[0] == 0 || p->user == NULL || p->user[0] == 0 ||
       p->letter < L'A' || p->letter > L'Z' || p->backend < SD_MOUNT_BACKEND_AUTO || p->backend > SD_MOUNT_BACKEND_WEBDAV)
     return SD_E_INVALID_PARAM;
+  /* M5: a global mount needs its volume security descriptor (service_access, D35) */
+  if (p->global_mount && (p->volume_sd == NULL || p->volume_sd_len == 0))
+    return SD_E_INVALID_PARAM;
   m = (sd_mount *)sd_calloc(1, sizeof(*m));
   if (m == NULL)
     return SD_E_NO_MEMORY;
@@ -1467,6 +1480,16 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->port = p->port ? p->port : 22;
   m->methods = p->auth_methods ? p->auth_methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
   m->letter = p->letter;
+  m->global_mount = p->global_mount ? 1 : 0;
+  if (p->volume_sd && p->volume_sd_len) {
+    m->volume_sd = (uint8_t *)sd_alloc(p->volume_sd_len);
+    if (m->volume_sd == NULL) {
+      sd_mount_destroy(m);          /* allowed before sd_mount_start */
+      return SD_E_NO_MEMORY;
+    }
+    memcpy(m->volume_sd, p->volume_sd, p->volume_sd_len);
+    m->volume_sd_len = p->volume_sd_len;
+  }
   m->read_only = p->read_only;
   m->tune = p->tuning;
   m->symlinks = p->symlinks;

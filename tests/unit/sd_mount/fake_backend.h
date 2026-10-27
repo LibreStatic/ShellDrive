@@ -24,6 +24,8 @@
 const sd_mount_backend *fake_backend(void);
 void fake_backend_reset(void);
 int  fake_backend_is_trusted(const char *host);
+/* M5 (tests/unit/sd_svc): marks a host as trusted without a TOFU prompt, as if its key had been stored before. */
+void fake_backend_pre_trust(const char *host);
 int  fake_backend_letter_mounted(wchar_t letter);
 uint32_t fake_backend_live_sessions(void);
 /* last vfs options seen by vfs_mount (copied scalars) */

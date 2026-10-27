@@ -159,6 +159,7 @@ static cli_cmd command_of(const wchar_t *w)
   if (wcscmp(w, L"cache") == 0) return CLI_CMD_CACHE;
   if (wcscmp(w, L"profile") == 0) return CLI_CMD_PROFILE;
   if (wcscmp(w, L"hostkey") == 0) return CLI_CMD_HOSTKEY;
+  if (wcscmp(w, L"service") == 0) return CLI_CMD_SERVICE;
   if (wcscmp(w, L"version") == 0) return CLI_CMD_VERSION;
   if (wcscmp(w, L"help") == 0) return CLI_CMD_HELP;
   if (wcscmp(w, L"agent") == 0) return CLI_CMD_AGENT_STOP;   /* "agent stop" checked below */
@@ -281,6 +282,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       } else if (a->cmd == CLI_CMD_CACHE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
+      } else if (a->cmd == CLI_CMD_SERVICE) {
+        if (a->positional == NULL) slot = &a->positional;   /* the verb */
+        else if (a->arg2 == NULL) slot = &a->arg2;          /* the profile or X: */
       } else if (a->cmd == CLI_CMD_PROFILE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
@@ -375,6 +379,21 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     if (a->all && a->arg2)
       return set_err(a, CLI_E_CONFLICT, L"--all", a->arg2);
     if (!a->all && !a->arg2)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
+    break;
+  case CLI_CMD_SERVICE:
+    /* list | mount <profile> | unmount <profile|X:> | status <profile|X:>; install and the rest are parsed and
+       reported as not in this build (cli_service.c) */
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"list") != 0 && wcscmp(a->positional, L"mount") != 0 &&
+        wcscmp(a->positional, L"unmount") != 0 && wcscmp(a->positional, L"status") != 0 &&
+        wcscmp(a->positional, L"install") != 0 && wcscmp(a->positional, L"uninstall") != 0 &&
+        wcscmp(a->positional, L"start") != 0 && wcscmp(a->positional, L"stop") != 0 &&
+        wcscmp(a->positional, L"repair-data") != 0)
+      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+    if ((wcscmp(a->positional, L"mount") == 0 || wcscmp(a->positional, L"unmount") == 0 ||
+         wcscmp(a->positional, L"status") == 0) && !a->arg2)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
     break;
   case CLI_CMD_HOSTKEY:

@@ -2,14 +2,17 @@
  *
  *   shelldrive-host agent [--logon]    per-user agent (single instance per user + session)
  *   shelldrive-host --selftest          health check, no network (exit 0 = healthy)
+ *   shelldrive-host service            ShellDriveSvc under the Service Control Manager (M5, 03 §1.3)
+ *   shelldrive-host service-debug      the same service core in a console, without the SCM (M5)
  *   shelldrive-host --version
- * The service mode (`service`) arrives in M5. The host does not localize (03 §9.3): it produces
- * codes, clients localize. */
+ * The host does not localize the agent and its codes (03 §9.3): clients localize. The service prints its own
+ * console and SCM messages in the svc domain. */
 #include <windows.h>
 #include <string.h>
 
 #include "host.h"
 #include "sd/version.h"
+#include "service.h"
 
 /* installer_hooks.c: hidden --installer-hook verbs (03 §6.1, 04 §8.3). */
 int sd_host_installer_hook(int argc, wchar_t **argv);
@@ -109,6 +112,11 @@ int wmain(int argc, wchar_t **argv)
     sd_log_close();
     return rc;
   }
-  out(L"usage: shelldrive-host agent [--logon] | --selftest | --version\r\n");
+  /* M5: the service core logs to its own file (<machine root>\logs\service.log) and localizes its console text */
+  if (argc >= 2 && wcscmp(argv[1], L"service") == 0)
+    return svc_dispatch();
+  if (argc >= 2 && wcscmp(argv[1], L"service-debug") == 0)
+    return svc_console_run();
+  out(L"usage: shelldrive-host agent [--logon] | service | service-debug | --selftest | --version\r\n");
   return 2;
 }

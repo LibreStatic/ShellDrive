@@ -136,11 +136,21 @@ typedef struct sd_ipc_server_cfg {
   void (*on_subscribe)(void *ctx, sd_ipc_client *client, const char *topic);
   /* M3: feature names listed as "features" in the hello reply; NULL = none. Must outlive the server. */
   const char *const *features;
+  /* M5 (service): called on the pipe thread for every valid topic of a subscribe request before anything is
+     subscribed; 0 refuses the whole request with access_denied. NULL = every topic allowed. */
+  int (*topic_allowed)(void *ctx, sd_ipc_client *client, const char *topic);
 } sd_ipc_server_cfg;
+
+/* TEST HOOK (M5): the service pipe is created with this owner SID string instead of SYSTEM (an unelevated test
+   process cannot create a pipe owned by SYSTEM). NULL restores SYSTEM. Never used by shipping code. */
+void     sd_ipc_test_set_service_owner(const wchar_t *sid_string);
 
 sd_err   sd_ipc_server_start_ex(sd_ipc_endpoint ep, const sd_ipc_server_cfg *cfg, sd_ipc_server **out);
 /* Stable id of a connected client (never reused within a server's lifetime). */
 uint64_t sd_ipc_client_id(sd_ipc_client *client);
+/* M5: 1 when the client's token has `sid` enabled (or it is the client's own user SID). Pipe thread, from a handler
+   only (the client is impersonated). Fail closed: an error leaves *member = 0. */
+sd_err   sd_ipc_client_member_of(sd_ipc_client *client, PSID sid, int *member);
 uint32_t sd_ipc_client_caps(sd_ipc_client *client);          /* SD_IPC_CAP_* from hello */
 const char *sd_ipc_client_lang(sd_ipc_client *client);       /* from hello; "en" if absent */
 /* Thread-safe: queues a complete event message for one client. SD_E_NOT_FOUND once it is gone. */

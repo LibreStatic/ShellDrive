@@ -821,3 +821,59 @@ msgstr "Limpia la caché de un perfil, de una unidad o de todas las unidades mon
 msgctxt "cli.help.profile_test"
 msgid "Connect and sign in, then resolve the remote path, without mounting anything."
 msgstr "Conecta e inicia sesión, y después resuelve la ruta remota, sin montar nada."
+
+msgctxt "cli.help.service"
+msgid "Global drives (shared by every session): list, mount, unmount and status. Changing them needs an elevated console."
+msgstr "Unidades globales (compartidas por todas las sesiones): list, mount, unmount y status. Cambiarlas requiere una consola elevada."
+
+msgctxt "cli.service.need_admin"
+msgid "Changing global drives needs an elevated console. Run it as administrator."
+msgstr "Cambiar unidades globales requiere una consola elevada. Ejecutá el programa como administrador."
+
+msgctxt "cli.service.unavailable"
+msgid "The ShellDrive service is not running or not installed."
+msgstr "El servicio de ShellDrive no está en ejecución o no está instalado."
+
+msgctxt "cli.service.none"
+msgid "No global drives are mounted."
+msgstr "No hay unidades globales montadas."
+
+msgctxt "cli.service.list_item"
+msgid "{target}  {label}  {state}"
+msgstr "{target}  {label}  {state}"
+
+msgctxt "cli.service.connecting"
+msgid "Connecting {target}..."
+msgstr "Conectando {target}..."
+
+msgctxt "cli.service.mounted"
+msgid "{target} is mounted."
+msgstr "{target} está montada."
+
+msgctxt "cli.service.unmounting"
+msgid "Unmounting {name}..."
+msgstr "Desmontando {name}..."
+
+msgctxt "cli.service.unimplemented"
+msgid "The service command {verb} is not part of this build yet."
+msgstr "El comando de servicio {verb} todavía no forma parte de esta versión."
+
+msgctxt "cli.service.state.connecting"
+msgid "connecting"
+msgstr "conectando"
+
+msgctxt "cli.service.state.mounted"
+msgid "mounted"
+msgstr "montada"
+
+msgctxt "cli.service.state.failed"
+msgid "failed"
+msgstr "falló"
+
+msgctxt "cli.service.state.offline"
+msgid "offline"
+msgstr "sin conexión"
+
+msgctxt "cli.service.state.unmounting"
+msgid "unmounting"
+msgstr "desmontando"

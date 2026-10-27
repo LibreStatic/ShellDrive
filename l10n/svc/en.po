@@ -1,0 +1,23 @@
+# ShellDrive service strings, English source of truth (03 §9.1). msgstr stays empty in en.po.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Printed by "shelldrive-host.exe service-debug" when the console service is listening.
+msgctxt "svc.debug_started"
+msgid "ShellDrive service running in console mode. Press Ctrl+C to stop."
+msgstr ""
+
+#. Printed when the console service has stopped.
+msgctxt "svc.debug_stopped"
+msgid "ShellDrive service stopped."
+msgstr ""
+
+#. Printed by "shelldrive-host.exe service" when the process was not started by the Service Control Manager.
+msgctxt "svc.not_scm"
+msgid "This program is the ShellDrive service and needs the Service Control Manager. To run it in a console, use: shelldrive-host.exe service-debug"
+msgstr ""

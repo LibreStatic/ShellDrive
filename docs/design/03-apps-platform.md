@@ -160,6 +160,20 @@ Why these four and not one:
   session 0, which is the first console user's session, but we **design as if session 0 isolation exists on XP
   too**: no `SERVICE_INTERACTIVE_PROCESS`, no windows, no message boxes. One code path, no XP-only UI.
 
+**M5 decisions (part 1, implemented; details in `docs/dev/m5-notes.md`).**
+
+- One core, `svc_run`, runs under the SCM (`shelldrive-host.exe service`) and in the console
+  (`service-debug`, Ctrl+C stops it). The SCM handler accepts stop, shutdown and pre-shutdown, logs power and session
+  changes without acting on them, and reports `SERVICE_RUNNING` once the control pipe listens.
+- The service logs to `<machine root>\logs\service.log`. Its console and SCM text is localized in the `svc` domain
+  (03 §9.1); its log lines and codes stay English.
+- Global mounts are Dokany only in this part. Startup creates the machine folders with the DACLs of 3.2 when they
+  are missing and refuses the whole tree (idle service) when a folder is a reparse point. Existing folders are not
+  re-ACLed and their owner is not checked yet (left, 3.2).
+- A `scope = service` profile is loaded only when it validates: a user is named, `auth.agent` is not `pageant` or
+  `openssh` (D17), `kbdint` is not offered, no jump hosts or proxies (not in this part), no WebDAV backend (D11), and
+  every `service_access` entry resolves. Other machine profiles load without a warning.
+
 ### 1.4 The UI (`shelldrive-ui.exe`)
 
 - One instance per (user, session): mutex `Local\com.librestatic.shelldrive.ui.<SID>` (explicit DACL as in 2.2, TM-R26); a second
@@ -686,6 +700,22 @@ Agent ↔ service cooperation is deliberately thin:
 - The service never starts agents (the Run key does). Rejected alternative: service launches agents with
   `WTSQueryUserToken` + `CreateProcessAsUserW` — makes the service mandatory and puts user-session lifecycle into a
   SYSTEM process for no gain.
+
+**M5 decisions (part 1, implemented; details in `docs/dev/m5-notes.md`).**
+
+- Admin methods (`mount`, `unmount`, `secret.set`, `secret.delete`, `prompt.list`, `prompt.answer`, `config.reload`,
+  and `status` details) need an elevated administrator (`sd_ipc_client_is_admin`). Topics `prompt`, `log` and
+  `hostkeys` are refused to other clients at subscribe time (`access_denied`, the whole request). `list` and `status`
+  answer every client, filtered by `service_access` (2.2): the letter for everyone, state for members and admins, the
+  rest in `reserved_letters`.
+- Routing of a service prompt (2.6 rule 3): a password or passphrase prompt goes to an elevated admin that subscribed
+  to `prompt` with `prompts.ui`, and is rejected after 120 s without an answer. With no such admin the mount fails
+  with `prompt_unavailable`. A host-key prompt is never routed: the mount fails with `host_key_unknown` (2.6 rule 2).
+- A service mount never saves a secret it was given. Service secrets are DPAPI files under `service\secrets\` (4.5),
+  written through `sd_secret` with the service scope; the user scope is never read by the service.
+- The volume descriptor of a global mount (02 §6.4) encodes `service_access` (read/traverse) and
+  `service_access_write` (full control), with SYSTEM and Administrators in full. This is the only per-drive
+  enforcement in this part; the per-request check in `sd_vfs` is left.
 
 ### 2.7 Header sketch
 

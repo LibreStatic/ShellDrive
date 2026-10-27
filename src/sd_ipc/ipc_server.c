@@ -505,6 +505,20 @@ static void handle_subscribe(sd_ipc_client *c, int64_t id, const sd_json *params
     reply_error_code(c, id, SD_E_INVALID_PARAM, "usage", "subscribe needs topics[]");
     return;
   }
+  /* M5: the service refuses topics a client may not hold (prompt, log, hostkeys for non-admins). The whole
+     request is refused and nothing is subscribed. */
+  if (c->srv->cfg.topic_allowed) {
+    for (i = 0; i < sd_json_count(topics); i++) {
+      size_t tn = 0;
+      const char *tt = sd_json_str(sd_json_at(topics, i), &tn);
+      if (tt == NULL || tn == 0 || tn >= IPC_TOPIC_LEN || !sd_ipc_topic_valid(tt))
+        continue;
+      if (!c->srv->cfg.topic_allowed(c->srv->cfg.ctx, c, tt)) {
+        reply_error_code(c, id, SD_E_ACCESS_DENIED, "access_denied", "topic needs an elevated administrator");
+        return;
+      }
+    }
+  }
   for (i = 0; i < sd_json_count(topics); i++) {
     size_t n;
     const char *t = sd_json_str(sd_json_at(topics, i), &n);
@@ -1010,7 +1024,15 @@ static sd_err build_sd(sd_ipc_server *s)
   sd_err e;
   sddl[0] = 0;
   if (s->ep == SD_IPC_SERVICE) {
-    ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    const wchar_t *owner = ipc_service_owner_override();
+    if (owner) {
+      /* TEST HOOK: same DACL, owner replaced (tests/unit/sd_svc). */
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:");
+      ipc_wcat(sddl, SD_COUNTOF(sddl), owner);
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    } else {
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    }
   } else {
     e = ipc_sid_to_string(s->own_sid, &sid);
     if (e != SD_OK)
@@ -1127,6 +1149,37 @@ void sd_ipc_server_stop(sd_ipc_server *s)
 
 int sd_ipc_client_is_elevated(sd_ipc_client *client) { return client ? client->elevated : 0; }
 int sd_ipc_client_is_admin(sd_ipc_client *client) { return client ? client->admin : 0; }
+
+/* M5: is the client's token a member of `sid` (enabled group membership, or the client's own user SID). Call on the
+   pipe thread from a handler only: the client is impersonated for the duration of the check. A token that cannot be
+   opened at impersonation level counts as not a member (fail closed). */
+sd_err sd_ipc_client_member_of(sd_ipc_client *client, PSID sid, int *member)
+{
+  HANDLE tok = NULL;
+  BOOL m = FALSE;
+  if (member == NULL)
+    return SD_E_INVALID_PARAM;
+  *member = 0;
+  if (client == NULL || sid == NULL || client->pipe == NULL || client->pipe == INVALID_HANDLE_VALUE)
+    return SD_E_INVALID_PARAM;
+  if (client->sid != NULL && EqualSid(client->sid, sid)) {
+    *member = 1;
+    return SD_OK;
+  }
+  if (!ImpersonateNamedPipeClient(client->pipe))
+    return SD_E_ACCESS_DENIED;
+  if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &tok))
+    tok = NULL;
+  if (!RevertToSelf())
+    ExitProcess(1);                         /* continuing under the client's identity is never acceptable */
+  if (tok != NULL) {
+    if (!CheckTokenMembership(tok, sid, &m))
+      m = FALSE;
+    CloseHandle(tok);
+  }
+  *member = m ? 1 : 0;
+  return SD_OK;
+}
 DWORD sd_ipc_client_pid(sd_ipc_client *client) { return client ? client->pid : 0; }
 uint64_t sd_ipc_client_id(sd_ipc_client *client) { return client ? client->id : 0; }
 const char *sd_ipc_client_kind(sd_ipc_client *client) { return client ? client->kind : ""; }
