@@ -21,15 +21,22 @@ include(SdVersion)   # VERSION file, git commit, generated sd/version.h
 include(SdModule)    # sd_add_module, sd_add_unit_test, sd_add_app helpers
 include(SdL10n)      # sdl10n catalog generation (03 §9)
 
+# Group Policy headers and ADMX/ADML outputs (03 §3.5); generated under generated/policy/.
+set(SD_POLICY_DIR "${SD_GENERATED_DIR}/policy")
+
 enable_testing()
 
 # Build-time tools first: sdl10n, sd-importcheck and sd-isacheck run during the build.
 add_subdirectory(tools/sdl10n)
 add_subdirectory(tools/sd-importcheck)
 add_subdirectory(tools/sd-isacheck)
+add_subdirectory(tools/sd-admxgen)
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)
+
+# Group Policy template generation (needs sd-admxgen, built above).
+add_subdirectory(res/policy)
 
 # Modules, in dependency order (00 §5).
 add_subdirectory(src/sd_base)
@@ -40,6 +47,7 @@ add_subdirectory(src/sd_sftp)
 add_subdirectory(src/sd_vfs)
 add_subdirectory(src/sd_dokan)
 add_subdirectory(src/sd_webdav)
+add_subdirectory(src/sd_policy)
 add_subdirectory(src/sd_l10n)
 add_subdirectory(src/sd_config)
 add_subdirectory(src/sd_secret)

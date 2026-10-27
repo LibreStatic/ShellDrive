@@ -14,7 +14,7 @@ add_executable(sd-test-host-fake
   "${_host_dir}/explorer_data.c" "${_host_dir}/config_watch.c" "${_host_dir}/host.h" host_fake_backend.c)
 target_compile_definitions(sd-test-host-fake PRIVATE SD_HOST_TEST_HOOKS=1)
 target_include_directories(sd-test-host-fake PRIVATE "${_host_dir}")
-target_link_libraries(sd-test-host-fake PRIVATE sd_headers sd_mount_fake_backend sd_mount sd_ipc sd_state sd_secret sd_config
+target_link_libraries(sd-test-host-fake PRIVATE sd_headers sd_mount_fake_backend sd_mount sd_ipc sd_state sd_secret sd_config sd_policy
                       sd_platform sd_base ole32 shell32)
 set_target_properties(sd-test-host-fake PROPERTIES FOLDER "tests")
 

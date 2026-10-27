@@ -150,6 +150,9 @@ if(SD_ENABLE_ASAN)
   add_compile_options("$<$<COMPILE_LANGUAGE:C>:/fsanitize=address>")
 endif()
 
+# Librarian (lib.exe) for static libraries: /Brepro keeps the archive member timestamps fixed (04 §12.2).
+set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /Brepro")
+
 # Linker (04 §3.2).
 # /PDBALTPATH:%_PDB% (04 §3.2, §12.2) cannot be spelled literally: the VS generator doubles '%' in link
 # options, so the debug directory recorded "%%%name.pdb%%%" and debuggers / dbghelp (sd-isacheck) could

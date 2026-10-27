@@ -1048,6 +1048,24 @@ token-only WebDAV fallback, 02 §7.4, TM-R19), `UILanguage`, `DisableUpdateCheck
 TM-R31). ADMX/ADML produced by 04 (target namespace `com.librestatic.shelldrive.policies`, D45), localized from our catalogs
 (`sdl10n` emits the ADML, C41).
 
+Implementation (M4, branch `wip/m4-admx`). The table above is one machine-readable file, `res/policy/policies.txt`
+(an `@key` line, then one line per value: name, class, type, params, supported, category). Three consumers read it:
+- `tools/sd-admxgen` (C, build-time, no third-party code) writes `ShellDrive.admx`, one `ShellDrive.adml` per culture
+  (en-US, es-ES, fr-FR, pt-BR, it-IT, de-DE) and two headers: the `sd_policy_id` enum and the name, kind, registry type
+  and range table. Texts come from the `policy` domain, `l10n/policy/<lang>.po`, which `sdl10n --check` validates
+  (complete in six locales, no plurals). Types: `boolean` (REG_DWORD 1/0), `enum` (REG_DWORD when every value is
+  decimal, REG_SZ otherwise), `text` (REG_SZ with a maximum length), `decimal` (REG_DWORD with min and max; the table
+  has no decimal policy yet). `supportedOn` is `xp` (Windows XP SP3 or later) or `win11`. Categories sit under
+  LibreStatic > ShellDrive.
+- `src/sd_policy` reads the values (HKLM first, then HKCU) by the generated names and types only. `UILanguage` and
+  `DisableNetworkLocations` are read through it.
+- `tests/policy` checks the output offline: `check-admx.ps1` (well-formedness, references, unique ids, table against
+  ADMX and ADML, all six cultures) and `check-raw-reads.ps1` (fails when a source reads the key or a value name
+  directly).
+Deviation from C41's wording: `sd-admxgen` produces the ADML from the policy catalogs, while `sdl10n` keeps its
+completeness and register checks on the same domain. Enum items are catalog keys `policy.<name>.opt.<value>`. All msgctxt
+keys are lower case, because sdl10n accepts `[a-z0-9_.-]` only.
+
 ### 3.6 Concurrency
 
 All writers (agent, UI, CLI) use `sd_config_lock()`: `LockFileEx` exclusive on `LibreStatic\ShellDrive\config.lock`. Writes go

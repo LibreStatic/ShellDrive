@@ -1,0 +1,48 @@
+# ShellDrive Group Policy values (03 §3.5). The single machine-readable source for:
+#   - tools/sd-admxgen (ShellDrive.admx, one ShellDrive.adml per culture, sd_policy_ids.h and
+#     sd_policy_table.h, built into generated/policy/);
+#   - src/sd_policy (the policy reader; it uses only the generated names, so it cannot drift);
+#   - tests/policy (ADMX/ADML structure checks compare the output with this table).
+#
+# Directive:  @key <registry key under HKLM|HKCU; HKLM wins>
+#
+# Policy line, fields separated by '|':
+#   name | class | type | params | supported | category
+#   name       registry value name (ASCII letters and digits, unique, case-sensitive in the ADMX)
+#   class      both | machine | user (the ADMX class attribute: Both | Machine | User)
+#   type       boolean  REG_DWORD 1 (enabled) / 0 (disabled)
+#              enum     REG_DWORD when every value is decimal, otherwise REG_SZ
+#              text     REG_SZ
+#              decimal  REG_DWORD in the range of params
+#   params     boolean: -          text: maximum length in characters
+#              enum: comma-separated values, labels in policy.<name>.opt.<value>
+#              decimal: min,max (integers)
+#   supported  xp (Windows XP Service Pack 3 or later) | win11 (Windows 11 only)
+#   category   security | network | mounts | updates | interface | logging
+#
+# Texts live in the PO catalog l10n/policy/ (policy.<name>.title, .explain, .label, .opt.<value>)
+# and are checked by sdl10n. Policy order here is the order in the ADMX.
+
+@key Software\Policies\LibreStatic\ShellDrive
+
+LegacyAlgorithms|both|enum|0,1,2|xp|security
+AllowUserProfiles|both|boolean|-|xp|mounts
+AllowAdHocMounts|both|boolean|-|xp|mounts
+AllowedBackends|both|text|128|xp|mounts
+DisableCredentialSaving|both|boolean|-|xp|security
+StrictHostKeyChecking|both|boolean|-|xp|security
+DisableKnownHostsSources|both|boolean|-|xp|security
+UpdateHostKeys|both|enum|0,1,2|xp|security
+ForceWriteThrough|both|boolean|-|xp|mounts
+ProxyServer|both|text|1024|xp|network
+AllowSystemProxy|both|boolean|-|xp|network
+AllowSystemProxySspi|both|boolean|-|xp|network
+AllowWebDavTokenOnly|both|boolean|-|xp|network
+UILanguage|both|enum|en,es,fr,pt-BR,it,de|xp|interface
+DisableUpdateCheck|both|boolean|-|xp|updates
+UpdateChannel|both|enum|stable,beta|xp|updates
+UpdateUrl|both|text|2048|xp|updates
+HideTrayIcon|both|boolean|-|xp|interface
+DisableNetworkLocations|both|boolean|-|xp|network
+DisableModernContextMenu|both|boolean|-|win11|interface
+LogPrivacy|both|enum|0,1|xp|logging

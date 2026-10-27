@@ -11,6 +11,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
+#include "sd_policy/sd_policy.h"
 
 static const sd_l10n_catalog *g_cat;
 static sd_lang g_lang = SD_LANG_EN;
@@ -86,21 +87,12 @@ static int lang_from_langid(LANGID id, sd_lang *out)
   }
 }
 
-static int lang_from_policy(HKEY root, sd_lang *out)
+static int lang_from_policy(sd_lang *out)
 {
-  HKEY k;
   wchar_t buf[32];
-  DWORD type = 0, cb = sizeof(buf) - sizeof(wchar_t);
-  int ok = 0;
-  if (RegOpenKeyExW(root, L"Software\\Policies\\LibreStatic\\ShellDrive", 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS)
+  if (!sd_policy_get_sz(SD_POLICY_UILANGUAGE, buf, SD_COUNTOF(buf)))
     return 0;
-  memset(buf, 0, sizeof(buf));
-  if (RegQueryValueExW(k, L"UILanguage", NULL, &type, (LPBYTE)buf, &cb) == ERROR_SUCCESS && type == REG_SZ) {
-    buf[SD_COUNTOF(buf) - 1] = 0;
-    ok = sd_l10n_parse_lang(buf, out);
-  }
-  RegCloseKey(k);
-  return ok;
+  return sd_l10n_parse_lang(buf, out);
 }
 
 sd_lang sd_l10n_init(const sd_l10n_catalog *catalog, const wchar_t *override_code)
@@ -125,8 +117,8 @@ sd_lang sd_l10n_init(const sd_l10n_catalog *catalog, const wchar_t *override_cod
     l = SD_LANG_PSEUDO;            /* Debug builds only: the catalog carries the table */
   } else if (override_code && override_code[0] && sd_l10n_parse_lang(override_code, &l)) {
     /* explicit choice */
-  } else if (lang_from_policy(HKEY_LOCAL_MACHINE, &l) || lang_from_policy(HKEY_CURRENT_USER, &l)) {
-    /* policy UILanguage (HKLM wins) */
+  } else if (lang_from_policy(&l)) {
+    /* policy UILanguage (HKLM wins, sd_policy) */
   } else if (!lang_from_langid(GetUserDefaultUILanguage(), &l)) {
     l = SD_LANG_EN;
   }

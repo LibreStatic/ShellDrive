@@ -7,6 +7,7 @@ sd_add_module(sd_l10n
   DEPS
     sd_base
     sd_platform
+    sd_policy
   SYSTEM_LIBS
     advapi32
   HEADERS
