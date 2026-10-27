@@ -36,6 +36,12 @@ SD_TEST_DECL(cng_diff_aes_ctr);
 SD_TEST_DECL(cng_diff_aes_gcm);
 SD_TEST_DECL(crypto_init_and_random);
 SD_TEST_DECL(ct_helpers);
+SD_TEST_DECL(hw_sha256_kat_both_paths);
+SD_TEST_DECL(hw_sha256_random_vs_portable);
+SD_TEST_DECL(hw_aes_fips197_both_paths);
+SD_TEST_DECL(hw_aes_random_vs_portable);
+SD_TEST_DECL(hw_aes_ctr_both_paths);
+SD_TEST_DECL(hw_aes_gcm_both_paths);
 SD_TEST_DECL(bench_throughput);
 
 static const sd_test_case k_tests[] = {
@@ -75,6 +81,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cng_diff_sha2_hmac),
   SD_TEST_ENTRY(cng_diff_aes_ctr),
   SD_TEST_ENTRY(cng_diff_aes_gcm),
+  SD_TEST_ENTRY(hw_sha256_kat_both_paths),
+  SD_TEST_ENTRY(hw_sha256_random_vs_portable),
+  SD_TEST_ENTRY(hw_aes_fips197_both_paths),
+  SD_TEST_ENTRY(hw_aes_random_vs_portable),
+  SD_TEST_ENTRY(hw_aes_ctr_both_paths),
+  SD_TEST_ENTRY(hw_aes_gcm_both_paths),
   SD_TEST_ENTRY(bench_throughput),
 };
 

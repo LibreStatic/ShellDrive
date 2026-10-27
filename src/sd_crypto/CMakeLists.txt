@@ -21,6 +21,7 @@ set(SD_CRYPTO_SOURCES
 set(SD_CRYPTO_SOURCES_HEADERS)
 include(${CMAKE_CURRENT_LIST_DIR}/sources_pk.cmake OPTIONAL)
 include(${CMAKE_CURRENT_LIST_DIR}/sources_pq.cmake OPTIONAL)
+include(${CMAKE_CURRENT_LIST_DIR}/sources_hw.cmake)
 
 sd_add_module(sd_crypto
   SOURCES

@@ -269,6 +269,10 @@ sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len)
   nk = key_len / 4;
   k->rounds = (uint32_t)(nk + 6);
   total = 4 * (k->rounds + 1);
+  /* The key schedule below stays the constant-time bitsliced S-box circuit on every path; AES-NI only takes
+     the resulting byte round keys for the encryption rounds. */
+  memset(k->ni_rk, 0, sizeof(k->ni_rk));
+  k->hw = (uint32_t)(sd_crypto_use_hw_aes() ? 1 : 0);
   memcpy(w, key, key_len);
   for (i = nk; i < total; i++) {
     uint8_t t[4];
@@ -295,6 +299,10 @@ sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len)
         b[j * 4 + blk] = w[16 * r + j];
     pack(k->rk[r], b);
   }
+#if SD_CRYPTO_X86_HW
+  if (k->hw)
+    memcpy(k->ni_rk, w, 16 * (size_t)(k->rounds + 1));
+#endif
   sd_secure_zero(w, sizeof(w));
   sd_secure_zero(b, sizeof(b));
   return SD_OK;
@@ -327,6 +335,13 @@ void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, si
   uint64_t q[8];
   uint8_t b[64];
   uint32_t r;
+#if SD_CRYPTO_X86_HW
+  /* k->hw is a CPU capability chosen at key setup, not a secret; AES-NI itself has no data-dependent timing. */
+  if (k->hw) {
+    sd_aes_ni_encrypt_blocks(k->ni_rk[0], k->rounds, in, out, nblocks);
+    return;
+  }
+#endif
   gather(b, in, nblocks);
   pack(q, b);
   add_round_key(q, k->rk[0]);

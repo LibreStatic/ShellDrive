@@ -42,7 +42,9 @@ SD_STATIC_ASSERT(sizeof(sha512_state) <= sizeof(((sd_hash_ctx *)0)->opaque), "sh
   d += t1;                                                  \
   h = t1 + S256_0(a) + MAJ(a, b, c)
 
-static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
+/* The portable block function is the reference; the SHA extensions (sha256_ni.c) take over when the CPU has
+   them and the portable hook is off. The choice depends on the CPU only, never on the message. */
+static void sha256_blocks_portable(uint32_t st[8], const uint8_t *p, size_t nblocks)
 {
   uint32_t w[64];
   uint32_t a, b, c, d, e, f, g, h, t1;
@@ -70,6 +72,17 @@ static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
     p += 64;
   }
   sd_secure_zero(w, sizeof(w));
+}
+
+static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
+{
+#if SD_CRYPTO_X86_HW
+  if (nblocks != 0 && sd_crypto_use_hw_sha256()) {
+    sd_sha256_ni_blocks(st, p, nblocks, k_sha256_k);
+    return;
+  }
+#endif
+  sha256_blocks_portable(st, p, nblocks);
 }
 
 static void sha256_update(sha256_state *s, const uint8_t *p, size_t n)
