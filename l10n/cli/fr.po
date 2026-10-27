@@ -426,150 +426,150 @@ msgstr[2] "Sur {target}, {count} fichiers n'ont pas pu être enregistrés sur le
 #. Summary of the status command.
 msgctxt "cli.help.status"
 msgid "Show the detailed state of the mounted drives."
-msgstr "Show the detailed state of the mounted drives."
+msgstr "Affiche l'état détaillé des lecteurs montés."
 
 #. Summary of "profile import".
 msgctxt "cli.help.profile_import"
 msgid "Import profiles from PuTTY sessions or an OpenSSH ssh_config file."
-msgstr "Import profiles from PuTTY sessions or an OpenSSH ssh_config file."
+msgstr "Importe des profils depuis des sessions PuTTY ou un fichier ssh_config OpenSSH."
 
 #. Summary of the hostkey command.
 msgctxt "cli.help.hostkey"
 msgid "Show, import or remove stored host keys, and apply announced key updates."
-msgstr "Show, import or remove stored host keys, and apply announced key updates."
+msgstr "Affiche, importe ou supprime les clés d'hôte enregistrées, et applique les mises à jour de clés annoncées."
 
 #. Help for --jump HOST. The value syntax is literal.
 msgctxt "cli.help.opt_jump"
 msgid "A server to connect through before the target, as [user@]host[:port]. Repeat the option for several hops."
-msgstr "A server to connect through before the target, as [user@]host[:port]. Repeat the option for several hops."
+msgstr "Un serveur par lequel passer avant la cible, sous la forme [utilisateur@]hôte[:port]. Répétez l'option pour plusieurs sauts."
 
 #. Help for --proxy SPEC. The value syntax and the scheme names are literal.
 msgctxt "cli.help.opt_proxy"
 msgid "Proxy for the first leg: http://[user@]host[:port] or socks5://[user@]host[:port]."
-msgstr "Proxy for the first leg: http://[user@]host[:port] or socks5://[user@]host[:port]."
+msgstr "Proxy pour le premier tronçon : http://[utilisateur@]hôte[:port] ou socks5://[utilisateur@]hôte[:port]."
 
 #. Help for --connections N. States the pool rule (D18): extra connections only with non-interactive auth.
 msgctxt "cli.help.opt_connections"
 msgid "How many connections to the server to use at once, from 1 to 4. More than one is only reached when signing in needs no typed answer."
-msgstr "How many connections to the server to use at once, from 1 to 4. More than one is only reached when signing in needs no typed answer."
+msgstr "Combien de connexions au serveur utiliser en même temps, de 1 à 4. Plusieurs ne sont utilisées que si l'authentification ne demande aucune réponse saisie."
 
 #. Help for hostkey remove --type T.
 msgctxt "cli.help.opt_type"
 msgid "Remove only the stored key of this type, for example ssh-ed25519."
-msgstr "Remove only the stored key of this type, for example ssh-ed25519."
+msgstr "Supprime uniquement la clé enregistrée de ce type, par exemple ssh-ed25519."
 
 #. Help for hostkey import --from. putty and openssh are literal values.
 msgctxt "cli.help.opt_from"
 msgid "Where to copy host keys from: putty (the registry) or openssh (a known_hosts file)."
-msgstr "Where to copy host keys from: putty (the registry) or openssh (a known_hosts file)."
+msgstr "D'où copier les clés d'hôte : putty (le Registre) ou openssh (un fichier known_hosts)."
 
 #. Help for hostkey accept-announced --add-only.
 msgctxt "cli.help.opt_add_only"
 msgid "Add the new keys, but keep the keys the server no longer offers."
-msgstr "Add the new keys, but keep the keys the server no longer offers."
+msgstr "Ajoute les nouvelles clés, mais conserve les clés que le serveur ne propose plus."
 
 #. Help for hostkey list --announced.
 msgctxt "cli.help.opt_announced"
 msgid "Show the host key updates that servers announced and that wait for review."
-msgstr "Show the host key updates that servers announced and that wait for review."
+msgstr "Affiche les mises à jour de clés d'hôte que les serveurs ont annoncées et qui attendent une vérification."
 
 #. Help for --dry-run.
 msgctxt "cli.help.opt_dry_run"
 msgid "Show what would be imported without writing anything."
-msgstr "Show what would be imported without writing anything."
+msgstr "Affiche ce qui serait importé sans rien écrire."
 
 #. Detail line of shelldrive status; {state} is a connection state word such as ready.
 msgctxt "cli.status.conn"
 msgid "Connection: {state}"
-msgstr "Connection: {state}"
+msgstr "Connexion : {state}"
 
 #. Detail line of shelldrive status.
 msgctxt "cli.status.pool"
 msgid "Connections in use: {count} of {wanted}."
-msgstr "Connections in use: {count} of {wanted}."
+msgstr "Connexions utilisées : {count} sur {wanted}."
 
 #. Detail line of shelldrive status: automatic reconnects after losses.
 msgctxt "cli.status.reconnects"
 msgid "Reconnected {count} times."
-msgstr "Reconnected {count} times."
+msgstr "Reconnexions : {count}."
 
 #. Detail line of shelldrive status; {reason} is an English error identifier.
 msgctxt "cli.status.reason"
 msgid "The connection was lost ({reason})."
-msgstr "The connection was lost ({reason})."
+msgstr "La connexion a été perdue ({reason})."
 
 #. profile import summary with --dry-run.
 #, plural-arg=count
 msgctxt "cli.pi.found"
 msgid "{count} profile found. Nothing was written (--dry-run)."
 msgid_plural "{count} profiles found. Nothing was written (--dry-run)."
-msgstr[0] "{count} profiles found. Nothing was written (--dry-run)."
-msgstr[1] "{count} profiles found. Nothing was written (--dry-run)."
-msgstr[2] "{count} profiles found. Nothing was written (--dry-run)."
+msgstr[0] "{count} profil trouvé. Rien n'a été écrit (--dry-run)."
+msgstr[1] "{count} de profils trouvés. Rien n'a été écrit (--dry-run)."
+msgstr[2] "{count} profils trouvés. Rien n'a été écrit (--dry-run)."
 
 #. profile import summary.
 #, plural-arg=count
 msgctxt "cli.pi.imported"
 msgid "{count} profile imported."
 msgid_plural "{count} profiles imported."
-msgstr[0] "{count} profiles imported."
-msgstr[1] "{count} profiles imported."
-msgstr[2] "{count} profiles imported."
+msgstr[0] "{count} profil importé."
+msgstr[1] "{count} de profils importés."
+msgstr[2] "{count} profils importés."
 
 #. profile import of a source with no usable entries.
 msgctxt "cli.pi.empty"
 msgid "Nothing to import."
-msgstr "Nothing to import."
+msgstr "Rien à importer."
 
 #. Note column of the profile import table.
 msgctxt "cli.pi.note_duplicate"
 msgid "a profile for this server already exists"
-msgstr "a profile for this server already exists"
+msgstr "un profil pour ce serveur existe déjà"
 
 #. Note column of the profile import table (D37).
 msgctxt "cli.pi.note_only_this_key"
 msgid "the imported key would be the only one offered"
-msgstr "the imported key would be the only one offered"
+msgstr "la clé importée serait la seule proposée"
 
 #. Note column of the profile import table.
 msgctxt "cli.pi.note_proxy_skipped"
 msgid "its proxy type is not supported"
-msgstr "its proxy type is not supported"
+msgstr "son type de proxy n'est pas pris en charge"
 
 #. Note column of the profile import table.
 msgctxt "cli.pi.note_name_changed"
 msgid "renamed because the name was taken"
-msgstr "renamed because the name was taken"
+msgstr "renommé car le nom était déjà pris"
 
 #. profile import: an ssh_config keyword that has no ShellDrive equivalent (3.7). {item} is the keyword.
 msgctxt "cli.pi.skip_keyword"
 msgid "{source}: the {item} lines are not imported."
-msgstr "{source}: the {item} lines are not imported."
+msgstr "{source} : les lignes {item} ne sont pas importées."
 
 #. profile import: same, for global lines (no Host section).
 msgctxt "cli.pi.skip_keyword_global"
 msgid "The {item} lines are not imported."
-msgstr "The {item} lines are not imported."
+msgstr "Les lignes {item} ne sont pas importées."
 
 #. profile import: a PuTTY session of another protocol. {item} is the protocol.
 msgctxt "cli.pi.skip_not_ssh"
 msgid "{source}: the session is not SSH ({item})."
-msgstr "{source}: the session is not SSH ({item})."
+msgstr "{source} : la session n'est pas SSH ({item})."
 
 #. profile import: a PuTTY proxy type without an equivalent (D20). {item} is the method.
 msgctxt "cli.pi.skip_proxy"
 msgid "{source}: the proxy type ({item}) is not supported."
-msgstr "{source}: the proxy type ({item}) is not supported."
+msgstr "{source} : le type de proxy ({item}) n'est pas pris en charge."
 
 #. profile import: an unusable entry.
 msgctxt "cli.pi.skip_invalid"
 msgid "{source}: unusable entry ({item})."
-msgstr "{source}: unusable entry ({item})."
+msgstr "{source} : entrée inutilisable ({item})."
 
 #. Column heading of hostkey list (keep it short).
 msgctxt "cli.hk.col_store"
 msgid "Store"
-msgstr "Store"
+msgstr "Magasin"
 
 #. Column heading of hostkey list (keep it short).
 msgctxt "cli.hk.col_type"
@@ -579,145 +579,145 @@ msgstr "Type"
 #. Column heading of hostkey list (keep it short).
 msgctxt "cli.hk.col_fp"
 msgid "Fingerprint"
-msgstr "Fingerprint"
+msgstr "Empreinte"
 
 #. hostkey list of a host with no stored key.
 msgctxt "cli.hk.list_empty"
 msgid "No host key is stored for {host}."
-msgstr "No host key is stored for {host}."
+msgstr "Aucune clé d'hôte n'est enregistrée pour {host}."
 
 #. hostkey list stopped early because there are very many keys.
 msgctxt "cli.hk.list_truncated"
 msgid "The list was cut short; refine the host name to see the rest."
-msgstr "The list was cut short; refine the host name to see the rest."
+msgstr "La liste a été raccourcie ; précisez le nom d'hôte pour voir le reste."
 
 #. hostkey remove.
 msgctxt "cli.hk.removed"
 msgid "Removed the stored keys of {host}."
-msgstr "Removed the stored keys of {host}."
+msgstr "Les clés enregistrées de {host} ont été supprimées."
 
 #. hostkey import summary.
 #, plural-arg=count
 msgctxt "cli.hk.imported"
 msgid "{count} host key imported."
 msgid_plural "{count} host keys imported."
-msgstr[0] "{count} host keys imported."
-msgstr[1] "{count} host keys imported."
-msgstr[2] "{count} host keys imported."
+msgstr[0] "{count} clé d'hôte importée."
+msgstr[1] "{count} de clés d'hôte importées."
+msgstr[2] "{count} clés d'hôte importées."
 
 #. hostkey import summary.
 #, plural-arg=count
 msgctxt "cli.hk.import_kept"
 msgid "{count} key was already stored."
 msgid_plural "{count} keys were already stored."
-msgstr[0] "{count} keys were already stored."
-msgstr[1] "{count} keys were already stored."
-msgstr[2] "{count} keys were already stored."
+msgstr[0] "{count} clé était déjà enregistrée."
+msgstr[1] "{count} de clés étaient déjà enregistrées."
+msgstr[2] "{count} clés étaient déjà enregistrées."
 
 #. hostkey import summary.
 #, plural-arg=count
 msgctxt "cli.hk.import_conflicts"
 msgid "{count} key conflicts with a stored key and was not imported."
 msgid_plural "{count} keys conflict with stored keys and were not imported."
-msgstr[0] "{count} keys conflict with stored keys and were not imported."
-msgstr[1] "{count} keys conflict with stored keys and were not imported."
-msgstr[2] "{count} keys conflict with stored keys and were not imported."
+msgstr[0] "{count} clé est en conflit avec une clé enregistrée et n'a pas été importée."
+msgstr[1] "{count} de clés sont en conflit avec des clés enregistrées et n'ont pas été importées."
+msgstr[2] "{count} clés sont en conflit avec des clés enregistrées et n'ont pas été importées."
 
 #. hostkey import summary.
 #, plural-arg=count
 msgctxt "cli.hk.import_invalid"
 msgid "{count} line could not be read."
 msgid_plural "{count} lines could not be read."
-msgstr[0] "{count} lines could not be read."
-msgstr[1] "{count} lines could not be read."
-msgstr[2] "{count} lines could not be read."
+msgstr[0] "{count} ligne n'a pas pu être lue."
+msgstr[1] "{count} de lignes n'ont pas pu être lues."
+msgstr[2] "{count} lignes n'ont pas pu être lues."
 
 #. hostkey import of a source without keys.
 msgctxt "cli.hk.import_empty"
 msgid "The source has no host keys."
-msgstr "The source has no host keys."
+msgstr "La source ne contient aucune clé d'hôte."
 
 #. hostkey list --announced with nothing pending.
 msgctxt "cli.hk.announced_none"
 msgid "There are no host key updates to review."
-msgstr "There are no host key updates to review."
+msgstr "Il n'y a aucune mise à jour de clés d'hôte à vérifier."
 
 #. hostkey list --announced, one pending update. {id} is the id for accept-announced.
 msgctxt "cli.hk.announced_item"
 msgid "{id}: {host} offered new host keys."
-msgstr "{id}: {host} offered new host keys."
+msgstr "{id} : {host} a proposé de nouvelles clés d'hôte."
 
 #. One key a server added to its announcement (5.6).
 msgctxt "cli.hk.announced_add"
 msgid "New key: {type} {fingerprint}"
-msgstr "New key: {type} {fingerprint}"
+msgstr "Nouvelle clé : {type} {fingerprint}"
 
 #. One key a server no longer offers (5.6).
 msgctxt "cli.hk.announced_remove"
 msgid "No longer offered: {type} {fingerprint}"
-msgstr "No longer offered: {type} {fingerprint}"
+msgstr "N'est plus proposée : {type} {fingerprint}"
 
 #. hostkey accept-announced.
 msgctxt "cli.hk.announced_applied"
 msgid "Updated the host keys of {host}: {added} added, {removed} removed."
-msgstr "Updated the host keys of {host}: {added} added, {removed} removed."
+msgstr "Les clés d'hôte de {host} ont été mises à jour (ajoutées : {added} ; supprimées : {removed})."
 
 #. Introduction of the password-change questions (2.5, PASSWD_CHANGEREQ).
 msgctxt "cli.prompt.password_change"
 msgid "The server {host} asks to change the password."
-msgstr "The server {host} asks to change the password."
+msgstr "Le serveur {host} demande de changer le mot de passe."
 
 #. Proxy password prompt; input is hidden.
 msgctxt "cli.prompt.proxy_password"
 msgid "Password for the proxy {user}@{proxy_host}:{proxy_port}: "
-msgstr "Password for the proxy {user}@{proxy_host}:{proxy_port}: "
+msgstr "Mot de passe du proxy {user}@{proxy_host}:{proxy_port} : "
 
 #. The legacy-algorithms question (2.5, C21); {algorithms} is a comma list of algorithm names.
 msgctxt "cli.prompt.legacy_ack"
 msgid "The server {host} uses outdated encryption ({algorithms})."
-msgstr "The server {host} uses outdated encryption ({algorithms})."
+msgstr "Le serveur {host} utilise un chiffrement obsolète ({algorithms})."
 
 #. The legacy-algorithms question; the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
 msgctxt "cli.prompt.legacy_ack_question"
 msgid "Continue anyway? [y]es, [N]o: "
-msgstr "Continue anyway? [y]es, [N]o: "
+msgstr "Continuer quand même ? [o]ui, [N]on : "
 
 #. Shown for hop i >= 1 of a jump chain (TM-R03). {host} is the previous hop.
 msgctxt "cli.prompt.via"
 msgid "Reached through jump host {host}."
-msgstr "Reached through jump host {host}."
+msgstr "Connexion établie via l'hôte de rebond {host}."
 
 #. Shown for every prompt of a jump chain. {host} is the hop's server.
 msgctxt "cli.prompt.hop"
 msgid "Jump host {hop} of {hops}: {host}"
-msgstr "Jump host {hop} of {hops}: {host}"
+msgstr "Hôte de rebond {hop} sur {hops} : {host}"
 
 #. Save question after a password, passphrase or proxy password (4.2); the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
 msgctxt "cli.prompt.save"
 msgid "Save the answer for the next connection? [y]es, [N]o: "
-msgstr "Save the answer for the next connection? [y]es, [N]o: "
+msgstr "Enregistrer la réponse pour la prochaine connexion ? [o]ui, [N]on : "
 
 #. Credential Manager comment for a saved secret (4.2). {name} is the profile name.
 msgctxt "cli.save.comment"
 msgid "Saved by ShellDrive for {name}"
-msgstr "Saved by ShellDrive for {name}"
+msgstr "Enregistré par ShellDrive pour {name}"
 
 msgctxt "cli.error.host_key_not_found"
 msgid "No host key of {host} is stored in your ShellDrive store."
-msgstr "No host key of {host} is stored in your ShellDrive store."
+msgstr "Aucune clé de {host} n'est enregistrée dans votre magasin ShellDrive."
 
 msgctxt "cli.error.announcement_not_found"
 msgid "There is no pending host key update with this id."
-msgstr "There is no pending host key update with this id."
+msgstr "Il n'y a aucune mise à jour de clés d'hôte en attente avec cet identifiant."
 
 msgctxt "cli.error.session_not_found"
 msgid "There is no PuTTY session named {name}."
-msgstr "There is no PuTTY session named {name}."
+msgstr "Il n'y a aucune session PuTTY nommée {name}."
 
 msgctxt "cli.error.putty_not_found"
 msgid "PuTTY is not installed, or it has no saved sessions."
-msgstr "PuTTY is not installed, or it has no saved sessions."
+msgstr "PuTTY n'est pas installé, ou il n'a aucune session enregistrée."
 
 msgctxt "cli.error.file_not_found"
 msgid "The file {name} could not be read."
-msgstr "The file {name} could not be read."
+msgstr "Le fichier {name} n'a pas pu être lu."
