@@ -47,6 +47,7 @@
 #include "log_ring.h"
 #include "state_producer.h"
 #include "explorer_data.h"
+#include "config_watch.h"
 #include "sd_state/sd_state.h"
 
 typedef struct work { struct work *next; void (*fn)(void *); void *arg; } work;
@@ -79,6 +80,14 @@ typedef struct host_announce {
   sd_mount_announcement a;
 } host_announce;
 
+/* M3 status proxy_legs: one proxy of the chain (no credentials). */
+typedef struct host_leg {
+  uint32_t hop;                 /* 1-based hop the leg reaches */
+  int kind;                     /* sd_proxy_kind */
+  char host[256];
+  uint16_t port;
+} host_leg;
+
 typedef struct host_mount {
   struct host_mount *next;
   uint32_t num;
@@ -109,6 +118,13 @@ typedef struct host_mount {
   /* M3 */
   uint32_t initiator_caps;      /* SD_IPC_CAP_* of the initiator when it asked for the mount */
   int network_location;         /* profile mount.network_location (03 §8.7) */
+  /* M3 (profile.test, status, unmount force) */
+  int test_only;                /* profile.test: not in `list`, the snapshot, Explorer or mount.state */
+  int stop_force;               /* unmount {force}: the write-behind drain gets no budget */
+  uint64_t defer_cid;           /* profile.test: the client waiting for the reply (0 = none) */
+  int64_t defer_rid;            /* its request id */
+  uint32_t nlegs;               /* proxy legs of the chain, for status proxy_legs */
+  host_leg legs[SD_MOUNT_MAX_HOPS];
 } host_mount;
 
 /* ---- M3 constants (03 §2.5, §3.3, 1.7.4) ---- */
@@ -118,9 +134,11 @@ typedef struct host_mount {
 #define UI_LAUNCH_INTERVAL_MS 30000u      /* at most one prompt-UI launch per 30 s */
 #define WARN_RING             32u         /* recent warnings kept for `list` */
 
-/* Feature names of the hello reply (03 §7): only what this build implements. */
+/* Feature names of the hello reply (03 §7, 2.8): only what this build implements. */
 static const char *const k_agent_features[] = {
-  "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued", NULL
+  "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued",
+  "refresh", "cache.clear", "profile.test", "mount.attach_info", "status.stats", "status.proxy_legs",
+  "config.changed", "agent.stopping", NULL
 };
 
 #ifdef SD_HOST_TEST_HOOKS
@@ -188,6 +206,8 @@ static struct {
   host_warn warns[WARN_RING];
   uint32_t warn_next, warn_count;
   uint64_t boot_tick;           /* log.tail cursor boot id */
+  /* M3 agent.stopping reason: "request", "event" or "idle" */
+  const char *stop_reason;
 } g;
 
 /* forward declarations: the prompt broker and the warning ring are defined further down */
@@ -360,6 +380,8 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
 {
   sd_wr d;
   sd_json_writer jw;
+  if (h->test_only)                 /* profile.test is not a mount for the clients (M3) */
+    return;
   sd_wr_init(&d, 64 * 1024);
   sd_jw_init(&jw, &d);
   sd_jw_obj_begin(&jw);
@@ -460,7 +482,10 @@ static void state_publish_locked(uint32_t flags)
   uint32_t n = 0;
   const host_mount *h;
   for (h = g.mounts; h && n < SD_STATE_MAX_ENTRIES; h = h->next) {
-    host_state_src *s = &src[n];
+    host_state_src *s;
+    if (h->test_only)
+      continue;
+    s = &src[n];
     memset(s, 0, sizeof(*s));
     s->mount_num = h->num;
     s->mount_id = h->id;
@@ -503,6 +528,8 @@ static void explorer_post_locked(const host_mount *h)
 /* A mount was added, changed or removed (h is no longer linked when it is removed). g.lock held. */
 static void mount_changed_locked(const host_mount *h)
 {
+  if (h->test_only)
+    return;
   state_publish_locked(0);
   explorer_post_locked(h);
 }
@@ -535,6 +562,67 @@ static void work_reap(void *arg)
   sd_mutex_unlock(&g.lock);
 }
 
+/* profile.test (M3): the deferred reply of the test mount, sent once when the mount is final. g.lock held. */
+static void reply_profile_test(host_mount *h, sd_mount *m, sd_err why)
+{
+  sd_mount_probe p;
+  sd_mount_failure f;
+  sd_err e;
+  if (h->defer_cid == 0 || g.srv == NULL)
+    return;
+  if (why == SD_OK && sd_mount_get_probe(m, &p)) {
+    sd_wr d;
+    sd_json_writer jw;
+    sd_wr_init(&d, 8 * 1024);
+    sd_jw_init(&jw, &d);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "profile"); sd_jw_cstr(&jw, h->profile_name);
+    sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, h->host);
+    sd_jw_key(&jw, "port"); sd_jw_int(&jw, h->port);
+    sd_jw_key(&jw, "user"); sd_jw_cstr(&jw, h->user);
+    sd_jw_key(&jw, "remote_path"); sd_jw_cstr(&jw, p.remote_real);
+    sd_jw_key(&jw, "hostkey_fingerprint"); sd_jw_cstr(&jw, p.hostkey_fp);
+    sd_jw_key(&jw, "server_version"); sd_jw_cstr(&jw, p.server_version);
+    sd_jw_key(&jw, "algorithms");
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "kex"); sd_jw_cstr(&jw, p.kex);
+    sd_jw_key(&jw, "hostkey"); sd_jw_cstr(&jw, p.hostkey);
+    sd_jw_key(&jw, "cipher_c2s"); sd_jw_cstr(&jw, p.cipher_c2s);
+    sd_jw_key(&jw, "cipher_s2c"); sd_jw_cstr(&jw, p.cipher_s2c);
+    sd_jw_key(&jw, "mac_c2s"); sd_jw_cstr(&jw, p.mac_c2s);
+    sd_jw_key(&jw, "mac_s2c"); sd_jw_cstr(&jw, p.mac_s2c);
+    sd_jw_obj_end(&jw);
+    sd_jw_key(&jw, "legacy"); sd_jw_bool(&jw, p.legacy);
+    sd_jw_key(&jw, "hops"); sd_jw_int(&jw, h->hop_count ? h->hop_count : 1);
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) == SD_OK)
+      e = sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, SD_OK, NULL, NULL, (const char *)d.p, d.len);
+    else
+      e = sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, SD_E_INTERNAL, NULL, "reply too large", NULL, 0);
+    sd_wr_free(&d);
+  } else {
+    const char *code;
+    memset(&f, 0, sizeof(f));
+    sd_mount_get_failure(m, &f);
+    if (why == SD_OK) {
+      /* ended without a result (torn down before READY): the request is answered, not left hanging */
+      code = "cancelled";
+      f.err = SD_E_CANCELLED;
+      if (f.detail[0] == 0)
+        scopy(f.detail, sizeof(f.detail), "the test ended before the connection was ready");
+    } else {
+      if (f.err == SD_OK) f.err = why;
+      code = final_code(h, &f);
+      if (f.detail[0] == 0)
+        scopy(f.detail, sizeof(f.detail), sd_err_name(f.err));
+    }
+    e = sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, f.err, code, f.detail, NULL, 0);
+  }
+  if (e != SD_OK && e != SD_E_NOT_FOUND)
+    SD_LOGW("agent", "%s: profile.test reply not sent (%s)", h->id, sd_err_name(e));
+  h->defer_cid = 0;
+}
+
 static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
 {
   host_mount *h;
@@ -545,6 +633,8 @@ static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
     h->state = st;
     send_state_event(h, st, why);
     mount_changed_locked(h);
+    if (h->test_only && sd_mount_is_final(m))
+      reply_profile_test(h, m, why);
     if (sd_mount_is_final(m))
       post(NULL, work_reap, h);
   }
@@ -1304,6 +1394,27 @@ static void work_start(void *arg)
     sd_free(h);
     return;
   }
+  /* M3 status proxy_legs: the proxies of the chain, kept before sd_mount_create consumes the hops (no secrets) */
+  h->nlegs = 0;
+  if (h->params.hops) {
+    uint32_t i;
+    for (i = 0; i < h->params.hop_count && h->nlegs < SD_MOUNT_MAX_HOPS; i++) {
+      const sd_mount_proxy *px = &h->params.hops[i].proxy;
+      host_leg *lg = &h->legs[h->nlegs];
+      if (px->kind == SD_PROXY_NONE)
+        continue;
+      lg->hop = i + 1;
+      lg->kind = px->kind;
+      lg->port = px->port;
+      lg->host[0] = 0;
+      if (px->host) {
+        size_t got = 0;
+        if (sd_utf16_to_utf8(px->host, wcslen(px->host), lg->host, sizeof(lg->host) - 1, &got, SD_UTF_REPLACE) == SD_OK)
+          lg->host[got] = 0;
+      }
+      h->nlegs++;
+    }
+  }
   e = sd_mount_create(host_backend(), &h->params, &cb, &m);
   h->m = m;
   h->started = 1;
@@ -1332,9 +1443,12 @@ static void work_start(void *arg)
       sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, sd_ipc_exit_code_for_err(e));
       sd_jw_obj_end(&jw);
       sd_jw_obj_end(&jw);
-      if (sd_jw_finish(&jw) == SD_OK) broadcast_data("mount", "mount.state", &d);
+      if (!h->test_only && sd_jw_finish(&jw) == SD_OK) broadcast_data("mount", "mount.state", &d);
       sd_wr_free(&d);
     }
+    if (h->test_only && h->defer_cid && g.srv)
+      (void)sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, e, NULL, "mount create failed", NULL, 0);
+    h->defer_cid = 0;
     destroy_record_locked(h);
     sd_mutex_unlock(&g.lock);
     return;
@@ -1348,20 +1462,24 @@ static void work_stop(void *arg)
   uint32_t num = (uint32_t)(uintptr_t)arg;
   host_mount *h;
   sd_mount *m = NULL;
+  int force = 0;
   sd_mutex_lock(&g.lock);
   for (h = g.mounts; h; h = h->next)
     if (h->num == num) break;
-  if (h && h->m && !sd_mount_is_final(h->m))
+  if (h && h->m && !sd_mount_is_final(h->m)) {
     m = h->m;
+    force = h->stop_force;
+  }
   sd_mutex_unlock(&g.lock);
   /* sd_mount_stop calls on_state synchronously (which takes g.lock): never call it locked. */
   if (m)
-    sd_mount_stop(m);
+    (void)sd_mount_stop_ex(m, force);
 }
 
 static void work_shutdown(void *arg)
 {
   SD_UNUSED(arg);
+  g.stop_reason = "request";
   InterlockedExchange(&g.stop, 1);
 }
 
@@ -1394,7 +1512,7 @@ static int letter_in_use_locked(wchar_t l)
   if (drives & (1u << (l - L'A')))
     return 1;
   for (h = g.mounts; h; h = h->next)
-    if (h->letter == l) return 1;
+    if (h->letter == l && !h->test_only) return 1;      /* a test holds no drive */
   return 0;
 }
 
@@ -1522,11 +1640,15 @@ static sd_err build_chain(host_mount *h, const sd_profile *prof, const sd_chain 
   return SD_OK;
 }
 
+/* test = 1 for profile.test (M3): the mount is a connect-only test (no drive letter, no list entry, no snapshot);
+   the reply is deferred to the end of the test. */
 static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err,
-                                sd_profile *prof)
+                                sd_profile *prof, int test)
 {
   const sd_json *adhoc = sd_json_get(params, "adhoc");
   const char *pname = sd_json_get_str(params, "profile");
+  if (pname == NULL)
+    pname = sd_json_get_str(params, "profile_id");
   const char *target = sd_json_get_str(params, "target");
   const char *pmode = sd_json_get_str(params, "prompt_mode");
   const char *pbackend = sd_json_get_str(params, "backend");
@@ -1672,14 +1794,16 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   }
   sd_mutex_lock(&g.lock);
   for (o = g.mounts; o; o = o->next) {
-    if (prof->id[0] && strcmp(o->profile_id, prof->id) == 0) {
+    if (!test && prof->id[0] && strcmp(o->profile_id, prof->id) == 0) {
       sd_mutex_unlock(&g.lock);
       free_chain(h->chain);
       sd_free(h);
       return fail(err, SD_E_EXISTS, "already_mounted", "profile already mounted");
     }
   }
-  if (letter) {
+  if (test) {
+    letter = L'Z';                     /* a test has no drive: the letter only satisfies the mount record */
+  } else if (letter) {
     if (letter_in_use_locked(letter)) {
       char detail[32];
       sd_mutex_unlock(&g.lock);
@@ -1701,6 +1825,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
     }
   }
   h->letter = letter;
+  h->test_only = test;
   h->num = ++g.next_num;
   {
     char tmp[12];
@@ -1722,6 +1847,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
                            ((prof->auth_methods & SD_PROFILE_AUTH_PASSWORD) ? SD_AUTH_PASSWORD : 0);
   h->params.remote_path = h->remote[0] ? h->remote : NULL;
   h->params.letter = letter;
+  h->params.test_only = test;
   h->params.read_only = prof->read_only;
   h->params.symlinks = prof->symlinks;
   h->params.write_mode = prof->write_mode;
@@ -1749,14 +1875,27 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->hop_count = h->chain->count;
   scopy(h->legacy_accepted, sizeof(h->legacy_accepted), prof->legacy_accepted);
   h->network_location = prof->network_location;
+  /* profile.test: the request is answered when the test ends (on_state). sd_ipc_defer is valid inside the
+     handler only; it is taken before the record is linked, so a refusal leaves nothing behind. */
+  if (test) {
+    if (!sd_ipc_defer(client, &h->defer_rid)) {
+      sd_mutex_unlock(&g.lock);
+      free_chain(h->chain);
+      sd_free(h);
+      return fail(err, SD_E_INTERNAL, NULL, "profile.test outside a request");
+    }
+    h->defer_cid = sd_ipc_client_id(client);
+  }
   h->next = g.mounts;
   g.mounts = h;
-  state_publish_locked(0);
   g.last_busy = sd_tick_ms();
-  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
-  sd_jw_key(res, "target"); jw_letter(res, letter);
-  sd_jw_key(res, "profile"); sd_jw_cstr(res, h->profile_name);
-  sd_jw_key(res, "state"); sd_jw_cstr(res, "connecting");
+  if (!test) {
+    state_publish_locked(0);
+    sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
+    sd_jw_key(res, "target"); jw_letter(res, letter);
+    sd_jw_key(res, "profile"); sd_jw_cstr(res, h->profile_name);
+    sd_jw_key(res, "state"); sd_jw_cstr(res, "connecting");
+  }
   sd_mutex_unlock(&g.lock);
   SD_LOGI("agent", "mount %s requested by client %llu", h->id, (unsigned long long)h->initiator);
   post(NULL, work_start, h);
@@ -1769,7 +1908,20 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
   sd_err e;
   if (prof == NULL)
     return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
-  e = handle_mount_body(client, params, res, err, prof);
+  e = handle_mount_body(client, params, res, err, prof, 0);
+  sd_free(prof);
+  return e;
+}
+
+/* profile.test {profile | profile_id | adhoc} (M3, 03 §2.4): connect, authenticate and realpath, no drive. The
+   prompts go through the normal broker. The reply is deferred (sd_ipc_defer) to the end of the test. */
+static sd_err handle_profile_test(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  sd_profile *prof = (sd_profile *)sd_alloc(sizeof(sd_profile));
+  sd_err e;
+  if (prof == NULL)
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  e = handle_mount_body(client, params, res, err, prof, 1);
   sd_free(prof);
   return e;
 }
@@ -1790,18 +1942,22 @@ static sd_err handle_unmount(const sd_json *params, sd_json_writer *res, sd_ipc_
   const char *target = sd_json_get_str(params, "target");
   const char *mount_id = sd_json_get_str(params, "mount_id");
   const char *profile = sd_json_get_str(params, "profile");
-  int all = 0, n = 0;
+  int all = 0, force = 0, n = 0;
   host_mount *h;
   sd_json_get_bool(params, "all", &all);
+  sd_json_get_bool(params, "force", &force);   /* M3: no write-behind drain budget (02 §4.4); see work_stop */
   if (!all && !target && !mount_id && !profile)
     return fail(err, SD_E_INVALID_PARAM, "usage", "target, mount_id, profile or all required");
   sd_mutex_lock(&g.lock);
   sd_jw_key(res, "mounts");
   sd_jw_arr_begin(res);
   for (h = g.mounts; h; h = h->next) {
+    if (h->test_only)
+      continue;                 /* a profile test is not a mount: profile.test ends by itself */
     if (all || mount_matches(h, target, mount_id, profile)) {
       if (!h->stop_requested) {
         h->stop_requested = 1;
+        h->stop_force = force ? 1 : 0;
         post(NULL, work_stop, (void *)(uintptr_t)h->num);
       }
       sd_jw_obj_begin(res);
@@ -1836,7 +1992,8 @@ static sd_err handle_list(sd_json_writer *res)
   sd_jw_key(res, "mounts");
   sd_jw_arr_begin(res);
   for (h = g.mounts; h; h = h->next)
-    write_mount_json(res, h);
+    if (!h->test_only)
+      write_mount_json(res, h);
   sd_jw_arr_end(res);
   /* M3: the recent warnings of this agent, oldest first (codes of the warning events) */
   sd_jw_key(res, "warnings");
@@ -1854,8 +2011,85 @@ static sd_err handle_list(sd_json_writer *res)
   return SD_OK;
 }
 
-/* status {mount_id | target, stats?}: the list object, the last failure and the connection details.
-   Not in M3: stats (sd_vfs / sd_sftp counters) and proxy_legs; requesting stats is unsupported. */
+/* M3 status stats (03 §2.4): the session and vfs counters of one mount and its pool members. g.lock held. */
+static void write_stats_json(sd_json_writer *jw, host_mount *h)
+{
+  sd_mount_stats st;
+  sd_mount_conn c;
+  uint32_t i;
+  memset(&st, 0, sizeof(st));
+  memset(&c, 0, sizeof(c));
+  if (h->m) {
+    sd_mount_get_stats(h->m, &st);
+    sd_mount_get_conn(h->m, &c);
+  }
+  sd_jw_key(jw, "stats");
+  sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "session"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "present"); sd_jw_bool(jw, st.has_session);
+  sd_jw_key(jw, "generation"); sd_jw_int(jw, st.generation);
+  sd_jw_key(jw, "channels"); sd_jw_int(jw, st.channels);
+  sd_jw_key(jw, "srtt_ms"); sd_jw_int(jw, st.srtt_ms);
+  sd_jw_key(jw, "rttvar_ms"); sd_jw_int(jw, st.rttvar_ms);
+  sd_jw_key(jw, "rx_bps"); sd_jw_int(jw, (int64_t)st.rx_bps);
+  sd_jw_key(jw, "tx_bps"); sd_jw_int(jw, (int64_t)st.tx_bps);
+  sd_jw_key(jw, "rx_bytes"); sd_jw_int(jw, (int64_t)st.rx_total);
+  sd_jw_key(jw, "tx_bytes"); sd_jw_int(jw, (int64_t)st.tx_total);
+  sd_jw_key(jw, "inflight"); sd_jw_int(jw, st.inflight);
+  sd_jw_key(jw, "queued"); sd_jw_int(jw, st.queued);
+  sd_jw_key(jw, "reconnect_attempts"); sd_jw_int(jw, st.reconnect_attempts);
+  sd_jw_obj_end(jw);
+  sd_jw_key(jw, "pool"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "ready"); sd_jw_int(jw, c.pool);
+  sd_jw_key(jw, "wanted"); sd_jw_int(jw, c.pool_wanted);
+  sd_jw_key(jw, "members"); sd_jw_arr_begin(jw);
+  for (i = 0; i < st.members; i++) {
+    sd_jw_obj_begin(jw);
+    sd_jw_key(jw, "ready"); sd_jw_bool(jw, st.member[i].ready);
+    sd_jw_key(jw, "srtt_ms"); sd_jw_int(jw, st.member[i].srtt_ms);
+    sd_jw_key(jw, "inflight"); sd_jw_int(jw, st.member[i].inflight);
+    sd_jw_key(jw, "queued"); sd_jw_int(jw, st.member[i].queued);
+    sd_jw_key(jw, "rx_bytes"); sd_jw_int(jw, (int64_t)st.member[i].rx_total);
+    sd_jw_key(jw, "tx_bytes"); sd_jw_int(jw, (int64_t)st.member[i].tx_total);
+    sd_jw_obj_end(jw);
+  }
+  sd_jw_arr_end(jw);
+  sd_jw_obj_end(jw);
+  sd_jw_key(jw, "cache"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "vfs"); sd_jw_bool(jw, st.has_vfs);
+  sd_jw_key(jw, "hits"); sd_jw_int(jw, (int64_t)st.cache_hits);
+  sd_jw_key(jw, "misses"); sd_jw_int(jw, (int64_t)st.cache_misses);
+  sd_jw_key(jw, "bytes_read"); sd_jw_int(jw, (int64_t)st.bytes_rd);
+  sd_jw_key(jw, "bytes_written"); sd_jw_int(jw, (int64_t)st.bytes_wr);
+  sd_jw_key(jw, "write_failed"); sd_jw_int(jw, (int64_t)st.write_failed);
+  sd_jw_key(jw, "write_behind_bytes"); sd_jw_int(jw, (int64_t)st.wb_bytes);
+  sd_jw_key(jw, "reconnects"); sd_jw_int(jw, (int64_t)st.reconnects);
+  sd_jw_obj_end(jw);
+  sd_jw_obj_end(jw);
+}
+
+/* status proxy_legs (M3): the proxies of the chain, without credentials. g.lock held. */
+static void write_legs_json(sd_json_writer *jw, const host_mount *h)
+{
+  uint32_t i;
+  sd_jw_key(jw, "proxy_legs");
+  sd_jw_arr_begin(jw);
+  for (i = 0; i < h->nlegs; i++) {
+    const host_leg *lg = &h->legs[i];
+    sd_jw_obj_begin(jw);
+    sd_jw_key(jw, "hop"); sd_jw_int(jw, lg->hop);
+    sd_jw_key(jw, "kind");
+    sd_jw_cstr(jw, lg->kind == SD_PROXY_HTTP ? "http" : lg->kind == SD_PROXY_SOCKS5 ? "socks5"
+                   : lg->kind == SD_PROXY_SYSTEM ? "system" : "none");
+    sd_jw_key(jw, "host"); sd_jw_cstr(jw, lg->host);
+    sd_jw_key(jw, "port"); sd_jw_int(jw, lg->port);
+    sd_jw_obj_end(jw);
+  }
+  sd_jw_arr_end(jw);
+}
+
+/* status {mount_id | target, stats?}: the list object, the last failure, the connection details, and with
+   stats the session, pool and cache counters; proxy_legs always (03 §2.4, M3). */
 static sd_err handle_status(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
 {
   const char *mid = sd_json_get_str(params, "mount_id");
@@ -1865,17 +2099,18 @@ static sd_err handle_status(const sd_json *params, sd_json_writer *res, sd_ipc_e
   if (mid == NULL && target == NULL)
     return fail(err, SD_E_INVALID_PARAM, "usage", "mount_id or target required");
   sd_json_get_bool(params, "stats", &stats);
-  if (stats)
-    return fail(err, SD_E_UNSUPPORTED, "unsupported", "stats are not available in this build");
   sd_mutex_lock(&g.lock);
   for (h = g.mounts; h; h = h->next)
-    if (mount_matches(h, target, mid, NULL)) break;
+    if (!h->test_only && mount_matches(h, target, mid, NULL)) break;
   if (h == NULL) {
     sd_mutex_unlock(&g.lock);
     return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
   }
   sd_jw_key(res, "mount");
   write_mount_json(res, h);
+  if (stats)
+    write_stats_json(res, h);
+  write_legs_json(res, h);
   if (h->m && (h->state == SD_MOUNT_FAILED || h->state == SD_MOUNT_OFFLINE)) {
     sd_mount_failure f;
     sd_mount_get_failure(h->m, &f);
@@ -1883,6 +2118,161 @@ static sd_err handle_status(const sd_json *params, sd_json_writer *res, sd_ipc_e
     sd_jw_obj_begin(res);
     sd_jw_key(res, "code"); sd_jw_cstr(res, final_code(h, &f));
     sd_jw_key(res, "detail"); sd_jw_cstr(res, f.detail);
+    sd_jw_obj_end(res);
+  }
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
+/* refresh {mount_id | target, path} (M3): drops the cached attributes and listings under path ("" or "/" = the
+   whole mount). Not mounted: not_mounted (exit 3). */
+static sd_err handle_refresh(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *mid = sd_json_get_str(params, "mount_id");
+  const char *target = sd_json_get_str(params, "target");
+  const char *path = sd_json_get_str(params, "path");
+  wchar_t wp[1024];
+  host_mount *h;
+  sd_err e;
+  size_t i;
+  int all;
+  if (mid == NULL && target == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "mount_id or target required");
+  if (path == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "path required");
+  if (!wide_from_utf8(path, wp, SD_COUNTOF(wp)))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "path is too long or not UTF-8");
+  for (i = 0; wp[i]; i++)
+    if (wp[i] == L'/') wp[i] = L'\\';
+  all = wp[0] == 0 || (wp[0] == L'\\' && wp[1] == 0);
+  sd_mutex_lock(&g.lock);
+  for (h = g.mounts; h; h = h->next)
+    if (!h->test_only && mount_matches(h, target, mid, NULL)) break;
+  if (h == NULL) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  }
+  e = h->m ? sd_mount_refresh(h->m, all ? NULL : wp) : SD_E_NOT_FOUND;
+  if (e == SD_OK) {
+    sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
+    sd_jw_key(res, "path"); sd_jw_cstr(res, all ? "\\" : path);
+    sd_jw_key(res, "refreshed"); sd_jw_bool(res, 1);
+  }
+  sd_mutex_unlock(&g.lock);
+  if (e == SD_E_NOT_FOUND)
+    return fail(err, e, "not_mounted", "the mount has no file system to refresh");
+  if (e == SD_E_UNSUPPORTED)
+    return fail(err, e, "unsupported", "refresh is not available in this build");
+  return e == SD_OK ? SD_OK : fail(err, e, NULL, "refresh failed");
+}
+
+/* cache.clear {profile_id | mount_id | target | all} (M3): drops the memory blocks and the disk-tier files of the
+   matching mounts. Write-behind data still queued on one of them refuses the whole request with busy
+   (write_behind_pending, exit 8) unless force is set; the queued data is never dropped. */
+static sd_err handle_cache_clear(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *profile = sd_json_get_str(params, "profile_id");
+  const char *mid = sd_json_get_str(params, "mount_id");
+  const char *target = sd_json_get_str(params, "target");
+  int all = 0, force = 0, matched = 0, cleared = 0, busy = 0;
+  host_mount *h;
+  sd_json_get_bool(params, "all", &all);
+  sd_json_get_bool(params, "force", &force);
+  if (!all && !profile && !mid && !target)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "profile_id, mount_id, target or all required");
+  sd_mutex_lock(&g.lock);
+  if (!force) {
+    for (h = g.mounts; h && !busy; h = h->next) {
+      sd_mount_stats st;
+      if (h->test_only || h->m == NULL || !(all || mount_matches(h, target, mid, profile)))
+        continue;
+      sd_mount_get_stats(h->m, &st);
+      if (st.has_vfs && st.wb_bytes > 0)
+        busy = 1;
+    }
+    if (busy) {
+      sd_mutex_unlock(&g.lock);
+      return fail(err, SD_E_BUSY, "write_behind_pending", "write-behind data is queued; use force to clear anyway");
+    }
+  }
+  sd_jw_key(res, "mounts");
+  sd_jw_arr_begin(res);
+  for (h = g.mounts; h; h = h->next) {
+    sd_err e;
+    if (h->test_only || h->m == NULL || !(all || mount_matches(h, target, mid, profile)))
+      continue;
+    matched++;
+    e = sd_mount_cache_clear(h->m, 1, force);
+    if (e == SD_OK) {
+      cleared++;
+      sd_jw_obj_begin(res);
+      sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
+      sd_jw_obj_end(res);
+    } else if (e == SD_E_BUSY) {
+      busy = 1;                 /* queued meanwhile: this mount keeps its cache, the rest is reported */
+    }
+  }
+  sd_jw_arr_end(res);
+  sd_jw_key(res, "cleared"); sd_jw_int(res, cleared);
+  sd_jw_key(res, "disk_tier"); sd_jw_bool(res, 1);
+  sd_mutex_unlock(&g.lock);
+  if (matched == 0 && !all)
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  if (busy)
+    return fail(err, SD_E_BUSY, "write_behind_pending", "write-behind data was queued during the clear");
+  return SD_OK;
+}
+
+/* mount.attach_info {mount_id | target} (M3): the backend, the state and, for WebDAV, the loopback port and the
+   share root. The export token of the path (the capability in \\localhost@PORT\DavWWWRoot\s-<token>) is never
+   returned. */
+static sd_err handle_attach_info(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *mid = sd_json_get_str(params, "mount_id");
+  const char *target = sd_json_get_str(params, "target");
+  host_mount *h;
+  sd_mount_attach a;
+  if (mid == NULL && target == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "mount_id or target required");
+  sd_mutex_lock(&g.lock);
+  for (h = g.mounts; h; h = h->next)
+    if (!h->test_only && mount_matches(h, target, mid, NULL)) break;
+  if (h == NULL) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  }
+  memset(&a, 0, sizeof(a));
+  if (h->m)
+    sd_mount_get_attach(h->m, &a);
+  else
+    a.backend = (sd_mount_backend_kind)h->backend_req;
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, h->id);
+  sd_jw_key(res, "target"); jw_letter(res, h->letter);
+  sd_jw_key(res, "backend"); sd_jw_cstr(res, sd_mount_backend_kind_name(a.backend));
+  sd_jw_key(res, "state"); sd_jw_cstr(res, sd_mount_state_name(h->state));
+  sd_jw_key(res, "mounted"); sd_jw_bool(res, a.mounted);
+  if (a.webdav_port) {
+    char port[8], unc[64], url[64];
+    size_t n = 0, o = 0;
+    uint32_t v = a.webdav_port;
+    char tmp[8];
+    do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+    while (n) port[o++] = tmp[--n];
+    port[o] = 0;
+    unc[0] = 0;
+    url[0] = 0;
+    strcat_s(unc, sizeof(unc), "\\\\localhost@");
+    strcat_s(unc, sizeof(unc), port);
+    strcat_s(unc, sizeof(unc), "\\DavWWWRoot");
+    strcat_s(url, sizeof(url), "http://localhost:");
+    strcat_s(url, sizeof(url), port);
+    strcat_s(url, sizeof(url), "/");
+    sd_jw_key(res, "webdav");
+    sd_jw_obj_begin(res);
+    sd_jw_key(res, "host"); sd_jw_cstr(res, "localhost");
+    sd_jw_key(res, "port"); sd_jw_int(res, a.webdav_port);
+    sd_jw_key(res, "unc_root"); sd_jw_cstr(res, unc);
+    sd_jw_key(res, "xp_url"); sd_jw_cstr(res, url);
     sd_jw_obj_end(res);
   }
   sd_mutex_unlock(&g.lock);
@@ -2302,6 +2692,10 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "list") == 0) return handle_list(res);
   if (strcmp(method, "status") == 0) return handle_status(params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
+  if (strcmp(method, "profile.test") == 0) return handle_profile_test(client, params, res, err);
+  if (strcmp(method, "refresh") == 0) return handle_refresh(params, res, err);
+  if (strcmp(method, "cache.clear") == 0) return handle_cache_clear(params, res, err);
+  if (strcmp(method, "mount.attach_info") == 0) return handle_attach_info(params, res, err);
   if (strcmp(method, "log.tail") == 0) return handle_log_tail(params, res, err);
   if (strcmp(method, "config.reload") == 0) return handle_config_reload(params, res, err);
   if (strcmp(method, "prompt.answer") == 0) return handle_prompt_answer(client, params, res, err);
@@ -2344,6 +2738,64 @@ static void cleanup_webdav_mappings(const char *when)
     if (removed)
       SD_LOGW("agent", "removed %u stale WebDAV mapping(s) at %s", (unsigned)removed, when);
   }
+}
+
+/* ---- M3 config.changed and agent.stopping (03 §2.4) ---- */
+
+/* Event to every client that completed hello (events of the agent are not topic-bound here). */
+static void broadcast_all_json(const char *event, sd_wr *data)
+{
+  sd_wr w;
+  sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+  if (g.srv && sd_ipc_build_event(event, (const char *)data->p, data->len, &w) == SD_OK)
+    (void)sd_ipc_broadcast_all(g.srv, (const char *)w.p, w.len);
+  sd_wr_free(&w);
+}
+
+/* config.changed {what: "settings" | "profiles", ids?}: runs on the watch thread. The ids of the profiles are the
+   ids of the changed files that still exist (a removed profile is not named; clients list again). */
+static void on_config_changed(void *ctx, const char *what, const wchar_t *const *paths, uint32_t npaths)
+{
+  sd_wr d;
+  sd_json_writer jw;
+  uint32_t i;
+  SD_UNUSED(ctx);
+  sd_wr_init(&d, 16 * 1024);
+  sd_jw_init(&jw, &d);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "what"); sd_jw_cstr(&jw, what);
+  if (strcmp(what, "profiles") == 0) {
+    sd_jw_key(&jw, "ids");
+    sd_jw_arr_begin(&jw);
+    for (i = 0; i < npaths; i++) {
+      sd_profile *p = (sd_profile *)sd_alloc(sizeof(sd_profile));
+      const char *bad = NULL;
+      if (p != NULL && sd_profile_load_file(paths[i], p, &bad) == SD_OK && p->id[0])
+        sd_jw_cstr(&jw, p->id);
+      sd_free(p);
+    }
+    sd_jw_arr_end(&jw);
+  }
+  sd_jw_obj_end(&jw);
+  if (sd_jw_finish(&jw) == SD_OK)
+    broadcast_all_json("config.changed", &d);
+  sd_wr_free(&d);
+  SD_LOGI("agent", "configuration changed: %s", what);
+}
+
+/* agent.stopping {reason}: sent once when the shutdown sequence starts (request, event or idle). */
+static void broadcast_stopping(void)
+{
+  sd_wr d;
+  sd_json_writer jw;
+  sd_wr_init(&d, 256);
+  sd_jw_init(&jw, &d);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "reason"); sd_jw_cstr(&jw, g.stop_reason ? g.stop_reason : "request");
+  sd_jw_obj_end(&jw);
+  if (sd_jw_finish(&jw) == SD_OK)
+    broadcast_all_json("agent.stopping", &d);
+  sd_wr_free(&d);
 }
 
 /* ---- main loop ---- */
@@ -2456,6 +2908,8 @@ int host_agent_run(const host_agent_opts *opts)
      another user could bind; remove them before anything else */
   cleanup_webdav_mappings("start");
   g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
+  if (config_watch_start(on_config_changed, NULL) != SD_OK)
+    SD_LOGI("agent", "configuration watch not started (no config root)");
   g.last_busy = sd_tick_ms();
 
   while (!g.stop) {
@@ -2466,6 +2920,7 @@ int host_agent_run(const host_agent_opts *opts)
     w = WaitForMultipleObjects(n, hs, FALSE, 1000);
     if (stop_ev && w == WAIT_OBJECT_0 + 1) {
       SD_LOGI("agent", "shutdown event signaled");
+      g.stop_reason = "event";
       break;
     }
     drain();
@@ -2479,12 +2934,17 @@ int host_agent_run(const host_agent_opts *opts)
         g.last_busy = now;
       else if (now - g.last_busy > opts->idle_exit_ms) {
         SD_LOGI("agent", "idle; exiting");
+        g.stop_reason = "idle";
         break;
       }
     }
   }
 
-  /* Shutdown sequence (1.2): stop every mount, wait (bounded) for teardown, then the pipe. */
+  /* Shutdown sequence (1.2): the config watch stops, agent.stopping goes out, every mount is stopped, the wait
+     (bounded) for teardown, then the pipe. */
+  config_watch_stop();
+  broadcast_stopping();
+  Sleep(100);                           /* the pipe thread writes the queued events; there is no flush call */
   if (ready) ResetEvent(ready);
   {
     host_mount *h;

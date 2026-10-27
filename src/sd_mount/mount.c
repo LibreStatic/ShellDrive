@@ -120,6 +120,14 @@ struct sd_mount {
   uint32_t nsaves;
   uint32_t warned_legacy, warned_proxy;   /* bit per hop */
   int warned_pool;
+  /* M3 */
+  int test_only;                  /* profile.test: connect, authenticate, realpath; no vfs */
+  int force_stop;                 /* sd_mount_stop_ex(force): no write-behind drain budget */
+  int readers;                    /* stats / refresh / cache calls in progress (under lock) */
+  uint16_t wport;                 /* WebDAV export port while the export exists (under lock) */
+  int legacy_seen;                /* an outdated algorithm was negotiated on some hop */
+  int probe_ok;                   /* probe holds the profile.test result */
+  sd_mount_probe probe;
 };
 
 static const char *const k_sess_names[] = {
@@ -370,18 +378,36 @@ static void vfs_on_event(void *ctx, const sd_vfs_event *ev)
 
 /* ---- teardown (control thread) ---- */
 
+/* M3 readers: the stats, refresh and cache calls use the session and vfs outside m->lock (the backend
+   may take locks of its own), so the control thread waits for them before it destroys either object.
+   A reader takes its count and the pointers in one locked step; no lock is held while waiting. */
+static void readers_drain(sd_mount *m)
+{
+  for (;;) {
+    int r;
+    sd_mutex_lock(&m->lock);
+    r = m->readers;
+    sd_mutex_unlock(&m->lock);
+    if (r == 0)
+      return;
+    Sleep(1);
+  }
+}
+
 static void finish(sd_mount *m)
 {
   sd_err why;
+  sd_sftp_session *s;
   if (m->finished)
     return;
   sd_mutex_lock(&m->lock);
   wipe_saves(m);
+  s = m->sess;                    /* taken under the lock: stats readers see NULL from here on */
+  m->sess = NULL;
   sd_mutex_unlock(&m->lock);
-  if (m->sess) {
-    m->be->session_destroy(m->sess);
-    m->sess = NULL;
-  }
+  readers_drain(m);
+  if (s)
+    m->be->session_destroy(s);
   if (m->kh) {
     m->be->kh_close(m->kh);
     m->kh = NULL;
@@ -412,6 +438,9 @@ static void teardown(sd_mount *m)
     if (e != SD_OK)
       SD_LOGW("mount", "webdav_mount_stop: %s", sd_err_name(e));
     m->wm = NULL;
+    sd_mutex_lock(&m->lock);
+    m->wport = 0;
+    sd_mutex_unlock(&m->lock);
   }
   if (m->dm) {
     sd_err e = m->be->dokan_mount_stop(m->dm);
@@ -420,9 +449,16 @@ static void teardown(sd_mount *m)
     m->dm = NULL;
   }
   if (m->vfs) {
-    m->be->vfs_quiesce(m->vfs, 10000);
-    m->be->vfs_unmount(m->vfs);
+    sd_vfs *v;
+    /* M3: the vfs leaves the mount under the lock, so a stats reader never sees a freed vfs. A forced
+       stop gives the write-behind drain no time: what is queued is reported as write_failed (02 §4.4). */
+    sd_mutex_lock(&m->lock);
+    v = m->vfs;
     m->vfs = NULL;
+    sd_mutex_unlock(&m->lock);
+    readers_drain(m);
+    m->be->vfs_quiesce(v, m->force_stop ? 0 : 10000);
+    m->be->vfs_unmount(v);
   }
   if (m->sess && !m->session_closing) {
     m->session_closing = 1;
@@ -524,6 +560,29 @@ static void warn_proxy_cleartext(sd_mount *m)
   }
 }
 
+/* M3 profile.test: realpath of the remote path and the negotiated summary, read from the READY session.
+   Control thread; a failure is recorded like any mount failure (the caller then tears the mount down). */
+static void do_probe(sd_mount *m)
+{
+  sd_mount_probe p;
+  sd_err e;
+  memset(&p, 0, sizeof(p));
+  if (m->be->session_probe == NULL) {
+    record_failure(m, SD_E_UNSUPPORTED, NULL, "profile test is not available in this build");
+    return;
+  }
+  e = m->be->session_probe(m->sess, m->remote, 15000, &p);
+  if (e != SD_OK) {
+    record_failure(m, e, NULL, "profile test: realpath failed");
+    return;
+  }
+  sd_mutex_lock(&m->lock);
+  p.legacy = m->legacy_seen;
+  m->probe = p;
+  m->probe_ok = 1;
+  sd_mutex_unlock(&m->lock);
+}
+
 static void on_ready(sd_mount *m)
 {
   sd_vfs_options vo;
@@ -538,6 +597,11 @@ static void on_ready(sd_mount *m)
     /* reconnected (generation > 1): the vfs and the backend stay; the vfs re-syncs by itself */
     set_state(m, SD_MOUNT_MOUNTED, SD_OK);
     if (m->cb.on_conn) m->cb.on_conn(m->cb.ctx, m);
+    return;
+  }
+  if (m->test_only) {
+    do_probe(m);
+    teardown(m);                    /* no vfs, no backend: the session closes and the mount ends */
     return;
   }
   use = choose_backend(m);
@@ -609,6 +673,11 @@ static void on_ready(sd_mount *m)
       record_failure(m, e, e == SD_E_EXISTS ? "target_in_use" : NULL, "webdav mount failed");
       teardown(m);
       return;
+    }
+    if (m->be->webdav_port) {
+      sd_mutex_lock(&m->lock);
+      m->wport = m->be->webdav_port(m->wm);
+      sd_mutex_unlock(&m->lock);
     }
   } else {
     sd_dokan_mount_cfg dc;
@@ -1124,6 +1193,9 @@ static void ssh_on_negotiated(void *ctx, const sd_ssh_negotiated *n)
     if (legacy_name(names[i])) legacy[k++] = names[i];
   if (k == 0 && n->legacy_mask == 0)
     return;
+  sd_mutex_lock(&m->lock);
+  m->legacy_seen = 1;             /* profile.test reports it whatever the legacy policy */
+  sd_mutex_unlock(&m->lock);
   qsort((void *)legacy, k, sizeof(legacy[0]), cmp_cstr);
   detail[0] = 0;
   for (i = 0; i < k; i++) {
@@ -1412,6 +1484,7 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->refuse_terrapin = p->refuse_terrapin_exposed;
   m->connections = p->connections >= 1 && p->connections <= 4 ? p->connections : 1;
   m->conn.pool_wanted = m->connections;
+  m->test_only = p->test_only ? 1 : 0;
   m->keepalive = p->keepalive_ms;
   m->ctimeout = p->connect_timeout_ms;
   m->profile_name = wdup(p->profile_name);
@@ -1753,3 +1826,128 @@ uint32_t sd_mount_cancel_prompts(sd_mount *m)
   }
 }
 
+
+/* ---- M3: stop force, refresh, cache.clear, stats, attach info, profile.test result ----
+ * Stats, refresh and cache calls may run on any thread that holds the host's lock for the mount (the
+ * host destroys mounts under that lock). They count themselves in m->readers under m->lock, so the
+ * control thread never frees the session or the vfs under them (readers_drain). */
+
+static void reader_leave(sd_mount *m)
+{
+  sd_mutex_lock(&m->lock);
+  m->readers--;
+  sd_mutex_unlock(&m->lock);
+}
+
+sd_err sd_mount_stop_ex(sd_mount *m, int force)
+{
+  if (m == NULL)
+    return SD_E_INVALID_PARAM;
+  m->force_stop = force ? 1 : 0;
+  return sd_mount_stop(m);
+}
+
+sd_err sd_mount_refresh(sd_mount *m, const wchar_t *subtree)
+{
+  sd_vfs *v;
+  if (m == NULL)
+    return SD_E_INVALID_PARAM;
+  if (m->be->vfs_refresh == NULL)
+    return SD_E_UNSUPPORTED;
+  sd_mutex_lock(&m->lock);
+  v = m->vfs;
+  if (v == NULL) {
+    sd_mutex_unlock(&m->lock);
+    return SD_E_NOT_FOUND;
+  }
+  m->readers++;
+  sd_mutex_unlock(&m->lock);
+  m->be->vfs_refresh(v, subtree);
+  reader_leave(m);
+  return SD_OK;
+}
+
+sd_err sd_mount_cache_clear(sd_mount *m, int disk_too, int force)
+{
+  sd_vfs *v;
+  sd_err e = SD_OK;
+  if (m == NULL)
+    return SD_E_INVALID_PARAM;
+  if (m->be->vfs_cache_clear == NULL)
+    return SD_E_UNSUPPORTED;
+  sd_mutex_lock(&m->lock);
+  v = m->vfs;
+  if (v == NULL) {
+    sd_mutex_unlock(&m->lock);
+    return SD_E_NOT_FOUND;
+  }
+  m->readers++;
+  sd_mutex_unlock(&m->lock);
+  /* write-behind data is still queued: the clear would not be the only copy, but it is not safe to
+     pretend the cache is clean either, so the host gets busy and decides (force) */
+  if (!force && m->be->vfs_write_behind_bytes && m->be->vfs_write_behind_bytes(v) > 0)
+    e = SD_E_BUSY;
+  else
+    m->be->vfs_cache_clear(v, disk_too ? 1 : 0);
+  reader_leave(m);
+  return e;
+}
+
+void sd_mount_get_stats(const sd_mount *cm, sd_mount_stats *out)
+{
+  sd_mount *m = (sd_mount *)cm;
+  sd_sftp_session *s;
+  sd_vfs *v;
+  if (out == NULL)
+    return;
+  memset(out, 0, sizeof(*out));
+  if (m == NULL)
+    return;
+  sd_mutex_lock(&m->lock);
+  s = m->sess;
+  v = m->vfs;
+  m->readers++;
+  sd_mutex_unlock(&m->lock);
+  if (s && m->be->session_stats) {
+    m->be->session_stats(s, out);
+    out->has_session = 1;
+  }
+  if (v) {
+    if (m->be->vfs_stats)
+      m->be->vfs_stats(v, out);
+    if (m->be->vfs_write_behind_bytes)
+      out->wb_bytes = m->be->vfs_write_behind_bytes(v);
+    out->has_vfs = 1;
+  }
+  reader_leave(m);
+}
+
+void sd_mount_get_attach(const sd_mount *cm, sd_mount_attach *out)
+{
+  sd_mount *m = (sd_mount *)cm;
+  if (out == NULL)
+    return;
+  memset(out, 0, sizeof(*out));
+  if (m == NULL)
+    return;
+  sd_mutex_lock(&m->lock);
+  out->backend = m->vfs ? m->used : (sd_mount_backend_kind)m->backend_req;
+  out->letter = m->letter;
+  out->mounted = m->state == SD_MOUNT_MOUNTED;
+  out->webdav_port = m->wport;
+  sd_mutex_unlock(&m->lock);
+}
+
+int sd_mount_get_probe(const sd_mount *cm, sd_mount_probe *out)
+{
+  sd_mount *m = (sd_mount *)cm;
+  int ok;
+  if (out == NULL || m == NULL)
+    return 0;
+  sd_mutex_lock(&m->lock);
+  ok = m->probe_ok;
+  if (ok)
+    *out = m->probe;
+  sd_mutex_unlock(&m->lock);
+  return ok;
+}

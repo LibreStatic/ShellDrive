@@ -77,6 +77,8 @@ static int g_last_known;
 static uint32_t g_last_known_uid;
 static sd_vfs_event_cb g_vfs_cb;
 static void *g_vfs_ctx;
+static volatile LONG g_quiesce_budget = -1;
+static volatile LONG g_refresh_calls, g_cache_clears, g_clear_disk, g_wb_dirty;
 static sd_vfs_identity g_vfs_ident;
 /* M2 */
 static fake_hop g_last_hops[FAKE_MAX_HOPS];
@@ -103,6 +105,8 @@ void fake_backend_reset(void)
   memset(&g_vfs_ident, 0, sizeof(g_vfs_ident));
   g_last_nhops = g_last_connections = g_store_answers = g_applied_add = g_applied_remove = g_apply_calls = 0;
   g_applied_name[0] = g_last_new_password[0] = 0;
+  g_refresh_calls = g_cache_clears = g_clear_disk = g_wb_dirty = 0;
+  g_quiesce_budget = -1;
   sd_mutex_unlock(&g_lock);
 }
 
@@ -800,7 +804,7 @@ static sd_vfs_status f_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd
   return *out ? SD_VFS_OK : SD_VFS_E_NO_MEMORY;
 }
 
-static void f_vfs_quiesce(sd_vfs *v, DWORD budget) { SD_UNUSED(v); SD_UNUSED(budget); }
+static void f_vfs_quiesce(sd_vfs *v, DWORD budget) { SD_UNUSED(v); InterlockedExchange(&g_quiesce_budget, (LONG)budget); }
 static void f_vfs_unmount(sd_vfs *v) { sd_free(v); }
 
 static int g_probe_fail_next;   /* set by a "nodokany" session */
@@ -944,6 +948,89 @@ static void f_vfs_get_identity(sd_vfs *v, sd_vfs_identity *out)
 
 static void f_wd_emergency(void) {}
 
+/* M3 fakes: profile.test probe, stats, refresh, cache clear, write-behind bytes, WebDAV port */
+
+static sd_err f_session_probe(sd_sftp_session *s, const char *remote, uint32_t timeout_ms, sd_mount_probe *out)
+{
+  SD_UNUSED(timeout_ms);
+  if (starts_with(s->host, "probefail"))
+    return SD_E_NOT_FOUND;
+  strcpy_s(out->kex, sizeof(out->kex), "curve25519-sha256");
+  strcpy_s(out->hostkey, sizeof(out->hostkey), "ssh-ed25519");
+  strcpy_s(out->cipher_c2s, sizeof(out->cipher_c2s), "chacha20-poly1305@openssh.com");
+  strcpy_s(out->cipher_s2c, sizeof(out->cipher_s2c), "chacha20-poly1305@openssh.com");
+  strcpy_s(out->mac_c2s, sizeof(out->mac_c2s), "");
+  strcpy_s(out->mac_s2c, sizeof(out->mac_s2c), "");
+  strcpy_s(out->hostkey_fp, sizeof(out->hostkey_fp), FAKE_FP);
+  strcpy_s(out->server_version, sizeof(out->server_version), "FakeSSH_1.0");
+  strcpy_s(out->remote_real, sizeof(out->remote_real), (remote && remote[0]) ? remote : "/home/fake");
+  return SD_OK;
+}
+
+static void f_session_stats(const sd_sftp_session *s, sd_mount_stats *out)
+{
+  SD_UNUSED(s);
+  out->srtt_ms = 12;
+  out->rttvar_ms = 3;
+  out->rx_bps = 2048;
+  out->tx_bps = 512;
+  out->rx_total = 4096;
+  out->tx_total = 1024;
+  out->inflight = 2;
+  out->queued = 1;
+  out->channels = 1;
+  out->generation = 1;
+  out->members = 1;
+  out->member[0].ready = 1;
+  out->member[0].srtt_ms = 12;
+  out->member[0].inflight = 2;
+  out->member[0].queued = 1;
+  out->member[0].rx_total = 4096;
+  out->member[0].tx_total = 1024;
+}
+
+static void f_vfs_stats(sd_vfs *v, sd_mount_stats *out)
+{
+  SD_UNUSED(v);
+  out->cache_hits = 7;
+  out->cache_misses = 5;
+  out->bytes_rd = 4096;
+  out->bytes_wr = 0;
+  out->write_failed = 0;
+  out->reconnects = 0;
+}
+
+static void f_vfs_refresh(sd_vfs *v, const wchar_t *subtree)
+{
+  SD_UNUSED(v);
+  SD_UNUSED(subtree);
+  InterlockedIncrement(&g_refresh_calls);
+}
+
+static void f_vfs_cache_clear(sd_vfs *v, int disk_too)
+{
+  SD_UNUSED(v);
+  InterlockedIncrement(&g_cache_clears);
+  InterlockedExchange(&g_clear_disk, disk_too ? 1 : 0);
+}
+
+static UINT64 f_wb_bytes(sd_vfs *v)
+{
+  SD_UNUSED(v);
+  return (UINT64)g_wb_dirty;
+}
+
+static uint16_t f_webdav_port(const sd_webdav_mount *m)
+{
+  SD_UNUSED(m);
+  return 49321;
+}
+
+void fake_backend_set_wb_dirty(UINT64 bytes) { InterlockedExchange(&g_wb_dirty, (LONG)bytes); }
+uint32_t fake_backend_refresh_calls(void) { return (uint32_t)g_refresh_calls; }
+uint32_t fake_backend_cache_clears(int *disk_too) { if (disk_too) *disk_too = (int)g_clear_disk; return (uint32_t)g_cache_clears; }
+int fake_backend_last_quiesce_budget(void) { return (int)g_quiesce_budget; }
+
 /* "nodokany*" hosts make the next probe fail: wrap session_create to detect them. */
 static sd_err f_session_create_wrap(const sd_ssh_config *ssh, const sd_ssh_callbacks *cb, const sd_sftp_options *opt,
                                     sd_sftp_event_cb ev, void *ev_ctx, sd_sftp_session **out)
@@ -984,6 +1071,13 @@ static const sd_mount_backend k_fake = {
   f_prompt_answer_ack,
   f_kh_apply,
   f_key_unprotect,
+  f_session_probe,
+  f_session_stats,
+  f_vfs_stats,
+  f_vfs_refresh,
+  f_vfs_cache_clear,
+  f_wb_bytes,
+  f_webdav_port,
 };
 
 const sd_mount_backend *fake_backend(void)

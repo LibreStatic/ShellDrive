@@ -255,3 +255,24 @@ SD_TEST(m3_state_section_create_open)
   CloseHandle(h2);
   CloseHandle(h);
 }
+
+/* TM-R26 (lead decision): the owner and label decision fails closed on Vista+ when the label cannot be read,
+   and XP (no labels) decides on the owner alone. Every branch of the decision is driven here. */
+SD_TEST(m3_owner_label_fails_closed)
+{
+  /* XP: owner only; there is no label to read */
+  SD_CHECK(sd_ipc_test_owner_decision(1, 0, 0, 0, 0) == SD_OK);
+  SD_CHECK(sd_ipc_test_owner_decision(0, 0, 0, 0, 0) == SD_E_ACCESS_DENIED);
+  /* Vista+: an unreadable label refuses, even when the owner matches (no owner-only fallback) */
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 0, 0, 0) == SD_E_ACCESS_DENIED);
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 0, 1, 0x2000) == SD_E_ACCESS_DENIED);
+  SD_CHECK(sd_ipc_test_owner_decision(0, 1, 0, 0, 0) == SD_E_ACCESS_DENIED);
+  /* Vista+ with a readable label: no label ACE is the default (medium); medium and high pass, low refuses */
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 1, 0, 0) == SD_OK);
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 1, 1, 0x2000) == SD_OK);
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 1, 1, 0x3000) == SD_OK);
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 1, 1, 0x1000) == SD_E_ACCESS_DENIED);
+  SD_CHECK(sd_ipc_test_owner_decision(1, 1, 1, 1, 0x0000) == SD_E_ACCESS_DENIED);
+  /* a readable low label on a foreign owner is refused as well */
+  SD_CHECK(sd_ipc_test_owner_decision(0, 1, 1, 1, 0x3000) == SD_E_ACCESS_DENIED);
+}

@@ -12,6 +12,8 @@ set(SD_HOST_AGENT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/state_producer.h
   ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.c
   ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.h
   ${CMAKE_CURRENT_SOURCE_DIR}/host.h)
 
 if(SD_HOST_REAL_BACKEND)

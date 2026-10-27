@@ -1200,6 +1200,26 @@ void sd_vfs_get_stats(sd_vfs *v, sd_vfs_stats *out)
   out->nconn = 1;
 }
 
+UINT64 sd_vfs_write_behind_bytes(sd_vfs *v)
+{
+  UINT64 n = 0;
+  if (!v)
+    return 0;
+  sd_mutex_lock(&v->lock);
+  n = v->wb_bytes;
+  sd_mutex_unlock(&v->lock);
+  return n;
+}
+
+void sd_vfs_cache_clear(sd_vfs *v, BOOL disk_too)
+{
+  if (!v)
+    return;
+  vc_drop_mount(v->mount_id);
+  if (disk_too)
+    vfs_disk_clear(v);
+}
+
 void sd_vfs_refresh(sd_vfs *v, const WCHAR *subtree)
 {
   vfs_path p;

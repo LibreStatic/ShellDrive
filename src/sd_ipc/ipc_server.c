@@ -45,6 +45,8 @@ struct sd_ipc_client {
   HANDLE pipe;
   uint64_t id;
   int hello_done, closing, close_after_write;
+  int cur_req_active, deferred;      /* M3: inside a handler call; the handler deferred its reply */
+  int64_t cur_req_id;
   int pending;                        /* outstanding ReadFileEx/WriteFileEx */
   uint8_t *rbuf;
   size_t rcap, rlen;
@@ -588,7 +590,16 @@ static void handle_request(sd_ipc_client *c, const sd_json *msg)
     sd_jw_key(&jw, "id"); sd_jw_int(&jw, id);
     sd_jw_key(&jw, "result");
     sd_jw_obj_begin(&jw);
+    c->cur_req_active = 1;
+    c->cur_req_id = id;
+    c->deferred = 0;
     r = s->cfg.handler ? s->cfg.handler(s->cfg.ctx, c, method, params, &jw, &err) : SD_E_UNSUPPORTED;
+    c->cur_req_active = 0;
+    if (c->deferred) {                /* the reply comes later through sd_ipc_reply_deferred */
+      c->deferred = 0;
+      sd_wr_free(&w);
+      return;
+    }
     if (r == SD_OK && err.err != SD_OK)
       r = err.err;
     if (r == SD_OK) {
@@ -734,6 +745,8 @@ static int client_is_recipient(const sd_ipc_client *c, const char *topic, uint32
   return client_subscribed(c, topic);
 }
 
+#define IPC_TOPIC_ALL "*"
+
 static void drain_queue(sd_ipc_server *s)
 {
   ipc_msg *m;
@@ -752,7 +765,8 @@ static void drain_queue(sd_ipc_server *s)
       next = c->next;   /* client_queue may free c */
       if (!c->hello_done || c->closing)
         continue;
-      if (m->client_id ? c->id == m->client_id : client_is_recipient(c, m->topic, m->caps, m->exclude))
+      if (m->client_id ? c->id == m->client_id
+                       : (strcmp(m->topic, IPC_TOPIC_ALL) == 0 || client_is_recipient(c, m->topic, m->caps, m->exclude)))
         client_queue(c, m->data, m->len);
     }
     sd_free(m);
@@ -842,6 +856,13 @@ void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_jso
   (void)sd_ipc_broadcast_count(s, topic, event_json, len, 0, 0, NULL);
 }
 
+/* M3: an event for every client that completed hello (events without a topic, config.changed and
+   agent.stopping). IPC_TOPIC_ALL is not a valid topic name, so no subscription can match it. */
+sd_err sd_ipc_broadcast_all(sd_ipc_server *s, const char *event_json, size_t len)
+{
+  return enqueue(s, 0, IPC_TOPIC_ALL, event_json, len, 0, 0);
+}
+
 uint32_t sd_ipc_topic_subscribers(sd_ipc_server *s, const char *topic, uint32_t required_caps)
 {
   sd_ipc_client *c;
@@ -861,6 +882,71 @@ sd_err sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_js
   if (client_id == 0)
     return SD_E_INVALID_PARAM;
   return enqueue(s, client_id, NULL, event_json, len, 0, 0);
+}
+
+/* M3: deferred replies (profile.test). Called inside the handler, on the pipe thread. */
+int sd_ipc_defer(sd_ipc_client *client, int64_t *req_id)
+{
+  if (client == NULL || !client->cur_req_active)
+    return 0;
+  client->deferred = 1;
+  if (req_id)
+    *req_id = client->cur_req_id;
+  return 1;
+}
+
+/* Any thread. Builds the complete "res" message of the request (result object, or the error of e/code/detail
+   with the table's exit code) and queues it for the client. SD_E_NOT_FOUND once the client is gone. */
+sd_err sd_ipc_reply_deferred(sd_ipc_server *s, uint64_t client_id, int64_t req_id, sd_err e, const char *code,
+                             const char *detail, const char *result_json, size_t result_len)
+{
+  sd_wr w;
+  sd_err r;
+  char idbuf[24];
+  if (s == NULL || client_id == 0)
+    return SD_E_INVALID_PARAM;
+  {
+    /* decimal id without the CRT: at most 20 digits and a sign */
+    uint64_t v = req_id < 0 ? (uint64_t)0 - (uint64_t)req_id : (uint64_t)req_id;
+    char tmp[24];
+    size_t n = 0, o = 0;
+    do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+    if (req_id < 0) idbuf[o++] = '-';
+    while (n) idbuf[o++] = tmp[--n];
+    idbuf[o] = 0;
+  }
+  sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+  if (e == SD_OK && result_json != NULL) {
+    sd_wr_bytes(&w, "{\"type\":\"res\",\"id\":", strlen("{\"type\":\"res\",\"id\":"));
+    sd_wr_bytes(&w, idbuf, strlen(idbuf));
+    sd_wr_bytes(&w, ",\"result\":", strlen(",\"result\":"));
+    sd_wr_bytes(&w, result_json, result_len);
+    sd_wr_bytes(&w, "}", 1);
+  } else {
+    sd_ipc_error err;
+    sd_json_writer jw;
+    memset(&err, 0, sizeof(err));
+    sd_ipc_error_set(&err, e == SD_OK ? SD_E_INTERNAL : e, code, detail);
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, "res");
+    sd_jw_key(&jw, "id"); sd_jw_int(&jw, req_id);
+    sd_jw_key(&jw, "error");
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, err.code[0] ? err.code : sd_err_name(err.err));
+    sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, err.detail);
+    sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, err.exit_code);
+    sd_jw_key(&jw, "err"); sd_jw_cstr(&jw, sd_err_name(err.err));
+    sd_jw_obj_end(&jw);
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) != SD_OK) {
+      sd_wr_free(&w);
+      return SD_E_INTERNAL;
+    }
+  }
+  r = sd_ipc_send_to(s, client_id, (const char *)w.p, w.len);
+  sd_wr_free(&w);
+  return r;
 }
 
 /* ---- thread ---- */

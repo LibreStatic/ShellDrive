@@ -96,6 +96,9 @@ int    sd_ipc_client_is_admin(sd_ipc_client *client);      /* elevated + BUILTIN
 DWORD  sd_ipc_client_pid(sd_ipc_client *client);
 /* Sends an event to every client subscribed to `topic`; `event_json` is a complete JSON object. */
 void   sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len);
+/* M3: sends an event to every client that completed hello, whatever its subscriptions (config.changed,
+   agent.stopping). Thread-safe, queued like the others. */
+sd_err sd_ipc_broadcast_all(sd_ipc_server *s, const char *event_json, size_t len);
 /* Same, and reports how many recipients were queued: subscribed clients that completed hello, have
    every bit of `required_caps` and are not `exclude_client` (0 = none). `count` may be NULL. The
    count is taken when the event is queued; a recipient that disconnects before the pipe thread
@@ -142,6 +145,13 @@ uint32_t sd_ipc_client_caps(sd_ipc_client *client);          /* SD_IPC_CAP_* fro
 const char *sd_ipc_client_lang(sd_ipc_client *client);       /* from hello; "en" if absent */
 /* Thread-safe: queues a complete event message for one client. SD_E_NOT_FOUND once it is gone. */
 sd_err   sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_json, size_t len);
+/* M3 deferred replies: a handler that cannot answer yet (profile.test) calls sd_ipc_defer(client, &id) inside
+   the call and returns; the pipe thread sends no reply. Later, from any thread, sd_ipc_reply_deferred sends the
+   reply once: result_json (an object of result_len bytes) on success, or the error of e/code/detail. sd_ipc_defer
+   returns 0 when it is not called from a handler. */
+int      sd_ipc_defer(sd_ipc_client *client, int64_t *req_id);
+sd_err   sd_ipc_reply_deferred(sd_ipc_server *s, uint64_t client_id, int64_t req_id, sd_err e, const char *code,
+                               const char *detail, const char *result_json, size_t result_len);
 /* Number of clients that completed hello (thread-safe). */
 uint32_t sd_ipc_server_client_count(sd_ipc_server *s);
 /* "client" of the hello ("cli", "ui", "shellext"); "" before hello. */
@@ -198,5 +208,8 @@ void     sd_ipc_set_instance_suffix(const wchar_t *suffix);
 void     sd_ipc_test_set_expected_owner(const wchar_t *sid_string);
 /* TEST HOOK: how often sd_ipc_connect retried because an instance broke before hello completed. */
 uint32_t sd_ipc_test_connect_retries(void);
+/* TEST HOOK: the owner and label decision of TM-R26 (ipc_owner_decision) without an object: owner_ok, want_label
+   (Vista+ and the label asked), label_read, label_present and the label RID of the mandatory label. */
+sd_err   sd_ipc_test_owner_decision(int owner_ok, int want_label, int label_read, int label_present, DWORD label_rid);
 
 #endif /* SD_IPC_H */

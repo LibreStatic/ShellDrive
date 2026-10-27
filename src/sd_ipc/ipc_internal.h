@@ -21,6 +21,7 @@ sd_err ipc_sid_to_string(PSID sid, wchar_t **out);
 /* Owner SID of a kernel object handle equals `expected`; also enforces "no label or label >=
    medium" when check_label is set (Vista+). SD_OK or SD_E_ACCESS_DENIED. */
 sd_err ipc_verify_object_owner(HANDLE h, PSID expected, int check_label);
+sd_err ipc_owner_decision(int owner_ok, int want_label, int label_read, int label_present, DWORD label_rid);
 
 /* Builds a self-relative security descriptor from SDDL (LocalFree the result). */
 sd_err ipc_sd_from_sddl(const wchar_t *sddl, PSECURITY_DESCRIPTOR *out);

@@ -203,6 +203,12 @@ typedef struct sd_vfs_stats { UINT64 ops[32], rtts[32], cache_hits, cache_misses
                               UINT32 nconn; sd_vfs_conn_stats conn[SD_VFS_MAX_CONN]; } sd_vfs_stats;
 void sd_vfs_get_stats(sd_vfs *v, sd_vfs_stats *out);
 void sd_vfs_refresh(sd_vfs *v, const WCHAR *subtree);
+/* M3 (cache.clear, status). Write-behind bytes queued on the mount and not yet acknowledged; the host
+   refuses a cache clear while it is not 0 unless forced. cache_clear drops this mount's memory blocks
+   and, when disk_too, its disk-tier files (entries in use are skipped). Dirty write-behind data is
+   never dropped by a clear: it stays queued for the background flush. Any thread. */
+UINT64 sd_vfs_write_behind_bytes(sd_vfs *v);
+void   sd_vfs_cache_clear(sd_vfs *v, BOOL disk_too);
 
 /* Static volume facts for the backend (GetVolumeInformation, requestor check). Pointers stay valid
    until sd_vfs_unmount; `online` is a snapshot (append offline_suffix to the label when FALSE). */

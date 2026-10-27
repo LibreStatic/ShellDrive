@@ -185,6 +185,7 @@ kernel32.dll!QueueUserAPC
 kernel32.dll!QueueUserWorkItem
 kernel32.dll!RaiseException
 kernel32.dll!ReadConsoleW
+kernel32.dll!ReadDirectoryChangesW
 kernel32.dll!ReadFile
 kernel32.dll!ReadFileEx
 kernel32.dll!ReleaseMutex
