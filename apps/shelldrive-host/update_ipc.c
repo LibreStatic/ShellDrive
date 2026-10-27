@@ -1,5 +1,5 @@
 /* shelldrive-host update methods (see update_ipc.h). Configuration precedence (04 §9.1, 03 §3.5):
- *   policy (HKLM, then HKCU: DisableUpdateCheck, UpdateChannel, UpdateUrl) > settings.ini [update] of the user
+ *   policy (sd_policy: HKLM, then HKCU; the update policies of 03 §3.5) > settings.ini [update] of the user
  *   (or of <exe dir>\data for a portable install) > settings.ini [update] of the machine (%ProgramData%) > defaults.
  * Defaults: enabled, channel stable, the GitHub bootstrap manifest. Trust: the release roots are compiled in by the
  * release build (04 §9.3); this build carries none, so every verification fails closed until they are added. */
@@ -14,12 +14,12 @@
 #include "sd_base/sd_utf.h"
 #include "sd_config/sd_ini.h"
 #include "sd_ipc/sd_ipc.h"
+#include "sd_policy/sd_policy.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
 #include "sd_update/sd_update.h"
 
-#define UPD_POLICY_KEY   L"Software\\Policies\\LibreStatic\\ShellDrive"
 #define UPD_DEFAULT_URL  L"https://github.com/LibreStatic/ShellDrive/releases/latest/download/manifest.txt"
 #define UPD_INI_MAX      (64u * 1024u)
 #define UPD_APPLY_MS     600000u           /* the staged setup may wait for UAC and a file lock */
@@ -35,7 +35,7 @@ typedef struct upd_cfg {
   const char *reason;                      /* "policy" | "settings" */
   int         portable;
   char        channel[8];
-  wchar_t     url[1024];
+  wchar_t     url[2049];               /* the UpdateUrl policy allows 2048 characters */
   wchar_t     state_user[MAX_PATH];
   wchar_t     state_machine[MAX_PATH];
   wchar_t     staging[MAX_PATH];
@@ -145,36 +145,6 @@ static void load_ini(const wchar_t *path, upd_cfg *c)
   sd_free(buf);
 }
 
-static int policy_dword(HKEY root, const wchar_t *name, DWORD *out)
-{
-  HKEY k;
-  DWORD type = 0, sz = sizeof(DWORD);
-  LONG r;
-  if (RegOpenKeyExW(root, UPD_POLICY_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
-    return 0;
-  r = RegQueryValueExW(k, name, NULL, &type, (LPBYTE)out, &sz);
-  RegCloseKey(k);
-  return r == ERROR_SUCCESS && type == REG_DWORD;
-}
-
-static int policy_string(HKEY root, const wchar_t *name, wchar_t *out, DWORD cch)
-{
-  HKEY k;
-  DWORD type = 0, sz;
-  LONG r;
-  if (out == NULL || cch < 2)
-    return 0;
-  sz = cch * sizeof(wchar_t);
-  if (RegOpenKeyExW(root, UPD_POLICY_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
-    return 0;
-  r = RegQueryValueExW(k, name, NULL, &type, (LPBYTE)out, &sz);
-  RegCloseKey(k);
-  if (r != ERROR_SUCCESS || type != REG_SZ || sz < sizeof(wchar_t))
-    return 0;                             /* a value longer than the buffer is ERROR_MORE_DATA: refused */
-  out[cch - 1] = L'\0';
-  return 1;
-}
-
 /* Points the engine's directory arguments at the arrays of this very struct. Call it on the copy that is
    used (a copied struct keeps pointers into the original). */
 static void cfg_bind(upd_cfg *c)
@@ -217,7 +187,7 @@ static void load_config(upd_cfg *c)
   }
 
   /* policy: HKLM wins over HKCU (03 §3.5) */
-  if (policy_dword(HKEY_LOCAL_MACHINE, L"DisableUpdateCheck", &dw) || policy_dword(HKEY_CURRENT_USER, L"DisableUpdateCheck", &dw)) {
+  if (sd_policy_get_dword(SD_POLICY_DISABLEUPDATECHECK, &dw)) {
     if (dw != 0) {
       c->enabled = 0;
       c->reason = "policy";
@@ -225,8 +195,7 @@ static void load_config(upd_cfg *c)
   }
   {
     wchar_t pv[64];
-    int have = policy_string(HKEY_LOCAL_MACHINE, L"UpdateChannel", pv, SD_COUNTOF(pv)) ||
-               policy_string(HKEY_CURRENT_USER, L"UpdateChannel", pv, SD_COUNTOF(pv));
+    int have = sd_policy_get_sz(SD_POLICY_UPDATECHANNEL, pv, SD_COUNTOF(pv));
     if (have) {
       size_t i;
       for (i = 0; i < 8 && pv[i]; i++)
@@ -237,9 +206,8 @@ static void load_config(upd_cfg *c)
     }
   }
   {
-    wchar_t pu[1024];
-    if (policy_string(HKEY_LOCAL_MACHINE, L"UpdateUrl", pu, SD_COUNTOF(pu)) ||
-        policy_string(HKEY_CURRENT_USER, L"UpdateUrl", pu, SD_COUNTOF(pu)))
+    wchar_t pu[2049];
+    if (sd_policy_get_sz(SD_POLICY_UPDATEURL, pu, SD_COUNTOF(pu)))
       wcscpy_s(c->url, SD_COUNTOF(c->url), pu);
   }
   if (c->enabled == 0 && c->reason == NULL)

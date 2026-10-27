@@ -62,11 +62,12 @@ static int known_load(const char *path)
     return 0;
   }
   while (fgets(line, sizeof(line), f)) {
-    char *p = line, *e;
-    e = p + strcspn(p, "#\r\n");
-    while (p < e && (*p == ' ' || *p == '\t')) p++;
-    while (e > p && (e[-1] == ' ' || e[-1] == '\t')) e--;
-    *e = 0;
+    size_t b = 0, e = strcspn(line, "#\r\n");
+    char *p;
+    while (b < e && (line[b] == ' ' || line[b] == '\t')) b++;
+    while (e > b && (line[e - 1] == ' ' || line[e - 1] == '\t')) e--;
+    line[e] = 0;
+    p = line + b;
     if (!*p) continue;
     if (g_nknown == g_capknown) {
       char **nk;
