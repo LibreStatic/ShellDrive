@@ -31,6 +31,10 @@ set_tests_properties(ui.windows PROPERTIES LABELS ui TIMEOUT 120)
 add_test(NAME ui.wizard COMMAND $<TARGET_FILE:shelldrive-ui> --test-wizard)
 set_tests_properties(ui.wizard PROPERTIES LABELS ui TIMEOUT 120)
 
+# The smoke tests share one fixed config root (%TEMP%\shelldrive-ui-test, apps/shelldrive-ui/main.c), so they
+# never run side by side.
+set_tests_properties(ui.smoke ui.prompts ui.editor ui.windows ui.wizard PROPERTIES RESOURCE_LOCK ui_test_store)
+
 # sd_add_dll fixture: exercises the DLL helper (version resource, import audit, ISA audit) on every flavour.
 sd_add_dll(sd-test-ui-fixture
   OUTPUT_NAME sd-test-ui-fixture

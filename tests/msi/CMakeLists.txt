@@ -18,7 +18,8 @@ set_tests_properties(msi.${SD_FLAVOUR}.tables PROPERTIES LABELS msi TIMEOUT 300)
 
 add_test(NAME msi.${SD_FLAVOUR}.admin
          COMMAND sd-test-msi admin "${SD_MSI_PACKAGE}" "${CMAKE_BINARY_DIR}/msi-admin/${SD_FLAVOUR}")
-set_tests_properties(msi.${SD_FLAVOUR}.admin PROPERTIES LABELS msi TIMEOUT 900)
+# msiexec runs one installation at a time per machine (Windows Installer service): windows_installer.
+set_tests_properties(msi.${SD_FLAVOUR}.admin PROPERTIES LABELS msi TIMEOUT 900 RESOURCE_LOCK windows_installer)
 
 # WixUI string overrides (packaging/msi/wixui): every id of the dialog set in every override, and the Spanish register
 # lint (docs/dev/m4-notes.md). Plain CMake script, no package needed.

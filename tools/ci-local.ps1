@@ -19,13 +19,17 @@
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets x64-modern -Clean
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets arm64 -Clean
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets arm32 -Clean
+  powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets x64-modern -Jobs 1
 #>
 [CmdletBinding()]
 param(
   [string[]]$Presets = @('x64-modern', 'x64-xp', 'x86-ia32', 'x86-sse2', 'x64-analysis'),
   [switch]$Clean,
   [switch]$AllowSkip,
-  [switch]$NoFixture
+  [switch]$NoFixture,
+  # Parallel ctest jobs. Tests that share a fixture, a pipe or other machine state carry a RESOURCE_LOCK (or
+  # RUN_SERIAL), so they still run one at a time; 1 restores the fully serial run.
+  [ValidateRange(1, 64)][int]$Jobs = 8
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,7 +104,7 @@ foreach ($preset in $Presets) {
       # tests: they need the per-row matrix fixtures and are run by tests\interop\run-matrix.ps1.
       # -LE also excludes the opt-in benchmarks (bench.vfs_pool needs SD_IT_BENCH=1 and the fixture; run by
       # hand). One expression: ctest's repeated -LE flags replace rather than accumulate.
-      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg --output-on-failure --output-junit $junit -LE 'matrix|bench|repro' 2>&1 }
+      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg -j $Jobs --output-on-failure --output-junit $junit -LE 'matrix|bench|repro' 2>&1 }
       $tlog | Out-Host
       if ($LASTEXITCODE) { throw "tests $cfg failed" }
       $skipped = @($tlog | Select-String -Pattern '\*\*\*Skipped' | ForEach-Object { ($_ -split ':')[1].Trim().Split(' ')[0] })

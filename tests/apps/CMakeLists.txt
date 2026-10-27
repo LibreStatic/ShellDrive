@@ -32,10 +32,14 @@ sd_add_unit_test(apps
   DEPS sd_ipc sd_state sd_config sd_platform sd_base ole32 shell32 advapi32 user32)
 target_include_directories(sd-test-apps PRIVATE "${_cli_dir}")
 add_dependencies(sd-test-apps sd-test-cli sd-test-host-fake)
-set_tests_properties(unit.apps PROPERTIES TIMEOUT 600)
+# unit.apps writes and removes the HKCU key tree Software\LibreStatic\ShellDriveTest (test_agent_m3.c), which the
+# transport tests also use for their keys (unit.ssh_transport, same parent): one lock for both.
+set_tests_properties(unit.apps PROPERTIES TIMEOUT 600 RESOURCE_LOCK hkcu_shelldrivetest)
 
 # The apps tests must leave no ShellDrive process behind (test agents never start the real UI, and every test
 # agent runs on its own instance). Runs after unit.apps; a leak fails this test with the process list.
+# RUN_SERIAL: the check scans every ShellDrive process of the build tree, so no other test may run beside it
+# (the ui smoke tests start shelldrive-ui.exe from the same tree).
 add_test(NAME apps.no_leftover_processes
   COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/check_no_leftovers.ps1" -BuildDir "${CMAKE_BINARY_DIR}")
-set_tests_properties(apps.no_leftover_processes PROPERTIES LABELS apps DEPENDS unit.apps TIMEOUT 60)
+set_tests_properties(apps.no_leftover_processes PROPERTIES LABELS apps DEPENDS unit.apps TIMEOUT 60 RUN_SERIAL TRUE)
