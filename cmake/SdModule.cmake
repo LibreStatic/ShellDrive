@@ -114,7 +114,7 @@ function(sd_add_isa_check target name)
   else()
     set(_args --floor sse2)
   endif()
-  list(APPEND _args --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/crt-allow.txt" ${ARGN})
+  list(APPEND _args --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/crt-allow.txt" --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/hw-allow.txt" ${ARGN})
   add_dependencies(${target} sd-isacheck)
   add_custom_command(TARGET ${target} POST_BUILD
     COMMAND "$<TARGET_FILE:sd-isacheck>" ${_args} "$<TARGET_FILE:${target}>"
