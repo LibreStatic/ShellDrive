@@ -11,9 +11,12 @@ set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds3.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_service.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c
-  # service install/uninstall/start/stop (M5): the SCM seam lives with the service it registers (03 §1.3).
+  # service install/uninstall/start/stop/status (M5): the SCM seam lives with the service it registers (03 §1.3).
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.c
-  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.h)
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.h
+  # service repair-data (M5, 3.2, TM-R34): the machine data folder repair; the tests call it on a temp folder.
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.h)
 set(SD_CLI_SOURCES ${SD_CLI_SOURCES} PARENT_SCOPE)
 
 # sd_ssh: the host key commands run sd_known_hosts in the CLI process (03 §5: the CLI and UI link

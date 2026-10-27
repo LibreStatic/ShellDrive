@@ -882,7 +882,7 @@ msgstr ""
 
 #. Help line of "shelldrive --help" and "shelldrive help service" for the service command.
 msgctxt "cli.help.service"
-msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start and stop. Changing them needs an elevated console."
+msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start, stop and repair-data. Changing them needs an elevated console."
 msgstr ""
 
 #. Printed when mount or unmount runs from a console that is not elevated (exit 9).
@@ -918,11 +918,6 @@ msgstr ""
 #. Printed after "shelldrive service unmount" asked the service to stop the drive.
 msgctxt "cli.service.unmounting"
 msgid "Unmounting {name}..."
-msgstr ""
-
-#. Printed for service verbs that this build does not provide yet (exit 1).
-msgctxt "cli.service.unimplemented"
-msgid "The service command {verb} is not part of this build yet."
 msgstr ""
 
 #. State words shown by "shelldrive service list" and "status".
@@ -994,4 +989,149 @@ msgstr ""
 #. Description of ShellDriveSvc shown in the Services console; set at install time in the language of the installing console.
 msgctxt "cli.service.description"
 msgid "Mounts ShellDrive drives shared by every user of this computer. Stays idle while no global drive is configured."
+msgstr ""
+
+#. Printed by "shelldrive service status" (no argument) when the service is not installed (exit 0).
+msgctxt "cli.service.status.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr ""
+
+#. First line of "shelldrive service status". {state} is one of the svc_state words below.
+msgctxt "cli.service.status.state_line"
+msgid "Service state: {state}."
+msgstr ""
+
+#. Start type line of "shelldrive service status". {type} is one of the start_type words below.
+msgctxt "cli.service.status.start_line"
+msgid "Start type: {type}."
+msgstr ""
+
+#. Program line of "shelldrive service status". {path} is the ImagePath as registered with the Service Control Manager.
+msgctxt "cli.service.status.program_line"
+msgid "Program: {path}"
+msgstr ""
+
+#. Check of the registered program path (quoted, this install's shelldrive-host.exe, " service") in "service status".
+msgctxt "cli.service.status.program_ok"
+msgid "The program path is quoted and points at this install."
+msgstr ""
+
+#. Check result in "service status": the program path is not quoted (an unquoted path is refused by policy).
+msgctxt "cli.service.status.program_unquoted"
+msgid "The program path is not quoted. Remove the service and install it again."
+msgstr ""
+
+#. Check result in "service status": the program path is quoted but names another program or install.
+msgctxt "cli.service.status.program_other"
+msgid "The program path points at another install. Remove the service and install it again from this one."
+msgstr ""
+
+#. Check result in "service status" when shelldrive-host.exe is not next to the running shelldrive.exe.
+msgctxt "cli.service.status.program_unknown"
+msgid "The program path cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr ""
+
+#. Event Log source check in "service status": the source names this install's shelldrive-host.exe.
+msgctxt "cli.service.status.source_ok"
+msgid "The Event Log source is registered for this install."
+msgstr ""
+
+#. Event Log source check in "service status": no source named ShellDrive is registered.
+msgctxt "cli.service.status.source_missing"
+msgid "The Event Log source is not registered."
+msgstr ""
+
+#. Event Log source check in "service status": the source names another program.
+msgctxt "cli.service.status.source_other"
+msgid "The Event Log source is registered for another program."
+msgstr ""
+
+#. Event Log source check in "service status" when shelldrive-host.exe is not next to the running shelldrive.exe.
+msgctxt "cli.service.status.source_unknown"
+msgid "The Event Log source cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr ""
+
+#. Printed by "service status" when the service runs but its pipe does not answer.
+msgctxt "cli.service.status.pipe_down"
+msgid "The service is running but does not answer on its pipe."
+msgstr ""
+
+#. Printed by "service status" when the service's machine data folder is trusted (its selftest passes).
+msgctxt "cli.service.status.healthy"
+msgid "The machine data folder is in order."
+msgstr ""
+
+#. Printed by "service status" when the service refused the machine data folder and stays idle (3.2).
+msgctxt "cli.service.status.idle"
+msgid "The machine data folder is refused, so the service stays idle. Run \"shelldrive service repair-data\" as administrator."
+msgstr ""
+
+#. Printed by "service status" for the open administrator prompts of the running service (the attention count).
+#, plural-arg=count
+msgctxt "cli.service.status.prompts"
+msgid "{count} administrator prompt waiting."
+msgid_plural "{count} administrator prompts waiting."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Service state word, shown after "Service state:" by "shelldrive service status".
+msgctxt "cli.service.svc_state.running"
+msgid "running"
+msgstr ""
+
+msgctxt "cli.service.svc_state.stopped"
+msgid "stopped"
+msgstr ""
+
+msgctxt "cli.service.svc_state.starting"
+msgid "starting"
+msgstr ""
+
+msgctxt "cli.service.svc_state.stopping"
+msgid "stopping"
+msgstr ""
+
+msgctxt "cli.service.svc_state.paused"
+msgid "paused"
+msgstr ""
+
+msgctxt "cli.service.svc_state.unknown"
+msgid "unknown"
+msgstr ""
+
+#. Start type word after "Start type:".
+msgctxt "cli.service.start_type.automatic"
+msgid "automatic"
+msgstr ""
+
+msgctxt "cli.service.start_type.manual"
+msgid "manual"
+msgstr ""
+
+msgctxt "cli.service.start_type.disabled"
+msgid "disabled"
+msgstr ""
+
+msgctxt "cli.service.start_type.unknown"
+msgid "unknown"
+msgstr ""
+
+#. Printed by "shelldrive service repair-data" when the machine data folder was already correct (exit 0).
+msgctxt "cli.service.repair.ok"
+msgid "The machine data folder is in order. Its permissions were set again."
+msgstr ""
+
+#. Printed by "shelldrive service repair-data" after an untrusted folder was moved aside (exit 0). {path} is the new name.
+msgctxt "cli.service.repair.moved"
+msgid "An untrusted machine data folder was moved to {path}. A new one was created. Nothing from the old folder is imported, so stored secrets and keys must be entered again."
+msgstr ""
+
+#. Printed by "shelldrive service repair-data" when the base folder or the data folder is a link (exit 1). Nothing changed.
+msgctxt "cli.service.repair.refused"
+msgid "{path} is a link or a junction, so nothing was changed. Remove it yourself, then run this command again."
+msgstr ""
+
+#. Printed by "shelldrive service repair-data" when a Win32 call fails (exit 1). {code} is the Win32 error number.
+msgctxt "cli.service.repair.failed"
+msgid "The machine data folder could not be repaired (error {code})."
 msgstr ""
