@@ -12,6 +12,7 @@ SD_TEST_DECL(svc_admin_mounts_reports_and_unmounts);
 SD_TEST_DECL(svc_mount_without_prompt_ui_fails_with_prompt_unavailable);
 SD_TEST_DECL(svc_host_key_prompt_is_refused_even_with_an_admin_ui);
 SD_TEST_DECL(svc_admin_answers_a_password_prompt_on_the_pipe);
+SD_TEST_DECL(svc_attention_counts_the_open_prompts);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
@@ -29,6 +30,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_mount_without_prompt_ui_fails_with_prompt_unavailable),
   SD_TEST_ENTRY(svc_host_key_prompt_is_refused_even_with_an_admin_ui),
   SD_TEST_ENTRY(svc_admin_answers_a_password_prompt_on_the_pipe),
+  SD_TEST_ENTRY(svc_attention_counts_the_open_prompts),
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),

@@ -19,6 +19,7 @@
 #include "sd_ipc/sd_ipc.h"
 #include "sd_l10n/sd_l10n.h"
 #include "sd_platform/sd_log.h"
+#include "ui_admin_model.h"
 #include "ui_int.h"
 #include "ui_win.h"
 
@@ -389,11 +390,14 @@ sd_err ui_ipc_config_reload(void)
 }
 
 /* prompt.answer: json is the complete request object, NUL-terminated, with len bytes. The queue keeps its own
-   copy, which is wiped after the call (free_params). The caller wipes its copy. */
+   copy, which is wiped after the call (free_params). The caller wipes its copy. In the elevated admin mode the
+   answer goes to the service pipe instead (ui_admin_answer_route, ui_svc.c). */
 sd_err ui_ipc_answer(const char *json, size_t len)
 {
   if (json == NULL || strlen(json) != len)
     return SD_E_INVALID_PARAM;
+  if (ui_admin_answer_route(g_app.elevated_admin) == UI_ROUTE_SERVICE)
+    return ui_svc_answer(json, len);
   return enqueue(UI_IPC_ANSWER, "prompt.answer", json, NULL);
 }
 

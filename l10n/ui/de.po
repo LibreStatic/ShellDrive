@@ -1750,3 +1750,22 @@ msgstr "Nicht jetzt"
 msgctxt "ui.notify.update"
 msgid "ShellDrive {version} is available. Open Settings to install it."
 msgstr "ShellDrive {version} ist verfügbar. Öffne die Einstellungen, um es zu installieren."
+
+#. Tray tooltip and tray menu header: a global drive waits for an administrator (03 §2.6 rule 3).
+#. sdl10n:maxlen=128
+msgctxt "ui.tray.admin_tip"
+msgid "A global ShellDrive drive needs attention"
+msgstr "Ein globales ShellDrive-Laufwerk braucht Aufmerksamkeit"
+
+#. Tray menu item: opens the administrator window. {count} is the number of prompts waiting.
+#, plural-arg=count
+msgctxt "ui.tray.admin_prompts"
+msgid "{count} prompt waiting for an administrator"
+msgid_plural "{count} prompts waiting for an administrator"
+msgstr[0] "{count} Anfrage wartet auf einen Administrator"
+msgstr[1] "{count} Anfragen warten auf einen Administrator"
+
+#. Shown when the administrator window cannot be started (not when the UAC prompt is declined).
+msgctxt "ui.admin.launch_failed"
+msgid "ShellDrive could not open its administrator window. Try again from the tray menu."
+msgstr "ShellDrive konnte das Administratorfenster nicht öffnen. Versuch es erneut über das Menü im Infobereich."

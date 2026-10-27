@@ -6,7 +6,9 @@
  * ours and whose integrity level is not lower than ours (TM-R26, T-48); everything else is dropped.
  *
  * Modes: no arguments opens the main window; --tray starts with the window hidden (Run key); --prompt-host
- * and --action <verb> <target> are the verbs of ui_wire.c; --test-window is the smoke test of tests/ui: it
+ * and --action <verb> <target> are the verbs of ui_wire.c; --elevated-admin (03 §2.6 rule 3) answers the service
+ * prompts over the service pipe with no tray and no agent: it is relaunched by the tray attention item with UAC;
+ * --test-window is the smoke test of tests/ui: it
  * creates the main window hidden, checks the window class and its controls, and exits 0; --test-prompts
  * creates every prompt dialog hidden and destroys it (exit 0 when all were created).
  *
@@ -30,6 +32,7 @@
 #include "ui_dpi.h"
 #include "ui_wizard.h"
 #include "sd_config/sd_config.h"
+#include "ui_admin_model.h"
 #include "ui_int.h"
 #include "ui_sdmount.h"
 #include "ui_win.h"
@@ -183,7 +186,9 @@ void ui_app_handle_request(const ui_request *req)
     break;
   case UI_VERB_TRAY:
   case UI_VERB_PROMPT_HOST:
-    /* --tray changes nothing here; --prompt-host was handled in wWinMain (g_app.prompt_host). */
+  case UI_VERB_ELEVATED_ADMIN:
+    /* --tray changes nothing here; --prompt-host and --elevated-admin were handled in wWinMain (g_app.prompt_host,
+       g_app.elevated_admin). */
     break;
   case UI_VERB_UNMOUNT:
     /* The drive must be one of this UI's mounts; the agent checks again. */
@@ -281,7 +286,21 @@ void ui_app_on_event(sd_json *ev)
 void ui_app_on_prompt_list(sd_json *result)
 {
   ui_prompt_on_list(result);
+  if (g_app.elevated_admin) {
+    /* the admin mode shows every open service prompt: the list carries the same fields as prompt.request */
+    const sd_json *arr = sd_json_get(result, "prompts");
+    size_t i, n = sd_json_count(arr);
+    for (i = 0; i < n; i++)
+      ui_prompt_on_request(sd_json_at(arr, i));
+  }
   sd_json_free(result);
+}
+
+/* attention {count} from the service (ui_svc.c): the tray shows it to an administrator only. */
+void ui_app_on_attention(int count)
+{
+  g_app.attention = ui_admin_attention_shown(count, g_app.user_admin) ? count : 0;
+  ui_tray_update();
 }
 
 /* Once a second. The prompt host leaves after UI_PROMPT_IDLE_MS with no open prompt (03 §1.4). */
@@ -375,6 +394,9 @@ static LRESULT CALLBACK ctrl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return 0;
   case UI_WM_IPC_PROMPTS:
     ui_app_on_prompt_list((sd_json *)lp);
+    return 0;
+  case UI_WM_SVC_ATTENTION:
+    ui_app_on_attention((int)wp);
     return 0;
   case WM_TIMER:
     ui_app_on_timer(wp);
@@ -542,14 +564,19 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   }
 
   /* set before the IPC thread starts: it reads the flag at its first connect */
-  g_app.prompt_host = req.verb == UI_VERB_PROMPT_HOST;
-  e = sd_ipc_object_create(SD_IPC_OBJ_UI_MUTEX, &mutex, &existed);
-  if (e != SD_OK || mutex == NULL)
-    goto done;
-  g_app.mutex = mutex;
-  if (existed) {
-    rc = forward_to_running(argc - 1, argv + 1) ? 0 : 1;
-    goto done;
+  g_app.elevated_admin = req.verb == UI_VERB_ELEVATED_ADMIN;
+  /* the admin mode has the prompt host's lifetime (no main window, leaves when the service goes or idles) */
+  g_app.prompt_host = req.verb == UI_VERB_PROMPT_HOST || g_app.elevated_admin;
+  if (!g_app.elevated_admin) {
+    /* the admin mode is not a second UI of the user: it never forwards to the running one (no mutex) */
+    e = sd_ipc_object_create(SD_IPC_OBJ_UI_MUTEX, &mutex, &existed);
+    if (e != SD_OK || mutex == NULL)
+      goto done;
+    g_app.mutex = mutex;
+    if (existed) {
+      rc = forward_to_running(argc - 1, argv + 1) ? 0 : 1;
+      goto done;
+    }
   }
 
   /* dark title bars (7.4): the hook is installed before the first window of this process exists */
@@ -563,10 +590,20 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   if (g_app.prompt_host)
     SetTimer(g_app.ctrl, UI_TIMER_PROMPT_IDLE, 1000, NULL);
-  /* Explorer may not be ready yet; TaskbarCreated adds the icon later. */
-  ui_tray_add();
-  if (ui_ipc_start() != SD_OK)
-    goto done;
+  if (g_app.elevated_admin) {
+    /* no tray icon for the admin mode: its prompt dialogs are the window */
+    if (ui_svc_start(1) != SD_OK)
+      goto done;
+  } else {
+    /* Explorer may not be ready yet; TaskbarCreated adds the icon later. */
+    ui_tray_add();
+    if (ui_ipc_start() != SD_OK)
+      goto done;
+    /* attention watch (03 §2.6 rule 3): only for a logged-on administrator; other users never connect to the service */
+    g_app.user_admin = ui_svc_user_is_admin();
+    if (g_app.user_admin)
+      (void)ui_svc_start(0);
+  }
   ui_app_handle_request(&req);
   /* first run (7.5): only for the plain start and "show"; --tray and the prompt host never open it */
   if (req.verb == UI_VERB_NONE || req.verb == UI_VERB_SHOW)
@@ -581,6 +618,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   rc = 0;
 
   ui_windows_close_all();
+  ui_svc_stop();
   ui_ipc_stop();
   ui_tray_remove();
   if (g_app.main != NULL && IsWindow(g_app.main))

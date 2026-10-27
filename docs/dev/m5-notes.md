@@ -74,7 +74,8 @@ Used by the service and mapped by the CLI through the existing table: `access_de
 
 - `mount.state` on topic `mount` carries only `mount_id`, `target` and `state` for every subscriber (the full data is
   in `status`, admins only). `prompt.request`, `prompt.closed` on topic `prompt`; `attention {count}` on topic
-  `attention` when a prompt is routed to an admin.
+  `attention` whenever the number of open routed prompts changes (0 included), and once to each new subscriber with
+  the current count. `prompt.list` entries carry the `prompt.request` fields (`kind` is the name, not a number).
 
 ## Decisions taken in this part
 
@@ -110,7 +111,7 @@ Used by the service and mapped by the CLI through the existing table: `access_de
 |---|---|
 | `x64-modern` Debug, full build | clean, zero warnings |
 | `x64-modern` ctest, default labels (`-LE "matrix|bench|interop|repro"`), 76 tests | all pass |
-| `unit.svc` (`sd-test-svc.exe`), 15 tests | all pass: decision table, list resolution, profile refusals, volume SDDL parses, identity path rule, core start and selftest, profile loading (D17), non-admin restricted token refused for every admin method and for the topic gate, admin mount/status/unmount, prompt refused without UI (`prompt_unavailable`), TOFU refused (`host_key_unknown`), password prompt answered over the pipe, DPAPI secret round trip, list visibility for restricted tokens, stop with nothing left behind |
+| `unit.svc` (`sd-test-svc.exe`), 16 tests | all pass: attention count on change and on subscribe (`svc_attention_counts_the_open_prompts`), decision table, list resolution, profile refusals, volume SDDL parses, identity path rule, core start and selftest, profile loading (D17), non-admin restricted token refused for every admin method and for the topic gate, admin mount/status/unmount, prompt refused without UI (`prompt_unavailable`), TOFU refused (`host_key_unknown`), password prompt answered over the pipe, DPAPI secret round trip, list visibility for restricted tokens, stop with nothing left behind |
 | `x64-xp` Debug, `shelldrive-host` and `shelldrive` | clean; XP SP2 x64 import audit passes |
 | `x86-ia32` Debug, `shelldrive-host` and `shelldrive` | clean; IA32 ISA audit passes |
 
@@ -134,7 +135,14 @@ interactive-user ACE on the pipe (they accept a refused connect as the refusal).
 - Per-request access check in `sd_vfs` (`access_sids` / `write_sids` are passed in the options but not enforced); the
   Dokany volume descriptor is the only enforcement on the drive.
 - Power events and session changes are logged only; the admin session list for the attention flow (2.6) is not kept.
-- Admin UI: the tray attention flow, `shelldrive-ui.exe --elevated-admin`, the prompt dialog (UI side, later).
+- Admin UI, not done: a list window of pending service prompts (the admin mode shows one prompt dialog per open prompt
+  instead); host-key announcements of the service machine store in the admin UI (`hostkey.announced` on the service is
+  not served yet); `--elevated-view` (03 §1.7.2) is a CLI flag of the WebDAV elevated mapping and has no UI mode here.
+- Admin UI, done (`shelldrive-ui.exe` part, `ui_svc.c`, `ui_admin_model.c`): the attention watch of a logged-on
+  administrator (linked token on Vista+, membership on XP) and the tray state and menu item that relaunch the UI with
+  `--elevated-admin` (`runas` on Vista+, plain `open` on XP). The admin mode connects to the service pipe only, has no
+  tray icon and no mutex (it never forwards to the running UI), lists the open prompts, shows their dialogs and sends
+  `prompt.answer` over the service pipe. It leaves when the service goes away or after 60 s with no prompt.
 - Secret types other than `password`; `secret.set` for passphrases needs the key fingerprint target.
 - Lab items: a real Dokany global mount (visible to a second session, before logon), LocalSystem decryption of the
   service secrets, and the SYSTEM-owned service pipe as a non-test client.

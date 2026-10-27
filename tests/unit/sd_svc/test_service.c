@@ -485,6 +485,75 @@ SD_TEST(svc_host_key_prompt_is_refused_even_with_an_admin_ui)
   sd_ipc_close(c);
 }
 
+/* Waits for an attention event carrying exactly `want` on this connection (a content-free count, 2.6 rule 3). */
+static int wait_attention(sd_ipc_conn *w, int64_t want)
+{
+  int i;
+  for (i = 0; i < 100; i++) {
+    sd_json *ev = NULL;
+    if (sd_ipc_next_event(w, 200, &ev) == SD_OK && ev) {
+      const char *name = sd_json_get_str(ev, "event");
+      const sd_json *data = sd_json_get(ev, "data");
+      int64_t n = -1;
+      if (name && strcmp(name, "attention") == 0 && data && sd_json_get_int64(data, "count", &n) && n == want) {
+        sd_json_free(ev);
+        return 1;
+      }
+      sd_json_free(ev);
+    }
+  }
+  return 0;
+}
+
+SD_TEST(svc_attention_counts_the_open_prompts)
+{
+  sd_ipc_conn *w = NULL, *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL, *list;
+  char mid[16], pid[24] = "";
+  const sd_json *first;
+  SD_REQUIRE(ensure_core());
+  /* a plain client (not an admin) may watch the attention topic; it gets the count at once and on every change */
+  SD_REQUIRE(connect_as("ui", 0, &w) == SD_OK);
+  res = call(w, "subscribe", "{\"topics\":[\"attention\"]}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  sd_json_free(res);
+  SD_REQUIRE(wait_attention(w, 0));
+  SD_REQUIRE(connect_as("testadmin", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  res = call(c, "subscribe", "{\"topics\":[\"prompt\",\"mount\"]}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  sd_json_free(res);
+  res = mount_profile(c, "pwprompt", &err, &e);
+  SD_REQUIRE(res != NULL);
+  copy_str(mid, sizeof(mid), sd_json_get_str(res, "mount_id"));
+  sd_json_free(res);
+  SD_CHECK(wait_attention(w, 1));
+  /* prompt.list carries the request fields, so an admin UI that connects late can show the dialog */
+  list = call(c, "prompt.list", NULL, &err, &e);
+  SD_REQUIRE(list != NULL);
+  first = sd_json_at(sd_json_get(list, "prompts"), 0);
+  SD_REQUIRE(first != NULL);
+  SD_CHECK_STR(sd_json_get_str(first, "kind"), "password");
+  copy_str(pid, sizeof(pid), sd_json_get_str(first, "prompt_id"));
+  sd_json_free(list);
+  {
+    char params[256];
+    _snprintf_s(params, sizeof(params), _TRUNCATE,
+                "{\"prompt_id\":\"%s\",\"action\":\"accept\",\"responses\":[\"secret\"]}", pid);
+    res = call(c, "prompt.answer", params, &err, &e);
+    SD_REQUIRE(res != NULL);
+    sd_json_free(res);
+  }
+  SD_CHECK(wait_attention(w, 0));
+  SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
+  if (st) sd_json_free(st);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+  sd_ipc_close(w);
+}
+
 SD_TEST(svc_admin_answers_a_password_prompt_on_the_pipe)
 {
   sd_ipc_conn *c = NULL;
