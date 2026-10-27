@@ -10,6 +10,7 @@
 
 #include "sd_base/sd_mem.h"
 #include "sd_platform/sd_log.h"
+#include "sd_platform/sd_time.h"
 #include "sftp_internal.h"
 
 #define TP_STREAMS 2u
@@ -359,6 +360,13 @@ sd_err sd_sftp_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks *
 
 #define POOL_REALPATH_CAP 512u
 #define POOL_TX_CAP (1024u * 1024u)
+/* Admission pacing (01 §10.9): attempts start POOL_ADMIT_STAGGER_MS apart; a transiently refused
+ * member retries after POOL_RETRY_1_MS, then POOL_RETRY_2_MS, and is abandoned for the generation
+ * after POOL_MAX_REFUSALS refusals (until the next notify_ready). */
+#define POOL_ADMIT_STAGGER_MS 500u
+#define POOL_RETRY_1_MS 500u
+#define POOL_RETRY_2_MS 2000u
+#define POOL_MAX_REFUSALS 3u
 
 typedef struct pool_tp pool_tp;
 
@@ -379,6 +387,10 @@ typedef struct pool_member {
   sd_ssh_conn *conn;
   sd_ssh_channel *ch;
   sd_err err;                          /* why a member was dropped */
+  uint32_t refusals;                   /* transient admission failures of this generation
+                                          (primary thread only) */
+  uint64_t retry_at;                   /* earliest start of the member's next attempt (primary
+                                          thread only) */
   char fp[128];                        /* negotiated host-key fingerprint (member thread) */
   char realpath[POOL_REALPATH_CAP];    /* the member's realpath(".") (member thread) */
   uint8_t in[1024];                    /* admission exchange input (member thread) */
@@ -410,6 +422,17 @@ struct pool_tp {
   int gen_stopped;                   /* identity mismatch: no more admissions this generation */
   char primary_realpath[POOL_REALPATH_CAP];
   pool_member m[3];                    /* members 1..3 */
+  /* admission pacing (primary thread only, except timer_at): the next attempt starts at
+     next_admit_at (the stagger) or at the candidate's retry_at (its backoff), whichever is later;
+     timer_at is the deadline handed to the timer thread (0: nothing pending) */
+  uint64_t next_admit_at;
+  volatile LONG64 timer_at;
+  volatile LONG fire_posted;           /* a pool_timer_fire post is in flight */
+  volatile LONG stopping;              /* the transport closed: no more admissions */
+  int timer_stop;                      /* the timer thread must exit */
+  sd_event timer_ev;
+  sd_thread timer_th;
+  int have_timer;
 };
 
 static void member_on_connected(void *ctx, sd_err err, uint32_t failed_hop);
@@ -426,6 +449,50 @@ static uint32_t member_gen(pool_member *m) { return (uint32_t)InterlockedCompare
 typedef struct pool_decide { pool_tp *p; uint32_t idx; int admitted; sd_err err; uint32_t gen; char fp[128]; char rp[POOL_REALPATH_CAP]; } pool_decide;
 
 static void pool_start_next(pool_tp *p);
+static void pool_refused(pool_tp *p, pool_member *m, sd_err err, uint32_t gen);
+
+/* ---- pool timer ----
+ * Watches timer_at (the earliest pending admission deadline) from its own thread and hands a fire
+ * to the primary I/O thread, which re-evaluates in pool_start_next. The primary thread is the only
+ * writer of the admission state and of timer_at; the timer thread only reads timer_at. */
+
+/* (Re-)arms the timer at `at` (tick ms; 0: nothing pending). The store is a self-CAS so the timer
+   thread never sees a torn value. No timer thread (creation failed): nothing to arm. */
+static void pool_rearm(pool_tp *p, uint64_t at)
+{
+  if (!p->have_timer) return;
+  sd_atomic_add64(&p->timer_at, (LONG64)at - sd_atomic_load64(&p->timer_at));
+  sd_event_set(&p->timer_ev);
+}
+
+static void pool_timer_fire(void *arg)
+{
+  pool_tp *p = (pool_tp *)arg;
+  InterlockedExchange(&p->fire_posted, 0);
+  pool_start_next(p);
+}
+
+static unsigned __stdcall pool_timer_main(void *arg)
+{
+  pool_tp *p = (pool_tp *)arg;
+  for (;;) {
+    LONG64 at, now;
+    if (p->timer_stop) break;
+    sd_event_reset(&p->timer_ev);      /* consume a kick before re-reading the deadline */
+    if (p->timer_stop) break;
+    at = sd_atomic_load64(&p->timer_at);
+    now = (LONG64)sd_tick_ms();
+    if (at && at <= now) {             /* due: let the primary thread decide (deduplicated) */
+      if (InterlockedCompareExchange(&p->fire_posted, 1, 0) == 0 &&
+          sd_ssh_conn_post(p->primary->conn, pool_timer_fire, p) != SD_OK)
+        InterlockedExchange(&p->fire_posted, 0);
+      (void)sd_event_wait(&p->timer_ev, 50);   /* pool_start_next re-arms and kicks */
+      continue;
+    }
+    (void)sd_event_wait(&p->timer_ev, at ? (uint32_t)(at - now) : SD_WAIT_INFINITE);
+  }
+  return 0;
+}
 
 static void pool_decided(void *arg)
 {
@@ -439,46 +506,86 @@ static void pool_decided(void *arg)
     if (!d->fp[0] || !t->have_neg || strcmp(d->fp, t->hostkey_fp) != 0) {
       d->admitted = 0;               /* not the same server: stop pooling for this generation */
       d->err = SD_E_HOSTKEY_MISMATCH;
-      p->gen_stopped = 1;
       member_teardown(m);
     } else if (strcmp(d->rp, p->primary_realpath) != 0) {
       d->admitted = 0;
       d->err = SD_E_NOT_FOUND;
-      p->gen_stopped = 1;
       member_teardown(m);
     }
   }
-  if (!d->admitted) {
-    m->state = PM_DROPPED;
-    m->err = d->err;
-    sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u dropped: %s", d->idx, sd_err_name(d->err));
-    sftp_session_pool_change(p->session, d->idx, 0, d->err, d->gen);
-  } else {
+  if (!d->admitted) pool_refused(p, m, d->err, d->gen);
+  else {
     m->state = PM_READY;
     sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u ready", d->idx);
     sftp_session_pool_change(p->session, d->idx, 1, SD_OK, d->gen);
   }
   sd_free(d);
-  pool_start_next(p);                  /* one at a time, no bursts (01 §10.9) */
+  pool_start_next(p);                  /* one at a time, staggered (01 §10.9) */
 }
 
-/* Runs on the primary I/O thread. */
+/* An admission attempt failed (primary thread). Identity mismatches (the member is not the
+   primary's server) stop the generation's admissions at once; a transient failure (connect or auth
+   timeout/error) is retried with backoff, and the member is abandoned for the generation after
+   POOL_MAX_REFUSALS refusals: no more attempts until the next notify_ready (01 §10.9). Every
+   refusal is reported with its reason, the abandonment with SD_E_POOL_ABANDONED. */
+static void pool_refused(pool_tp *p, pool_member *m, sd_err err, uint32_t gen)
+{
+  m->err = err;
+  if (err == SD_E_HOSTKEY_MISMATCH || err == SD_E_NOT_FOUND) {
+    p->gen_stopped = 1;
+    m->state = PM_DROPPED;
+    sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u dropped: %s", m->idx, sd_err_name(err));
+    sftp_session_pool_change(p->session, m->idx, 0, err, gen);
+    return;
+  }
+  m->refusals++;
+  sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u refused (%u/%u): %s", m->idx, m->refusals,
+         POOL_MAX_REFUSALS, sd_err_name(err));
+  sftp_session_pool_refused(p->session, m->idx, err);
+  if (m->refusals >= POOL_MAX_REFUSALS) {
+    m->state = PM_DROPPED;             /* abandoned: pool_start_next no longer considers it */
+    sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "pool: member %u abandoned for this generation", m->idx);
+    sftp_session_pool_refused(p->session, m->idx, SD_E_POOL_ABANDONED);
+    return;
+  }
+  m->state = PM_IDLE;                  /* retry when the backoff expires */
+  m->retry_at = sd_tick_ms() + (m->refusals == 1 ? POOL_RETRY_1_MS : POOL_RETRY_2_MS);
+}
+
+/* Runs on the primary I/O thread: from notify_ready, pool_decided and the pool timer. Starts the
+   next admission attempt of the generation when it is due - the first pending member in order,
+   its start staggered POOL_ADMIT_STAGGER_MS after the previous attempt's start and, after a
+   transient refusal, delayed by the member's backoff (01 §10.9). One attempt at a time: while one
+   is in flight, its decision re-pumps. When nothing is due, arms the pool timer. */
 static void pool_start_next(pool_tp *p)
 {
-  uint32_t i;
-  if (p->disabled || p->gen_stopped || !p->session) return;
-  for (i = 0; i < 3; i++) {
-    pool_member *m = &p->m[i];
-    if (m->state != PM_IDLE) continue;
-    if (i + 1 >= p->target) return;    /* target reached (primary counts as member 0) */
+  if (p->stopping || p->disabled || p->gen_stopped || !p->session) { pool_rearm(p, 0); return; }
+  for (;;) {
+    pool_member *m = NULL;
+    uint64_t at, now;
+    uint32_t i;
+    for (i = 0; i < 3 && i + 1 < p->target; i++) {
+      pool_member *mm = &p->m[i];
+      if (mm->state == PM_CONNECTING || mm->state == PM_CHECKING) return;   /* its decision re-pumps */
+      if (mm->state == PM_IDLE) { m = mm; break; }
+    }
+    if (!m) { pool_rearm(p, 0); return; }   /* target reached, or everyone settled or abandoned */
+    now = sd_tick_ms();
+    at = p->next_admit_at;                  /* the stagger ... */
+    if (m->refusals && m->retry_at > at) at = m->retry_at;   /* ... or the member's backoff */
+    if (now < at) { pool_rearm(p, at); return; }
     m->state = PM_CONNECTING;
     m->err = SD_OK;
-    if (sd_ssh_conn_connect(m->conn, member_on_connected, m) != SD_OK) {
-      m->state = PM_DROPPED;           /* conn_create problems are structural: do not retry */
-      sftp_session_pool_change(p->session, i + 1, 0, SD_E_INTERNAL, member_gen(m));
-      continue;
+    m->have_version = 0;                    /* a retry runs a fresh admission exchange */
+    m->in_len = 0;
+    p->next_admit_at = now + POOL_ADMIT_STAGGER_MS;
+    if (sd_ssh_conn_connect(m->conn, member_on_connected, m) == SD_OK) {
+      pool_rearm(p, p->next_admit_at);      /* the attempt's decision re-pumps; this is a safety net */
+      return;
     }
-    return;
+    m->state = PM_DROPPED;                  /* conn problems are structural: do not retry */
+    sftp_session_pool_change(p->session, m->idx, 0, SD_E_INTERNAL, member_gen(m));
+    /* the next member follows the same stagger deadline */
   }
 }
 
@@ -931,6 +1038,8 @@ static void pool_notify_ready(void *ctx, const char *realpath_dot)
     /* a new generation: every member admits again (the primary reconnect dropped them) */
     pool_member *m = &p->m[i];
     InterlockedIncrement(&m->gen);    /* invalidate events posted for the previous generation */
+    m->refusals = 0;                  /* the backoff and abandonment of the old generation are gone */
+    m->retry_at = 0;
     if (m->state != PM_IDLE) {
       m->state = PM_IDLE;             /* before the teardown: its on_closed is then a no-op */
       InterlockedExchange(&m->sink_active, 0);
@@ -941,6 +1050,7 @@ static void pool_notify_ready(void *ctx, const char *realpath_dot)
     }
   }
   p->gen_stopped = 0;
+  p->next_admit_at = 0;
   if (p->target <= 1 || p->disabled) return;
   if (sd_ssh_conn_auth_info(t->conn, &ai) != SD_OK) return;
   if (!ai.noninteractive) {
@@ -999,6 +1109,8 @@ static void pool_member_stats(void *ctx, sd_sftp_conn_stats out[3], uint32_t *co
 static void pool_close_members(pool_tp *p)
 {
   uint32_t i;
+  p->stopping = 1;                    /* no admissions after the transport closed */
+  pool_rearm(p, 0);
   for (i = 0; i < 3; i++) {
     pool_member *m = &p->m[i];
     int live = m->state == PM_READY || m->state == PM_CHECKING || m->state == PM_CONNECTING;
@@ -1035,6 +1147,13 @@ static void pool_tp_destroy(void *ctx)
   pool_tp *p = ((ssh_tp *)ctx)->pool;
   uint32_t i;
   if (!p) { tp_destroy(ctx); return; }
+  p->stopping = 1;
+  if (p->have_timer) {                /* before the connections: the timer posts into the primary */
+    p->timer_stop = 1;
+    sd_event_set(&p->timer_ev);
+    (void)sd_thread_join(&p->timer_th, SD_WAIT_INFINITE, NULL);
+    sd_event_destroy(&p->timer_ev);
+  }
   for (i = 0; i < 3; i++) {
     pool_member *m = &p->m[i];
     InterlockedExchange(&m->sink_active, 0);
@@ -1102,5 +1221,17 @@ static sd_err pool_create(ssh_tp *t, const sd_ssh_config *ssh, const sd_sftp_opt
   }
   p->session = *out;
   t->session = *out;
+  if (target > 1) {
+    /* the timer drives the staggered admissions and the refusal backoff (01 §10.9); without it the
+       pool still runs, but only the attempt decisions pump the next admission */
+    if (sd_event_init(&p->timer_ev, 1, 0) == SD_OK) {
+      if (sd_thread_create(&p->timer_th, pool_timer_main, p, 0, L"pool timer") == SD_OK)
+        p->have_timer = 1;
+      else
+        sd_event_destroy(&p->timer_ev);
+    }
+    if (!p->have_timer)
+      sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "pool: no timer thread; admissions run unpaced");
+  }
   return SD_OK;
 }

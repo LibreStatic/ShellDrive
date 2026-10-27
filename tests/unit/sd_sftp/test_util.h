@@ -44,6 +44,8 @@ typedef struct evlog {
   uint32_t ext_count;
   volatile LONG n_pool;         /* SD_SFTP_EV_POOL events */
   volatile LONG n_pool_drop;    /* of those, the ones with a non-OK reason (a member was dropped) */
+  sd_err pool_reasons[16];      /* the first 16 POOL reasons in order (refusal/abandonment tests) */
+  uint32_t pool_members[16];
   uint32_t pool_member, pool_conns; sd_err pool_reason;
 } evlog;
 void evlog_init(evlog *e);

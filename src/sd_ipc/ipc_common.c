@@ -444,6 +444,7 @@ int sd_ipc_exit_code_for_err(sd_err e)
   case SD_E_LEGACY_REJECTED:          return 15;
   case SD_E_PROXY:                    return 16;
   case SD_E_PROXY_AUTH:               return 16;
+  case SD_E_POOL_ABANDONED:           return 1;
   case SD_E_NO_MEMORY:                return 1;
   case SD_E_CRYPTO:                   return 1;
   case SD_E_KEY_FORMAT:               return 1;

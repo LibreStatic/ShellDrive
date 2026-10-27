@@ -2531,6 +2531,28 @@ void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted,
   s->ev(s->ev_ctx, &e);
 }
 
+/* 01 §10.9: the pool refused to admit a member that is not admitted in the current generation
+   (I/O thread). reason is the transient failure while the pool retries with backoff, or
+   SD_E_POOL_ABANDONED once it gave up for this generation. Informational only: unlike
+   sftp_session_pool_change there is nothing to settle (no wires, no sub-handles, the member was
+   never ready), so this just reports the count and emits EV_POOL. */
+void sftp_session_pool_refused(sd_sftp_session *s, uint32_t member, sd_err reason)
+{
+  sd_sftp_event e;
+  uint32_t count = 1, i;
+  if (!s || member == 0 || member > NMB) return;
+  for (i = 1; i <= NMB; i++)
+    if (s->member_ready[i]) count++;
+  if (!s->ev) return;
+  memset(&e, 0, sizeof(e));
+  e.type = SD_SFTP_EV_POOL;
+  e.state = (sd_sftp_state)s->state;
+  e.reason = reason;
+  e.member = member;
+  e.connections = count;
+  s->ev(s->ev_ctx, &e);
+}
+
 /* ---- inbox processing (I/O thread) ---- */
 
 /* WAIT_READY may wait in every state that can still lead to READY (02 §5.2 offline_wait). */

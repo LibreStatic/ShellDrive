@@ -53,6 +53,7 @@
   X(SD_E_LEGACY_REJECTED,          "legacy_refused")                         \
   X(SD_E_PROXY,                    "proxy_connect_failed")                   \
   X(SD_E_PROXY_AUTH,               "proxy_auth_failed")                      \
+  X(SD_E_POOL_ABANDONED,           "pool_abandoned")                         \
   /* local */                                                                \
   X(SD_E_NO_MEMORY,                "no_memory")                              \
   X(SD_E_CRYPTO,                   "crypto")                                 \

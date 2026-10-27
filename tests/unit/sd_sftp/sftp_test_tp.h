@@ -60,6 +60,16 @@ void      fake_drop_member(fake_srv *f, uint32_t member);       /* the member ch
 void      fake_fail_member_writes(fake_srv *f, uint32_t member, sd_err e);
 void      fake_limit_member_writes(fake_srv *f, uint32_t member, LONG budget);
 uint32_t  fake_stream_packets(fake_srv *f, uint32_t idx);       /* client packets seen on a stream */
+/* Pool admission pacing (01 §10.9), modelled like sftp_ssh.c: attempts start 500 ms apart, a
+ * transiently refused member retries after 500 ms then 2 s and is abandoned for the generation
+ * after three refusals (an EV_POOL refusal per refusal, then SD_E_POOL_ABANDONED); a
+ * SD_E_HOSTKEY_MISMATCH / SD_E_NOT_FOUND refusal stops the generation's admissions at once.
+ * fake_refuse_member fails the member's next n admission attempts with e (n = 0 clears; set before
+ * the generation's admissions start). fake_member_attempt_at reports the tick of the member's
+ * attempt (1..3) of the current generation, attempts their number. */
+void      fake_refuse_member(fake_srv *f, uint32_t member, LONG n, sd_err e);
+uint64_t  fake_member_attempt_at(fake_srv *f, uint32_t member, uint32_t attempt);   /* attempt 1..3 */
+uint32_t  fake_member_attempts(fake_srv *f, uint32_t member);
 
 /* Packet builder: begins a reply of `type` with id (id_present). Finish with fake_reply_wr. */
 void pk_begin(sd_wr *w, uint8_t type, uint32_t id);

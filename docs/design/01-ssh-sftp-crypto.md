@@ -1746,6 +1746,7 @@ typedef enum sd_err {
   SD_E_AUTH_REQUIRED,     /* reconnect needs user input */
   SD_E_LEGACY_REJECTED,   /* legacy acknowledgement refused (section 4.1) */
   SD_E_PROXY,             SD_E_PROXY_AUTH,        /* section 5.2 */
+  SD_E_POOL_ABANDONED,    /* pool member given up for the generation (section 10.9) */
   /* local */
   SD_E_NO_MEMORY,         SD_E_CRYPTO,            SD_E_KEY_FORMAT,       SD_E_KEY_UNSUPPORTED,
   SD_E_BAD_PASSPHRASE,    SD_E_KEY_PASSPHRASE_REQUIRED, SD_E_INTERNAL

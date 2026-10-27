@@ -109,5 +109,11 @@ void sftp_session_auth_prompt(sd_sftp_session *s);
    a drop whose gen is not the member's admitted generation is ignored (a stale posted event, or the
    second report of a drop already handled - 01 §10.9). */
 void sftp_session_pool_change(sd_sftp_session *s, uint32_t member, int admitted, sd_err reason, uint32_t gen);
+/* sftp_ssh.c -> session (primary I/O thread): the pool refused to admit a member that is not
+   admitted in the current generation. reason is the transient failure (the pool retries with
+   backoff) or SD_E_POOL_ABANDONED when it gave up for this generation after three refusals
+   (01 §10.9). Informational EV_POOL only: nothing was ever admitted, so there is no member
+   lifecycle (member_lost) to settle and the connection count does not change. */
+void sftp_session_pool_refused(sd_sftp_session *s, uint32_t member, sd_err reason);
 
 #endif /* SD_SFTP_INTERNAL_H */

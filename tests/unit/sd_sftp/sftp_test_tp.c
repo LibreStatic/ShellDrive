@@ -5,6 +5,7 @@
 
 #include "sd_base/sd_mem.h"
 #include "sd_platform/sd_thread.h"
+#include "sd_platform/sd_time.h"
 #include "sftp_internal.h"      /* sftp_session_pool_change(): the fake plays the SSH pool's part */
 #include "sftp_test_tp.h"
 
@@ -92,6 +93,11 @@ int tl_is_io(tl_loop *l) { return l && (DWORD)l->tid == GetCurrentThreadId(); }
 
 #define FK_STREAMS 5
 #define FK_MEMBERS 3
+/* Production pacing (01 §10.9), mirrored from sftp_ssh.c. */
+#define FAKE_ADMIT_STAGGER_MS 500u
+#define FAKE_RETRY_1_MS 500u
+#define FAKE_RETRY_2_MS 2000u
+#define FAKE_MAX_REFUSALS 3u
 
 typedef struct fake_stream {
   const sd_ssh_channel_sink *sink; void *sink_ctx;
@@ -122,6 +128,24 @@ struct fake_srv {
   volatile LONG admitted;      /* bit member-1: the member was admitted */
   volatile LONG pkts[FK_STREAMS];
   volatile LONG tx[FK_MEMBERS], rx[FK_MEMBERS];
+  /* Pool admission pacing (01 §10.9), modelled like the SSH pool: attempts start
+     FAKE_ADMIT_STAGGER_MS apart; a transiently refused member retries with backoff and is
+     abandoned for the generation after three refusals. The schedule below is touched on the fake's
+     I/O thread only; the timer thread only reads timer_at. */
+  volatile LONG64 timer_at;    /* earliest pending admission deadline (0: none) */
+  volatile LONG fire_posted;
+  sd_event timer_ev;
+  sd_thread timer_th;
+  int have_timer, timer_stop;
+  uint32_t adm_gen;            /* the generation the schedule belongs to */
+  int gen_stopped;             /* identity mismatch: no more admissions this generation */
+  uint64_t next_admit_at;      /* the stagger: earliest start of the next attempt */
+  uint32_t refusals[FK_MEMBERS];
+  uint64_t retry_at[FK_MEMBERS];
+  volatile LONG attempts[FK_MEMBERS];      /* admission attempts started (stagger/backoff tests) */
+  uint64_t attempt_at[FK_MEMBERS][FAKE_MAX_REFUSALS];   /* tick of each attempt of the generation */
+  volatile LONG refuse_left[FK_MEMBERS];   /* remaining injected admission failures (test thread) */
+  volatile LONG refuse_err[FK_MEMBERS];    /* their error (test thread) */
 };
 
 typedef struct fake_chunk { fake_srv *f; size_t n; int kind; uint32_t idx; LONG gen; sd_err err; uint8_t data[1]; } fake_chunk;
@@ -247,20 +271,135 @@ static void fake_close_all(fake_srv *f, sd_err why)
 
 static void ft_close(void *ctx) { fake_close_all((fake_srv *)ctx, SD_E_SHUTDOWN); }
 
-/* The SSH pool's notify_ready() admits members once the primary is READY; the fake calls
-   sftp_session_pool_change() with the session fake_set_session() handed over. Members are stamped
-   with the session generation, like the SSH pool stamps the member's own generation (01 §10.9). */
+/* ---- pool admission pacing (01 §10.9) ----
+ * The SSH pool starts the members' admission attempts one at a time, 500 ms apart, retries a
+ * transiently refused member with backoff and abandons it for the generation after three refusals.
+ * The fake models exactly that on its I/O thread; a small timer thread hands fires to the loop,
+ * like the pool's own timer posts into the primary connection. */
+
+static void fake_pump(fake_srv *f);
+
+/* Arms the fake's timer at `at` (tick ms; 0: nothing pending). Fake I/O thread. */
+static void fake_arm(fake_srv *f, uint64_t at)
+{
+  if (!f->have_timer) return;
+  sd_atomic_add64(&f->timer_at, (LONG64)at - sd_atomic_load64(&f->timer_at));
+  sd_event_set(&f->timer_ev);
+}
+
+static void fake_timer_fire(void *arg)
+{
+  fake_srv *f = (fake_srv *)arg;
+  InterlockedExchange(&f->fire_posted, 0);
+  fake_pump(f);
+}
+
+static unsigned __stdcall fake_timer_main(void *arg)
+{
+  fake_srv *f = (fake_srv *)arg;
+  for (;;) {
+    LONG64 at, now;
+    if (f->timer_stop) break;
+    sd_event_reset(&f->timer_ev);      /* consume a kick before re-reading the deadline */
+    if (f->timer_stop) break;
+    at = sd_atomic_load64(&f->timer_at);
+    now = (LONG64)sd_tick_ms();
+    if (at && at <= now) {
+      if (InterlockedCompareExchange(&f->fire_posted, 1, 0) == 0 &&
+          tl_post(f->loop, fake_timer_fire, f) != SD_OK)
+        InterlockedExchange(&f->fire_posted, 0);
+      (void)sd_event_wait(&f->timer_ev, 50);   /* fake_pump re-arms and kicks */
+      continue;
+    }
+    (void)sd_event_wait(&f->timer_ev, at ? (uint32_t)(at - now) : SD_WAIT_INFINITE);
+  }
+  return 0;
+}
+
+/* Earliest pending deadline of the schedule (fake I/O thread). */
+static uint64_t fake_next_deadline(fake_srv *f)
+{
+  uint64_t at = f->next_admit_at;
+  uint32_t i;
+  for (i = 0; i < FK_MEMBERS; i++)
+    if (f->refusals[i] && f->refusals[i] < FAKE_MAX_REFUSALS && f->retry_at[i] &&
+        f->retry_at[i] < at)
+      at = f->retry_at[i];
+  return at;
+}
+
+/* The admission state machine (fake I/O thread): runs the next due attempt, or arms the timer at
+   the earliest pending deadline. One attempt at a time. */
+static void fake_pump(fake_srv *f)
+{
+  uint32_t i;
+  if (!f->session) return;
+  if (f->adm_gen != (uint32_t)f->gen) { fake_arm(f, 0); return; }   /* stale fire from an old
+                                                                       generation */
+  for (i = 0; i < FK_MEMBERS && i + 1 < f->pool_target; i++) {
+    uint64_t now, at;
+    if (f->admitted & (1L << i)) continue;             /* admitted */
+    if (f->refusals[i] >= FAKE_MAX_REFUSALS) continue; /* abandoned for this generation */
+    if (f->gen_stopped) { fake_arm(f, 0); return; }
+    now = sd_tick_ms();
+    at = f->next_admit_at;                             /* the stagger ... */
+    if (f->refusals[i] && f->retry_at[i] > at) at = f->retry_at[i];   /* ... or the backoff */
+    if (now < at) { fake_arm(f, at); return; }
+    /* the attempt starts */
+    if (f->attempts[i] < FAKE_MAX_REFUSALS) f->attempt_at[i][f->attempts[i]] = now;
+    InterlockedIncrement(&f->attempts[i]);
+    f->next_admit_at = now + FAKE_ADMIT_STAGGER_MS;
+    if (f->refuse_left[i] > 0) {
+      InterlockedDecrement(&f->refuse_left[i]);
+      if (f->refuse_err[i] == SD_E_HOSTKEY_MISMATCH || f->refuse_err[i] == SD_E_NOT_FOUND) {
+        /* identity mismatch: stop the whole generation's admissions at once, like the SSH pool */
+        f->gen_stopped = 1;
+        sftp_session_pool_change((sd_sftp_session *)f->session, i + 1, 0,
+                                 (sd_err)f->refuse_err[i],
+                                 sd_sftp_session_generation((sd_sftp_session *)f->session));
+        fake_arm(f, 0);
+        return;
+      }
+      f->refusals[i]++;
+      sftp_session_pool_refused((sd_sftp_session *)f->session, i + 1, (sd_err)f->refuse_err[i]);
+      if (f->refusals[i] >= FAKE_MAX_REFUSALS) {
+        sftp_session_pool_refused((sd_sftp_session *)f->session, i + 1, SD_E_POOL_ABANDONED);
+        fake_arm(f, 0);
+        return;
+      }
+      f->retry_at[i] = sd_tick_ms() + (f->refusals[i] == 1 ? FAKE_RETRY_1_MS : FAKE_RETRY_2_MS);
+      fake_arm(f, fake_next_deadline(f));
+      return;
+    }
+    {   /* set the member's admitted bit (single writer, the fake I/O thread; a CAS because
+           InterlockedOr has no ia32 XP implementation) */
+      LONG v;
+      do { v = f->admitted; } while (InterlockedCompareExchange(&f->admitted, v | (LONG)(1L << i), v) != v);
+    }
+    sftp_session_pool_change((sd_sftp_session *)f->session, i + 1, 1, SD_OK,
+                             sd_sftp_session_generation((sd_sftp_session *)f->session));
+    fake_arm(f, fake_next_deadline(f));
+    return;
+  }
+  fake_arm(f, 0);                      /* target reached: nothing pending */
+}
+
+/* The SSH pool's notify_ready() starts a generation's admissions once the primary is READY; the
+   fake models its pacing (stagger, backoff, abandonment) and reports through
+   sftp_session_pool_change() / sftp_session_pool_refused() with the session fake_set_session()
+   handed over. Members are stamped with the session generation, like the SSH pool stamps the
+   member's own generation (01 §10.9). */
 static void ft_notify_ready(void *ctx, const char *realpath_dot)
 {
   fake_srv *f = (fake_srv *)ctx;
-  uint32_t m;
+  uint32_t i;
   SD_UNUSED(realpath_dot);
   if (!f->pool || !f->session) return;
-  for (m = 1; m < f->pool_target && m <= FK_MEMBERS; m++) {
-    InterlockedOr(&f->admitted, 1L << (m - 1));
-    sftp_session_pool_change((sd_sftp_session *)f->session, m, 1, SD_OK,
-                             sd_sftp_session_generation((sd_sftp_session *)f->session));
-  }
+  f->adm_gen = (uint32_t)f->gen;       /* a new generation: a fresh schedule */
+  f->gen_stopped = 0;
+  f->next_admit_at = 0;
+  for (i = 0; i < FK_MEMBERS; i++) { f->refusals[i] = 0; f->retry_at[i] = 0; }
+  fake_pump(f);                        /* the first attempt starts now, like the SSH pool */
 }
 
 /* Per-member statistics, members 1..3 in out[member-1] (01 §10.9); *count = admitted members. */
@@ -284,6 +423,12 @@ static void ft_destroy(void *ctx)
 {
   fake_srv *f = (fake_srv *)ctx;
   uint32_t i;
+  if (f->have_timer) {                /* before the loop: the timer posts into it */
+    f->timer_stop = 1;
+    sd_event_set(&f->timer_ev);
+    (void)sd_thread_join(&f->timer_th, SD_WAIT_INFINITE, NULL);
+    sd_event_destroy(&f->timer_ev);
+  }
   tl_loop_free(f->loop);
   for (i = 0; i < FK_STREAMS; i++) sd_wr_free(&f->st[i].in);
   sd_free(f);
@@ -326,6 +471,14 @@ void fake_set_pool(fake_srv *f, uint32_t connections)
 {
   f->pool = 1;
   f->pool_target = connections < 1 ? 1 : (connections > 1 + FK_MEMBERS ? 1 + FK_MEMBERS : connections);
+  if (f->pool_target > 1 && !f->have_timer) {   /* drives the admission pacing */
+    if (sd_event_init(&f->timer_ev, 1, 0) == SD_OK) {
+      if (sd_thread_create(&f->timer_th, fake_timer_main, f, 0, L"fake pool timer") == SD_OK)
+        f->have_timer = 1;
+      else
+        sd_event_destroy(&f->timer_ev);
+    }
+  }
 }
 void fake_set_session(fake_srv *f, sd_sftp_session *s) { f->session = s; }
 
@@ -370,6 +523,25 @@ void fake_limit_member_writes(fake_srv *f, uint32_t member, LONG budget)
   InterlockedExchange(&f->tx_budget[member - 1], budget);
 }
 uint32_t fake_stream_packets(fake_srv *f, uint32_t idx) { return idx < FK_STREAMS ? (uint32_t)f->pkts[idx] : 0; }
+/* Fails the member's next n admission attempts with e before it is admitted (01 §10.9): transient
+ * errors are retried with backoff (refusal EV_POOL per refusal) and the member is abandoned for the
+ * generation after three refusals (EV_POOL with SD_E_POOL_ABANDONED); SD_E_HOSTKEY_MISMATCH /
+ * SD_E_NOT_FOUND stop the generation's admissions at once instead. n = 0 clears. Set before the
+ * generation's admissions start. */
+void fake_refuse_member(fake_srv *f, uint32_t member, LONG n, sd_err e)
+{
+  if (member < 1 || member > FK_MEMBERS) return;
+  InterlockedExchange(&f->refuse_err[member - 1], (LONG)e);
+  InterlockedExchange(&f->refuse_left[member - 1], n);
+}
+uint64_t fake_member_attempt_at(fake_srv *f, uint32_t member, uint32_t attempt)
+{
+  if (member < 1 || member > FK_MEMBERS || attempt < 1 || attempt > FAKE_MAX_REFUSALS) return 0;
+  return f->attempt_at[member - 1][attempt - 1];
+}
+uint32_t fake_member_attempts(fake_srv *f, uint32_t member)
+{ return member >= 1 && member <= FK_MEMBERS
+       ? (uint32_t)InterlockedCompareExchange(&f->attempts[member - 1], 0, 0) : 0; }
 void fake_refuse_bulk(fake_srv *f, sd_err e) { f->refuse_bulk = e; }
 void fake_fail_opens(fake_srv *f, LONG n, sd_err e) { f->fail_err = e; InterlockedExchange(&f->fail_opens, n); }
 uint32_t fake_opens(fake_srv *f) { return (uint32_t)f->opens; }

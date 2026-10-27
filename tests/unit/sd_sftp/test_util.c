@@ -101,7 +101,8 @@ void evlog_cb(void *ctx, const sd_sftp_event *ev)
     e->home[n] = 0;
     sd_event_set(&e->ready);
   } else if (ev->type == SD_SFTP_EV_POOL) {
-    InterlockedIncrement(&e->n_pool);
+    LONG i = InterlockedIncrement(&e->n_pool) - 1;
+    if (i < 16) { e->pool_reasons[i] = ev->reason; e->pool_members[i] = ev->member; }
     if (ev->reason != SD_OK) InterlockedIncrement(&e->n_pool_drop);
     e->pool_member = ev->member;
     e->pool_conns = ev->connections;

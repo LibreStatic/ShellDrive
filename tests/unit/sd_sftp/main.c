@@ -65,6 +65,10 @@ SD_TEST_DECL(striping_meta_and_directory_handles_stay_off_members);
 SD_TEST_DECL(striping_transport_without_members_never_stripes);
 SD_TEST_DECL(striping_member_drop_reported_twice_acts_once);
 SD_TEST_DECL(striping_stale_member_event_after_generation_reset_is_ignored);
+SD_TEST_DECL(pool_admission_attempts_staggered);
+SD_TEST_DECL(pool_member_backoff_then_abandoned_after_three_refusals);
+SD_TEST_DECL(pool_abandoned_member_waits_for_next_generation);
+SD_TEST_DECL(pool_mismatch_stops_generation_admissions);
 SD_TEST_DECL(striping_stripe_unit_clamped_to_negotiated_limits);
 SD_TEST_DECL(striping_barrier_fstat_status_ok_is_protocol_violation);
 SD_TEST_DECL(striping_short_read_reissues_the_missing_range);
@@ -134,6 +138,10 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(striping_transport_without_members_never_stripes),
   SD_TEST_ENTRY(striping_member_drop_reported_twice_acts_once),
   SD_TEST_ENTRY(striping_stale_member_event_after_generation_reset_is_ignored),
+  SD_TEST_ENTRY(pool_admission_attempts_staggered),
+  SD_TEST_ENTRY(pool_member_backoff_then_abandoned_after_three_refusals),
+  SD_TEST_ENTRY(pool_abandoned_member_waits_for_next_generation),
+  SD_TEST_ENTRY(pool_mismatch_stops_generation_admissions),
   SD_TEST_ENTRY(striping_stripe_unit_clamped_to_negotiated_limits),
   SD_TEST_ENTRY(striping_barrier_fstat_status_ok_is_protocol_violation),
   SD_TEST_ENTRY(striping_short_read_reissues_the_missing_range),

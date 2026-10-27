@@ -378,6 +378,18 @@ static void st_handler(fake_srv *f, void *ctx, const uint8_t *pkt, size_t n)
 
 typedef struct xf { xsrv sv; sd_sftp_session *s; evlog ev; } xf;
 
+/* Waits until the session reports `want` connections (members admit staggered, 01 §10.9). */
+static int wait_connections(xf *x, uint32_t want, uint32_t ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  sd_sftp_stats st;
+  for (;;) {
+    if (sd_sftp_session_stats(x->s, &st) == SD_OK && st.conn_count >= want) return 1;
+    if (sd_tick_ms() >= end) return 0;
+    Sleep(5);
+  }
+}
+
 /* The pool admission starts right after the READY_INFO event, so a round trip is the cheapest
    barrier that guarantees the member streams finished opening (the fake's I/O thread processes its
    queue in order). */
@@ -393,7 +405,8 @@ static int xf_settle(xf *x)
   return ok;
 }
 
-static xf *xf_new_full(uint32_t connections, uint32_t caps, uint32_t stripe_bytes, uint32_t infl_bytes)
+static xf *xf_new_full(uint32_t connections, uint32_t caps, uint32_t stripe_bytes, uint32_t infl_bytes,
+                       uint32_t refuse_member, LONG refuse_n, sd_err refuse_err)
 {
   xf *x = (xf *)sd_calloc(1, sizeof(*x));
   sd_sftp_transport t;
@@ -413,6 +426,7 @@ static xf *xf_new_full(uint32_t connections, uint32_t caps, uint32_t stripe_byte
   o.reconnect.max_delay_ms = 100;
   fake_set_caps(x->sv.f, caps);
   fake_set_pool(x->sv.f, connections);
+  if (refuse_n) fake_refuse_member(x->sv.f, refuse_member, refuse_n, refuse_err);
   fake_transport(x->sv.f, &t);
   if (sd_sftp_session_create_transport(&t, &o, evlog_cb, &x->ev, &x->s) != SD_OK) {
     fake_free_if_unused(x->sv.f);
@@ -422,16 +436,40 @@ static xf *xf_new_full(uint32_t connections, uint32_t caps, uint32_t stripe_byte
   if (sd_sftp_session_start(x->s) != SD_OK) return NULL;
   if (sd_event_wait(&x->ev.ready, 5000) != SD_OK) return NULL;
   if (sd_sftp_session_state(x->s) != SD_SFTP_ST_READY) return NULL;
+  if (refuse_n) {
+    uint64_t end = sd_tick_ms() + 15000;
+    if (refuse_err == SD_E_HOSTKEY_MISMATCH || refuse_err == SD_E_NOT_FOUND) {
+      /* the identity drop is decided in the pool and stops the generation silently (no EV_POOL):
+         wait for the attempt itself */
+      while (fake_member_attempts(x->sv.f, refuse_member) < 1 && sd_tick_ms() < end) Sleep(5);
+      if (fake_member_attempts(x->sv.f, refuse_member) < 1) return NULL;
+    } else {
+      /* transient refusals: wait for the refusal events (and the abandonment when the third
+         refusal exhausts the backoff) */
+      LONG want = refuse_n + (refuse_n >= 3 ? 1 : 0);
+      while (x->ev.n_pool < want && sd_tick_ms() < end) Sleep(5);
+      if (x->ev.n_pool < want) return NULL;
+    }
+  } else if (connections > 1 && !wait_connections(x, connections, 5000)) {
+    return NULL;                               /* admissions are staggered: wait for the pool */
+  }
   if (!xf_settle(x)) return NULL;
   return x;
 }
 
 static xf *xf_new_ex(uint32_t connections, uint32_t caps, uint32_t stripe_bytes)
 {
-  return xf_new_full(connections, caps, stripe_bytes, 0);
+  return xf_new_full(connections, caps, stripe_bytes, 0, 0, 0, SD_OK);
 }
 
 static xf *xf_new(uint32_t connections) { return xf_new_ex(connections, 0, ST_UNIT); }
+
+/* A fixture whose member `member` refuses its first `n` admission attempts with `err` (01 §10.9
+   backoff/abandonment; the fixture waits for the refusal events instead of the pool). */
+static xf *xf_new_refused(uint32_t connections, uint32_t member, LONG n, sd_err err)
+{
+  return xf_new_full(connections, 0, ST_UNIT, 0, member, n, err);
+}
 
 /* Frees the fixture; the caller frees the struct itself (as in test_session.c). */
 static void xf_stop(xf *x)
@@ -1083,7 +1121,7 @@ SD_TEST(striping_write_parks_at_obuf_high_water)
    the primary, 4 on member 2. */
 SD_TEST(striping_write_parks_at_max_inflight_bytes)
 {
-  xf *x = xf_new_full(3, 0, ST_LIMIT, 2 * ST_LIMIT);
+  xf *x = xf_new_full(3, 0, ST_LIMIT, 2 * ST_LIMIT, 0, 0, SD_OK);
   waiter w;
   sd_sftp_reqopt o = { 0, GATE_MS, NULL };
   sd_sftp_file *f;
@@ -1564,17 +1602,6 @@ static int wait_gen_ready(xf *x, uint32_t gen, uint32_t ms)
   }
 }
 
-static int wait_connections(xf *x, uint32_t want, uint32_t ms)
-{
-  uint64_t end = sd_tick_ms() + ms;
-  sd_sftp_stats st;
-  for (;;) {
-    if (sd_sftp_session_stats(x->s, &st) == SD_OK && st.conn_count >= want) return 1;
-    if (sd_tick_ms() >= end) return 0;
-    Sleep(5);
-  }
-}
-
 /* A member drop reaches the session twice - the channel's on_closed and the pool's decision. The
    second report must neither emit a second EV_POOL nor walk member_lost again. */
 SD_TEST(striping_member_drop_reported_twice_acts_once)
@@ -1658,6 +1685,121 @@ SD_TEST(striping_stale_member_event_after_generation_reset_is_ignored)
   SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
 
   sd_sftp_file_release(f);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* ---- life cycle: admission pacing (01 §10.9) ---- */
+
+/* Several members are admitted in one generation: each attempt starts 500 ms after the previous
+   one (the fake timestamps the attempts; the session's READY path is not delayed: the fixture's
+   READY event fired long before the last admission). */
+SD_TEST(pool_admission_attempts_staggered)
+{
+  xf *x = xf_new(4);                   /* the primary plus members 1..3 */
+  uint64_t t1, t2, t3, d12, d23;
+  SD_REQUIRE(x != NULL);
+  t1 = fake_member_attempt_at(x->sv.f, 1, 1);
+  t2 = fake_member_attempt_at(x->sv.f, 2, 1);
+  t3 = fake_member_attempt_at(x->sv.f, 3, 1);
+  SD_REQUIRE(t1 && t2 && t3);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 1);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 2), 1);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 3), 1);
+  d12 = t2 - t1;
+  d23 = t3 - t2;
+  printf("  admission spacing %llu ms / %llu ms\n", (unsigned long long)d12, (unsigned long long)d23);
+  SD_CHECK(d12 >= 495 && d12 <= 4000);
+  SD_CHECK(d23 >= 495 && d23 <= 4000);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* A member whose admission fails transiently is retried with backoff: 500 ms after the first
+   refusal, then 2 s; the third refusal abandons it for the generation. Every refusal is reported
+   with its reason, then the abandonment with SD_E_POOL_ABANDONED; the session stays READY at one
+   connection. */
+SD_TEST(pool_member_backoff_then_abandoned_after_three_refusals)
+{
+  xf *x = xf_new_refused(2, 1, 3, SD_E_TIMEOUT);
+  sd_sftp_stats st;
+  uint64_t t1, t2, t3, d12, d23;
+  int i;
+  SD_REQUIRE(x != NULL);
+  SD_CHECK_EQ_INT(x->ev.n_pool, 4);                /* three refusals + the abandonment */
+  SD_CHECK_EQ_INT(x->ev.n_pool_drop, 4);
+  for (i = 0; i < 3; i++) {
+    SD_CHECK_EQ_INT(x->ev.pool_reasons[i], SD_E_TIMEOUT);
+    SD_CHECK_EQ_INT(x->ev.pool_members[i], 1);
+  }
+  SD_CHECK_EQ_INT(x->ev.pool_reasons[3], SD_E_POOL_ABANDONED);
+  SD_CHECK_EQ_INT(x->ev.pool_members[3], 1);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+  SD_CHECK(sd_sftp_session_stats(x->s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 1);               /* never admitted: the count never grew */
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 3);
+  /* the backoff: the second attempt ~500 ms after the first, the third ~2 s after the second */
+  t1 = fake_member_attempt_at(x->sv.f, 1, 1);
+  t2 = fake_member_attempt_at(x->sv.f, 1, 2);
+  t3 = fake_member_attempt_at(x->sv.f, 1, 3);
+  SD_REQUIRE(t1 && t2 && t3);
+  d12 = t2 - t1;
+  d23 = t3 - t2;
+  printf("  refusal backoff %llu ms / %llu ms\n", (unsigned long long)d12, (unsigned long long)d23);
+  SD_CHECK(d12 >= 495 && d12 <= 4000);
+  SD_CHECK(d23 >= 1995 && d23 <= 6000);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* After the abandonment no further attempt happens (past every backoff the member could have);
+   the next generation (the next notify_ready) admits it again. */
+SD_TEST(pool_abandoned_member_waits_for_next_generation)
+{
+  xf *x = xf_new_full(2, SD_SFTP_TP_REOPEN, ST_UNIT, 0, 1, 3, SD_E_CONN_REFUSED);
+  sd_sftp_stats st;
+  uint32_t gen0;
+  SD_REQUIRE(x != NULL);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 3);
+  gen0 = sd_sftp_session_generation(x->s);
+  Sleep(2500);                         /* past every backoff: nothing may retry the member */
+  xf_drain(x);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 3);
+  SD_CHECK_EQ_INT(x->ev.n_pool, 4);
+  /* the next generation admits it again, on the first attempt */
+  fake_hangup(x->sv.f);
+  SD_REQUIRE(wait_gen_ready(x, gen0 + 1, 5000));
+  SD_REQUIRE(wait_connections(x, 2, 15000));
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 4);
+  SD_CHECK(sd_sftp_session_stats(x->s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 2);
+  xf_stop(x);
+  sd_free(x);
+}
+
+/* A fingerprint mismatch is not a transient refusal: it stops the whole generation's admissions
+   immediately - the other members are never attempted - and the next generation admits again. */
+SD_TEST(pool_mismatch_stops_generation_admissions)
+{
+  xf *x = xf_new_full(4, SD_SFTP_TP_REOPEN, ST_UNIT, 0, 1, 1, SD_E_HOSTKEY_MISMATCH);
+  sd_sftp_stats st;
+  uint32_t gen0;
+  SD_REQUIRE(x != NULL);
+  gen0 = sd_sftp_session_generation(x->s);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 1), 1);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 2), 0);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 3), 0);
+  Sleep(1500);                         /* past the stagger: still no attempt for members 2 and 3 */
+  xf_drain(x);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 2), 0);
+  SD_CHECK_EQ_INT(fake_member_attempts(x->sv.f, 3), 0);
+  SD_CHECK(sd_sftp_session_stats(x->s, &st) == SD_OK);
+  SD_CHECK_EQ_INT(st.conn_count, 1);
+  SD_CHECK_EQ_INT(sd_sftp_session_state(x->s), SD_SFTP_ST_READY);
+  /* the next generation admits again (the mismatch stopped only this one) */
+  fake_hangup(x->sv.f);
+  SD_REQUIRE(wait_gen_ready(x, gen0 + 1, 5000));
+  SD_REQUIRE(wait_connections(x, 3, 15000));
   xf_stop(x);
   sd_free(x);
 }
@@ -1782,7 +1924,7 @@ SD_TEST(striping_short_read_reissues_the_missing_range)
    until the next generation's schedule pass (and leaks when no such pass ever runs). */
 SD_TEST(striping_lost_session_drains_the_striped_queue)
 {
-  xf *x = xf_new_full(3, 0, ST_UNIT, ST_UNIT);     /* one unit per channel fills the inflight budget */
+  xf *x = xf_new_full(3, 0, ST_UNIT, ST_UNIT, 0, 0, SD_OK);     /* one unit per channel fills the inflight budget */
   waiter w;
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
