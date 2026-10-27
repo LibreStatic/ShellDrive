@@ -20,6 +20,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_platform/sd_log.h"
 #include "ui_int.h"
+#include "ui_win.h"
 
 #define UI_IPC_QUEUE       8u
 #define UI_IPC_CALL_MS     10000u
@@ -42,6 +43,19 @@ static struct {
   ui_ipc_req queue[UI_IPC_QUEUE];
   size_t count;
 } g_ipc;
+
+/* Agent features of the hello reply that the windows use (ui_win.h). */
+static int features_of(sd_ipc_conn *c)
+{
+  int f = 0;
+  if (sd_ipc_conn_has_feature(c, "log.tail"))
+    f |= UI_FEAT_LOG_TAIL;
+  if (sd_ipc_conn_has_feature(c, "config.reload"))
+    f |= UI_FEAT_RELOAD;
+  if (sd_ipc_conn_has_feature(c, "update.check"))
+    f |= UI_FEAT_UPDATE;
+  return f;
+}
 
 static void post_state(int up)
 {
@@ -211,6 +225,7 @@ static DWORD WINAPI ipc_thread(void *arg)
       sd_ipc_error err;
       failures = 0;
       memset(&err, 0, sizeof(err));
+      InterlockedExchange((volatile LONG *)&g_app.agent_features, features_of(c));
       post_state(1);
       if (subscribe_topics(c) == SD_OK &&
           sd_ipc_call_raw(c, "list", NULL, 0, UI_IPC_CALL_MS, &res, &err) == SD_OK) {
@@ -229,6 +244,7 @@ static DWORD WINAPI ipc_thread(void *arg)
       }
       stop = serve(c) == 1;
       sd_ipc_close(c);
+      InterlockedExchange((volatile LONG *)&g_app.agent_features, 0);
       post_state(0);
       fail_queued();
     } else {
@@ -350,4 +366,13 @@ sd_err ui_ipc_answer(const char *json, size_t len)
   if (json == NULL || strlen(json) != len)
     return SD_E_INVALID_PARAM;
   return enqueue(UI_IPC_ANSWER, "prompt.answer", json, NULL);
+}
+
+/* Generic call of the secondary windows (ui_win.c): the reply is UI_WM_IPC_REPLY with this kind, and the
+   result is owned by the UI until the reply is handled. */
+sd_err ui_ipc_call(ui_ipc_kind kind, const char *method, const char *params)
+{
+  if (method == NULL)
+    return SD_E_INVALID_PARAM;
+  return enqueue(kind, method, params, NULL);
 }

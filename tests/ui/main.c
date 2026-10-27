@@ -43,6 +43,24 @@ SD_TEST_DECL(verbs_unknown_are_rejected);
 SD_TEST_DECL(dpi_scale_rounding_and_clamp);
 SD_TEST_DECL(dpi_font_height);
 
+/* test_logs.c, test_hostkeys.c and test_settings.c: the M3 models and their file paths. */
+SD_TEST_DECL(logs_cursor_appends_records_in_order);
+SD_TEST_DECL(logs_reset_clears_or_keeps_by_dropped_count);
+SD_TEST_DECL(logs_malformed_reply_changes_nothing);
+SD_TEST_DECL(logs_keeps_the_newest_records_only);
+SD_TEST_DECL(logs_filters_by_level_and_search);
+SD_TEST_DECL(logs_level_names);
+SD_TEST_DECL(hk_row_plain_and_bracketed_hosts);
+SD_TEST_DECL(hk_row_lists_wildcards_and_hashed_entries);
+SD_TEST_DECL(hk_row_cells_and_source_labels);
+SD_TEST_DECL(hk_announcement_cells);
+SD_TEST_DECL(hk_store_enumeration_and_remove);
+SD_TEST_DECL(settings_model_defaults_and_mapping);
+SD_TEST_DECL(settings_model_round_trip_keeps_other_fields);
+SD_TEST_DECL(settings_save_load_round_trip_in_a_temp_root);
+SD_TEST_DECL(settings_cache_budget_parsing);
+SD_TEST_DECL(settings_language_index_and_run_command);
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(dlg_empty_template_parses),
   SD_TEST_ENTRY(dlg_items_aligned_and_counted),
@@ -83,6 +101,22 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(verbs_unknown_are_rejected),
   SD_TEST_ENTRY(dpi_scale_rounding_and_clamp),
   SD_TEST_ENTRY(dpi_font_height),
+  SD_TEST_ENTRY(logs_cursor_appends_records_in_order),
+  SD_TEST_ENTRY(logs_reset_clears_or_keeps_by_dropped_count),
+  SD_TEST_ENTRY(logs_malformed_reply_changes_nothing),
+  SD_TEST_ENTRY(logs_keeps_the_newest_records_only),
+  SD_TEST_ENTRY(logs_filters_by_level_and_search),
+  SD_TEST_ENTRY(logs_level_names),
+  SD_TEST_ENTRY(hk_row_plain_and_bracketed_hosts),
+  SD_TEST_ENTRY(hk_row_lists_wildcards_and_hashed_entries),
+  SD_TEST_ENTRY(hk_row_cells_and_source_labels),
+  SD_TEST_ENTRY(hk_announcement_cells),
+  SD_TEST_ENTRY(hk_store_enumeration_and_remove),
+  SD_TEST_ENTRY(settings_model_defaults_and_mapping),
+  SD_TEST_ENTRY(settings_model_round_trip_keeps_other_fields),
+  SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),
+  SD_TEST_ENTRY(settings_cache_budget_parsing),
+  SD_TEST_ENTRY(settings_language_index_and_run_command),
 };
 
 int main(int argc, char **argv)

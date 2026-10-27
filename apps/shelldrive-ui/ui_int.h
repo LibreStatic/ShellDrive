@@ -39,7 +39,13 @@
 
 #define UI_MAX_MOUNTS 64
 
-typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER } ui_ipc_kind;
+typedef enum ui_ipc_kind {
+  UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER,
+  UI_IPC_ANNOUNCED,   /* hostkey.announced.list (ui_hostkeys.c) */
+  UI_IPC_ACCEPT,      /* hostkey.announced.accept (ui_hostkeys.c) */
+  UI_IPC_LOG,         /* log.tail (ui_logs.c) */
+  UI_IPC_RELOAD       /* config.reload (ui_settings.c) */
+} ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
   ui_ipc_kind kind;
@@ -76,6 +82,8 @@ typedef struct ui_app {
   wchar_t class_main[320];      /* com.librestatic.shelldrive.ui.<SID>.main */
   HANDLE mutex;                 /* SD_IPC_OBJ_UI_MUTEX, held for the life of the first instance */
   int agent_up;
+  int agent_features;           /* UI_FEAT_* of the connected agent (hello), 0 when none */
+  int notify_on;                /* [ui] notify (settings.ini): balloons other than write_failed are shown when set */
   int quit;
   int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
   unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
@@ -115,6 +123,9 @@ sd_err ui_ipc_unmount(const wchar_t *drive);
 sd_err ui_ipc_mount(const char *profile_id);
 /* prompt.answer, see ui_ipc.c: the JSON is copied; the caller wipes its own copy. */
 sd_err ui_ipc_answer(const char *json, size_t len);
+/* Generic call for the secondary windows: the reply comes back as UI_WM_IPC_REPLY with this kind. params may be
+   NULL. */
+sd_err ui_ipc_call(ui_ipc_kind kind, const char *method, const char *params);
 
 /* ---- ui_tray.c: notification area icon ---- */
 sd_err ui_tray_add(void);

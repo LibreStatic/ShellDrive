@@ -15,6 +15,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "ui_int.h"
+#include "ui_win.h"
 
 #ifndef NIIF_RESPECT_QUIET_TIME
 #define NIIF_RESPECT_QUIET_TIME 0x00000080
@@ -113,6 +114,9 @@ void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
 
 void ui_tray_balloon(const char *code, const wchar_t *drive)
 {
+  /* write_failed is always shown (03 §7.7); the others follow the notifications setting */
+  if (!g_app.notify_on && !(code && strcmp(code, "write_failed") == 0))
+    return;
   sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
   if (code && strcmp(code, "legacy_algorithms") == 0)
     msg = SD_MSG_UI_WARN_LEGACY;
@@ -160,6 +164,10 @@ static void show_menu(void)
   else
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
   AppendMenuW(menu, MF_STRING, UI_CMD_OPEN, sd_l10n_get(SD_MSG_UI_TRAY_OPEN));
+  AppendMenuW(menu, MF_STRING, UI_CMD_HOSTKEYS, sd_l10n_get(SD_MSG_UI_MENU_HOSTKEYS));
+  AppendMenuW(menu, MF_STRING, UI_CMD_LOGS, sd_l10n_get(SD_MSG_UI_MENU_LOGS));
+  AppendMenuW(menu, MF_STRING, UI_CMD_SETTINGS, sd_l10n_get(SD_MSG_UI_MENU_SETTINGS));
+  AppendMenuW(menu, MF_STRING, UI_CMD_ABOUT, sd_l10n_get(SD_MSG_UI_MENU_ABOUT));
   AppendMenuW(menu, MF_STRING, UI_CMD_EXIT, sd_l10n_get(SD_MSG_UI_TRAY_EXIT));
   SetMenuDefaultItem(menu, UI_CMD_OPEN, FALSE);
 
@@ -173,6 +181,8 @@ static void show_menu(void)
 
   if (cmd == UI_CMD_OPEN) {
     ui_main_show();
+  } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_ABOUT) {
+    ui_windows_command(cmd);
   } else if (cmd == UI_CMD_EXIT) {
     ui_app_quit();
   } else if (cmd >= UI_CMD_UNMOUNT_BASE && cmd < UI_CMD_UNMOUNT_BASE + n) {

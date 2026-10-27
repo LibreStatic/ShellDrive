@@ -782,6 +782,63 @@ sd_err sd_known_hosts_list(sd_known_hosts *kh, sd_kh_store_kind store, const cha
   return any ? SD_OK : SD_E_NOT_FOUND;
 }
 
+typedef struct kh_all_ctx {
+  sd_kh_all_cb cb;
+  void *ctx;
+  uint8_t *tmp;
+  int stop;
+} kh_all_ctx;
+
+static int all_line(void *vctx, const char *s, size_t n, uint32_t no)
+{
+  kh_all_ctx *c = (kh_all_ctx *)vctx;
+  kh_line l;
+  size_t blen;
+  char type[64], pat[256];
+  sd_kh_all_entry e;
+  if (parse_line(s, n, &l) <= 0 || l.marker != KH_PLAIN) return 0;
+  if (l.pat_len >= sizeof(pat) || l.type_len >= sizeof(type)) return 0;
+  if (!decode_key(&l, c->tmp, KH_MAX_BLOB, &blen)) return 0;
+  memcpy(pat, l.pat, l.pat_len);
+  pat[l.pat_len] = '\0';
+  memcpy(type, l.type, l.type_len);
+  type[l.type_len] = '\0';
+  e.pattern = pat;
+  e.blob = c->tmp;
+  e.len = blen;
+  e.type = type;
+  e.line = no;
+  e.hashed = l.pat[0] == '|';
+  if (c->cb(c->ctx, &e)) { c->stop = 1; return 1; }
+  return 0;
+}
+
+sd_err sd_known_hosts_list_all(sd_known_hosts *kh, sd_kh_store_kind store, sd_kh_all_cb cb, void *ctx)
+{
+  uint32_t i;
+  kh_all_ctx c;
+  int any = 0;
+  if (!kh || !cb || (store != SD_KH_STORE_MACHINE && store != SD_KH_STORE_USER)) return SD_E_INVALID_PARAM;
+  memset(&c, 0, sizeof(c));
+  c.cb = cb;
+  c.ctx = ctx;
+  c.tmp = (uint8_t *)sd_alloc(KH_MAX_BLOB);
+  if (!c.tmp) return SD_E_NO_MEMORY;
+  sd_mutex_lock(&kh->lock);
+  for (i = 0; i < kh->count && !c.stop; i++) {
+    char *text;
+    size_t tlen;
+    if (kh->stores[i].kind != store) continue;
+    any = 1;
+    if (load_store(&kh->stores[i], &text, &tlen) != SD_OK) continue;
+    for_each_line(text, tlen, all_line, &c);
+    sd_free(text);
+  }
+  sd_mutex_unlock(&kh->lock);
+  sd_free(c.tmp);
+  return any ? SD_OK : SD_E_NOT_FOUND;
+}
+
 /* ---- writing ---- */
 
 static HANDLE lock_file_mutex(const kh_store *s)

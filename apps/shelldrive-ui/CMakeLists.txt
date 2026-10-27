@@ -1,15 +1,26 @@
-# shelldrive-ui.exe: tray icon, main window (03 §1.4, §7) and prompt dialogs (03 §2.5). GUI subsystem,
-# comctl32 v6 and DPI awareness come from sd_add_app WINDOWS (cmake/SdModule.cmake).
+# shelldrive-ui.exe: tray icon, main window (03 §1.4, §7), prompt dialogs (03 §2.5) and the M3 windows: host key
+# manager, Logs viewer, Settings and About (03 §5, §10, §3.2; ui_win.h). GUI subsystem, comctl32 v6 and DPI
+# awareness come from sd_add_app WINDOWS (cmake/SdModule.cmake).
 #
-# ui_wire.c, ui_dpi.c, ui_dlg.c and ui_prompt_model.c are pure (no window, IPC or agent code): they are also
-# compiled into the unit tests (tests/ui) through SD_UI_PURE_SOURCES.
+# ui_wire.c, ui_dpi.c, ui_dlg.c, ui_prompt_model.c, ui_logs_model.c, ui_hostkeys_model.c and ui_settings_model.c
+# are pure (no window, IPC or agent code): they are also compiled into the unit tests (tests/ui) through
+# SD_UI_PURE_SOURCES.
 
 set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_wire.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_dpi.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_dlg.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_prompt_model.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_prompt_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_logs_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_hostkeys_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c)
 set(SD_UI_PURE_SOURCES ${SD_UI_PURE_SOURCES} PARENT_SCOPE)
+
+# Icon resources (res/icons): the template gets the absolute icon directory (rc.exe does not search the
+# source tree for relative paths).
+set(SD_UI_ICON_DIR "${CMAKE_SOURCE_DIR}/res/icons")
+configure_file("${CMAKE_SOURCE_DIR}/res/icons/shelldrive-ui.rc.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc" @ONLY)
 
 sd_add_app(shelldrive-ui
   OUTPUT_NAME shelldrive-ui
@@ -17,16 +28,27 @@ sd_add_app(shelldrive-ui
   WINDOWS
   SOURCES
     main.c
+    ui_about.c
+    ui_hostkeys.c
     ui_icon.c
     ui_ipc.c
+    ui_logs.c
     ui_main.c
     ui_model.c
     ui_prompt.c
+    ui_settings.c
     ui_tray.c
+    ui_win.c
     ui_int.h
+    ui_res.h
+    ui_win.h
     ui_wire.h
     ui_dpi.h
     ui_dlg.h
+    ui_hostkeys_model.h
+    ui_logs_model.h
     ui_prompt_model.h
+    ui_settings_model.h
+    ${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc
     ${SD_UI_PURE_SOURCES}
-  DEPS sd_ipc sd_l10n sd_l10n_catalog_ui sd_platform sd_base comctl32)
+  DEPS sd_ipc sd_config sd_ssh sd_l10n sd_l10n_catalog_ui sd_platform sd_base comctl32 comdlg32 shell32)

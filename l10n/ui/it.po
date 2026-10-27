@@ -440,3 +440,463 @@ msgstr[2] "Tempo per rispondere: circa {count} minuti."
 msgctxt "ui.prompt.timeout"
 msgid "A sign-in for {profile} timed out. Open ShellDrive to try again."
 msgstr "Il tempo per accedere a {profile} è scaduto. Apri ShellDrive per riprovare."
+
+#. Host key manager window title.
+msgctxt "ui.hostkeys.title"
+msgid "Host keys"
+msgstr "Chiavi host"
+
+#. Host key manager tab: keys stored in the known hosts files.
+msgctxt "ui.hostkeys.tab_known"
+msgid "Known keys"
+msgstr "Chiavi conosciute"
+
+#. Host key manager tab: keys the server offered to add or remove (UpdateHostKeys).
+msgctxt "ui.hostkeys.tab_announced"
+msgid "Announced keys"
+msgstr "Chiavi annunciate"
+
+#. Host key list column: host name.
+msgctxt "ui.hostkeys.col_host"
+msgid "Host"
+msgstr "Host"
+
+#. Host key list column: TCP port.
+msgctxt "ui.hostkeys.col_port"
+msgid "Port"
+msgstr "Porta"
+
+#. Host key list column: SSH key type.
+msgctxt "ui.hostkeys.col_type"
+msgid "Key type"
+msgstr "Tipo di chiave"
+
+#. Host key list column: SHA256 fingerprint of the key.
+msgctxt "ui.hostkeys.col_fp"
+msgid "SHA256 fingerprint"
+msgstr "Impronta SHA256"
+
+#. Host key list column: the store the key comes from.
+msgctxt "ui.hostkeys.col_source"
+msgid "Source"
+msgstr "Origine"
+
+#. Announced keys column: whether the key is added or removed.
+msgctxt "ui.hostkeys.col_change"
+msgid "Change"
+msgstr "Modifica"
+
+#. Host key list: the host name of a hashed known_hosts entry (it cannot be read).
+msgctxt "ui.hostkeys.hashed"
+msgid "(hashed)"
+msgstr "(con hash)"
+
+#. Host key list: source of a key in the machine store (read-only here).
+msgctxt "ui.hostkeys.src_machine"
+msgid "Machine (read-only)"
+msgstr "Macchina (sola lettura)"
+
+#. Host key list: source of a key in the user store.
+msgctxt "ui.hostkeys.src_user"
+msgid "ShellDrive (user)"
+msgstr "ShellDrive (utente)"
+
+#. Announced keys: the key is added to the store.
+msgctxt "ui.hostkeys.action_add"
+msgid "Add"
+msgstr "Aggiunta"
+
+#. Announced keys: the key is removed from the store.
+msgctxt "ui.hostkeys.action_remove"
+msgid "Remove"
+msgstr "Rimozione"
+
+#. Host key manager button: removes the selected key from the user store.
+msgctxt "ui.hostkeys.btn_remove"
+msgid "Remove"
+msgstr "Rimuovi"
+
+#. Host key manager button: copies the PuTTY host keys into the user store.
+msgctxt "ui.hostkeys.btn_import_putty"
+msgid "Import from PuTTY"
+msgstr "Importa da PuTTY"
+
+#. Host key manager button: opens a known_hosts file and copies its keys.
+msgctxt "ui.hostkeys.btn_import_openssh"
+msgid "Import from OpenSSH…"
+msgstr "Importa da OpenSSH…"
+
+#. Announced keys button: adds the proven keys of the announcement.
+msgctxt "ui.hostkeys.btn_add"
+msgid "Add keys"
+msgstr "Aggiungi chiavi"
+
+#. Announced keys button: adds the keys and removes the ones the server no longer uses.
+msgctxt "ui.hostkeys.btn_add_all"
+msgid "Add and remove"
+msgstr "Aggiungi e rimuovi"
+
+#. Confirmation before a key is removed. {host} is the host name, {type} the key type.
+msgctxt "ui.hostkeys.confirm_remove"
+msgid "Remove the {type} key of {host} from your known hosts? ShellDrive asks again the next time it connects to {host}."
+msgstr "Rimuovere la chiave {type} di {host} dagli host conosciuti? ShellDrive chiederà di nuovo alla prossima connessione a {host}."
+
+#. Confirmation before an announcement that also removes keys is applied.
+msgctxt "ui.hostkeys.confirm_accept_removals"
+msgid "Also remove the keys the server no longer uses? They are deleted from your known hosts."
+msgstr "Rimuovere anche le chiavi che il server non usa più? Verranno cancellate dagli host conosciuti."
+
+#. File filter name in the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.file_all"
+msgid "All files"
+msgstr "Tutti i file"
+
+#. Title of the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.pick_title"
+msgid "Choose an OpenSSH known_hosts file"
+msgstr "Scegli un file known_hosts di OpenSSH"
+
+#. Host key manager: the known hosts files could not be opened.
+msgctxt "ui.hostkeys.store_failed"
+msgid "The known hosts could not be opened."
+msgstr "Impossibile aprire gli host conosciuti."
+
+#. Host key manager: a key was removed.
+msgctxt "ui.hostkeys.removed"
+msgid "The host key was removed."
+msgstr "La chiave dell'host è stata rimossa."
+
+#. Host key manager: a key could not be removed. {code} is the error name.
+msgctxt "ui.hostkeys.remove_failed"
+msgid "The host key could not be removed ({code})."
+msgstr "Impossibile rimuovere la chiave dell'host ({code})."
+
+#. Host key manager: the import failed. {code} is the error name.
+msgctxt "ui.hostkeys.import_failed"
+msgid "The host keys could not be imported ({code})."
+msgstr "Impossibile importare le chiavi ({code})."
+
+#. Host key manager: the import source had no keys.
+msgctxt "ui.hostkeys.import_none"
+msgid "No host keys were found in that source."
+msgstr "Nessuna chiave trovata in quell'origine."
+
+#. Host key manager: number of keys imported.
+#, plural-arg=count
+msgctxt "ui.hostkeys.imported"
+msgid "{count} host key imported."
+msgid_plural "{count} host keys imported."
+msgstr[0] "{count} chiave importata."
+msgstr[1] "{count} chiavi importate."
+msgstr[2] "{count} chiavi importate."
+
+#. Host key manager: the agent is not running, so announcements cannot be read.
+msgctxt "ui.hostkeys.agent_down"
+msgid "The agent is not running."
+msgstr "L'agente non è in esecuzione."
+
+#. Host key manager: the announcements could not be read.
+msgctxt "ui.hostkeys.announced_failed"
+msgid "The announced keys could not be read."
+msgstr "Impossibile leggere le chiavi annunciate."
+
+#. Host key manager: applying an announcement failed. {code} is the error name.
+msgctxt "ui.hostkeys.accept_failed"
+msgid "The host keys could not be applied ({code})."
+msgstr "Impossibile applicare le chiavi ({code})."
+
+#. Host key manager: the request could not be queued for the agent.
+msgctxt "ui.hostkeys.accept_failed_queue"
+msgid "The request could not be sent to the agent. Try again."
+msgstr "Impossibile inviare la richiesta all'agente. Riprova."
+
+#. Host key manager: an announcement was applied. {host} is the host name.
+msgctxt "ui.hostkeys.accepted"
+msgid "Host keys for {host} were updated."
+msgstr "Le chiavi di {host} sono state aggiornate."
+
+#. Host key manager status line: number of keys listed.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_known"
+msgid "{count} host key."
+msgid_plural "{count} host keys."
+msgstr[0] "{count} chiave."
+msgstr[1] "{count} chiavi."
+msgstr[2] "{count} chiavi."
+
+#. Host key manager status line: number of announced keys.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_announced"
+msgid "{count} announced key."
+msgid_plural "{count} announced keys."
+msgstr[0] "{count} chiave annunciata."
+msgstr[1] "{count} chiavi annunciate."
+msgstr[2] "{count} chiavi annunciate."
+
+#. Logs viewer window title.
+msgctxt "ui.logs.title"
+msgid "Logs"
+msgstr "Registri"
+
+#. Logs viewer: label of the level filter.
+msgctxt "ui.logs.level_label"
+msgid "Show"
+msgstr "Mostra"
+
+#. Logs viewer: label of the search box.
+msgctxt "ui.logs.search_label"
+msgid "Search"
+msgstr "Cerca"
+
+#. Logs viewer level filter: errors only.
+msgctxt "ui.logs.level_error"
+msgid "Errors only"
+msgstr "Solo errori"
+
+#. Logs viewer level filter: warnings and errors.
+msgctxt "ui.logs.level_warn"
+msgid "Warnings and errors"
+msgstr "Avvisi ed errori"
+
+#. Logs viewer level filter: information and more severe records.
+msgctxt "ui.logs.level_info"
+msgid "Information and above"
+msgstr "Informazioni e superiori"
+
+#. Logs viewer level filter: debug and more severe records.
+msgctxt "ui.logs.level_debug"
+msgid "Debug and above"
+msgstr "Debug e superiori"
+
+#. Logs viewer level filter: every record.
+msgctxt "ui.logs.level_trace"
+msgid "All records"
+msgstr "Tutti i record"
+
+#. Logs viewer button: copies the selected lines (all lines when nothing is selected).
+msgctxt "ui.logs.btn_copy"
+msgid "Copy selection"
+msgstr "Copia selezione"
+
+#. Logs viewer button: opens the folder with the log files.
+msgctxt "ui.logs.btn_folder"
+msgid "Open log folder"
+msgstr "Apri cartella dei registri"
+
+#. Logs viewer status line: number of records shown.
+#, plural-arg=count
+msgctxt "ui.logs.status_count"
+msgid "{count} record shown."
+msgid_plural "{count} records shown."
+msgstr[0] "{count} record mostrato."
+msgstr[1] "{count} record mostrati."
+msgstr[2] "{count} record mostrati."
+
+#. Logs viewer status line: records the agent dropped before the ones shown.
+#, plural-arg=count
+msgctxt "ui.logs.dropped"
+msgid "{count} older record was dropped."
+msgid_plural "{count} older records were dropped."
+msgstr[0] "È andato perso {count} record precedente."
+msgstr[1] "Sono andati persi {count} record precedenti."
+msgstr[2] "Sono andati persi {count} record precedenti."
+
+#. Logs viewer: the agent is not running; the records already shown stay.
+msgctxt "ui.logs.agent_down"
+msgid "The agent is not running. Records already shown are kept."
+msgstr "L'agente non è in esecuzione. I record già mostrati restano visibili."
+
+#. Logs viewer: the running agent has no log.tail method.
+msgctxt "ui.logs.old_agent"
+msgid "The running agent is too old to show its log."
+msgstr "L'agente in esecuzione è troppo vecchio per mostrare il suo registro."
+
+#. Logs viewer: reading the log failed. {code} is the error name.
+msgctxt "ui.logs.read_failed"
+msgid "The log could not be read ({code})."
+msgstr "Impossibile leggere il registro ({code})."
+
+#. Logs viewer: the agent sent a malformed log.tail reply.
+msgctxt "ui.logs.bad_reply"
+msgid "The agent sent a log that could not be read."
+msgstr "L'agente ha inviato un registro illeggibile."
+
+#. Logs viewer: the log folder could not be opened.
+msgctxt "ui.logs.open_failed"
+msgid "The log folder could not be opened."
+msgstr "Impossibile aprire la cartella dei registri."
+
+#. Logs viewer: first poll in progress.
+msgctxt "ui.logs.loading"
+msgid "Loading the log…"
+msgstr "Caricamento del registro…"
+
+#. Settings window title.
+msgctxt "ui.settings.title"
+msgid "Settings"
+msgstr "Impostazioni"
+
+#. Settings: label of the language list.
+msgctxt "ui.settings.language"
+msgid "Language"
+msgstr "Lingua"
+
+#. Settings: the first language entry, the Windows language.
+msgctxt "ui.settings.lang_system"
+msgid "System default"
+msgstr "Predefinita di sistema"
+
+#. Settings: checkbox for balloon notifications.
+msgctxt "ui.settings.notify"
+msgid "Show notifications"
+msgstr "Mostra notifiche"
+
+#. Settings: checkbox that starts the tray icon at sign-in (Run key, this user only).
+msgctxt "ui.settings.logon"
+msgid "Start the tray icon at sign-in"
+msgstr "Avvia l'icona nell'area di notifica all'accesso"
+
+#. Settings: label of the default backend list.
+msgctxt "ui.settings.backend"
+msgid "Default backend"
+msgstr "Backend predefinito"
+
+#. Settings: default backend choice, chosen by Windows.
+msgctxt "ui.settings.backend_auto"
+msgid "Automatic"
+msgstr "Automatico"
+
+#. Settings: default backend choice, the Dokany product name.
+msgctxt "ui.settings.backend_dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+#. Settings: default backend choice, the WebDAV protocol name.
+msgctxt "ui.settings.backend_webdav"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+#. Settings: label of the memory cache budget field.
+msgctxt "ui.settings.cache"
+msgid "Memory cache (MB)"
+msgstr "Cache in memoria (MB)"
+
+#. Settings: explains the values of the memory cache budget field.
+msgctxt "ui.settings.cache_hint"
+msgid "0 uses the default. Otherwise 16 to 65536."
+msgstr "0 usa il valore predefinito. Altrimenti da 16 a 65536."
+
+#. Settings: heading of the update group.
+msgctxt "ui.settings.group_updates"
+msgid "Updates"
+msgstr "Aggiornamenti"
+
+#. Settings: checkbox for automatic update checks (disabled until the agent offers it).
+msgctxt "ui.settings.check_updates"
+msgid "Check for updates automatically"
+msgstr "Cerca aggiornamenti automaticamente"
+
+#. Settings: shown when the agent cannot check for updates.
+msgctxt "ui.settings.updates_unavailable"
+msgid "Updates are not available in this version of the agent."
+msgstr "Gli aggiornamenti non sono disponibili in questa versione dell'agente."
+
+#. Settings: which changes take effect without a restart.
+msgctxt "ui.settings.live_note"
+msgid "Notifications, the backend and the cache apply to new mounts and connections after the agent reloads the file."
+msgstr "Notifiche, backend e cache valgono per i nuovi montaggi e le nuove connessioni dopo che l'agente ricarica il file."
+
+#. Settings: shown after a language change, which is read at start-up.
+msgctxt "ui.settings.restart_note"
+msgid "The language changes when you restart ShellDrive."
+msgstr "La lingua cambia al riavvio di ShellDrive."
+
+#. Settings button: saves the file and applies it.
+msgctxt "ui.settings.btn_save"
+msgid "Save"
+msgstr "Salva"
+
+#. Settings button: closes without saving.
+msgctxt "ui.settings.btn_cancel"
+msgid "Cancel"
+msgstr "Annulla"
+
+#. Settings: the memory cache field holds a value outside 0 and 16 to 65536.
+msgctxt "ui.settings.cache_invalid"
+msgid "Enter 0, or a size from 16 to 65536 MB."
+msgstr "Inserisci 0 oppure una dimensione da 16 a 65536 MB."
+
+#. Settings: saving settings.ini failed. {code} is the error name.
+msgctxt "ui.settings.save_failed"
+msgid "The settings could not be saved ({code})."
+msgstr "Impossibile salvare le impostazioni ({code})."
+
+#. Settings: the Run key for start at sign-in could not be written.
+msgctxt "ui.settings.run_failed"
+msgid "Start at sign-in could not be changed."
+msgstr "Impossibile modificare l'avvio all'accesso."
+
+#. About window title.
+msgctxt "ui.about.title"
+msgid "About ShellDrive"
+msgstr "Informazioni su ShellDrive"
+
+#. About window: the version line. {version} is the product version.
+msgctxt "ui.about.version"
+msgid "Version {version}"
+msgstr "Versione {version}"
+
+#. About window: the license line.
+msgctxt "ui.about.license"
+msgid "Licensed under the MIT License."
+msgstr "Licenza MIT."
+
+#. About window: the copyright line.
+msgctxt "ui.about.copyright"
+msgid "Copyright (C) LibreStatic"
+msgstr "Copyright (C) LibreStatic"
+
+#. About window button: opens the project web page in the browser.
+msgctxt "ui.about.btn_project"
+msgid "Project page"
+msgstr "Pagina del progetto"
+
+#. About window button: closes the window.
+msgctxt "ui.about.btn_close"
+msgid "Close"
+msgstr "Chiudi"
+
+#. About window: the browser could not be started.
+msgctxt "ui.about.open_failed"
+msgid "The project page could not be opened in the browser."
+msgstr "Impossibile aprire la pagina del progetto nel browser."
+
+#. Menu item: opens the host key manager.
+msgctxt "ui.menu.hostkeys"
+msgid "Host keys…"
+msgstr "Chiavi host…"
+
+#. Menu item: opens the Logs viewer.
+msgctxt "ui.menu.logs"
+msgid "Logs…"
+msgstr "Registri…"
+
+#. Menu item: opens Settings.
+msgctxt "ui.menu.settings"
+msgid "Settings…"
+msgstr "Impostazioni…"
+
+#. Menu item: opens the About window.
+msgctxt "ui.menu.about"
+msgid "About ShellDrive"
+msgstr "Informazioni su ShellDrive"
+
+#. Menu bar: the Tools menu.
+msgctxt "ui.menu.tools"
+msgid "Tools"
+msgstr "Strumenti"
+
+#. Menu bar: the Help menu.
+msgctxt "ui.menu.help"
+msgid "Help"
+msgstr "Aiuto"

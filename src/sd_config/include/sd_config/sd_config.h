@@ -208,10 +208,17 @@ typedef struct sd_settings {
   int    openssh_source;         /* [hostkeys] openssh_source (yes, D7) */
   int    putty_source;           /* [hostkeys] putty_source (yes, D7) */
   int    persist_enterprise;     /* [credentials] persist = local (0, default) | enterprise (1) */
+  /* M3 (03 §3.2, §3.4.2): [ui] and [defaults] */
+  char   ui_language[16];        /* [ui] language: "" = system default (the UI default language order, 9.3) */
+  int    notify;                 /* [ui] notify = yes (balloons on, default) | no */
+  int    default_backend;        /* [defaults] backend: SD_PROFILE_BACKEND_* (auto) */
 } sd_settings;
 void   sd_settings_defaults(sd_settings *s);
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s);   /* SD_E_INVALID_PARAM if a value was bad */
 sd_err sd_settings_load(sd_settings *s);
+/* Writes the settings this struct holds into settings.ini under the per-user root: other keys and comments
+   are kept, the file is replaced atomically under config.lock. An empty ui_language removes [ui] language. */
+sd_err sd_settings_save(const sd_settings *s);
 /* Process-wide override of the per-user root (portable layouts, tests). NULL clears it. */
 void   sd_config_set_root_override(const wchar_t *dir);
 
