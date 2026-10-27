@@ -1,6 +1,7 @@
 # sd_update unit tests (owned by the updater agent). Fixtures are made at test time by sd-updsign (test keys in a
 # temporary directory). The fake binaries are built from fakeapp.c. Only loopback 127.0.0.1 is used.
-add_executable(sd-test-update-fakeapp fakeapp.c)
+sd_manifest_configure("${CMAKE_CURRENT_BINARY_DIR}/sd-test-update-fakeapp.manifest" "sd-test-update-fakeapp" FALSE)
+add_executable(sd-test-update-fakeapp fakeapp.c "${CMAKE_CURRENT_BINARY_DIR}/sd-test-update-fakeapp.manifest")
 set_target_properties(sd-test-update-fakeapp PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(update

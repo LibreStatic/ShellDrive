@@ -75,7 +75,11 @@ endfunction()
 function(sd_add_unit_test short)
   cmake_parse_arguments(T "" "" "SOURCES;DEPS" ${ARGN})
   set(_t sd-test-${short})
-  add_executable(${_t} ${T_SOURCES})
+  # The asInvoker manifest keeps Windows installer detection from elevating 32-bit test binaries whose names
+  # contain "setup", "update", "install" or "patch" (ctest then reports them as Not Run).
+  set(_manifest "${CMAKE_CURRENT_BINARY_DIR}/${_t}.manifest")
+  sd_manifest_configure("${_manifest}" "${_t}" FALSE)
+  add_executable(${_t} ${T_SOURCES} "${_manifest}")
   target_link_libraries(${_t} PRIVATE sd_test_harness ${T_DEPS})
   set_target_properties(${_t} PROPERTIES FOLDER "tests")
   add_test(NAME unit.${short} COMMAND ${_t})
