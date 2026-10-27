@@ -1025,3 +1025,132 @@ SD_TEST(m3_cache_clear_refuses_queued_writes)
   sd_ipc_close(c);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_WB_DIRTY", NULL);
 }
+
+/* ---- M3 mount.autostart and mount.open_after_mount (03 §3.4.1) ---- */
+
+static int write_test_file(const wchar_t *path, const char *data)
+{
+  HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD wrote = 0;
+  if (f == INVALID_HANDLE_VALUE)
+    return 0;
+  if (!WriteFile(f, data, (DWORD)strlen(data), &wrote, NULL) || wrote != strlen(data)) {
+    CloseHandle(f);
+    return 0;
+  }
+  CloseHandle(f);
+  return 1;
+}
+
+/* 1 when the agent log (log.tail) has a record containing needle, 0 when not, -1 on a failed call. */
+static int log_has(sd_ipc_conn *c, const char *needle)
+{
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  const sd_json *recs;
+  size_t i, n;
+  int found = 0;
+  if (call(c, "log.tail", "{\"lines\":2000}", &res, &err) != SD_OK) {
+    sd_json_free(res);
+    return -1;
+  }
+  recs = sd_json_get(res, "records");
+  n = sd_json_count(recs);
+  for (i = 0; i < n && !found; i++) {
+    const char *t = sd_json_get_str(sd_json_at(recs, i), "text");
+    if (t != NULL && strstr(t, needle) != NULL)
+      found = 1;
+  }
+  sd_json_free(res);
+  return found;
+}
+
+/* Profile 1 (autostart = logon) is started by the agent at its start; profile 2 (logon, remote sessions only) is
+   started only in a remote session and skipped on the console; profile 3 (autostart = no) is never looked at.
+   A user-initiated mount with the open request opens the drive root once, after its first MOUNTED. Test builds
+   append the root to SHELLDRIVE_TEST_OPEN_FILE and start no Explorer window. */
+SD_TEST(m3_autostart_and_open_after_mount)
+{
+  static const char k_auto[] =
+    "[profile]\r\nformat = 1\r\nid = 11111111111111111111111111111111\r\nname = Auto Logon\r\n"
+    "host = new.test\r\nuser = alice\r\n[mount]\r\nautostart = logon\r\n";
+  static const char k_remote[] =
+    "[profile]\r\nformat = 1\r\nid = 22222222222222222222222222222222\r\nname = Auto Remote\r\n"
+    "host = new2.test\r\nuser = alice\r\n[mount]\r\nautostart = logon\r\nautostart_sessions = remote\r\n";
+  static const char k_manual[] =
+    "[profile]\r\nformat = 1\r\nid = 33333333333333333333333333333333\r\nname = Manual\r\n"
+    "host = new3.test\r\nuser = alice\r\n[mount]\r\nautostart = no\r\n";
+  wchar_t root[MAX_PATH], dir[MAX_PATH], path[MAX_PATH], open_file[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  char pid[32], buf[160];
+  int tries, remote = GetSystemMetrics(SM_REMOTESESSION) != 0;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"autostart", NULL, NULL, NULL));
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", root, MAX_PATH) > 0);
+  wcscpy_s(dir, MAX_PATH, root);
+  wcscat_s(dir, MAX_PATH, L"\\profiles");
+  CreateDirectoryW(dir, NULL);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\11111111111111111111111111111111.ini", dir);
+  SD_REQUIRE(write_test_file(path, k_auto));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\22222222222222222222222222222222.ini", dir);
+  SD_REQUIRE(write_test_file(path, k_remote));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\33333333333333333333333333333333.ini", dir);
+  SD_REQUIRE(write_test_file(path, k_manual));
+  _snwprintf_s(open_file, SD_COUNTOF(open_file), _TRUNCATE, L"%s\\open.txt", root);
+  DeleteFileW(open_file);
+  SD_REQUIRE(SetEnvironmentVariableW(L"SHELLDRIVE_TEST_OPEN_FILE", open_file));
+
+  /* the agent starts with the first client connection: autostart is decided at its start */
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  for (tries = 0; tries < 100 && log_has(c, "autostart of profile 11111111111111111111111111111111 requested") != 1;
+       tries++)
+    Sleep(100);
+  SD_CHECK(log_has(c, "autostart of profile 11111111111111111111111111111111 requested") == 1);
+  if (remote)
+    SD_CHECK(log_has(c, "autostart of profile 22222222222222222222222222222222 requested") == 1);
+  else
+    SD_CHECK(log_has(c, "profile 22222222222222222222222222222222: autostart skipped") == 1);
+  SD_CHECK(log_has(c, "33333333333333333333333333333333") == 0);
+  SD_CHECK(GetFileAttributesW(open_file) == INVALID_FILE_ATTRIBUTES);     /* no logon mount opens a drive */
+
+  /* user-initiated mount with the open request: the drive root is opened once, after MOUNTED */
+  subscribe(c, "\"prompt\",\"mount\"");
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new5.test\",\"user\":\"alice\"},\"open\":true}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 1, 10000));
+  prompt_id_of(&l, "prompt.request", 0, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 2, 10000));
+  prompt_id_of(&l, "prompt.request", 1, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"answer\",\"responses\":[\"secret\"]");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "mounted", 1, 15000));
+  for (tries = 0; tries < 100 && GetFileAttributesW(open_file) == INVALID_FILE_ATTRIBUTES; tries++)
+    Sleep(100);
+  {
+    HANDLE h = CreateFileW(open_file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    char got[16];
+    DWORD rd = 0;
+    SD_REQUIRE(h != INVALID_HANDLE_VALUE);
+    SD_REQUIRE(ReadFile(h, got, sizeof(got), &rd, NULL));
+    CloseHandle(h);
+    SD_CHECK(rd == 4);                                   /* one line: "X:\" */
+    SD_CHECK(got[0] >= 'D' && got[0] <= 'Z');
+    SD_CHECK(got[1] == ':' && got[2] == '\\' && got[3] == '\n');
+  }
+  SD_CHECK(log_has(c, "autostart of profile 11111111111111111111111111111111 failed") != 0 ||
+           log_has(c, "autostart of profile 11111111111111111111111111111111 requested") == 1);
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_OPEN_FILE", NULL);
+}

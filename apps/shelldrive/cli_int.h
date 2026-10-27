@@ -39,6 +39,8 @@ int fail_code(const cli_args *a, const char *code, const char *detail, const err
 
 /* ---- connection ---- */
 int can_prompt(const cli_args *a);
+/* Answers one prompt.request event of this connection (cli_cmds.c; mount and profile test). */
+void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d);
 int connect_agent(const cli_args *a, int start, sd_ipc_conn **c, const err_ctx *ec);
 int subscribe(sd_ipc_conn *c, const char *topic);
 const sd_ipc_hello *quiet_hello(sd_ipc_hello *h);

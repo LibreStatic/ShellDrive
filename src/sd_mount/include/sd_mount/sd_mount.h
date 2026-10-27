@@ -166,6 +166,20 @@ int sd_mount_backend_kind_parse(const char *s, sd_mount_backend_kind *out);   /*
 /* Real modules (library sd_mount_real; link it only when sd_ssh/sd_sftp/sd_vfs/sd_dokan are built). */
 const sd_mount_backend *sd_mount_backend_real(void);
 
+/* M3 vfs and session tuning from the profile (3.4.1). Zero means the sd_vfs_options default, except for the flag
+   that is inverted on purpose: shell_active_show = 0 blocks shell-active files (D41, the safe default). */
+typedef struct sd_mount_tuning {
+  uint32_t attr_ttl_ms, dir_ttl_ms, neg_ttl_ms;   /* cache.attr_ttl, dir_ttl, neg_ttl; 0 = 30 s, 30 s, 10 s */
+  int      open_revalidate_ms;                    /* cache.open_revalidate; 0 = 1 s, -1 = never */
+  uint32_t max_readahead;                         /* cache.max_readahead; 0 = 8 MiB */
+  uint32_t umask;                                 /* mount.umask; 0 = 022 */
+  int      hide_dotfiles, map_readonly, show_special, case_sensitive, fsync_on_flush;
+  int      remote_case;                           /* sd_vfs_case */
+  int      shell_active_show;                     /* mount.shell_active_files = show (1); block (0) */
+  int      identity_probe_exec;                   /* mount.identity_probe = exec: SD_SFTP_OPT_IDENTITY_EXEC */
+  wchar_t  fs_name[32];                           /* mount.fs_name (Dokany); "" = NTFS */
+} sd_mount_tuning;
+
 typedef struct sd_mount_params {
   uint32_t struct_size;                 /* sizeof(sd_mount_params) */
   const wchar_t *host;                  /* as typed */
@@ -206,6 +220,7 @@ typedef struct sd_mount_params {
   /* M3: 1 = connect, authenticate and realpath only (profile.test): no vfs, no backend, no drive letter
      needed. The result is read with sd_mount_get_probe() once the mount reports UNMOUNTED. */
   int test_only;
+  sd_mount_tuning tuning;               /* M3: vfs and session options of the profile (3.4.1); zeros = defaults */
 } sd_mount_params;
 
 

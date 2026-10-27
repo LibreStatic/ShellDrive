@@ -94,7 +94,7 @@ enum {
   OPT_JSON, OPT_QUIET, OPT_LANG, OPT_HELP, OPT_VERSION, OPT_PROMPT, OPT_STDIN,
   OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE,
   OPT_BACKEND, OPT_JUMP, OPT_PROXY, OPT_CONNECTIONS, OPT_TYPE, OPT_FROM, OPT_DRY_RUN, OPT_ADD_ONLY,
-  OPT_ANNOUNCED
+  OPT_ANNOUNCED, OPT_STATS, OPT_OPEN
 };
 
 static const opt_def k_opts[] = {
@@ -112,7 +112,7 @@ static const opt_def k_opts[] = {
   { L"--connections", O_VALUE, OPT_CONNECTIONS },
   { L"--type", O_VALUE, OPT_TYPE }, { L"--from", O_VALUE, OPT_FROM },
   { L"--dry-run", O_FLAG, OPT_DRY_RUN }, { L"--add-only", O_FLAG, OPT_ADD_ONLY },
-  { L"--announced", O_FLAG, OPT_ANNOUNCED },
+  { L"--announced", O_FLAG, OPT_ANNOUNCED }, { L"--stats", O_FLAG, OPT_STATS }, { L"--open", O_FLAG, OPT_OPEN },
 };
 
 /* Which options each command accepts (globals are always accepted). */
@@ -125,12 +125,16 @@ static int allowed(cli_cmd cmd, int id)
   case OPT_REMOTE_PATH: case OPT_READ_ONLY: case OPT_NO_WAIT: case OPT_BACKEND:
   case OPT_JUMP: case OPT_PROXY: case OPT_CONNECTIONS:
     return cmd == CLI_CMD_MOUNT;
+  case OPT_OPEN:
+    return cmd == CLI_CMD_MOUNT;
+  case OPT_STATS:
+    return cmd == CLI_CMD_STATUS;
   case OPT_TYPE: case OPT_FROM: case OPT_ADD_ONLY: case OPT_ANNOUNCED:
     return cmd == CLI_CMD_HOSTKEY;
   case OPT_DRY_RUN:
     return cmd == CLI_CMD_PROFILE;
   case OPT_ALL: case OPT_FORCE:
-    return cmd == CLI_CMD_UNMOUNT;
+    return cmd == CLI_CMD_UNMOUNT || cmd == CLI_CMD_CACHE;
   }
   return 0;
 }
@@ -150,7 +154,9 @@ static cli_cmd command_of(const wchar_t *w)
   if (wcscmp(w, L"mount") == 0) return CLI_CMD_MOUNT;
   if (wcscmp(w, L"unmount") == 0 || wcscmp(w, L"umount") == 0) return CLI_CMD_UNMOUNT;
   if (wcscmp(w, L"list") == 0 || wcscmp(w, L"ls") == 0) return CLI_CMD_LIST;
-  if (wcscmp(w, L"status") == 0 || wcscmp(w, L"stats") == 0) return CLI_CMD_STATUS;
+  if (wcscmp(w, L"status") == 0 || wcscmp(w, L"stats") == 0) return CLI_CMD_STATUS;   /* stats: status --stats */
+  if (wcscmp(w, L"refresh") == 0) return CLI_CMD_REFRESH;
+  if (wcscmp(w, L"cache") == 0) return CLI_CMD_CACHE;
   if (wcscmp(w, L"profile") == 0) return CLI_CMD_PROFILE;
   if (wcscmp(w, L"hostkey") == 0) return CLI_CMD_HOSTKEY;
   if (wcscmp(w, L"version") == 0) return CLI_CMD_VERSION;
@@ -246,6 +252,8 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       case OPT_DRY_RUN: a->dry_run = 1; break;
       case OPT_ADD_ONLY: a->add_only = 1; break;
       case OPT_ANNOUNCED: a->announced = 1; break;
+      case OPT_STATS: a->stats = 1; break;
+      case OPT_OPEN: a->open_after = 1; break;
       }
       continue;
     }
@@ -268,8 +276,11 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
          sub-verb + source + value, hostkey takes sub-verb + target */
       const wchar_t **slot = NULL;
       if (a->cmd == CLI_CMD_MOUNT || a->cmd == CLI_CMD_UNMOUNT || a->cmd == CLI_CMD_HELP ||
-          a->cmd == CLI_CMD_STATUS) {
+          a->cmd == CLI_CMD_STATUS || a->cmd == CLI_CMD_REFRESH) {
         if (a->positional == NULL) slot = &a->positional;
+      } else if (a->cmd == CLI_CMD_CACHE) {
+        if (a->positional == NULL) slot = &a->positional;
+        else if (a->arg2 == NULL) slot = &a->arg2;
       } else if (a->cmd == CLI_CMD_PROFILE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
@@ -283,6 +294,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     return set_err(a, CLI_E_EXTRA_ARGUMENT, arg, NULL);
   }
   a->subverb = (a->cmd == CLI_CMD_PROFILE || a->cmd == CLI_CMD_HOSTKEY) ? a->positional : NULL;
+  /* "stats <X:>" is "status <X:> --stats" (03 §6.1 aliases) */
+  if (a->cmd == CLI_CMD_STATUS && a->cmd_name && wcscmp(a->cmd_name, L"stats") == 0)
+    a->stats = 1;
   /* options given before the command word: re-check against the command */
   if (a->cmd == CLI_CMD_NONE && !a->help)
     return set_err(a, CLI_E_MISSING_ARGUMENT, NULL, NULL);
@@ -294,8 +308,12 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
                    a->no_wait ? L"--no-wait" : a->use_stdin ? L"--stdin" :
                    a->jump_count ? L"--jump" : a->proxy ? L"--proxy" : a->connections ? L"--connections" :
                    L"--prompt", NULL);
-  if (a->cmd != CLI_CMD_UNMOUNT && (a->all || a->force))
+  if (a->cmd != CLI_CMD_UNMOUNT && a->cmd != CLI_CMD_CACHE && (a->all || a->force))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->all ? L"--all" : L"--force", NULL);
+  if (a->cmd != CLI_CMD_STATUS && a->stats)
+    return set_err(a, CLI_E_UNKNOWN_OPTION, L"--stats", NULL);
+  if (a->cmd != CLI_CMD_MOUNT && a->open_after)
+    return set_err(a, CLI_E_UNKNOWN_OPTION, L"--open", NULL);
   if (a->cmd != CLI_CMD_HOSTKEY && (a->hk_type || a->from || a->add_only || a->announced))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" :
                    a->add_only ? L"--add-only" : L"--announced", NULL);
@@ -328,10 +346,36 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   case CLI_CMD_PROFILE:
     if (!a->positional)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"test") == 0) {          /* profile test <profile> (03 §6.1) */
+      if (!a->arg2)
+        return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
+      if (a->arg3)
+        return set_err(a, CLI_E_EXTRA_ARGUMENT, a->arg3, NULL);
+      break;
+    }
     if (wcscmp(a->positional, L"import") != 0)
       return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
     if (!a->arg2 || (wcscmp(a->arg2, L"putty") != 0 && wcscmp(a->arg2, L"ssh-config") != 0))
       return set_err(a, CLI_E_UNKNOWN_COMMAND, a->arg2 ? a->arg2 : L"", NULL);
+    break;
+  case CLI_CMD_REFRESH:
+    /* X:, X:\ or X:\sub\path (folder targets need Dokany folder mounts, not in this build) */
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (!((a->positional[0] >= L'A' && a->positional[0] <= L'Z') || (a->positional[0] >= L'a' && a->positional[0] <= L'z')) ||
+        a->positional[1] != L':' || (a->positional[2] != 0 && a->positional[2] != L'\\' && a->positional[2] != L'/'))
+      return set_err(a, CLI_E_LETTER, a->positional, a->positional);
+    break;
+  case CLI_CMD_CACHE:
+    /* cache clear [<profile>|--all] [--force] (03 §6.1) */
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"clear") != 0)
+      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+    if (a->all && a->arg2)
+      return set_err(a, CLI_E_CONFLICT, L"--all", a->arg2);
+    if (!a->all && !a->arg2)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
     break;
   case CLI_CMD_HOSTKEY:
     if (!a->positional)

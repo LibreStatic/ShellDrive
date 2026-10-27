@@ -106,6 +106,7 @@ void sd_profile_defaults(sd_profile *p)
   p->channels = 2;
   p->network_location = 1;
   sd_profile_m2_defaults(p);
+  sd_profile_m3_defaults(p);
 }
 
 static int valid_id(const char *id)
@@ -162,7 +163,7 @@ sd_err sd_profile_validate(const sd_profile *p, const char **bad_key)
   else if (p->offline_wait_ms > 600000u) bad = "mount.offline_wait";
   else if (p->disk_cache_mb > 1024u * 1024u) bad = "cache.disk";
   else if (has_ctl(p->label)) bad = "mount.label";
-  else bad = sd_profile_m2_validate(p);
+  else if ((bad = sd_profile_m2_validate(p)) == NULL) bad = sd_profile_m3_validate(p);
   if (bad_key) *bad_key = bad;
   return bad ? SD_E_INVALID_PARAM : SD_OK;
 }
@@ -249,7 +250,9 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
   if ((v = sd_ini_get(ini, "mount", "reconnect_grace")) != NULL &&
       !sd_ini_parse_duration_ms(v, &p->reconnect_grace_ms))
     BAD("mount.reconnect_grace");
-  if ((v = sd_ini_get(ini, "cache", "disk")) != NULL) {
+  if ((v = sd_ini_get(ini, "cache", "disk")) == NULL)
+    v = sd_ini_get(ini, "cache", "read_cache_disk");   /* 3.4.1 legacy name, rewritten on save */
+  if (v != NULL) {
     uint64_t sz;
     if (!sd_ini_parse_size(v, &sz) || sz > ((uint64_t)1 << 40)) BAD("cache.disk");
     p->disk_cache_mb = (uint32_t)((sz + (1u << 20) - 1) >> 20);
@@ -261,6 +264,10 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
   {
     const char *m2 = sd_profile_m2_from_ini(ini, p);
     if (m2) BAD(m2);
+  }
+  {
+    const char *m3 = sd_profile_m3_from_ini(ini, p);
+    if (m3) BAD(m3);
   }
   if (p->name[0] == 0)
     scpy(p->name, sizeof(p->name), p->host);
@@ -348,7 +355,11 @@ sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
   if (p->channels != 2 || sd_ini_get(d, "connection", "channels"))
     SET("connection", "channels", p->channels == 1 ? "1" : "2");
 #undef SET
-  return sd_profile_m2_to_ini(p, d);
+  e = sd_profile_m2_to_ini(p, d);
+  if (e != SD_OK)
+    return e;
+  (void)sd_ini_remove(d, "cache", "read_cache_disk");
+  return sd_profile_m3_to_ini(p, d);
 }
 
 sd_err sd_profile_new_id(char out[33])

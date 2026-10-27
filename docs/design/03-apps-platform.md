@@ -936,15 +936,18 @@ the value from `sd_mount`.
 | `mount.shell_active_files` | `show \| block` (`block` when `security.trust = untrusted`, the default, `show` when `trusted`; blocks opening for every process, D41, TM-R14) | `sd_vfs` / backends (02 §4.1, §6.4) | — |
 | `mount.mark_of_the_web` | `off \| internet` (`off`; opt-in per profile, not derived from `security.trust`, which D41 ties to shell-active files only; Dokany only, enabled after TST-21, TM-R15) | `sd_dokan` (02 §1.1, §6.4) | — |
 | `mount.case`, `mount.remote_case` | `insensitive \| sensitive` (`insensitive`); `auto \| sensitive \| insensitive` (`auto`) | `sd_vfs` | — |
-| `mount.remote_charset` | code page (empty = UTF-8) | `sd_vfs` (stage 1 of the name map, C23) | — |
-| `mount.umask`, `mount.map_readonly`, `mount.show_special`, `mount.allow_system`, `mount.strict_acl` | (`022`, `yes`, `no`, `yes`, `no`) | `sd_vfs` | — |
+| `mount.remote_charset` | code page name (empty or `utf-8` = UTF-8; `cp` + number or a number otherwise, 1 to 31 characters of letters, digits, `.`, `_`, `-`) (M3: parsed only; the vfs refuses any code page other than UTF-8, so the key has no effect yet) | `sd_vfs` (stage 1 of the name map, C23) | — |
+| `mount.umask`, `mount.map_readonly`, `mount.show_special`, `mount.allow_system`, `mount.strict_acl` | (`022`, `yes`, `no`, `yes`, `no`); `umask` is octal `001` to `777` (`000` is refused: the vfs reads 0 as the default 022) | `sd_vfs` (`allow_system` is M5, parsed only; `strict_acl` parsed only, no consumer yet) | — |
 | `mount.identity_probe` | `owner \| exec` (`owner`, D10) | `sd_sftp` (`exec` sets `SD_SFTP_OPT_IDENTITY_EXEC`, 01 §11) → `sd_vfs` via `server_info.identity` (02 §3.4) | — |
 | `mount.fs_name` | string (`NTFS`, D23) | `sd_dokan` (`sd_vfs_options.volume_fs_name`) | — |
 | `mount.offline_hint_over_mb` | integer MB (`0` = off, D22) | `sd_webdav` | — |
 | `mount.offline_wait`, `mount.reconnect_grace` | (`3s`, `60s`) | `sd_vfs` | — |
-| `mount.autostart`, `mount.autostart_sessions` | (`no`, `any`) | `sd_mount` | — |
-| `mount.open_after_mount`, `mount.network_location` | (`no`, `yes`; `network_location` ignored for `scope = service`) | UI / `sd_mount` (8.7) | — |
-| `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate` | (`30s`, `30s`, `10s`, `1s`) | `sd_vfs` | — |
+| `mount.autostart` | `no \| logon \| boot` (`no`; `boot` is valid only with `scope = service`, otherwise `mount.autostart` is the bad key; `logon` mounts when the agent starts, D25/03 §1.2; `boot` is applied by the service, M5) | agent (`sd_mount`), 03 §1.2 | — |
+| `mount.autostart_sessions` | `any \| console \| remote` (`any`); checked against the session of the agent at its start | agent (`sd_mount`) | — |
+| `mount.open_after_mount`, `mount.network_location` | (`no`, `yes`; `network_location` ignored for `scope = service`); `open_after_mount` opens the drive root once, after the first MOUNTED of a user-initiated mount, never on a reconnect or a logon mount | agent / UI, `sd_mount` (8.7) | — |
+| `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl` | durations (`30s`, `30s`, `10s`); `0` is refused (the vfs reads 0 as the default), range 1 ms to 1 h. Legacy names `metadata_ttl`, `directory_ttl` are read once | `sd_vfs` | — |
+| `cache.open_revalidate` | duration (`1s`) or `never`; `0` is refused, `never` = revalidate on every open (vfs `-1`) | `sd_vfs` | — |
+| `cache.max_readahead` | size (`8M`), 64 KiB to 1 GiB; `0` is refused (the vfs reads 0 as the default) | `sd_vfs` | — |
 | `cache.disk` | size (`0`) | `sd_vfs` (`disk_cache_mb`, dir from 3.2) | — |
 | `cache.max_readahead` | size (`8M`) | `sd_vfs` | — |
 | `security.trust` | `untrusted \| trusted` (`untrusted`, D41) | `sd_mount`: selects the default of `shell_active_files` (D41, TM-R14) | — |
@@ -1425,7 +1428,7 @@ shelldrive hostkey list [host] [--announced] | add --from-server host[:port] [--
                    | accept-announced <id> [--add-only]
 shelldrive location add <profile> | remove <profile> | repair     Network location entries (8.7)
 shelldrive service install | uninstall | start | stop | status | repair-data     (repair-data: 3.2, TM-R34)
-shelldrive cache clear [<profile>|--all]
+shelldrive cache clear [<profile>|X:|mount-id] | --all [--force]     --force: clear although write-behind data is queued (kept)
 shelldrive logs [--component agent|service|ui] [--lines N] [--follow] [--path]
 shelldrive diag [--check] [--bundle FILE.zip [--include-dumps] [--no-anonymize]] [--fix linked-connections|webclient]
 shelldrive diag bench <X:> [--scenario NAME] [--json]           developer/support benchmark (02 §11)
@@ -1497,12 +1500,12 @@ On XP the check is plain group membership.
 | 0 | success | |
 | 1 | generic failure | `internal`, `io_error` |
 | 2 | usage error | `usage`, `service_access_required` |
-| 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found` |
+| 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found`, `not_mounted` (refresh of a drive without a file system) |
 | 4 | authentication failed or required | `auth_failed`, `prompt_required` |
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
 | 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |
-| 8 | agent/service unavailable, or busy (`SD_E_BUSY`) | `agent_unavailable`, `service_not_installed`, `busy`, `too_many_connections`, `rate_limited` (TM-R25) |
+| 8 | agent/service unavailable, or busy (`SD_E_BUSY`) | `agent_unavailable`, `service_not_installed`, `busy`, `write_behind_pending` (cache clear with queued writes), `too_many_connections`, `rate_limited` (TM-R25) |
 | 9 | elevation or permission required | `elevation_required`, `access_denied` |
 | 10 | conflict | `target_in_use`, `already_mounted` |
 | 11 | backend unavailable | `backend_unavailable`, `webclient_disabled` |
@@ -2761,3 +2764,27 @@ identity `com.librestatic.shelldrive.shellext`, `PublisherDisplayName` `LibreSta
   `secret.*` are planned for later milestones (2.4).
 - Snapshot section layout v1 specified in 8.2.1; the agent producer and the Explorer data (drive icons, Network
   locations) are in M3 (8.8). The shell DLL reader is a later package.
+
+## Changelog: M3 profile keys and CLI (2026-10-27)
+
+- 3.4.1 audit: every key the M3 backend review listed exists in the table under the name given (none is misspelled).
+  The keys are now parsed and validated in `src/sd_config/profile_m3.c`. Applied: `mount.shell_active_files` (derived
+  from `security.trust`), `mount.hide_dotfiles`, `mount.show_special`, `mount.case`, `mount.remote_case`,
+  `mount.umask`, `mount.map_readonly`, `mount.fsync_on_flush`, `mount.fs_name`, `mount.identity_probe`,
+  `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate`, `cache.max_readahead`,
+  `mount.autostart`, `mount.autostart_sessions`, `mount.open_after_mount`. Parsed only (no consumer or refused by the
+  consumer, listed in docs/dev/m3-notes.md): `mount.exec_hint`, `mount.atomic_put`, `mount.strict_acl`,
+  `mount.remote_charset`, `mount.mark_of_the_web`, `mount.offline_hint_over_mb`, `security.crypto_backend`.
+  M5 (parsed and validated only): `profile.scope`, `profile.service_access`, `profile.service_access_write`,
+  `mount.allow_system`.
+- Spec issues fixed in 3.4.1: the value sets of `mount.autostart` (`no | logon | boot`, `boot` only for
+  `scope = service`) and `mount.autostart_sessions` (`any | console | remote`) were missing; `cache.open_revalidate`
+  accepts `never` (the vfs value -1); a zero TTL, read-ahead size or umask is refused, because the vfs reads 0 as
+  its default and cannot express "off"; `mount.remote_charset` and `mount.mark_of_the_web` are refused by the vfs
+  until a later milestone, so they are parsed only.
+- Default change: `mount.hide_dotfiles`, `mount.map_readonly` and `mount.fsync_on_flush` now reach the vfs with their
+  3.4.1 defaults (`yes`). The agent passed FALSE before M3, so dot files are hidden by default from this build on.
+- 6.1: the profile test command is `shelldrive profile test <p>` (the table of 3.4.1 and 6.1 list it under `profile`;
+  there is no top-level `test`). `cache clear` takes `<profile>|X:|mount-id` or `--all`, and `--force`.
+  `mount --open` is listed in the command line and implemented (it sends `open` to the agent).
+- 6.2: exit 3 has `not_mounted` (refresh of a drive without a file system) and exit 8 has `write_behind_pending`.

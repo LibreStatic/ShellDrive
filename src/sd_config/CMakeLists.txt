@@ -7,6 +7,7 @@ sd_add_module(sd_config
     profile.c
     profile_m2.c
     import.c
+    profile_m3.c
   DEPS
     sd_base
     sd_platform

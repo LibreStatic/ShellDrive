@@ -24,6 +24,8 @@ SD_TEST_DECL(m3_profile_test_results_and_errors);
 SD_TEST_DECL(m3_config_changed_and_agent_stopping);
 SD_TEST_DECL(m3_refresh_cache_attach_and_status_stats);
 SD_TEST_DECL(m3_cache_clear_refuses_queued_writes);
+SD_TEST_DECL(m3_autostart_and_open_after_mount);
+SD_TEST_DECL(cli_parse_m3_commands);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -50,6 +52,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m3_config_changed_and_agent_stopping),
   SD_TEST_ENTRY(m3_refresh_cache_attach_and_status_stats),
   SD_TEST_ENTRY(m3_cache_clear_refuses_queued_writes),
+  SD_TEST_ENTRY(m3_autostart_and_open_after_mount),
+  SD_TEST_ENTRY(cli_parse_m3_commands),
 };
 
 int main(int argc, char **argv)

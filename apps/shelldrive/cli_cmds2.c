@@ -183,6 +183,8 @@ int cli_run_status(const cli_args *a)
   const sd_json *arr;
   size_t i, n, shown = 0;
   int rc;
+  if (a->stats)                                      /* status --stats (M3, 03 §6.1) */
+    return cli_run_status_stats(a);
   if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
     /* no agent: nothing is mounted in this session */
     if (a->positional) {
@@ -447,6 +449,8 @@ static void print_import_json(const sd_import_result *r, uint32_t written, int d
 int cli_run_profile(const cli_args *a)
 {
   sd_import_result r;
+  if (wcscmp(a->positional, L"test") == 0)            /* profile test <profile> (03 §6.1, M3) */
+    return cli_run_profile_test(a);
   err_ctx ec;
   int is_putty = wcscmp(a->arg2, L"putty") == 0;
   uint32_t written = 0;

@@ -104,7 +104,51 @@ typedef struct sd_profile {
   uint32_t connect_timeout_ms;   /* security.connect_timeout; 0 = default (20 s) */
   int      refuse_terrapin_exposed;   /* security.refuse_terrapin_exposed (no) */
   int      network_location;     /* mount.network_location (yes): Network locations entry, 03 §8.7 (D14) */
+  /* M3 (3.4.1). Every value holds its effective setting (sd_profile_defaults sets the defaults). "parsed only"
+     keys are validated and round-tripped but have no consumer yet (docs/dev/m3-notes.md). */
+  int      scope;                /* profile.scope: SD_PROFILE_SCOPE_* (user) */
+  char     service_access[512];  /* profile.service_access (M5): comma list of SIDs or names; parsed only */
+  char     service_access_write[512];  /* profile.service_access_write (M5): subset of the above; parsed only */
+  int      trust;                /* security.trust: SD_PROFILE_TRUST_* (untrusted) */
+  int      shell_active_files;   /* mount.shell_active_files: SD_PROFILE_UNSET (derived from trust, D41), 0 show, 1 block */
+  int      hide_dotfiles;        /* mount.hide_dotfiles (yes) */
+  int      exec_hint;            /* mount.exec_hint (yes); parsed only */
+  int      autostart;            /* mount.autostart: SD_PROFILE_AUTOSTART_* (no) */
+  int      autostart_sessions;   /* mount.autostart_sessions: SD_PROFILE_SESSIONS_* (any) */
+  int      open_after_mount;     /* mount.open_after_mount (no) */
+  int      fsync_on_flush;       /* mount.fsync_on_flush (yes) */
+  int      atomic_put;           /* mount.atomic_put (no); parsed only */
+  int      case_sensitive;       /* mount.case: 0 insensitive (default), 1 sensitive */
+  int      remote_case;          /* mount.remote_case: 0 auto (default), 1 sensitive, 2 insensitive (sd_vfs_case) */
+  char     remote_charset[32];   /* mount.remote_charset: "" = UTF-8; parsed only (the vfs refuses other code pages) */
+  uint32_t umask;                /* mount.umask: 022 octal = 18; 1..0777 */
+  int      map_readonly;         /* mount.map_readonly (yes) */
+  int      show_special;         /* mount.show_special (no) */
+  int      allow_system;         /* mount.allow_system (yes); M5, parsed only */
+  int      strict_acl;           /* mount.strict_acl (no); parsed only */
+  int      identity_probe_exec;  /* mount.identity_probe: 0 owner (default), 1 exec */
+  char     fs_name[32];          /* mount.fs_name ("NTFS"): Dokany volume file system name */
+  uint32_t offline_hint_over_mb; /* mount.offline_hint_over_mb (0 = off); parsed only */
+  int      mark_of_the_web;      /* mount.mark_of_the_web: 0 off (default), 1 internet; parsed only (vfs refuses it) */
+  uint32_t attr_ttl_ms, dir_ttl_ms, neg_ttl_ms;   /* cache.attr_ttl, dir_ttl, neg_ttl (30 s, 30 s, 10 s) */
+  int      open_revalidate_ms;   /* cache.open_revalidate (1 s); -1 = never */
+  uint32_t max_readahead;        /* cache.max_readahead (8 MiB) */
+  int      crypto_backend;       /* security.crypto_backend: SD_PROFILE_CRYPTO_* (auto); parsed only */
 } sd_profile;
+
+enum { SD_PROFILE_SCOPE_USER = 0, SD_PROFILE_SCOPE_USERS = 1, SD_PROFILE_SCOPE_SERVICE = 2 };
+enum { SD_PROFILE_TRUST_UNTRUSTED = 0, SD_PROFILE_TRUST_TRUSTED = 1 };
+enum { SD_PROFILE_AUTOSTART_NO = 0, SD_PROFILE_AUTOSTART_LOGON = 1, SD_PROFILE_AUTOSTART_BOOT = 2 };
+enum { SD_PROFILE_SESSIONS_ANY = 0, SD_PROFILE_SESSIONS_CONSOLE = 1, SD_PROFILE_SESSIONS_REMOTE = 2 };
+enum { SD_PROFILE_CRYPTO_AUTO = 0, SD_PROFILE_CRYPTO_OWN = 1 };
+#define SD_PROFILE_UMASK_DEFAULT 18u                       /* 022 octal */
+#define SD_PROFILE_MAX_READAHEAD (1024u * 1024u * 1024u)   /* cache.max_readahead upper bound */
+
+/* M3 helpers. The effective shell-active setting: 1 = block (shell_active_files, or the D41 default from
+   security.trust when the key is unset). */
+int sd_profile_block_shell_active(const sd_profile *p);
+/* Parses "022"-style octal text (1 to 4 digits, value 1..0777) for mount.umask; 1 on success. */
+int sd_profile_parse_umask(const char *v, uint32_t *out);
 
 void   sd_profile_defaults(sd_profile *p);
 /* Reads and validates the M0 keys. On error *bad_key (if given) names the offending "section.key". */

@@ -194,6 +194,8 @@ void print_error(const cli_args *a, const char *code, const char *detail, int ex
   }
   else if (is(code, "invalid_target")) say1w(SD_MSG_CLI_ERROR_INVALID_TARGET, "value", ec ? ec->target : NULL, 1);
   else if (is(code, "already_mounted")) say(SD_MSG_CLI_ERROR_ALREADY_MOUNTED, NULL, 0, 1);
+  else if (is(code, "not_mounted")) say(SD_MSG_CLI_ERROR_NOT_MOUNTED, NULL, 0, 1);
+  else if (is(code, "write_behind_pending")) say(SD_MSG_CLI_ERROR_WRITE_BEHIND_PENDING, NULL, 0, 1);
   else if (is(code, "webclient_disabled")) say(SD_MSG_CLI_ERROR_WEBCLIENT_DISABLED, NULL, 0, 1);
   else if (is(code, "backend_unavailable") && detail && strstr(detail, "WebClient"))
     say(SD_MSG_CLI_ERROR_WEBDAV_UNAVAILABLE, NULL, 0, 1);

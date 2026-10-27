@@ -30,6 +30,7 @@
  * M0 gaps (documented in docs/dev/m0-notes.md by the lead): no hidden window (WM_ENDSESSION, WTS
  * and power notifications), no prompt queue while locked, no UI launch for prompts, no autostart. */
 #include <windows.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -118,6 +119,7 @@ typedef struct host_mount {
   /* M3 */
   uint32_t initiator_caps;      /* SD_IPC_CAP_* of the initiator when it asked for the mount */
   int network_location;         /* profile mount.network_location (03 §8.7) */
+  int open_after, opened;       /* mount.open_after_mount (or the mount open request): opened at the first MOUNTED */
   /* M3 (profile.test, status, unmount force) */
   int test_only;                /* profile.test: not in `list`, the snapshot, Explorer or mount.state */
   int stop_force;               /* unmount {force}: the write-behind drain gets no budget */
@@ -623,6 +625,80 @@ static void reply_profile_test(host_mount *h, sd_mount *m, sd_err why)
   h->defer_cid = 0;
 }
 
+/* ---- M3 profile tuning, open after mount, autostart (03 §3.4.1) ---- */
+
+/* The vfs and session options of the profile. */
+static void tuning_of(const sd_profile *p, sd_mount_tuning *t)
+{
+  memset(t, 0, sizeof(*t));
+  t->attr_ttl_ms = p->attr_ttl_ms;
+  t->dir_ttl_ms = p->dir_ttl_ms;
+  t->neg_ttl_ms = p->neg_ttl_ms;
+  t->open_revalidate_ms = p->open_revalidate_ms;
+  t->max_readahead = p->max_readahead;
+  t->umask = p->umask;
+  t->hide_dotfiles = p->hide_dotfiles;
+  t->map_readonly = p->map_readonly;
+  t->show_special = p->show_special;
+  t->case_sensitive = p->case_sensitive;
+  t->remote_case = p->remote_case;
+  t->fsync_on_flush = p->fsync_on_flush;
+  t->shell_active_show = !sd_profile_block_shell_active(p);
+  t->identity_probe_exec = p->identity_probe_exec;
+  (void)wide_from_utf8(p->fs_name, t->fs_name, SD_COUNTOF(t->fs_name));
+}
+
+/* mount.open_after_mount: Explorer opens the drive root. Test builds never open a window: the root is appended
+   to the file named by SHELLDRIVE_TEST_OPEN_FILE (nothing is written when the variable is not set). */
+static void shell_explore(const wchar_t *root)
+{
+#ifdef SD_HOST_TEST_HOOKS
+  {
+    wchar_t file[MAX_PATH];
+    if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_OPEN_FILE", file, MAX_PATH) > 0 && wcslen(file) < MAX_PATH - 1) {
+      HANDLE f = CreateFileW(file, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+      if (f != INVALID_HANDLE_VALUE) {
+        char line[4];
+        DWORD put = 0;
+        line[0] = (char)root[0];
+        line[1] = ':';
+        line[2] = '\\';
+        line[3] = '\n';
+        SetFilePointer(f, 0, NULL, FILE_END);
+        (void)WriteFile(f, line, sizeof(line), &put, NULL);
+        CloseHandle(f);
+      }
+    }
+    return;
+  }
+#else
+  if ((INT_PTR)ShellExecuteW(NULL, L"explore", root, NULL, NULL, SW_SHOWNORMAL) <= 32)
+    SD_LOGW("agent", "explorer did not open the drive (error %lu)", (unsigned long)GetLastError());
+#endif
+}
+
+/* Posted by on_state at the first MOUNTED of a user-initiated mount (never on a reconnect). */
+static void work_open(void *arg)
+{
+  uint32_t num = (uint32_t)(uintptr_t)arg;
+  host_mount *h;
+  wchar_t root[4];
+  root[0] = 0;
+  sd_mutex_lock(&g.lock);
+  for (h = g.mounts; h; h = h->next) {
+    if (h->num == num && h->state == SD_MOUNT_MOUNTED && !h->test_only) {
+      root[0] = h->letter;
+      root[1] = L':';
+      root[2] = L'\\';
+      root[3] = 0;
+      break;
+    }
+  }
+  sd_mutex_unlock(&g.lock);
+  if (root[0])
+    shell_explore(root);
+}
+
 static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
 {
   host_mount *h;
@@ -631,6 +707,10 @@ static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   h = find_by_mount(m);
   if (h) {
     h->state = st;
+    if (st == SD_MOUNT_MOUNTED && h->open_after && !h->opened) {
+      h->opened = 1;
+      post(NULL, work_open, (void *)(uintptr_t)h->num);
+    }
     send_state_event(h, st, why);
     mount_changed_locked(h);
     if (h->test_only && sd_mount_is_final(m))
@@ -1736,10 +1816,11 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->port = prof->port;
   h->read_only = prof->read_only;
   h->backend_req = (int)backend;
-  h->initiator = sd_ipc_client_id(client);
-  h->initiator_caps = sd_ipc_client_caps(client);
+  /* a logon mount (client NULL) has no initiator: no prompts and no open after mount */
+  h->initiator = client ? sd_ipc_client_id(client) : 0;
+  h->initiator_caps = client ? sd_ipc_client_caps(client) : 0;
   h->prompt_none = (pmode && strcmp(pmode, "none") == 0) ||
-                   !(sd_ipc_client_caps(client) & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI));
+                   !(h->initiator_caps & (SD_IPC_CAP_PROMPTS_CONSOLE | SD_IPC_CAP_PROMPTS_UI));
   h->state = SD_MOUNT_CONNECTING;
   if (!wide_from_utf8(prof->host, h->whost, SD_COUNTOF(h->whost)) ||
       !wide_from_utf8(prof->label[0] ? prof->label : prof->name, h->label, SD_COUNTOF(h->label))) {
@@ -1875,6 +1956,13 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->hop_count = h->chain->count;
   scopy(h->legacy_accepted, sizeof(h->legacy_accepted), prof->legacy_accepted);
   h->network_location = prof->network_location;
+  tuning_of(prof, &h->params.tuning);
+  {
+    /* mount.open_after_mount, or the open request of `shelldrive mount --open`; never for profile.test */
+    int open_req = 0;
+    (void)sd_json_get_bool(params, "open", &open_req);
+    h->open_after = !test && (prof->open_after_mount || open_req);
+  }
   /* profile.test: the request is answered when the test ends (on_state). sd_ipc_defer is valid inside the
      handler only; it is taken before the record is linked, so a refusal leaves nothing behind. */
   if (test) {
@@ -1915,6 +2003,93 @@ static sd_err handle_mount(sd_ipc_client *client, const sd_json *params, sd_json
 
 /* profile.test {profile | profile_id | adhoc} (M3, 03 §2.4): connect, authenticate and realpath, no drive. The
    prompts go through the normal broker. The reply is deferred (sd_ipc_defer) to the end of the test. */
+/* ---- M3 autostart (03 §3.4.1): profiles with autostart = logon are mounted when the agent starts ---- */
+
+#define AUTOSTART_MAX 16u
+typedef struct autostart_list {
+  char id[AUTOSTART_MAX][33];
+  uint32_t n;
+} autostart_list;
+
+static int autostart_sessions_ok(int want)
+{
+  int remote = GetSystemMetrics(SM_REMOTESESSION) != 0;
+  if (want == SD_PROFILE_SESSIONS_CONSOLE) return !remote;
+  if (want == SD_PROFILE_SESSIONS_REMOTE) return remote;
+  return 1;
+}
+
+static int autostart_cb(void *vctx, const sd_profile *p, const wchar_t *path)
+{
+  autostart_list *l = (autostart_list *)vctx;
+  SD_UNUSED(path);
+  if (p->autostart == SD_PROFILE_AUTOSTART_NO)
+    return 1;
+  if (p->autostart == SD_PROFILE_AUTOSTART_BOOT) {
+    SD_LOGI("agent", "profile %s: autostart = boot is applied by the service only", p->id);
+    return 1;
+  }
+  if (p->scope != SD_PROFILE_SCOPE_USER) {
+    SD_LOGI("agent", "profile %s: autostart for a machine profile is not applied by the agent", p->id);
+    return 1;
+  }
+  if (!autostart_sessions_ok(p->autostart_sessions)) {
+    SD_LOGI("agent", "profile %s: autostart skipped (autostart_sessions does not match this session)", p->id);
+    return 1;
+  }
+  if (l->n < AUTOSTART_MAX && p->id[0]) {
+    scopy(l->id[l->n], sizeof(l->id[0]), p->id);
+    l->n++;
+  }
+  return 1;
+}
+
+/* A logon mount is not a user request: no client, no prompt (prompt_none), no open after mount. */
+static void start_autostart(const char *id)
+{
+  sd_profile *prof = (sd_profile *)sd_alloc(sizeof(sd_profile));
+  sd_json *params = NULL;
+  sd_wr w;
+  sd_json_writer jw;
+  sd_ipc_error err;
+  char text[96];
+  sd_err e;
+  if (prof == NULL)
+    return;
+  strcpy_s(text, sizeof(text), "{\"profile_id\":\"");
+  strcat_s(text, sizeof(text), id);
+  strcat_s(text, sizeof(text), "\"}");
+  if (sd_json_parse(text, strlen(text), 8, &params) == SD_OK) {
+    sd_wr_init(&w, 4096);
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    memset(&err, 0, sizeof(err));
+    e = handle_mount_body(NULL, params, &jw, &err, prof, 0);
+    if (e != SD_OK)
+      SD_LOGW("agent", "autostart of profile %s failed: %s", id, err.code[0] ? err.code : sd_err_name(e));
+    else
+      SD_LOGI("agent", "autostart of profile %s requested", id);
+    sd_wr_free(&w);
+    sd_json_free(params);
+  }
+  sd_free(prof);
+}
+
+static void work_autostart(void *arg)
+{
+  autostart_list *l;
+  uint32_t i;
+  SD_UNUSED(arg);
+  l = (autostart_list *)sd_alloc(sizeof(*l));
+  if (l == NULL)
+    return;
+  memset(l, 0, sizeof(*l));
+  (void)sd_profile_enum(autostart_cb, l);
+  for (i = 0; i < l->n; i++)
+    start_autostart(l->id[i]);
+  sd_free(l);
+}
+
 static sd_err handle_profile_test(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
 {
   sd_profile *prof = (sd_profile *)sd_alloc(sizeof(sd_profile));
@@ -2911,6 +3086,7 @@ int host_agent_run(const host_agent_opts *opts)
   if (config_watch_start(on_config_changed, NULL) != SD_OK)
     SD_LOGI("agent", "configuration watch not started (no config root)");
   g.last_busy = sd_tick_ms();
+  post(NULL, work_autostart, NULL);     /* M3 mount.autostart = logon (03 §3.4.1) */
 
   while (!g.stop) {
     HANDLE hs[2];

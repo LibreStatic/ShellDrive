@@ -5,6 +5,10 @@
 #include "sd_config/sd_config.h"
 
 void        sd_profile_m2_defaults(sd_profile *p);
+void        sd_profile_m3_defaults(sd_profile *p);
+const char *sd_profile_m3_from_ini(const sd_ini *ini, sd_profile *p);    /* bad key or NULL */
+const char *sd_profile_m3_validate(const sd_profile *p);                 /* bad key or NULL */
+sd_err      sd_profile_m3_to_ini(const sd_profile *p, sd_ini *d);
 const char *sd_profile_m2_validate(const sd_profile *p);                 /* bad key or NULL */
 const char *sd_profile_m2_from_ini(const sd_ini *ini, sd_profile *p);    /* bad key or NULL */
 sd_err      sd_profile_m2_to_ini(const sd_profile *p, sd_ini *d);

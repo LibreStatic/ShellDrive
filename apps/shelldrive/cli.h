@@ -9,7 +9,8 @@
 
 typedef enum cli_cmd {
   CLI_CMD_NONE, CLI_CMD_HELP, CLI_CMD_VERSION, CLI_CMD_MOUNT, CLI_CMD_UNMOUNT, CLI_CMD_LIST,
-  CLI_CMD_AGENT_STOP, CLI_CMD_STATUS, CLI_CMD_PROFILE, CLI_CMD_HOSTKEY
+  CLI_CMD_AGENT_STOP, CLI_CMD_STATUS, CLI_CMD_PROFILE, CLI_CMD_HOSTKEY,
+  CLI_CMD_REFRESH, CLI_CMD_CACHE     /* M3: refresh <X:|PATH>[\sub\path], cache clear [<profile>|--all] */
 } cli_cmd;
 
 /* Repeatable --jump: at most SD_PROFILE_MAX_HOPS hops before the parse rejects one more. */
@@ -34,6 +35,7 @@ typedef struct cli_args {
   cli_cmd cmd;
   const wchar_t *cmd_name;   /* command word as typed, for messages */
   int json, quiet, use_stdin, no_wait, read_only, all, force, help;
+  int stats, open_after;     /* status --stats (and the stats alias); mount --open */
   cli_prompt_mode prompt;
   const wchar_t *lang;
   const wchar_t *positional; /* mount: profile; unmount: X: | profile | mount id; help: topic;
@@ -85,5 +87,9 @@ int cli_run_status(const cli_args *a);         /* cli_cmds2.c: status (03 §6.1)
 int cli_run_profile(const cli_args *a);        /* cli_cmds2.c: profile import (03 §3.7, §6.1) */
 int cli_run_hostkey(const cli_args *a);        /* cli_cmds2.c: hostkey list/import/remove/accept-announced
                                                   (03 §5.5, §5.6, §6.1) */
+int cli_run_refresh(const cli_args *a);        /* cli_cmds3.c: refresh <X:|PATH>[\sub\path] (03 §6.1) */
+int cli_run_cache(const cli_args *a);          /* cli_cmds3.c: cache clear [<profile>|X:|--all] [--force] (03 §6.1) */
+int cli_run_profile_test(const cli_args *a);   /* cli_cmds3.c: profile test <profile> (03 §6.1) */
+int cli_run_status_stats(const cli_args *a);   /* cli_cmds3.c: status --stats (03 §6.1, 02 §11) */
 
 #endif /* SD_CLI_H */

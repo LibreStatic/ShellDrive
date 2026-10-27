@@ -169,7 +169,7 @@ static void answer_legacy_ack(const cli_args *a, sd_ipc_conn *c, const sd_json *
   sd_free(list);
 }
 
-static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
+void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
 {
   const char *pid = sd_json_get_str(d, "prompt_id");
   const char *kind = sd_json_get_str(d, "kind");
@@ -375,6 +375,7 @@ static int cmd_mount(const cli_args *a)
   if (a->read_only) { sd_jw_key(&jw, "read_only"); sd_jw_bool(&jw, 1); }
   if (a->backend) { sd_jw_key(&jw, "backend"); sd_jw_cstr(&jw, a->backend); }
   if (a->connections) { sd_jw_key(&jw, "connections"); sd_jw_int(&jw, a->connections); }
+  if (a->open_after) { sd_jw_key(&jw, "open"); sd_jw_bool(&jw, 1); }
   sd_jw_key(&jw, "prompt_mode"); sd_jw_cstr(&jw, can_prompt(a) ? "console" : "none");
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) != SD_OK) {
@@ -807,6 +808,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--prompt auto|console|none", SD_MSG_CLI_HELP_OPT_PROMPT);
     help_line(L"--stdin", SD_MSG_CLI_HELP_OPT_STDIN);
     help_line(L"--no-wait", SD_MSG_CLI_HELP_OPT_NO_WAIT);
+    help_line(L"--open", SD_MSG_CLI_HELP_OPT_OPEN);
   } else if (topic && (wcscmp(topic, L"unmount") == 0 || wcscmp(topic, L"umount") == 0)) {
     help_line(L"unmount <X:|profile|mount-id> | --all", SD_MSG_CLI_HELP_UNMOUNT);
     cli_print(L"");
@@ -815,10 +817,22 @@ void cli_print_help(const wchar_t *topic)
   } else if (topic && wcscmp(topic, L"list") == 0) {
     help_line(L"list", SD_MSG_CLI_HELP_LIST);
   } else if (topic && (wcscmp(topic, L"status") == 0 || wcscmp(topic, L"stats") == 0)) {
-    help_line(L"status [<X:|profile|mount-id>]", SD_MSG_CLI_HELP_STATUS);
+    help_line(L"status [<X:|profile|mount-id>] [--stats]", SD_MSG_CLI_HELP_STATUS);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--stats", SD_MSG_CLI_HELP_OPT_STATS);
+  } else if (topic && wcscmp(topic, L"refresh") == 0) {
+    help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
+  } else if (topic && wcscmp(topic, L"cache") == 0) {
+    help_line(L"cache clear [<profile>|X:|mount-id] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--all", SD_MSG_CLI_HELP_OPT_ALL);
+    help_line(L"--force", SD_MSG_CLI_HELP_OPT_FORCE);
   } else if (topic && wcscmp(topic, L"profile") == 0) {
     help_line(L"profile import putty [<session>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile import ssh-config [<file>] [--dry-run]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
+    help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
     cli_print(L"");
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--dry-run", SD_MSG_CLI_HELP_OPT_DRY_RUN);
@@ -840,8 +854,11 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"mount <profile> | --host [user@]host[:port]", SD_MSG_CLI_HELP_MOUNT);
     help_line(L"unmount <X:|profile> | --all", SD_MSG_CLI_HELP_UNMOUNT);
     help_line(L"list", SD_MSG_CLI_HELP_LIST);
-    help_line(L"status [<X:|profile>]", SD_MSG_CLI_HELP_STATUS);
+    help_line(L"status [<X:|profile>] [--stats]", SD_MSG_CLI_HELP_STATUS);
+    help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
+    help_line(L"cache clear [<profile>|X:] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
     help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
+    help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
     help_line(L"hostkey list | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
     help_line(L"version", SD_MSG_CLI_HELP_VERSION);
@@ -887,6 +904,8 @@ int cli_run(const cli_args *a)
   case CLI_CMD_STATUS:     return cli_run_status(a);
   case CLI_CMD_PROFILE:    return cli_run_profile(a);
   case CLI_CMD_HOSTKEY:    return cli_run_hostkey(a);
+  case CLI_CMD_REFRESH:    return cli_run_refresh(a);
+  case CLI_CMD_CACHE:      return cli_run_cache(a);
   default:
     cli_print_help(NULL);
     return 2;

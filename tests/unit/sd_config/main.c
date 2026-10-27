@@ -20,6 +20,12 @@ SD_TEST_DECL(import_putty_reg_export);
 SD_TEST_DECL(import_putty_test_registry_key);
 SD_TEST_DECL(import_ssh_config);
 SD_TEST_DECL(import_duplicates_and_write);
+SD_TEST_DECL(profile_m3_defaults);
+SD_TEST_DECL(profile_m3_umask_octal);
+SD_TEST_DECL(profile_m3_key_values_and_bounds);
+SD_TEST_DECL(profile_m3_values_and_derived_shell_active);
+SD_TEST_DECL(profile_m3_legacy_cache_names);
+SD_TEST_DECL(profile_m3_round_trip);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ini_parses_grammar),
@@ -42,6 +48,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(import_putty_test_registry_key),
   SD_TEST_ENTRY(import_ssh_config),
   SD_TEST_ENTRY(import_duplicates_and_write),
+  SD_TEST_ENTRY(profile_m3_defaults),
+  SD_TEST_ENTRY(profile_m3_umask_octal),
+  SD_TEST_ENTRY(profile_m3_key_values_and_bounds),
+  SD_TEST_ENTRY(profile_m3_values_and_derived_shell_active),
+  SD_TEST_ENTRY(profile_m3_legacy_cache_names),
+  SD_TEST_ENTRY(profile_m3_round_trip),
 };
 
 int main(int argc, char **argv)

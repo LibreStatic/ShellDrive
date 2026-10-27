@@ -115,8 +115,7 @@ Not implemented in this package, and not advertised in `features`:
   by the harness (lab: a WebDAV mount with the WebClient service).
 - Service side of `refresh`, `cache.clear`, `profile.test`, `mount.attach_info` and `status stats`: M5 (the service
   mutating methods need the elevated admin check; the non-admin list rules of 2.2 apply to them).
-- CLI: `not_mounted` and `write_behind_pending` need a row in the CLI exit-code table and localized messages in the six
-  languages (AGENTS.md). Not done here (the CLI package).
+- CLI: done in the M3 profile-keys package (see the section "M3 profile keys, CLI and autostart" below).
 - `update.check` / `update.apply`: M4 (decision 10). `secret.set` / `secret.delete`: M5 (decision 4).
 - Session lock state is not probed before a UI launch (the UI would start while locked and wait for a subscription).
 - `config.reload` returns `restart_required: []`; the restart-required keys are not computed yet (decision 9 lists them).
@@ -243,3 +242,70 @@ Code: `apps/shelldrive-shellext/` (COM server, reader, registration), tests: `te
   roots only) is untested here and belongs to TST-24.
 - **Registry:** nothing was registered in the real registry and Explorer was not restarted; only the redirected test
   registration ran.
+
+### M3 profile keys, CLI and autostart (3.4.1, 6.1, 6.2)
+
+Contract changes made in this package. Spec corrections are in 03 §3.4.1 and the changelog at its end.
+
+Profile keys (`src/sd_config/profile_m3.c`, fields in `sd_profile`, parsed and validated; round trip writes a key only
+when it differs from its default or is already present; legacy `cache.metadata_ttl`, `directory_ttl`,
+`read_cache_disk` are read once and removed on save, `read_cache_memory` is ignored with a log line):
+
+- Applied, with the consumer named:
+  - `security.trust` and `mount.shell_active_files`: `block_shell_active` = `shell_active_files` or the D41 default from trust.
+  - `mount.hide_dotfiles`, `mount.show_special`, `mount.map_readonly`, `mount.case`, `mount.remote_case`, `mount.umask`,
+    `mount.fsync_on_flush`, `mount.fs_name` (Dokany): `sd_vfs_options` through `sd_mount_params.tuning`.
+  - `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate`, `cache.max_readahead`: `sd_vfs_options`.
+  - `mount.identity_probe = exec`: `SD_SFTP_OPT_IDENTITY_EXEC` in the sftp options (sd_mount).
+  - `mount.autostart = logon` and `mount.autostart_sessions`: the agent starts the mount at its start (`work_autostart`,
+    no client, prompts off, no open). `boot` is logged and left to the service (M5).
+  - `mount.open_after_mount` and the `open` request of `mount --open`: the agent posts `work_open` at the first MOUNTED of
+    a user-initiated mount (never on a reconnect or a logon mount); `ShellExecuteW(..., "explore", "X:\")`. Test builds never
+    open a window: they append the drive root to the file named by `SHELLDRIVE_TEST_OPEN_FILE`.
+- Parsed only (no consumer, or the consumer refuses the value today):
+  - `mount.exec_hint`, `mount.atomic_put`, `mount.strict_acl`: no reader in sd_vfs or sd_webdav.
+  - `mount.remote_charset`: `sd_vfs` refuses a non-zero code page (`SD_VFS_E_UNSUPPORTED`), so UTF-8 is used.
+  - `mount.mark_of_the_web`: `sd_vfs` refuses it until a later milestone (`SD_VFS_E_UNSUPPORTED`). 02 §1.1 and TST-21 apply.
+  - `mount.offline_hint_over_mb`: no reader (`sd_webdav` does not read the field yet).
+  - `security.crypto_backend`: `sd_ssh_algo_cfg.crypto_backend` exists but nothing reads it; the mount does not set it.
+- M5, parsed and validated only: `profile.scope` (`user | users | service`), `profile.service_access`,
+  `profile.service_access_write` (a subset of `service_access`, by name or SID string, ASCII case-insensitive; names are
+  not resolved here), `mount.allow_system` (the vfs option stays FALSE in this build, as before).
+- Validation: `scope = service` needs `service_access`; `autostart = boot` needs `scope = service`. Bounds: TTLs 1 ms to 1 h,
+  `open_revalidate` 1 ms to 1 h or `never`, `max_readahead` 64 KiB to 1 GiB, `umask` 001 to 777 (octal), `offline_hint_over_mb`
+  up to 1048576. Zero is refused where the vfs would read it as its default.
+- Behaviour change: `hide_dotfiles`, `map_readonly` and `fsync_on_flush` default to yes, so the mounts now hide dot files
+  and map read-only bits by default (the agent passed FALSE before).
+
+Agent and IPC:
+
+- `refresh`, `cache.clear`, `profile.test`, `status {stats}` and `mount {open}` are the existing methods; this package adds
+  the `open` boolean to `mount` (ignored by `profile.test`). Nothing new was added to `features`.
+- `not_mounted` (exit 3) and `write_behind_pending` (exit 8) are in `sd_ipc_exit_code_for_code` since M3 and now have CLI texts.
+
+CLI (`apps/shelldrive`, new file `cli_cmds3.c`):
+
+- `refresh <X:|X:\path>`: `refresh` IPC; drive letters only (folder targets need Dokany folder mounts).
+- `cache clear [<profile>|X:|m-N] | --all [--force]`: `cache.clear`. Without an agent, `--all` reports 0 and a named
+  target is `mount_not_found`.
+- `profile test <profile>`: `profile.test` on a worker thread; the main thread answers `prompt.request` events of the
+  connection (the same `handle_prompt` as mount). Result lines are localized; `--json` prints the reply.
+- `status --stats` and the `stats <X:>` alias: `list`, then `status {mount_id, stats: true}` per matching mount.
+- Exit codes: `not_mounted` (3) and `write_behind_pending` (8) have localized texts. Spec 6.2 lists both.
+- New strings (19 msgctxt ids, all six locales, `cli.*`): see `l10n/cli/en.po` (the `M3` block). sdl10n: Spanish,
+  French, Italian and Portuguese plurals have three forms, German and English two (the checker's rule).
+
+Tests:
+
+- `tests/unit/sd_config/test_config_m3.c`: defaults, every M3 key's values and bounds (49 cases), umask octal, the derived
+  shell-active default, legacy names, round trip.
+- `tests/apps/test_cli_m3.c` (`cli_parse_m3_commands`): refresh, cache clear, profile test, status --stats, the stats alias,
+  mount --open, and the option limits per command.
+- `tests/apps/test_agent_m3.c` (`m3_autostart_and_open_after_mount`): the logon autostart and the session check (read from
+  the agent log through `log.tail`), no autostart for `autostart = no`, and one open of the drive root after the first
+  MOUNTED of a user mount. No Explorer window is started.
+
+Open items:
+
+- The lab check of `open_after_mount` on a real Explorer and of `ShellExecuteW` on XP (TST, not run here).
+- `profile test` prompts: exercised only through the agent test harness, not with the real console prompt.

@@ -71,6 +71,7 @@ struct sd_mount {
   uint32_t methods;
   wchar_t letter;
   int read_only, symlinks, write_mode;
+  sd_mount_tuning tune;           /* M3 vfs and session tuning (copied) */
   PSID owner_sid;
   /* M1 parameters */
   UINT64 cache_mem;
@@ -630,13 +631,26 @@ static void on_ready(sd_mount *m)
   vo.read_only = m->read_only ? TRUE : FALSE;
   vo.symlinks = m->symlinks;
   vo.write_mode = (sd_vfs_write_mode)m->write_mode;
-  vo.block_shell_active = TRUE;            /* security.trust = untrusted (D41 default) */
+  vo.block_shell_active = m->tune.shell_active_show ? FALSE : TRUE;   /* D41: untrusted blocks, mount.shell_active_files */
   /* below the Dokany 30 s timeout / the redirector's 60 s SendReceiveTimeoutInSec (02 §5.7) */
   vo.request_timeout_ms = use == SD_MOUNT_BACKEND_WEBDAV ? 50000 : 25000;
   vo.volume_label = m->label ? m->label : m->host;
   vo.owner_sid = m->owner_sid;
   vo.offline_wait_ms = m->offline_wait;
   vo.reconnect_grace_ms = m->grace;
+  vo.attr_ttl_ms = m->tune.attr_ttl_ms;
+  vo.dir_ttl_ms = m->tune.dir_ttl_ms;
+  vo.neg_ttl_ms = m->tune.neg_ttl_ms;
+  vo.open_revalidate_ms = m->tune.open_revalidate_ms;
+  vo.max_readahead = m->tune.max_readahead;
+  vo.umask = m->tune.umask;
+  vo.hide_dotfiles = m->tune.hide_dotfiles ? TRUE : FALSE;
+  vo.map_readonly = m->tune.map_readonly ? TRUE : FALSE;
+  vo.show_special = m->tune.show_special ? TRUE : FALSE;
+  vo.case_sensitive_view = m->tune.case_sensitive ? TRUE : FALSE;
+  vo.remote_case = m->tune.remote_case;
+  vo.fsync_on_flush = m->tune.fsync_on_flush ? TRUE : FALSE;
+  vo.volume_fs_name = m->tune.fs_name[0] ? m->tune.fs_name : NULL;
   vo.disk_cache_mb = m->disk_dir ? m->disk_mb : 0;
   vo.disk_cache_dir = m->disk_dir;
   {
@@ -1454,6 +1468,7 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->methods = p->auth_methods ? p->auth_methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
   m->letter = p->letter;
   m->read_only = p->read_only;
+  m->tune = p->tuning;
   m->symlinks = p->symlinks;
   m->write_mode = p->write_mode;
   m->backend_req = p->backend;
@@ -1627,7 +1642,7 @@ sd_err sd_mount_start(sd_mount *m)
     m->sopt.struct_size = sizeof(m->sopt);
     m->sopt.channels = m->channels;            /* meta + bulk (D19) unless the profile says 1 */
     m->sopt.connections = m->connections;      /* D18: sd_sftp opens members only after non-interactive auth */
-    m->sopt.flags = SD_SFTP_OPT_REFINE_ERRORS;
+    m->sopt.flags = SD_SFTP_OPT_REFINE_ERRORS | (m->tune.identity_probe_exec ? SD_SFTP_OPT_IDENTITY_EXEC : 0);
     m->sopt.reconnect.enabled = m->reconnect_disabled ? 0 : 1;
     m->sopt.reconnect.initial_delay_ms = m->rc_initial;
     m->sopt.reconnect.max_delay_ms = m->rc_max;

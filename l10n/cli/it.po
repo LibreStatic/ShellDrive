@@ -721,3 +721,103 @@ msgstr "PuTTY non è installato oppure non ha sessioni salvate."
 msgctxt "cli.error.file_not_found"
 msgid "The file {name} could not be read."
 msgstr "Impossibile leggere il file {name}."
+
+#. M3: refresh, cache clear, profile test, status --stats and the new mount option.
+#. Exit code 3: the drive has no file system to refresh.
+msgctxt "cli.error.not_mounted"
+msgid "The drive is not mounted, so there is nothing to refresh."
+msgstr "L'unità non è montata, quindi non c'è nulla da aggiornare."
+
+#. Exit code 8: write-behind data is queued and the cache clear was refused.
+msgctxt "cli.error.write_behind_pending"
+msgid "Changes are still waiting to be written to the server, so the cache was not cleared. Run the command again with --force to clear the rest; the waiting changes are kept."
+msgstr "Ci sono ancora modifiche in attesa di essere scritte sul server, quindi la cache non è stata svuotata. Esegui di nuovo il comando con --force per svuotare il resto; le modifiche in attesa vengono conservate."
+
+#. Printed by shelldrive refresh. {path} is the drive and the folder, such as W: or W:\docs.
+msgctxt "cli.refresh.done"
+msgid "Refreshed the cache of {path}."
+msgstr "La cache di {path} è stata aggiornata."
+
+#. Printed by shelldrive cache clear. {count} is the number of drives whose cache was cleared.
+#, plural-arg=count
+msgctxt "cli.cache.cleared"
+msgid "Cleared the cache of {count} drive."
+msgid_plural "Cleared the cache of {count} drives."
+msgstr[0] "Cache svuotata per {count} unità."
+msgstr[1] "Cache svuotata per {count} di unità."
+msgstr[2] "Cache svuotata per {count} unità."
+
+#. Printed by status --stats for a drive without a connection.
+msgctxt "cli.stats.none"
+msgid "No statistics: the drive has no connection."
+msgstr "Nessuna statistica: l'unità non ha una connessione."
+
+#. Heading of one drive in status --stats. {target} is the drive, {name} the profile.
+msgctxt "cli.stats.header"
+msgid "{target} {name}"
+msgstr "{target} {name}"
+
+#. status --stats: the session line. Round trip in milliseconds; generation counts the reconnects.
+msgctxt "cli.stats.session"
+msgid "Connection: round trip {srtt} ms, {inflight} requests in flight, {queued} queued, session generation {generation}."
+msgstr "Connessione: andata e ritorno di {srtt} ms, {inflight} richieste in corso, {queued} in coda, generazione della sessione {generation}."
+
+#. status --stats: bytes received and sent by the current connection.
+msgctxt "cli.stats.transfer"
+msgid "Transferred {rx} bytes in and {tx} bytes out."
+msgstr "Trasferiti {rx} byte in entrata e {tx} byte in uscita."
+
+#. status --stats: the cache counters of the drive (memory and disk tiers).
+msgctxt "cli.stats.cache"
+msgid "Cache: {hits} hits, {misses} misses, {failed} failed writes, {queued} bytes waiting for write-behind."
+msgstr "Cache: {hits} riscontri, {misses} mancati, {failed} scritture non riuscite, {queued} byte in attesa di scrittura differita."
+
+#. profile test: the result line. {path} is the resolved remote folder.
+msgctxt "cli.test.ok"
+msgid "{name} works: connected to {host} as {user}, and the remote path is {path}."
+msgstr "{name} funziona: connesso a {host} come {user}, e il percorso remoto è {path}."
+
+#. profile test: the host key that was verified.
+msgctxt "cli.test.hostkey"
+msgid "Host key: {fingerprint}."
+msgstr "Chiave dell'host: {fingerprint}."
+
+#. profile test: the negotiated algorithms (key exchange, host key, cipher and MAC of the client-to-server direction).
+msgctxt "cli.test.algorithms"
+msgid "Algorithms: key exchange {kex}, host key {hostkey}, cipher {cipher}, MAC {mac}."
+msgstr "Algoritmi: scambio di chiavi {kex}, chiave dell'host {hostkey}, cifratura {cipher}, MAC {mac}."
+
+#. profile test: an outdated algorithm was negotiated on some hop.
+msgctxt "cli.test.legacy"
+msgid "The server negotiated an outdated algorithm. security.legacy_algorithms decides what happens next."
+msgstr "Il server ha negoziato un algoritmo obsoleto. security.legacy_algorithms decide cosa succede dopo."
+
+#. Help of the mount option --open.
+msgctxt "cli.help.opt_open"
+msgid "Open the drive in Explorer once it is mounted."
+msgstr "Apri l'unità in Esplora risorse dopo il montaggio."
+
+#. Help of the status option --stats.
+msgctxt "cli.help.opt_stats"
+msgid "Also show the connection and cache counters of each drive."
+msgstr "Mostra anche i contatori di connessione e cache di ogni unità."
+
+#. Help of the cache clear option --force.
+msgctxt "cli.help.opt_force"
+msgid "Clear the cache even while changes are waiting to be written. The waiting changes are kept."
+msgstr "Svuota la cache anche se ci sono modifiche in attesa di essere scritte. Le modifiche in attesa vengono conservate."
+
+#. Summary of the refresh command.
+msgctxt "cli.help.refresh"
+msgid "Drop the cached attributes and listings of a folder, or of the whole drive."
+msgstr "Elimina gli attributi e gli elenchi in cache di una cartella o di tutta l'unità."
+
+#. Summary of the cache command.
+msgctxt "cli.help.cache"
+msgid "Clear the cache of a profile, a drive or every mounted drive."
+msgstr "Svuota la cache di un profilo, di un'unità o di tutte le unità montate."
+
+#. Summary of profile test.
+msgctxt "cli.help.profile_test"
+msgid "Connect and sign in, then resolve the remote path, without mounting anything."
+msgstr "Connettiti e autenticati, poi risolvi il percorso remoto, senza montare nulla."
