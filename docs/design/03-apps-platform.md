@@ -1779,7 +1779,7 @@ transient balloon.
 The section `Local\com.librestatic.shelldrive.state.<UserSidString>` is written only by the agent. It is created by
 `sd_ipc_state_create` (256 KiB, `PAGE_READWRITE`, the owner and label DACL of 2.2) and read by the shell extension through
 `sd_ipc_state_open` with `FILE_MAP_READ | READ_CONTROL` [verify on XP, 7 and 10/11: a reader that cannot read the owner fails
-closed]. This section specifies the binary layout; the producer (`sd_state`) is a later package (M4). This binary layout supersedes the content summary given in 1.6 and 8.2.
+closed]. This section specifies the binary layout; the codec and the agent producer are `sd_state` and the host's state producer (M3, decisions in 8.8). This binary layout supersedes the content summary given in 1.6 and 8.2.
 
 Header, 64 bytes. Integers are little-endian with fixed width; there are no pointers. Strings are UTF-16LE in fixed slots,
 measured in code units; a string is NUL-terminated when it fits, and a full slot without NUL means the slot length.
@@ -1974,6 +1974,66 @@ Design:
   placeholder folder; the `.sdmount` file then has no handler. This is documented in the admin guide.
 - **Not done:** no entries in the machine-wide `All Users` NetHood (it does not exist on Vista+), no namespace
   extension (8.4).
+
+#### 8.8 M3 implementation decisions (producer and Explorer data)
+
+Written with the M3 agent package (`src/sd_state`, `apps/shelldrive-host/state_producer.c`, `explorer_data.c`).
+Where 8.2.1 is silent or ambiguous, the choice below applies; each open point is marked [verify] or [open].
+
+- **Module.** `sd_state` (codec and section helpers) depends on sd_base, sd_platform and sd_ipc only. The codec works
+  on any byte buffer; `sd_state_read_section` opens, maps read-only, copies and unmaps within one call and keeps no
+  handle, so the shell DLL can call it from `QueryContextMenu`.
+- **Header and entry base.** Entries start at `header_size` (64 for layout 1). A reader accepts `header_size` of 64 or
+  more, `entry_size` from 1792 to 4096 in multiples of 8, `entry_count` up to 128, and `total_size` equal to
+  `header_size + entry_count * entry_size` and at most 256 KiB and the mapped size. Any other header value is "no data".
+- **Entries.** An entry without IN_USE, with a letter other than 0 or `A`..`Z`, with an unpaired surrogate in a string,
+  or with a `profile_id` that is neither empty nor 32 lowercase hex digits is dropped (the others stay). An out-of-range
+  `state` or `backend` reads as unknown (0) and keeps the entry. Unknown flag bits are ignored.
+- **Strings.** A string of at most the slot length fits (a full slot without NUL is the slot length, 8.2.1). A longer
+  one is cut by the producer with `sd_state_set_string` to slot length minus one unit, never inside a surrogate pair,
+  NUL-terminated, and the entry gets TRUNCATED. The codec never splits a string itself: the decoded struct has no
+  room for a string longer than its slot.
+- **Writer seqlock.** A stale odd `seq` (a writer that died mid-write) is made even before the next publish. The section
+  is created before the pipe and the ready event exist, so a client never sees "no section" for a running agent.
+- **Publish triggers.** Start (empty), every `mount.state` (through the state callback), the add of a mount (state
+  CONNECTING), the removal of a mount (finished or never started), and shutdown (empty with bit 0 set). Warnings do
+  **not** trigger a publish: the layout has no warning field, so a warning cannot change what the entry shows. Labels
+  are read when a mount starts, so a profile label change needs no publish. [open] A warning count would need a
+  layout change (v2 field in the reserved area) and is not made here.
+- **Remote URL.** `sftp://user@host:port/path`, IPv6 literals in brackets, path only. Passwords and key material never
+  reach the section (8.2.1).
+- **Drive present.** An entry's drive is "present" in `mounted`, `offline` and `auth_required`. Icons and the Network
+  location target follow this flag; no other state maps a drive.
+- **Drive icons (8.3).** Per user: `HKCU\Software\Classes\Applications\Explorer.exe\Drives\<Letter>\DefaultIcon` =
+  `"<install dir>\shelldrive-ui.exe",-1`, written when the drive becomes present and removed when it stops being
+  present. Removal happens only when the value still starts with our binary path. The letters written are listed in
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\state\explorer.ini` (`[icons] letters = ...`) and removed at the next start
+  and at shutdown (crash cleanup). Icon index 1 refers to an icon resource of `shelldrive-ui.exe` that the repository
+  does not contain yet [open]: until it is added Explorer shows the generic network drive icon. Global drives
+  (`HKLM DriveIcons`) belong to the service (M5) and are not written.
+- **SHChangeNotify.** `SHCNE_DRIVEADD` and `SHCNE_UPDATEITEM` (on `X:\`) when a drive becomes present,
+  `SHCNE_DRIVEREMOVED` when it stops, `SHCNE_UPDATEDIR` on the NetHood folder after a Network location changes.
+- **Labels (8.3).** The host writes no label value. The WebDAV label is written by `sd_webdav_map` (`_LabelFromReg`,
+  MountPoints2), and the Dokany label is the volume label; a second writer would duplicate the first.
+- **Network locations (8.7).** Profile key `mount.network_location` (default `yes`, 3.4.1) is parsed and written back
+  only when it is off or already present. Entry folders are named after the profile (reserved characters and control
+  characters become `_`, trailing dots and spaces are trimmed, an empty name becomes `ShellDrive`); a name collision
+  with a foreign folder gets ` (2)`, ` (3)` and so on. Placeholder files live in
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\places\<id>\Connect to <name>.sdmount`. `target.lnk` is written through
+  `IShellLinkW` and `IPersistFile::Save` to a temp file that is moved over the old link.
+- **Start reconciliation (8.7 lifecycle).** Agent start deletes every NetHood folder with a `[ShellDrive] profile=` marker
+  whose profile is gone or no longer asks for a Network location, and recreates the folders that are missing. Folders
+  without the marker are never touched. The policy `DisableNetworkLocations` (HKLM wins over HKCU) turns the feature off.
+- **Not done in M3 (8.7).** No hook at profile save (creation is at agent start only), no `shelldrive location add |
+  remove | repair` command, no `scope = service` handling (the profile model has no `scope` key yet), no portable-mode
+  check (the agent does not know yet whether it runs portable), no per-user protected DACL on the placeholder and state
+  folders (3.2 asks for one) [open].
+- **Test isolation.** Test builds (`SD_HOST_TEST_HOOKS`) write icons and Network locations only when
+  `SHELLDRIVE_TEST_EXPLORER_KEY` and `SHELLDRIVE_TEST_NETHOOD` name test locations; the test placeholders then go under the
+  test configuration root. Without them a test build writes nothing to the user's keys or folders.
+- **[verify] on lab machines:** (1) `desktop.ini` honoured with the read-only folder attribute on XP, 7, 10 and 11, and
+  the `CLSID2` key name (8.7); (2) `target.lnk` re-resolved by open Explorer windows after MoveFileEx (8.7); (3) the
+  drive icon key on 7, 10 and 11 (8.3); (4) `SHChangeNotify` refresh of `This PC` after DRIVEADD and DRIVEREMOVED.
 
 ---
 
@@ -2695,4 +2755,5 @@ identity `com.librestatic.shelldrive.shellext`, `PublisherDisplayName` `LibreSta
 - Methods: `hostkey.announced.accept` takes `{id, add_only}`; `status`, `config.reload`, `log.tail`, `selftest` and
   `prompt.list` are in M3; `refresh`, `profile.test`, `mount.attach_info`, `cache.clear`, `diag.collect`, `update.*` and
   `secret.*` are planned for later milestones (2.4).
-- Snapshot section layout v1 specified in 8.2.1; the producer is a later package.
+- Snapshot section layout v1 specified in 8.2.1; the agent producer and the Explorer data (drive icons, Network
+  locations) are in M3 (8.8). The shell DLL reader is a later package.

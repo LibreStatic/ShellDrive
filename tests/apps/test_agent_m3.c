@@ -8,12 +8,14 @@
  * its test hooks from the environment it inherits). agent.shutdown ends it. Hosts used:
  *   new.test ... new7.test  unknown key (trust on first use), then a password prompt. */
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_test.h"
 #include "sd_base/sd_json.h"
 #include "sd_ipc/sd_ipc.h"
 #include "sd_platform/sd_time.h"
+#include "sd_state/sd_state.h"
 
 #define M3_EVENTS 128
 
@@ -39,7 +41,7 @@ static void wcat_u(wchar_t *dst, size_t cch, unsigned v)
    or cleared. */
 static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar_t *queue_max, const wchar_t *no_route)
 {
-  wchar_t suffix[96], root[MAX_PATH], exe[MAX_PATH];
+  wchar_t suffix[96], root[MAX_PATH], exe[MAX_PATH], nethood[MAX_PATH + 16];
   DWORD n = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
   size_t i, slash = 0;
   if (n == 0 || n >= MAX_PATH)
@@ -69,6 +71,12 @@ static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_QUEUE_MAX", queue_max);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", no_route);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_UI_LAUNCH", L"0");   /* never start the real prompt UI */
+  /* M3 Explorer data: a test key and a test NetHood folder only (never the user's own) */
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_EXPLORER_KEY", L"Software\\LibreStatic\\ShellDriveTest\\m3icons");
+  wcscpy_s(nethood, SD_COUNTOF(nethood), root);
+  wcscat_s(nethood, SD_COUNTOF(nethood), L"\\nethood");
+  CreateDirectoryW(nethood, NULL);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", nethood);
   sd_ipc_set_instance_suffix(suffix);
   wcscpy_s(exe, MAX_PATH, g_dir);
   wcscat_s(exe, MAX_PATH, L"\\sd-test-host-fake.exe");
@@ -231,7 +239,152 @@ static int list_mounts(sd_ipc_conn *c)
   return n;
 }
 
+/* Drive icon of a letter in the test key (SHELLDRIVE_TEST_EXPLORER_KEY): 1 while it exists. */
+static int test_icon_exists(const wchar_t *letter)
+{
+  wchar_t sub[160];
+  HKEY k;
+  int found;
+  _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"Software\\LibreStatic\\ShellDriveTest\\m3icons\\%s\\DefaultIcon", letter);
+  found = RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS;
+  if (found)
+    RegCloseKey(k);
+  return found;
+}
+
+static void test_icon_cleanup(void)
+{
+  RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\LibreStatic\\ShellDriveTest\\m3icons");
+  RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\LibreStatic\\ShellDriveTest");
+}
+
 /* ---- tests ---- */
+
+/* M3 (03 §8.2.1, §8.3): the state section exists from the start (empty), gets the mount while it is
+   mounted (state, id, remote URL without credentials, the drive letter) and loses it after unmount; the
+   drive icon follows the mount in the test key. */
+SD_TEST(m3_snapshot_and_icon_follow_mount)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  char pid[32], buf[160];
+  sd_state_snapshot *snap = NULL;
+  wchar_t ls[2];
+  uint64_t end;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(sd_state_snapshot_new(&snap) == SD_OK);
+  test_icon_cleanup();
+  SD_REQUIRE(setup_agent(L"snap", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  subscribe(c, "\"prompt\",\"mount\"");
+  SD_CHECK(sd_state_read_section(snap) == SD_OK && snap->count == 0);
+
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"new.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 1, 10000));
+  prompt_id_of(&l, "prompt.request", 0, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "prompt.request", NULL, 2, 10000));
+  prompt_id_of(&l, "prompt.request", 1, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"answer\",\"responses\":[\"secret\"]");
+  SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "mounted", 1, 15000));
+
+  SD_REQUIRE(sd_state_read_section(snap) == SD_OK);
+  SD_REQUIRE(snap->count == 1);
+  SD_CHECK(snap->entries[0].state == SD_STATE_S_MOUNTED);
+  SD_CHECK(wcscmp(snap->entries[0].mount_id, L"m-1") == 0);
+  SD_CHECK(wcscmp(snap->entries[0].remote_url, L"sftp://alice@new.test:22") == 0);
+  SD_CHECK(snap->entries[0].letter >= L'A' && snap->entries[0].letter <= L'Z');
+  ls[0] = (wchar_t)snap->entries[0].letter;
+  ls[1] = 0;
+  /* the icon is written by the work item the control thread runs after the event */
+  end = sd_tick_ms() + 10000;
+  while (!test_icon_exists(ls) && sd_tick_ms() < end)
+    Sleep(100);
+  SD_CHECK(test_icon_exists(ls));
+
+  SD_REQUIRE(call(c, "unmount", "{\"mount_id\":\"m-1\"}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "unmounted", 1, 15000));
+  /* the entry and the icon go once the control thread has run the posted work */
+  end = sd_tick_ms() + 10000;
+  while (sd_tick_ms() < end) {
+    if (sd_state_read_section(snap) == SD_OK && snap->count == 0 && !test_icon_exists(ls))
+      break;
+    Sleep(100);
+  }
+  SD_CHECK(sd_state_read_section(snap) == SD_OK && snap->count == 0);
+  SD_CHECK(!test_icon_exists(ls));
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+  sd_state_snapshot_free(snap);
+  test_icon_cleanup();
+}
+
+/* M3 (03 §8.7): at agent start a profile with the default mount.network_location gets its NetHood folder
+   (desktop.ini with the [ShellDrive] marker, target.lnk, placeholder file); a marked folder of a profile
+   that no longer exists is removed; a folder without our marker is left alone. */
+SD_TEST(m3_network_location_entries_at_start)
+{
+  static const char k_profile[] =
+    "[profile]\r\nformat = 1\r\nid = 7f3c2a90d1e44b6c9a0e5b21c4d7f8aa\r\nname = Work Drive\r\n"
+    "host = new.test\r\nuser = alice\r\n";
+  wchar_t cfg[MAX_PATH], nh[MAX_PATH], dir[MAX_PATH], ini[MAX_PATH], path[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  HANDLE f;
+  DWORD wrote = 0;
+  wchar_t id[64];
+  SD_REQUIRE(setup_agent(L"netloc", NULL, NULL, NULL));
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", cfg, MAX_PATH) > 0);
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", nh, MAX_PATH) > 0);
+  wcscat_s(cfg, MAX_PATH, L"\\profiles");
+  CreateDirectoryW(cfg, NULL);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\7f3c2a90d1e44b6c9a0e5b21c4d7f8aa.ini", cfg);
+  f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  SD_REQUIRE(f != INVALID_HANDLE_VALUE);
+  SD_REQUIRE(WriteFile(f, k_profile, (DWORD)strlen(k_profile), &wrote, NULL) && wrote == strlen(k_profile));
+  CloseHandle(f);
+
+  /* a stale entry of a profile that is gone, and a folder of someone else */
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Old Entry", nh);
+  CreateDirectoryW(dir, NULL);
+  _snwprintf_s(ini, SD_COUNTOF(ini), _TRUNCATE, L"%s\\desktop.ini", dir);
+  WritePrivateProfileStringW(L"ShellDrive", L"profile", L"ffffffffffffffffffffffffffffffff", ini);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Mine", nh);
+  CreateDirectoryW(dir, NULL);
+
+  /* the agent's start reconciles before it serves its first client */
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Work Drive", nh);
+  _snwprintf_s(ini, SD_COUNTOF(ini), _TRUNCATE, L"%s\\desktop.ini", dir);
+  SD_CHECK(GetPrivateProfileStringW(L"ShellDrive", L"profile", L"", id, SD_COUNTOF(id), ini) > 0);
+  SD_CHECK(wcscmp(id, L"7f3c2a90d1e44b6c9a0e5b21c4d7f8aa") == 0);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\target.lnk", dir);
+  SD_CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);   /* [verify] the link target in a lab */
+  SD_CHECK(GetFileAttributesW(dir) & FILE_ATTRIBUTE_READONLY);
+  /* the placeholder the link points at while the drive is not mapped (8.7) */
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE,
+               L"%s\\..\\places\\7f3c2a90d1e44b6c9a0e5b21c4d7f8aa\\Connect to Work Drive.sdmount", cfg);
+  SD_CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
+
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Old Entry", nh);
+  SD_CHECK(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Mine", nh);
+  SD_CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
 
 /* A UI that is the only client: the prompts reach it once each, answers route back, the mount
    completes, prompt.closed carries reason answered and answered_by ui. */

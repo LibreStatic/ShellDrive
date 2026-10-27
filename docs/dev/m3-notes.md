@@ -47,6 +47,24 @@ Each item is in the code of this package (sd_ipc, the agent) unless marked other
 - Features advertised by this build: `status`, `config.reload`, `log.tail`, `selftest`, `prompt.list`,
   `prompt.queued`.
 
+### Contract changes (M3 snapshot producer and Explorer data, WP-A part 2)
+
+- New module `sd_state` (`src/sd_state`): layout v1 codec (encode, copy-then-validate decode), the section writer and
+  `sd_state_read_section` (8.2.1, 8.8). Depends on sd_base, sd_platform and sd_ipc only, so the shell DLL can link it.
+- Agent: the snapshot section is created before the pipe accepts clients, published on every mount add, state change
+  and removal, and emptied with the shutdown flag at exit (`state_producer.c`). Warnings do not publish (no field).
+- Agent: drive icons per user (`HKCU\Software\Classes\Applications\Explorer.exe\Drives\<L>\DefaultIcon`), listed in
+  `state\explorer.ini`; SHChangeNotify on present changes; Network location folders in NetHood with `desktop.ini`
+  `[ShellDrive] profile=` marker and `target.lnk` (`explorer_data.c`, 8.3, 8.7). Labels are not written here (WebDAV
+  label stays in `sd_webdav_map`).
+- sd_config: profile key `mount.network_location` is parsed (default `yes`, 3.4.1 table) and written back only when set
+  to `no` or already present. The table already listed it; the parser did not read it before.
+- Floor lists: `GetFileSize`, `FindFirstFileW`, `GetPrivateProfileStringW` and `WritePrivateProfileStringW` added to
+  `tests/os-imports/xp-sp2-x64.txt` and `xp-sp3-x86.txt` (XP-era APIs the agent now imports; the lists are per-function
+  reviews, so this is the review entry).
+- Test hooks (SD_HOST_TEST_HOOKS builds only): `SHELLDRIVE_TEST_UI_LAUNCH` (0 by default: no `shelldrive-ui.exe` launch),
+  `SHELLDRIVE_TEST_EXPLORER_KEY` and `SHELLDRIVE_TEST_NETHOOD` (test locations for icons and Network locations).
+
 ## Left for later milestones
 
 Not implemented in this package, and not advertised in `features`:
@@ -61,7 +79,6 @@ Not implemented in this package, and not advertised in `features`:
 - `update.check` / `update.apply`: M4 (decision 10). `secret.set` / `secret.delete`: M5 (decision 4).
 - Session lock state is not probed before a UI launch (the UI would start while locked and wait for a subscription).
 - `config.reload` returns `restart_required: []`; the restart-required keys are not computed yet (decision 9 lists them).
-- Snapshot producer (`sd_state` writer, section 8.2.1): the layout is specified, the writer is a later package.
 - Service side of prompts (`prompt.answer` for the service, `prompt.list` for admins) and `hostkey.announced.list` on the
   service: M5.
 
@@ -74,6 +91,15 @@ Not implemented in this package, and not advertised in `features`:
   UI-only prompts (one copy each, answered by the UI), prompt deadline (injected to 1.5 s), queue eviction and drain on
   subscribe, the initiator-disconnect rule (both branches), and the new methods (selftest, status, config.reload,
   log.tail cursors, list warnings, prompt.list, hello features).
+- `tests/unit/sd_state`: round trip, truncation (cut and surrogate-safe), the seqlock reader under a live writer thread
+  (never a torn snapshot), a stuck odd seq, every corrupt header field, bad entries dropped, layout skew (v1 reader and
+  v2 writer), unknown layouts, the section round trip and a squatted low-integrity section (Vista+; no XP label).
+  A foreign-owner squat needs an administrator and is not tested.
+- `tests/apps`: `m3_snapshot_and_icon_follow_mount` (section entry and drive icon while mounted, both gone after
+  unmount) and `m3_network_location_entries_at_start` (the profile's folder with the marker, `target.lnk` and the
+  placeholder; a stale marked folder removed; an unmarked folder kept). All registry and NetHood writes go to test
+  locations (see 8.8); test builds never start `shelldrive-ui.exe` unless `SHELLDRIVE_TEST_UI_LAUNCH=1`. `target.lnk` contents and the
+  icon on real Explorer are not checked (lab).
 - The CLI is unchanged. Its replies gained only additive fields (`queued`, `deadline_ms` on `prompt.request`,
   `warnings` on `list`, `features` on hello), which the CLI ignores.
 

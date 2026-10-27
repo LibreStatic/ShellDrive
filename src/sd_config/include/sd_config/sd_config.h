@@ -103,6 +103,7 @@ typedef struct sd_profile {
   uint32_t keepalive_ms;         /* security.keepalive; 0 = default (15 s) */
   uint32_t connect_timeout_ms;   /* security.connect_timeout; 0 = default (20 s) */
   int      refuse_terrapin_exposed;   /* security.refuse_terrapin_exposed (no) */
+  int      network_location;     /* mount.network_location (yes): Network locations entry, 03 §8.7 (D14) */
 } sd_profile;
 
 void   sd_profile_defaults(sd_profile *p);
