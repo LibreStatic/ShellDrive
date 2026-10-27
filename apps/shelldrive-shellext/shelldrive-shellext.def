@@ -1,0 +1,6 @@
+; shelldrive-shellext.dll exports (03 8.5). Undecorated names: the same list on x86 (__stdcall) and x64.
+EXPORTS
+    DllCanUnloadNow      PRIVATE
+    DllGetClassObject    PRIVATE
+    DllRegisterServer    PRIVATE
+    DllUnregisterServer  PRIVATE
