@@ -43,6 +43,7 @@ SD_TEST(prompt_kind_names)
   SD_CHECK(ui_prompt_kind_from_name("password_change") == UI_PK_PASSWORD_CHANGE);
   SD_CHECK(ui_prompt_kind_from_name("legacy_ack") == UI_PK_LEGACY_ACK);
   SD_CHECK(ui_prompt_kind_from_name("proxy_password") == UI_PK_PROXY_PASSWORD);
+  SD_CHECK(ui_prompt_kind_from_name("webdav_token_only") == UI_PK_WEBDAV_TOKEN_ONLY);
   SD_CHECK(ui_prompt_kind_from_name("made_up") == UI_PK_NONE);
   SD_CHECK(ui_prompt_kind_from_name(NULL) == UI_PK_NONE);
 }

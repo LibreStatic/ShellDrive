@@ -122,6 +122,8 @@ ui_prompt_kind ui_prompt_kind_from_name(const char *name)
     return UI_PK_LEGACY_ACK;
   if (strcmp(name, "proxy_password") == 0)
     return UI_PK_PROXY_PASSWORD;
+  if (strcmp(name, "webdav_token_only") == 0)
+    return UI_PK_WEBDAV_TOKEN_ONLY;
   return UI_PK_NONE;
 }
 

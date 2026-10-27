@@ -569,8 +569,12 @@ Local HTTP/1.1 + WebDAV server over `sd_vfs`, mapped through the built-in Window
 
 ### Gaps (not done in M1 by this module)
 
-- Token-only fallback and the WinHTTP self-test (`SD_WD_E_AUTH_UNAVAILABLE`, TM-R19), and the
-  "redirector prompted for credentials" detection.
+- Token-only fallback (TM-R19), partly done in r10 (branch wip/r10-tokconsent): the question
+  `webdav_token_only` through the prompt broker (CLI y/N, UI dialog), per-enable consent, the no-SSPI trigger
+  (`SD_WD_E_AUTH_UNAVAILABLE`, exit 4), plumbing `token_only` / `token_only_confirmed` into sd_mount and the WebDAV
+  cfg, and tests (sd_mount, agent broker). Still open: the WinHTTP autologon-LOW self-test that detects a
+  redirector authentication failure (02 §7.4), and the "redirector prompted for credentials" detection. No profile
+  key exists for token-only, so the answer is asked per enable. The CLI answer has no unit test (no harness).
 - Watchers (TM-R17 c, e): the API exists (`sd_webdav_cleanup_mappings(0, port)`) but there is no
   long-running CLI/tray to watch the agent. (The crash filter and the cleanup at stop are wired; see
   Integration.)

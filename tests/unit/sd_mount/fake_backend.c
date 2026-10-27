@@ -66,6 +66,11 @@ static char g_last_root[256];
 static sd_webdav_client_state g_webclient = SD_WD_CLIENT_MISSING;
 static int g_webclient_startable = 1;
 static volatile LONG g_ensure_calls, g_webdav_mounts;
+/* TM-R19: no SSPI (SD_WD_E_AUTH_UNAVAILABLE for a non-token-only mount) when set here or by the environment
+   variable SHELLDRIVE_TEST_WD_NOAUTH=1 (the agent tests set it); the last cfg seen is recorded. */
+static int g_wd_noauth;
+static int g_wd_last_token_only, g_wd_last_confirmed;
+static volatile LONG g_wd_calls;
 static uint32_t g_last_timeout;
 /* M1 */
 static volatile LONG g_drop_req = -1;     /* -1 none, 0 reconnect, 1 fail */
@@ -99,6 +104,9 @@ void fake_backend_reset(void)
   g_webclient = SD_WD_CLIENT_MISSING;
   g_webclient_startable = 1;
   g_ensure_calls = g_webdav_mounts = 0;
+  g_wd_noauth = 0;
+  g_wd_last_token_only = g_wd_last_confirmed = 0;
+  g_wd_calls = 0;
   g_drop_req = -1;
   g_dokan_starts = g_vfs_mounts = g_budget_calls = 0;
   g_vfs_cb = NULL;
@@ -198,6 +206,10 @@ void fake_backend_set_webclient(sd_webdav_client_state st, int startable)
 
 uint32_t fake_backend_webclient_starts(void) { return (uint32_t)g_ensure_calls; }
 uint32_t fake_backend_webdav_mounts(void) { return (uint32_t)g_webdav_mounts; }
+void fake_backend_set_webdav_noauth(int on) { g_wd_noauth = on ? 1 : 0; }
+uint32_t fake_backend_webdav_calls(void) { return (uint32_t)g_wd_calls; }
+int fake_backend_last_webdav_token_only(void) { return g_wd_last_token_only; }
+int fake_backend_last_webdav_confirmed(void) { return g_wd_last_confirmed; }
 uint32_t fake_backend_last_request_timeout(void) { return g_last_timeout; }
 
 int fake_backend_is_trusted(const char *host)
@@ -909,6 +921,15 @@ static sd_err f_wd_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_webdav_
   if (cfg == NULL || cfg->letter < L'A' || cfg->letter > L'Z')
     return SD_E_INVALID_PARAM;
   l = cfg->letter;
+  {
+    wchar_t nv[8];
+    int noauth = g_wd_noauth || (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_WD_NOAUTH", nv, 8) > 0 && nv[0] == L'1');
+    InterlockedIncrement(&g_wd_calls);
+    g_wd_last_token_only = cfg->token_only ? 1 : 0;
+    g_wd_last_confirmed = cfg->token_only_confirmed ? 1 : 0;
+    if (noauth && !cfg->token_only)
+      return SD_WD_E_AUTH_UNAVAILABLE;
+  }
   ensure();
   sd_mutex_lock(&g_lock);
   if (g_letters[l - L'A']) {

@@ -61,7 +61,9 @@
   X(SD_E_KEY_UNSUPPORTED,          "key_unsupported")                        \
   X(SD_E_BAD_PASSPHRASE,           "bad_passphrase")                         \
   X(SD_E_KEY_PASSPHRASE_REQUIRED,  "key_passphrase_required")                \
-  X(SD_E_INTERNAL,                 "internal")
+  X(SD_E_INTERNAL,                 "internal")                               \
+  /* WebDAV (02 §7.4, TM-R19): SSPI is unavailable, so the redirector cannot authenticate the user */ \
+  X(SD_WD_E_AUTH_UNAVAILABLE,      "auth_unavailable")
 
 #define SD_ERR_ENUM_(sym, name) sym,
 typedef enum sd_err { SD_ERR_LIST(SD_ERR_ENUM_) SD_ERR_COUNT } sd_err;

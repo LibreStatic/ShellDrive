@@ -1076,7 +1076,7 @@ All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\Shell
 (1 = `write_mode = behind` refused), `ProxyServer` (a proxy spec forced as leg 1 for every profile),
 `AllowSystemProxy`, `AllowSystemProxySspi` (0 default: SSPI is never answered to a proxy that came from `proxy = system`,
 WPAD or PAC; 1 lifts that restriction, the scheme rules of 3.8 still apply; TM-R10), `AllowWebDavTokenOnly` (1 default; 0 forbids the
-token-only WebDAV fallback, 02 §7.4, TM-R19), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
+token-only WebDAV fallback, 02 §7.4, TM-R19; the answer is asked per enable, there is no profile key), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
 `HideTrayIcon`, `DisableNetworkLocations`, `DisableModernContextMenu`, `LogPrivacy` (0 standard, 1 strict; 10.1,
 TM-R31). ADMX/ADML produced by 04 (target namespace `com.librestatic.shelldrive.policies`, D45), localized from our catalogs
 (`sdl10n` emits the ADML, C41).
@@ -1549,7 +1549,7 @@ On XP the check is plain group membership.
 | 1 | generic failure | `internal`, `io_error` |
 | 2 | usage error | `usage`, `service_access_required` |
 | 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found`, `not_mounted` (refresh of a drive without a file system) |
-| 4 | authentication failed or required | `auth_failed`, `prompt_required` |
+| 4 | authentication failed or required | `auth_failed`, `prompt_required`, `auth_unavailable` (no SSPI for WebDAV; 02 §7.4) |
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
 | 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |
@@ -1717,6 +1717,13 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   your files." (**Continue**, **Cancel**; no default button). The question is not offered, and the mount fails with
   `policy_denied`, on Remote Desktop Session Hosts, when more than one interactive session is active, or with policy
   `AllowWebDavTokenOnly = 0`.
+  **Implementation status (r10):** the question is the prompt kind `webdav_token_only` (sd_mount
+  `SD_MP_WEBDAV_TOKEN_ONLY`) routed through the normal prompt broker: the CLI answers y/N (default no), the UI
+  dialog has Continue (accept) and Cancel (reject) with no default button. The answer applies to that enable only
+  and is not stored; there is no profile key for it. A rejected question fails the mount with IPC code
+  `token_only_refused`. The environment refusals (RDSH, several sessions, policy, global mount) come from
+  `sd_webdav` as `SD_E_ACCESS_DENIED`; they are not yet mapped to `policy_denied` as this section asks. The trigger
+  is currently the no-SSPI case only (02 §7.4).
 - First-run wizard (`PropertySheet` with `PSH_WIZARD97`, XP+): welcome, import (5.5), create first profile, finish.
   The finish page and the admin guide recommend full-disk encryption (BitLocker/device encryption) when keys are
   kept by ShellDrive or the disk cache is turned on, and explain that saved passwords are only as safe as the

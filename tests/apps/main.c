@@ -28,6 +28,7 @@ SD_TEST_DECL(m3_cache_clear_refuses_queued_writes);
 SD_TEST_DECL(m3_autostart_and_open_after_mount);
 SD_TEST_DECL(cli_parse_m3_commands);
 SD_TEST_DECL(agent_shutdown_event_stops_agent);
+SD_TEST_DECL(m3_webdav_token_only_question_routes_to_ui);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -58,6 +59,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m3_autostart_and_open_after_mount),
   SD_TEST_ENTRY(cli_parse_m3_commands),
   SD_TEST_ENTRY(agent_shutdown_event_stops_agent),
+  SD_TEST_ENTRY(m3_webdav_token_only_question_routes_to_ui),
 };
 
 int main(int argc, char **argv)

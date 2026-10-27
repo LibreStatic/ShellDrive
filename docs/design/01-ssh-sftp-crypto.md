@@ -1757,7 +1757,9 @@ typedef enum sd_err {
   SD_E_POOL_ABANDONED,    /* pool member given up for the generation (section 10.9) */
   /* local */
   SD_E_NO_MEMORY,         SD_E_CRYPTO,            SD_E_KEY_FORMAT,       SD_E_KEY_UNSUPPORTED,
-  SD_E_BAD_PASSPHRASE,    SD_E_KEY_PASSPHRASE_REQUIRED, SD_E_INTERNAL
+  SD_E_BAD_PASSPHRASE,    SD_E_KEY_PASSPHRASE_REQUIRED, SD_E_INTERNAL,
+  /* WebDAV (02 §7.4, TM-R19): no SSPI, so the redirector cannot authenticate; the host may ask for token-only */
+  SD_WD_E_AUTH_UNAVAILABLE
 } sd_err;
 const char *sd_err_name(sd_err e);   /* stable English identifier for logs/JSON, e.g. "not_found" */
 ```
@@ -1766,7 +1768,8 @@ const char *sd_err_name(sd_err e);   /* stable English identifier for logs/JSON,
 `host_key_mismatch`, `host_key_revoked`, `host_key_type_unavailable` (new with TM-R04; 03 still has to add it to its
 IPC error and exit-code tables); `SD_E_DNS` -> `dns_failed`; `SD_E_AUTH_REQUIRED` -> `prompt_required`;
 `SD_E_PROXY` -> `proxy_connect_failed`; `SD_E_PROXY_AUTH` -> `proxy_auth_failed`; `SD_E_LEGACY_REJECTED` ->
-`legacy_refused` (03 §6.2 exit codes 16 and 15); all others are the lowercase enum name without the `SD_E_` prefix.
+`legacy_refused` (03 §6.2 exit codes 16 and 15); `SD_WD_E_AUTH_UNAVAILABLE` -> `auth_unavailable` (03 §6.2 exit code 4);
+all others are the lowercase enum name without the `SD_E_` prefix.
 
 SFTP status to `sd_err` (v3 codes, plus higher codes some servers send anyway):
 

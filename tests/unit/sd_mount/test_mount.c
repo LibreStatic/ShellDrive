@@ -33,6 +33,10 @@ typedef struct harness {
   char lookup_fp[64];
   int known_uid;             /* 0 = lookup returns nothing */
   uint32_t stored_uid;
+  /* TM-R19: the token-only question (SD_MP_WEBDAV_TOKEN_ONLY) is answered with token_answer when answer_token */
+  int answer_token;
+  sd_mount_answer_kind token_answer;
+  uint32_t ntoken_prompts;
 } harness;
 
 static void h_post(void *ctx, void (*fn)(void *), void *arg)
@@ -62,6 +66,12 @@ static void h_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
   harness *h = (harness *)ctx;
   h->last_prompt = *p;
   h->nprompts++;
+  if (p->kind == SD_MP_WEBDAV_TOKEN_ONLY) {
+    h->ntoken_prompts++;
+    if (h->answer_token)
+      sd_mount_answer(m, p->id, h->token_answer, 0, NULL);
+    return;
+  }
   if (!h->answer_inline)
     return;
   if (p->kind == SD_MP_HOSTKEY) {
@@ -180,6 +190,8 @@ static void h_free(harness *h)
 
 /* M3: the next h_create_b makes a test-only mount (profile.test) when set */
 static int h_test_only;
+/* TM-R19: the next h_create_b asks for token-only (params.token_only / token_only_confirmed) */
+static int h_token_only, h_token_confirmed;
 
 static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter, int backend)
 {
@@ -194,6 +206,8 @@ static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identit
   p.remote_path = "/srv/data";
   p.backend = backend;
   p.test_only = h_test_only;
+  p.token_only = h_token_only;
+  p.token_only_confirmed = h_token_confirmed;
   memset(&cb, 0, sizeof(cb));
   cb.ctx = h;
   cb.post = h_post;
@@ -421,6 +435,7 @@ SD_TEST(mount_rejects_bad_params_and_names)
   SD_CHECK_STR(sd_mount_state_name(SD_MOUNT_AUTH_REQUIRED), "auth_required");
   SD_CHECK_STR(sd_mount_state_name(SD_MOUNT_UNMOUNTED), "unmounted");
   SD_CHECK_STR(sd_mount_prompt_kind_name(SD_MP_HOSTKEY), "hostkey_unknown");
+  SD_CHECK_STR(sd_mount_prompt_kind_name(SD_MP_WEBDAV_TOKEN_ONLY), "webdav_token_only");
   h_free(&h);
 }
 
@@ -704,11 +719,162 @@ SD_TEST(mount_m3_refresh_stats_cache_and_stop)
   h_free(&h);
 }
 
+/* ---- TM-R19 token-only WebDAV (02 §7.4, 03 §7.5): plumbing and the consent answers ---- */
+
+/* The params reach the WebDAV cfg (confirmed by the host), and no question is asked. */
+SD_TEST(mount_token_only_params_reach_webdav_cfg)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  h_token_only = 1;
+  h_token_confirmed = 1;
+  SD_REQUIRE(h_create_b(&h, L"good-webdav.test", L"C:\\keys\\id_ed25519", L'Y', SD_MOUNT_BACKEND_WEBDAV) == SD_OK);
+  h_token_only = 0;
+  h_token_confirmed = 0;
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK_EQ_INT(fake_backend_last_webdav_token_only(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_webdav_confirmed(), 1);
+  SD_CHECK_EQ_INT(h.ntoken_prompts, 0);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+/* A global (service) mount never takes token-only: refused at create, and the plain global mount is fine. */
+SD_TEST(mount_token_only_refused_for_global)
+{
+  harness h;
+  sd_mount_params p;
+  sd_mount_callbacks cb;
+  sd_mount *m = NULL;
+  static const unsigned char sd_bytes[4] = { 1, 0, 4, 0 };
+  h_init(&h);
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  memset(&p, 0, sizeof(p));
+  p.struct_size = sizeof(p);
+  p.host = L"good-webdav.test";
+  p.user = "alice";
+  p.identity_path = L"C:\\keys\\id_ed25519";
+  p.letter = L'Y';
+  p.remote_path = "/srv/data";
+  p.backend = SD_MOUNT_BACKEND_WEBDAV;
+  p.global_mount = 1;
+  p.volume_sd = sd_bytes;
+  p.volume_sd_len = sizeof(sd_bytes);
+  p.token_only = 1;
+  p.token_only_confirmed = 1;
+  memset(&cb, 0, sizeof(cb));
+  cb.ctx = &h;
+  cb.post = h_post;
+  SD_CHECK(sd_mount_create(fake_backend(), &p, &cb, &m) == SD_E_INVALID_PARAM);
+  SD_CHECK(m == NULL);
+  p.token_only = 0;
+  p.token_only_confirmed = 0;
+  SD_CHECK(sd_mount_create(fake_backend(), &p, &cb, &m) == SD_OK);
+  if (m) sd_mount_destroy(m);
+  h_free(&h);
+}
+
+/* The no-SSPI question: accept (SD_MA_HOSTKEY_TRUST or _ONCE) continues with token-only for this enable. */
+static void token_consent_accept_case(sd_test_ctx *sd_t_, sd_mount_answer_kind answer)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  fake_backend_set_webdav_noauth(1);
+  h.answer_inline = 1;
+  h.hk_answer = SD_MA_HOSTKEY_TRUST;
+  h.password = "pw";
+  h.answer_token = 1;
+  h.token_answer = answer;
+  h_token_only = 0;
+  h_token_confirmed = 0;
+  SD_REQUIRE(h_create_b(&h, L"good-webdav.test", L"C:\\keys\\id_ed25519", L'Y', SD_MOUNT_BACKEND_WEBDAV) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK_EQ_INT(h.ntoken_prompts, 1);
+  SD_CHECK_EQ_INT(fake_backend_webdav_calls(), 2);            /* refused without SSPI, then token-only */
+  SD_CHECK_EQ_INT(fake_backend_last_webdav_token_only(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_webdav_confirmed(), 1);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  fake_backend_set_webdav_noauth(0);
+}
+
+SD_TEST(mount_token_consent_accept_and_once)
+{
+  token_consent_accept_case(sd_t_, SD_MA_HOSTKEY_TRUST);
+  token_consent_accept_case(sd_t_, SD_MA_HOSTKEY_ONCE);
+}
+
+/* Reject: the mount fails with token_only_refused and no token-only mount is started. */
+SD_TEST(mount_token_consent_reject_fails)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  fake_backend_set_webdav_noauth(1);
+  h.answer_inline = 1;
+  h.hk_answer = SD_MA_HOSTKEY_TRUST;
+  h.password = "pw";
+  h.answer_token = 1;
+  h.token_answer = SD_MA_REJECT;
+  h_token_only = 0;
+  h_token_confirmed = 0;
+  SD_REQUIRE(h_create_b(&h, L"good-webdav.test", L"C:\\keys\\id_ed25519", L'Y', SD_MOUNT_BACKEND_WEBDAV) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  SD_CHECK_EQ_INT(h.ntoken_prompts, 1);
+  SD_CHECK_EQ_INT(fake_backend_webdav_mounts(), 0);
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK(f.code != NULL && strcmp(f.code, "token_only_refused") == 0);
+  fake_backend_set_webdav_noauth(0);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+/* The host asked for token-only without a confirmation: the question comes before any WebDAV start. */
+SD_TEST(mount_token_only_asks_before_webdav_start)
+{
+  harness h;
+  h_init(&h);
+  fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
+  h.answer_token = 1;
+  h.token_answer = SD_MA_HOSTKEY_ONCE;
+  h_token_only = 1;
+  h_token_confirmed = 0;
+  SD_REQUIRE(h_create_b(&h, L"good-webdav.test", L"C:\\keys\\id_ed25519", L'Y', SD_MOUNT_BACKEND_WEBDAV) == SD_OK);
+  h_token_only = 0;
+  h_token_confirmed = 0;
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_state(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK_EQ_INT(h.ntoken_prompts, 1);
+  SD_CHECK_EQ_INT(fake_backend_webdav_calls(), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_webdav_confirmed(), 1);
+  SD_CHECK(sd_mount_stop(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
 SD_TEST(mount_m3_webdav_attach_port)
 {
   harness h;
   sd_mount_attach a;
   fake_backend_reset();
+  fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
   fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
   h_init(&h);
   SD_REQUIRE(h_create_b(&h, L"nodokany-m3.test", NULL, L'S', SD_MOUNT_BACKEND_AUTO) == SD_OK);

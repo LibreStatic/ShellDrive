@@ -1778,3 +1778,18 @@ msgstr[2] "{count} solicitudes esperando a un administrador"
 msgctxt "ui.admin.launch_failed"
 msgid "ShellDrive could not open its administrator window. Try again from the tray menu."
 msgstr "ShellDrive no pudo abrir su ventana de administrador. Probá de nuevo desde el menú de la bandeja."
+
+#. Prompt dialog text for token-only WebDAV (03 7.5, TM-R19). Shown when Windows cannot sign in, every time it is enabled.
+msgctxt "ui.webdav.token_only_ask"
+msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgstr "Windows no pudo iniciar sesión en el servidor local de archivos de ShellDrive. ¿Continuar con una conexión menos protegida? Otros programas que conozcan la dirección de la unidad pueden leer tus archivos."
+
+#. Prompt dialog title for the token-only WebDAV question (03 7.5).
+msgctxt "ui.prompt.title_token_only"
+msgid "Less protected connection"
+msgstr "Conexión menos protegida"
+
+#. Prompt dialog button: continue with the token-only connection for this enable (answers accept).
+msgctxt "ui.prompt.btn.token_continue"
+msgid "Conti&nue"
+msgstr "Conti&nuar"

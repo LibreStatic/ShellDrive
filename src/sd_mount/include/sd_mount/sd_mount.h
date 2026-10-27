@@ -227,6 +227,11 @@ typedef struct sd_mount_params {
   int global_mount;
   const void *volume_sd;
   uint32_t volume_sd_len;
+  /* TM-R19 (02 §7.4): 1 = token-only WebDAV (the path token is the only authenticator). Refused with
+     SD_E_INVALID_PARAM for global mounts. The host sets it only when it already has the user's answer;
+     otherwise sd_mount asks SD_MP_WEBDAV_TOKEN_ONLY when SSPI is unavailable. */
+  int token_only;
+  int token_only_confirmed;             /* 1 = the user confirmed this enable (03 §7.5) */
 } sd_mount_params;
 
 
@@ -265,9 +270,11 @@ typedef struct sd_mount_hop {
 
 typedef enum sd_mount_prompt_kind {
   SD_MP_HOSTKEY, SD_MP_PASSWORD, SD_MP_PASSPHRASE, SD_MP_KBDINT,
-  SD_MP_PASSWORD_CHANGE, SD_MP_LEGACY_ACK, SD_MP_PROXY_PASSWORD     /* M2 */
+  SD_MP_PASSWORD_CHANGE, SD_MP_LEGACY_ACK, SD_MP_PROXY_PASSWORD,    /* M2 */
+  SD_MP_WEBDAV_TOKEN_ONLY           /* TM-R19: no sd_prompt; answered with accept (SD_MA_HOSTKEY_TRUST or _ONCE) or reject */
 } sd_mount_prompt_kind;
-/* "hostkey_unknown", "password", "passphrase", "kbdint", "password_change", "legacy_ack", "proxy_password" */
+/* "hostkey_unknown", "password", "passphrase", "kbdint", "password_change", "legacy_ack", "proxy_password",
+   "webdav_token_only" */
 const char *sd_mount_prompt_kind_name(sd_mount_prompt_kind k);
 
 /* Secret kinds of cb.secret_get / secret_put: same values as sd_secret_kind. Targets are raw

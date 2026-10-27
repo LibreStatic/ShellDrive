@@ -72,6 +72,7 @@ typedef struct sd_webdav_server_cfg {
   uint32_t max_unauth;         /* 8 */
   uint32_t max_unauth_per_process;  /* 4 */
   uint32_t max_connections;    /* 64 */
+  BOOL token_only;             /* TM-R19: started for a token-only export, which needs no SSPI to start */
 } sd_webdav_server_cfg;
 
 sd_err   sd_webdav_server_start(const sd_webdav_server_cfg *cfg, sd_webdav_server **out);

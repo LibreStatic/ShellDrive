@@ -927,3 +927,13 @@ msgstr "El administrador de servicios de Windows rechazó la solicitud (error {c
 msgctxt "cli.service.description"
 msgid "Mounts ShellDrive drives shared by every user of this computer. Stays idle while no global drive is configured."
 msgstr "Monta las unidades de ShellDrive compartidas por todos los usuarios de este equipo. Queda inactivo mientras no haya ninguna unidad global configurada."
+
+#. TM-R19 (03 7.5): asked before token-only WebDAV is used for one enable. Shown in the console.
+msgctxt "cli.prompt.webdav_token_only"
+msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgstr "Windows no pudo iniciar sesión en el servidor local de archivos de ShellDrive. ¿Continuar con una conexión menos protegida? Otros programas que conozcan la dirección de la unidad pueden leer tus archivos."
+
+#. Question for the token-only consent; the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.prompt.webdav_token_only_question"
+msgid "Continue with a less protected connection? [y]es, [N]o: "
+msgstr "¿Continuar con una conexión menos protegida? [s]í, [N]o: "

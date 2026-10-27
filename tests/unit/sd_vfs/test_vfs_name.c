@@ -31,6 +31,7 @@ SD_TEST(vfs_err_table_covers_every_value)
     { SD_E_NO_MEMORY, SD_VFS_E_NO_MEMORY }, { SD_E_CRYPTO, SD_VFS_E_IO }, { SD_E_KEY_FORMAT, SD_VFS_E_IO },
     { SD_E_KEY_UNSUPPORTED, SD_VFS_E_IO }, { SD_E_BAD_PASSPHRASE, SD_VFS_E_IO },
     { SD_E_KEY_PASSPHRASE_REQUIRED, SD_VFS_E_IO }, { SD_E_INTERNAL, SD_VFS_E_IO },
+    { SD_WD_E_AUTH_UNAVAILABLE, SD_VFS_E_IO },
   };
   size_t i;
   /* One row per SD_ERR_LIST value: a new sd_err must be added here (00 §4). */

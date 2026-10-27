@@ -557,6 +557,7 @@ int sd_ipc_exit_code_for_err(sd_err e)
   case SD_E_BAD_PASSPHRASE:           return 4;
   case SD_E_KEY_PASSPHRASE_REQUIRED:  return 4;
   case SD_E_INTERNAL:                 return 1;
+  case SD_WD_E_AUTH_UNAVAILABLE:      return 4;     /* an authentication failure (TM-R19); 03 §6.2 has no own code */
   case SD_ERR_COUNT:                  break;
   }
   return 1;
