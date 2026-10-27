@@ -61,7 +61,7 @@ Normative table (from `decisions.md`). A *flavour* is one compiled set of the fo
 | `x86-sse2` | v141_xp, 7.1A | `/arch:SSE2` | XP SP3 | x86 OS with SSE2 (default x86) | SSE2/SHA-NI/AES-NI fast paths, runtime-detected; its shell DLL is the x86 copy installed on x64/ARM64 |
 | `x64-xp` | v141_xp, 7.1A | — | XP x64 SP2 / Vista+ | x64 OS below Windows 10 | No CFG, no CET |
 | `x64-modern` | v143, 10.0.26100 | `/guard:cf`, `/CETCOMPAT`, `/sdl` | Windows 10 | x64 OS, Windows 10 or later | Doubles x64 test runs |
-| `arm32` | v143, 10.0.22621 | `/guard:cf` | Windows 10 on ARM / Windows 11 ≤ 23H2 (ARM32 app support; RT 8.1 and 10 IoT Core not runnable, §5.1) | ARM32 setup EXE / MSI only | Best effort (D5): CLI + host in agent mode + WebDAV only; dropped if the toolchain breaks |
+| `arm32` | v143, 10.0.22621 | `/guard:cf` | Windows 10 on ARM / Windows 11 ≤ 23H2 (ARM32 app support; RT 8.1 and 10 IoT Core not runnable, §5.1) | ARM32 setup EXE / MSI only | Best effort (D5): CLI + host in agent mode + WebDAV only; dropped if the toolchain breaks. **Build only** in CI and ci-local, cross-compiled with the build-time tools from a nested x64 build (§2.5), no test run; no UI, no shell extension (§5.1) |
 | `arm64` | v143, 10.0.26100 | `/guard:cf` (no `/CETCOMPAT`: x64 only) | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs. **Build only** on x64 hosts (M6): cross-compiled, build-time tools from a nested x64 build (§2.5), no test run (§11.4) |
 
 The `arm64` flavour (M6) is built with `cmake --preset arm64` (`arm64-debug` for Debug). `/volatile:ms` is set on every flavour
@@ -397,6 +397,11 @@ or pre-Windows 10 x64 machines; the MSI launch conditions (§8.2) refuse the wro
 - Contents: `shelldrive.exe` and `shelldrive-host.exe` (agent mode only), WebDAV backend only. No UI, no shell
   extension, no service, no Dokany (no upstream ARM32 build). The CI build stays; ARM32 is dropped from a
   release the moment the toolchain breaks (§15 R2).
+- Implementation status (`wip/r7-arm32`, M6 notes "ARM32 flavour"): the `arm32` preset builds Release and Debug
+  with no warnings; the UI, the shell extension and their tests are not built; the setup stub is native ARM32 and
+  installs the `PAYLOAD_ARM32` CAB (CLI, host, uninstall.exe). CI and `tools/ci-local.ps1` build it without tests.
+  Not implemented yet: the Windows 11 24H2 and RT/IoT refusals below, the ARM32 MSI (D31), and the ARM32
+  constant-time gate and test run (open items in the M6 notes).
 - Targets, with their limits:
   - **Windows 10 on ARM64 and Windows 11 up to 23H2 (ARM64 hardware)** run ARM32 desktop apps and include
     Windows Installer 5.0 and WebClient. This is the only realistic target and the one the lab tests.

@@ -96,6 +96,8 @@ SD_TEST(setup_flavour_names)
   SD_CHECK(sd_setup_flavour_parse(NULL) == SD_SETUP_FL_NONE);
   SD_CHECK(wcscmp(sd_setup_payload_resource(SD_SETUP_FL_X64_MODERN), L"PAYLOAD_X64_MODERN") == 0);
   SD_CHECK(wcscmp(sd_setup_payload_resource(SD_SETUP_FL_ARM64), L"PAYLOAD_ARM64") == 0);
+  SD_CHECK(sd_setup_flavour_parse(L"arm32") == SD_SETUP_FL_ARM32);
+  SD_CHECK(wcscmp(sd_setup_payload_resource(SD_SETUP_FL_ARM32), L"PAYLOAD_ARM32") == 0);
 }
 
 SD_TEST(setup_detect_host_runs)

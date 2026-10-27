@@ -2,11 +2,12 @@
 #
 #   sd_setup_core      engine library (all presets; tests/setup links it)
 #   shelldrive-setup-stub  the stub without payload (x86-ia32 preset: an x86 program that runs on every x86 and
-#                      x64 CPU, 04 §6.1; arm64 preset: the native ARM64 stub, §1.1). It is also uninstall.exe
-#                      inside the payload.
+#                      x64 CPU, 04 §6.1; arm64 and arm32 presets: the native ARM64 and ARM32 stubs, §1.1, §5.1). It is
+#                      also uninstall.exe inside the payload.
 #   shelldrive-setup   the stub with the payload of this preset attached (tools/sd-payload). The arm64 CAB holds the
 #                      ARM64 binaries only; the x86-sse2 and x64-modern shell DLLs that the ARM64 payload also
-#                      carries (04 §6.1) are added by the release pipeline, not by this preset.
+#                      carries (04 §6.1) are added by the release pipeline, not by this preset. The arm32 CAB holds
+#                      the ARM32 CLI and host only (04 §5.1).
 
 include(SdPayload)
 
@@ -31,7 +32,7 @@ target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer)
 set_target_properties(sd_setup_core PROPERTIES FOLDER "apps")
 
-if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64")
+if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64" OR SD_FLAVOUR STREQUAL "arm32")
   set(SD_RC_DESCRIPTION "ShellDrive setup")
   set(SD_RC_INTERNAL_NAME "shelldrive-setup")
   set(SD_RC_ORIGINAL_FILENAME "shelldrive-setup.exe")

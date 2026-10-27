@@ -29,7 +29,8 @@ typedef enum sd_setup_flavour {
   SD_SETUP_FL_X86_SSE2,
   SD_SETUP_FL_X64_XP,
   SD_SETUP_FL_X64_MODERN,
-  SD_SETUP_FL_ARM64
+  SD_SETUP_FL_ARM64,
+  SD_SETUP_FL_ARM32
 } sd_setup_flavour;
 
 const wchar_t *sd_setup_flavour_name(sd_setup_flavour f);      /* "x86-ia32", ... or NULL */

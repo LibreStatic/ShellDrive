@@ -226,3 +226,95 @@ on x64-modern (`sd-test-apps.exe --filter agent_shutdown_event_stops_agent`).
 - ARMv8 crypto fast paths (AES, PMULL, SHA-1/256): `SD_CPU_ARMV8_CRYPTO` is detected, but no fast path exists yet
   (`src/sd_ssh/kex.c` selects GCM on AES-NI only, so ARM64 takes the portable path).
 - `sd_cpucheck` (the SSE2 entry thunk) is x86-sse2 only, as designed.
+
+## ARM32 flavour
+
+Scope of this branch (`wip/r7-arm32`): the `arm32` build flavour (04 §1.1, §5.1, D5 best effort, D31 MSI not done
+here). Build only: this x64 machine cannot run ARM32 binaries, and the lab has no Windows on ARM device yet. Nothing
+here runs ARM32 code.
+
+### Status
+
+| Item | State |
+|---|---|
+| `cmake --preset arm32` / `arm32-debug` (v143, SDK 10.0.22621, `-A ARM`) | Release and Debug build; `/W4 /WX`, no warnings; PE32 images, machine `ARMNT` (0x1C4), subsystem 6.02 |
+| Build-time tools | built by a nested x64 configure (`SD_HOST_TOOLS_ONLY`, as for ARM64) |
+| UI and shell extension | not built (D5, 04 §5.1); `tests/ui` and `tests/shellext` are not added on ARM32 |
+| Import audit | runs on `shelldrive.exe`, `shelldrive-host.exe` and the setup stub against `tests/os-imports/win10-arm32.txt` (bootstrap list) |
+| Setup stub and `shelldrive-setup.exe` | native ARM32 stub; it selects flavour `arm32` (payload `PAYLOAD_ARM32`) on ARM32 and ARM64 hosts |
+| Payload CAB | `shelldrive.exe`, `shelldrive-host.exe`, `uninstall.exe` (the stub); no UI or shell extension members |
+| ARM32 tests | built, **not run** (the `arm32` test preset selects no tests; CI and ci-local skip ctest) |
+| ci.yml / ci-local.ps1 | `arm32` is build-only, in the CI matrix and as an optional preset in ci-local |
+| Dokany, MSI | none (no upstream ARM32 installer, 04 §7; the MSI is D31 and not built) |
+
+### Build layout
+
+- `CMakePresets.json`: `arm32` configure preset (VS 2022, `-A ARM`, `-T v143`, `CMAKE_SYSTEM_VERSION=10.0.22621.0`),
+  build presets `arm32` and `arm32-debug`, and a test preset with no tests (as `arm64`).
+- **Compiler probe skipped for this preset (workaround, remove when it is no longer needed).** With the default SDK
+  10.0.26100 the compiler test of CMake 3.31 fails with MSB8087 (that SDK has no ARM libraries). The compiler test
+  builds its try-compile project without the `CMAKE_SYSTEM_VERSION` SDK. Tried and not enough: `CMAKE_SYSTEM_VERSION`
+  before `project()`, `CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION` (on the command line and before `project()`),
+  `CMAKE_TRY_COMPILE_PLATFORM_VARIABLES`, `CMAKE_VS_GLOBALS=WindowsTargetPlatformVersion=...` and the
+  `WindowsTargetPlatformVersion` environment variable. The preset therefore sets `CMAKE_C_COMPILER_WORKS=1` and
+  `CMAKE_C_ABI_COMPILED=ON`. The compiler identification still runs, and the real projects still get
+  `WindowsTargetPlatformVersion=10.0.22621.0` (checked in the generated vcxproj files).
+- Skipping the probe also leaves CMake without the ARM architecture family, so the platform file picks the ARM
+  default library list (kernel32 and user32 only). The preset pins `CMAKE_C_STANDARD_LIBRARIES` to the desktop list
+  that the arm64 cache uses; without it the setup stub fails to link (gdi32, shell32, ole32 unresolved).
+- `cmake/SdOptions.cmake`: the `arm32` flavour (ARM platform, v143, SDK 10.0.22621, `_WIN32_WINNT=0x0602`,
+  `/SUBSYSTEM:WINDOWS,6.02`, floor `win10-arm32.txt`, `SD_MODERN_SECURITY` = `/sdl` and `/guard:cf`, no CET, no
+  `/HIGHENTROPYVA`, manifest `processorArchitecture="arm"`). `SD_ARM32` drops the UI and the shell extension and
+  makes the tree cross-compiled (`SD_CROSS_HOST_TOOLS`). `sd-isacheck` (x86 audit) is not built, as on ARM64.
+- `cmake/SdPayload.cmake`: the UI and shell-extension members and dependencies are left out on ARM32.
+- `tests/os-imports/win10-arm32.txt`: bootstrap list in the style of `win10-arm64.txt`. Replace it with the
+  per-function capture from a Windows 10 on ARM device (04 §2.4, §11.4).
+
+### Source changes
+
+| File | Change | Why |
+|---|---|---|
+| `src/sd_crypto/sd_ct64.h` | `SD_MUL32` on `_M_ARM` is `_arm_umull` (one UMULL); `sd_mul64_wide` uses the 32-bit pieces | 32-bit ARM has no `__umulh` or `_umul128`; 64x64 products must not reach a compiler helper (01 2.4.3) |
+| `src/sd_crypto/bn.c` | unchanged: 32-bit limbs on every target that is not x64 or ARM64 | ARM32 takes the same limb size as the x86 flavours (`SD_BN_LIMB_BITS` 32) |
+| `apps/shelldrive-setup/setup_core.h`, `setup_args.c` | `SD_SETUP_FL_ARM32`, name `arm32`, payload `PAYLOAD_ARM32`; an ARM32 stub (`_M_ARM`) accepts ARM32 or ARM64 hosts and picks `arm32`; a 32-bit ARM process on a 32-bit ARM OS reports native machine `ARMNT` | 04 §6.2: ARM32 has its own setup EXE and the universal stub refuses `ARMNT` |
+| `src/sd_update/update_engine.c` | an ARM32 build reports flavour `arm32` even on an ARM64 host | `GetNativeSystemInfo` reports ARM64 for a 32-bit process on ARM64 Windows; the update must match the binary |
+| `CMakeLists.txt`, `tests/CMakeLists.txt` | UI, shell extension and their tests are not added on ARM32 | D5, 04 §5.1 |
+| `tests/setup/test_args.c` | checks the `arm32` name and payload resource | |
+
+### Constant-time status (ARM32)
+
+- Products of secrets: the disassembly of the Release `sd_crypto` `bn.obj` (checked by hand with `dumpbin /disasm`)
+  has 5 `umull` (the 32x32->64 products of the Montgomery code), no `__rt_*` helper call and no `_all*`/`_aull*`
+  call. Calls go only to functions of this tree and to the stack-cookie and `memcpy` runtime. This is a one-off check.
+  The automated gate (TM-R02, TST-03: `sd-ctcheck` for ARM32 with the call allow-list, no branch on secrets, no 64x64
+  multiply) does not exist yet.
+- **Unverified (01 2.4.1, 2.4 rule 3, marked [verify]):** whether `UMULL` takes the same time for every operand on
+  the cores that run Windows on ARM32. The rule relies on dudect on the lab device. Check the TRM of each target core
+  first: some ARM cores of earlier generations had early-terminating multipliers, which would make the cycle count
+  depend on an operand. Until dudect has run on a device, the ARM32 constant-time claim is not made.
+- Not reviewed on ARM32: secret-indexed memory, branches on secret data in the field code (the x86 review applies, the
+  ARM32 code generator has not been looked at), and the `sd_ct_*` value barriers (`volatile` round trips, unchanged).
+
+### Verification run on this machine
+
+- `arm32` Release and Debug: built, zero warnings (`/W4 /WX`), import audit and setup payload pass on the shipping images.
+- `x64-modern` Debug: built, zero warnings. `ctest --preset x64-modern-debug -LE "matrix|bench|interop|repro"`: 74 of
+  75 tests pass. `unit.crypto_pk` times out at 300 s: its `bench_pk_throughput` (RSA-3072 signing loop) is slow in a Debug
+  build. That code path is not changed on x64 by this branch, but the base commit was not rebuilt to confirm it.
+- `x86-ia32` Release and Debug: built, zero warnings, import and ISA audits pass.
+- No ARM32 test binary was run.
+
+### Open items (ARM32)
+
+- ARM32 test run on a Windows 10 on ARM device or in the lab, dudect on UMULL (TM-R02), and the ARM32
+  constant-time disassembly gate (TST-03).
+- Per-function floor list for ARM32 (`win10-arm32.txt` is a bootstrap list).
+- Refusals in the setup and the MSI: Windows 11 24H2 and later (no ARM32 app support, 04 §5.1, `[lab-verify]` the build
+  cut-off) and Windows RT and IoT Core (`[lab-verify]` the detection value). Not implemented: the stub has no build
+  number check.
+- MSI `Platform="arm"` package, install into the ARM32 Program Files folder, `[lab-verify]` (D31).
+- Backend choice: 02 §10.1 ("auto") and 03 §3.4.1 never pick Dokany on ARM32. `sd_mount` has no architecture check yet; on ARM32 the
+  Dokany probe fails because `dokan2.dll` is absent, so WebDAV is chosen by the existing fallback.
+- CI: the `arm32` job runs on `windows-2022`. Whether that image has the ARM32 toolset and the SDK 10.0.22621 ARM
+  libraries is not verified here (the local machine has both).
+- Removing the compiler-probe workaround once CMake's compiler test honours the SDK version (see Build layout).

@@ -9,14 +9,16 @@
   skipped, unless -AllowSkip is given (the x86 presets always skip dokany.* under WOW64; that is reported,
   not failed). Writes a JUnit file per preset under build\ci-local\.
 
-  arm64 (04 §1.1, M6) is an optional, build-only preset: it is not in the default list. It cross-compiles
-  Release and Debug on this x64 machine (the build-time tools come from a nested x64 build) and runs no tests,
-  because ARM64 binaries cannot run here (04 §11.4). Run it with -Presets arm64, or with the default list plus arm64.
+  arm64 (04 §1.1, M6) and arm32 (04 §1.1, §5.1, D5) are optional, build-only presets: they are not in the default
+  list. Each cross-compiles Release and Debug on this x64 machine (the build-time tools come from a nested x64 build)
+  and runs no tests, because ARM binaries cannot run here (04 §11.4). Run them with -Presets arm64 or -Presets arm32,
+  or with the default list plus the ARM preset.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets x64-modern -Clean
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets arm64 -Clean
+  powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1 -Presets arm32 -Clean
 #>
 [CmdletBinding()]
 param(
@@ -85,9 +87,9 @@ foreach ($preset in $Presets) {
       if ($LASTEXITCODE) { throw "build $cfg failed" }
       $warn = @($log | Select-String -Pattern ' (warning|error) [A-Z]+[0-9]+').Count
       if ($warn) { throw "build $cfg reported $warn warnings/errors" }
-      if ($preset -eq 'arm64') {
-        # Build only: the ARM64 test binaries cannot run on this x64 host (04 §11.4); the arm64 ctest preset selects no tests, so ctest is skipped.
-        $note += "arm64 $cfg built, not tested (build only); "
+      if ($preset -in @('arm64', 'arm32')) {
+        # Build only: ARM test binaries cannot run on this x64 host (04 §11.4); the ARM ctest presets select no tests, so ctest is skipped.
+        $note += "$preset $cfg built, not tested (build only); "
         continue
       }
 

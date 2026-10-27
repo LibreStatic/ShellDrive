@@ -215,7 +215,12 @@ sd_upd_res sd_upd_detect_flavour(char *out, size_t cap)
     name = (os->major == 5) ? "x64-xp" : "x64-modern";
     break;
   case PROCESSOR_ARCHITECTURE_ARM64:
+#if defined(_M_ARM)
+    /* An ARM32 build on an ARM64 host reports ARM64 here; it runs and updates as arm32 (04 §6.2). */
+    name = "arm32";
+#else
     name = "arm64";
+#endif
     break;
   case PROCESSOR_ARCHITECTURE_ARM:
     name = "arm32";
