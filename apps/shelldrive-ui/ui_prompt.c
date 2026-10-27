@@ -338,6 +338,22 @@ static sd_err add_legacy_dialog(ui_dlg *d, const ui_prompt *p)
   return e;
 }
 
+/* TM-R19 (03 §7.5): the token-only question. No default button (trust decision); the risk text is
+   webdav.token_only_ask in the ui catalog. Continue is IDOK ("accept"), Cancel is IDCANCEL ("reject"). */
+static sd_err add_token_only_dialog(ui_dlg *d, const ui_prompt *p)
+{
+  static const WORD ids[2] = { IDOK, IDCANCEL };
+  const wchar_t *texts[2];
+  sd_err e;
+  SD_UNUSED(p);
+  e = ui_dlg_text(d, ID_P_TEXT_BASE, sd_l10n_get(SD_MSG_UI_WEBDAV_TOKEN_ONLY_ASK), SS_NOPREFIX);
+  if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 93, sd_l10n_get(SD_MSG_UI_PROMPT_CHOOSE_BUTTON), 0);
+  texts[0] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_TOKEN_CONTINUE);
+  texts[1] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_CANCEL);
+  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 2, 0);
+  return e;
+}
+
 static sd_err add_proxy_dialog(ui_dlg *d, const ui_prompt *p)
 {
   static const WORD ids[2] = { IDOK, IDCANCEL };
@@ -383,6 +399,8 @@ static wchar_t *dialog_title(const ui_prompt *p)
     return fmt(SD_MSG_UI_PROMPT_TITLE_HOSTKEY, NULL, 0);
   case UI_PK_HOSTKEY_CHANGED:
     return fmt(SD_MSG_UI_PROMPT_TITLE_CHANGED, NULL, 0);
+  case UI_PK_WEBDAV_TOKEN_ONLY:
+    return fmt(SD_MSG_UI_PROMPT_TITLE_TOKEN_ONLY, NULL, 0);
   case UI_PK_PASSPHRASE:
   case UI_PK_PROXY_PASSWORD:
     a[0].name = "profile"; a[0].type = SD_ARG_STR; a[0].v.s = p->profile;
@@ -436,6 +454,9 @@ static sd_err build_dialog(const ui_prompt *p, ui_dlg *d, unsigned char **blob, 
       break;
     case UI_PK_LEGACY_ACK:
       e = add_legacy_dialog(d, p);
+      break;
+    case UI_PK_WEBDAV_TOKEN_ONLY:
+      e = add_token_only_dialog(d, p);
       break;
     case UI_PK_PROXY_PASSWORD:
       e = add_proxy_dialog(d, p);
@@ -594,7 +615,7 @@ static void submit(ui_pdlg *pd, const char *action)
 static void cancel_action(ui_pdlg *pd)
 {
   submit(pd, (pd->p->kind == UI_PK_HOSTKEY || pd->p->kind == UI_PK_HOSTKEY_CHANGED ||
-              pd->p->kind == UI_PK_LEGACY_ACK) ? "reject" : "cancel");
+              pd->p->kind == UI_PK_LEGACY_ACK || pd->p->kind == UI_PK_WEBDAV_TOKEN_ONLY) ? "reject" : "cancel");
 }
 
 static void primary_action(ui_pdlg *pd)
@@ -607,6 +628,7 @@ static void primary_action(ui_pdlg *pd)
     cancel_action(pd);
     break;
   case UI_PK_LEGACY_ACK:
+  case UI_PK_WEBDAV_TOKEN_ONLY:
     submit(pd, "accept");
     break;
   case UI_PK_KBDINT:
@@ -669,7 +691,7 @@ static INT_PTR CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     pd->nedits = pd->p->kind == UI_PK_PASSWORD_CHANGE ? 3
                : pd->p->kind == UI_PK_KBDINT ? pd->p->item_count
                : (pd->p->kind == UI_PK_HOSTKEY || pd->p->kind == UI_PK_HOSTKEY_CHANGED ||
-                  pd->p->kind == UI_PK_LEGACY_ACK) ? 0 : 1;
+                  pd->p->kind == UI_PK_LEGACY_ACK || pd->p->kind == UI_PK_WEBDAV_TOKEN_ONLY) ? 0 : 1;
     if (pd->p->kind == UI_PK_KBDINT && pd->nedits > UI_PROMPT_MAX_ITEMS)
       pd->nedits = UI_PROMPT_MAX_ITEMS;
     for (i = 0; i < pd->nedits; i++)
@@ -888,7 +910,7 @@ int ui_prompt_smoke_test(void)
 {
   static const ui_prompt_kind kinds[] = {
     UI_PK_HOSTKEY, UI_PK_HOSTKEY_CHANGED, UI_PK_PASSWORD, UI_PK_PASSPHRASE, UI_PK_KBDINT,
-    UI_PK_PASSWORD_CHANGE, UI_PK_LEGACY_ACK, UI_PK_PROXY_PASSWORD
+    UI_PK_PASSWORD_CHANGE, UI_PK_LEGACY_ACK, UI_PK_PROXY_PASSWORD, UI_PK_WEBDAV_TOKEN_ONLY
   };
   size_t k;
   int ok = 1;

@@ -816,8 +816,8 @@ sd_err sd_webdav_server_start(const sd_webdav_server_cfg *cfg, sd_webdav_server 
   sd_once_run(&g_wsa_once, wsa_init, NULL);
   if (!g_wsa_ok)
     return SD_E_UNSUPPORTED;
-  if (!wd_auth_available())
-    return SD_E_UNSUPPORTED;               /* SD_WD_E_AUTH_UNAVAILABLE: no SSPI Negotiate */
+  if (!wd_auth_available() && !cfg->token_only)
+    return SD_WD_E_AUTH_UNAVAILABLE;       /* no SSPI Negotiate (02 §7.4); token-only exports do not need it */
   s = (sd_webdav_server *)sd_calloc(1, sizeof(*s));
   if (s == NULL)
     return SD_E_NO_MEMORY;

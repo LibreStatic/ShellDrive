@@ -1179,6 +1179,55 @@ SD_TEST(m4_update_consent_and_disabled_check)
 /* Shutdown event (04 §6.9 step 1, 03 §1.2, C3): setup and signal-shutdown set the agent's manual-reset event
    Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session>. The agent must then start the shutdown
    sequence (agent.stopping with reason "event") and exit: the process is gone when its session mutex is. */
+/* TM-R19 (03 §7.5): the no-SSPI question reaches a UI as prompt kind webdav_token_only (prompt.request), and
+   prompt.answer "accept" completes the token-only mount. The fake refuses the WebDAV start without SSPI
+   (SHELLDRIVE_TEST_WD_NOAUTH=1). Other prompts of the chain (host key, password) are answered on the way. */
+SD_TEST(m3_webdav_token_only_question_routes_to_ui)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  char pid[32], buf[160];
+  int k, found = 0;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"tok", NULL, NULL, NULL));
+  /* the first connect starts the agent: set it before so that the agent inherits it, and clear it at once so that
+     later tests (and their agents) do not */
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_WD_NOAUTH", L"1");
+  k = connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK;
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_WD_NOAUTH", NULL);
+  SD_REQUIRE(k);
+  subscribe(c, "\"prompt\",\"mount\"");
+  SD_REQUIRE(call(c, "mount", "{\"adhoc\":{\"host\":\"good-webdav.test\",\"user\":\"alice\"},\"backend\":\"webdav\"}",
+                  &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  for (k = 0; k < 4 && !found; k++) {
+    const char *kind;
+    if (!pump_until(c, &l, "prompt.request", NULL, k + 1, 10000))
+      break;
+    prompt_id_of(&l, "prompt.request", k, pid);
+    kind = sd_json_get_str(ev_data(nth_ev(&l, "prompt.request", NULL, k)), "kind");
+    if (kind && strcmp(kind, "webdav_token_only") == 0) {
+      found = 1;
+      answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+    } else if (kind && strcmp(kind, "password") == 0) {
+      answer_json(buf, sizeof(buf), pid, "\"action\":\"answer\",\"responses\":[\"secret\"]");
+    } else {
+      answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+    }
+    SD_REQUIRE(call(c, "prompt.answer", buf, &res, &err) == SD_OK);
+    sd_json_free(res);
+    res = NULL;
+  }
+  SD_CHECK(found);
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "mounted", 1, 15000));
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
+
 SD_TEST(agent_shutdown_event_stops_agent)
 {
   sd_ipc_conn *c = NULL;

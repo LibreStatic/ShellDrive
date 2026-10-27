@@ -1046,3 +1046,13 @@ msgstr "{path} es un vínculo o una unión de directorios, así que no se cambi�
 msgctxt "cli.service.repair.failed"
 msgid "The machine data folder could not be repaired (error {code})."
 msgstr "No se pudo reparar la carpeta de datos de la máquina (error {code})."
+
+#. TM-R19 (03 7.5): asked before token-only WebDAV is used for one enable. Shown in the console.
+msgctxt "cli.prompt.webdav_token_only"
+msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgstr "Windows no pudo iniciar sesión en el servidor local de archivos de ShellDrive. ¿Continuar con una conexión menos protegida? Otros programas que conozcan la dirección de la unidad pueden leer tus archivos."
+
+#. Question for the token-only consent; the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.prompt.webdav_token_only_question"
+msgid "Continue with a less protected connection? [y]es, [N]o: "
+msgstr "¿Continuar con una conexión menos protegida? [s]í, [N]o: "

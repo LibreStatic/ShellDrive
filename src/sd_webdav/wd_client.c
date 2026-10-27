@@ -443,6 +443,7 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
     memset(&sc, 0, sizeof(sc));
     sc.struct_size = sizeof(sc);
     sc.owner_sid = cfg->owner_sid;
+    sc.token_only = cfg->token_only;
     e = sd_webdav_server_start(&sc, &g_srv);
     if (e == SD_OK)
       warn_redirector_limits();

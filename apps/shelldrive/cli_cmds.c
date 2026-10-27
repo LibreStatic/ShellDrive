@@ -226,6 +226,17 @@ void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
     answer_legacy_ack(a, c, d, pid);
     return;
   }
+  if (strcmp(kind, "webdav_token_only") == 0) {
+    /* TM-R19 (03 §7.5): token-only WebDAV for this enable only. The default (and EOF) is no. */
+    say(SD_MSG_CLI_PROMPT_WEBDAV_TOKEN_ONLY, NULL, 0, 1);
+    cli_eprint_raw(sd_l10n_get(SD_MSG_CLI_PROMPT_WEBDAV_TOKEN_ONLY_QUESTION));
+    if (cli_read_line(line, sizeof(line), 1, a->use_stdin) &&
+        answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES))
+      answer(c, pid, "accept", NULL);
+    else
+      answer(c, pid, "reject", NULL);
+    return;
+  }
   if (strcmp(kind, "proxy_password") == 0) {
     wchar_t *s, *wu = wide(sd_json_get_str(d, "user")), *wh = wide(sd_json_get_str(d, "proxy_host"));
     wchar_t pbuf[24];

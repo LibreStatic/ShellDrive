@@ -27,7 +27,9 @@ typedef struct pending_prompt {
 
 enum { EV_READY, EV_FAILED, EV_DISCONNECTED, EV_CLOSED, EV_PROMPT, EV_PROMPT_CLOSED, EV_DOKAN_UNMOUNTED,
        EV_CONN, EV_AUTH_REQUIRED, EV_WRITE_FAILED, EV_NOTICE, EV_IDENTITY,
-       EV_WARNING, EV_ANNOUNCED };
+       EV_WARNING, EV_ANNOUNCED,
+       EV_TOKEN_ASK,            /* TM-R19: raise SD_MP_WEBDAV_TOKEN_ONLY (it->prompt) */
+       EV_TOKEN_ONLY };         /* TM-R19: the answer (err SD_OK = accept, otherwise refused) */
 
 /* M2: owned copy of one hop (sd_mount_hop) */
 typedef struct owned_hop {
@@ -108,6 +110,11 @@ struct sd_mount {
   sd_mount_failure fail;
   sd_mount_conn conn;             /* M1 connection sub-state */
   char hostkey_fp[64];            /* verified host key of the current connection */
+  /* TM-R19: token-only WebDAV. consent_pending: the mount waits for the user's answer to
+     SD_MP_WEBDAV_TOKEN_ONLY (consent_id); token_only/_confirmed are copied from the params and set on accept */
+  int token_only, token_only_confirmed;
+  int consent_pending;
+  uint32_t consent_id;
   sd_vfs_identity known_id;       /* passed to the vfs (lookup_identity) */
   /* M2 */
   owned_hop hops[SD_MOUNT_MAX_HOPS];
@@ -181,6 +188,7 @@ const char *sd_mount_prompt_kind_name(sd_mount_prompt_kind k)
   case SD_MP_KBDINT:     return "kbdint";
   case SD_MP_PASSWORD_CHANGE: return "password_change";
   case SD_MP_LEGACY_ACK: return "legacy_ack";
+  case SD_MP_WEBDAV_TOKEN_ONLY: return "webdav_token_only";
   case SD_MP_PROXY_PASSWORD: return "proxy_password";
   }
   return "password";
@@ -589,6 +597,75 @@ static void do_probe(sd_mount *m)
   sd_mutex_unlock(&m->lock);
 }
 
+/* TM-R19 (02 §7.4, 03 §7.5): the answer to the token-only question. Accept is SD_MA_HOSTKEY_TRUST or
+   SD_MA_HOSTKEY_ONCE (the host's "accept" and "once"); anything else refuses. Returns 0 when prompt_id is not
+   the open question. Any thread. */
+static int take_consent(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind kind)
+{
+  int found = 0;
+  sd_mutex_lock(&m->lock);
+  if (m->consent_pending && m->consent_id == prompt_id) {
+    m->consent_pending = 0;
+    m->consent_id = 0;
+    found = 1;
+  }
+  sd_mutex_unlock(&m->lock);
+  if (found)
+    post_item(m, EV_TOKEN_ONLY, (kind == SD_MA_HOSTKEY_TRUST || kind == SD_MA_HOSTKEY_ONCE) ? SD_OK : SD_E_ACCESS_DENIED,
+              0, NULL);
+  return found;
+}
+
+/* TM-R19: starts the WebDAV export of the mount's vfs with the mount's token-only settings. Control thread.
+   On failure m->wm is NULL and the caller records the failure. */
+static sd_err webdav_start(sd_mount *m)
+{
+  sd_webdav_mount_cfg wc;
+  sd_err e;
+  memset(&wc, 0, sizeof(wc));
+  wc.struct_size = sizeof(wc);
+  wc.letter = m->letter;
+  wc.read_only = m->read_only ? TRUE : FALSE;
+  wc.label = m->label ? m->label : m->host;
+  wc.owner_sid = m->owner_sid;
+  wc.global = m->global_mount ? TRUE : FALSE;     /* TM-R19: token-only is always refused for global mounts */
+  wc.token_only = m->token_only ? TRUE : FALSE;
+  wc.token_only_confirmed = m->token_only_confirmed ? TRUE : FALSE;
+  e = m->be->webdav_mount_start(m->vfs, &wc, &m->wm);
+  if (e != SD_OK) {
+    m->wm = NULL;
+    return e;
+  }
+  if (m->be->webdav_port) {
+    sd_mutex_lock(&m->lock);
+    m->wport = m->be->webdav_port(m->wm);
+    sd_mutex_unlock(&m->lock);
+  }
+  return SD_OK;
+}
+
+/* TM-R19 (03 §7.5): asks the user whether token-only WebDAV may be used for this enable. The mount keeps its vfs
+   and waits; the answer comes back through sd_mount_answer (take_consent). Control thread. */
+static void ask_token_only(sd_mount *m)
+{
+  sd_mount_prompt *mp;
+  uint32_t id;
+  sd_mutex_lock(&m->lock);
+  id = ++m->next_prompt_id;
+  m->consent_pending = 1;
+  m->consent_id = id;
+  sd_mutex_unlock(&m->lock);
+  mp = (sd_mount_prompt *)sd_calloc(1, sizeof(*mp));
+  if (mp == NULL || m->cb.on_prompt == NULL) {
+    sd_free(mp);
+    (void)take_consent(m, id, SD_MA_REJECT);        /* nobody can ask: refused */
+    return;
+  }
+  mp->id = id;
+  mp->kind = SD_MP_WEBDAV_TOKEN_ONLY;
+  post_item(m, EV_TOKEN_ASK, SD_OK, id, mp);
+}
+
 static void on_ready(sd_mount *m)
 {
   sd_vfs_options vo;
@@ -597,6 +674,8 @@ static void on_ready(sd_mount *m)
   sd_err e;
   if (m->stopping)
     return;
+  if (m->consent_pending)
+    return;                         /* TM-R19: parked until the user answers the token-only question */
   commit_saves(m);
   warn_proxy_cleartext(m);
   if (m->vfs) {
@@ -680,25 +759,20 @@ static void on_ready(sd_mount *m)
     return;
   }
   if (use == SD_MOUNT_BACKEND_WEBDAV) {
-    sd_webdav_mount_cfg wc;
-    memset(&wc, 0, sizeof(wc));
-    wc.struct_size = sizeof(wc);
-    wc.letter = m->letter;
-    wc.read_only = m->read_only ? TRUE : FALSE;
-    wc.label = vo.volume_label;
-    wc.owner_sid = m->owner_sid;
-    wc.global = m->global_mount ? TRUE : FALSE;     /* TM-R19: token-only is always refused for global mounts */
-    e = m->be->webdav_mount_start(m->vfs, &wc, &m->wm);
+    if (m->token_only && !m->token_only_confirmed && !m->global_mount) {
+      ask_token_only(m);            /* the host asked for token-only: the user confirms this enable first */
+      return;
+    }
+    e = webdav_start(m);
+    if (e == SD_WD_E_AUTH_UNAVAILABLE && !m->global_mount && !m->token_only) {
+      /* TM-R19 (02 §7.4): SSPI is unavailable, so the redirector cannot authenticate; ask before token-only */
+      ask_token_only(m);
+      return;
+    }
     if (e != SD_OK) {
-      m->wm = NULL;
       record_failure(m, e, e == SD_E_EXISTS ? "target_in_use" : NULL, "webdav mount failed");
       teardown(m);
       return;
-    }
-    if (m->be->webdav_port) {
-      sd_mutex_lock(&m->lock);
-      m->wport = m->be->webdav_port(m->wm);
-      sd_mutex_unlock(&m->lock);
     }
   } else {
     sd_dokan_mount_cfg dc;
@@ -844,6 +918,34 @@ static void run_item(void *arg)
           SD_LOGI("mount", "%c: UpdateHostKeys announcement for %s ignored (update_host_keys = no)",
                   (int)m->letter, a->lookup_name);
         }
+      }
+      break;
+    case EV_TOKEN_ASK:
+      /* TM-R19: a closed or stopping mount refuses at once, so that the question is never left open */
+      if (m->stopping || m->cb.on_prompt == NULL)
+        (void)take_consent(m, it->prompt_id, SD_MA_REJECT);
+      else
+        m->cb.on_prompt(m->cb.ctx, m, it->prompt);
+      break;
+    case EV_TOKEN_ONLY:
+      if (m->stopping || m->vfs == NULL)
+        break;
+      if (it->err == SD_OK) {
+        sd_err we;
+        /* accepted for this enable only (03 §7.5): never stored, never switched on again by itself */
+        m->token_only = 1;
+        m->token_only_confirmed = 1;
+        we = webdav_start(m);
+        if (we == SD_OK) {
+          set_state(m, SD_MOUNT_MOUNTED, SD_OK);
+          if (m->cb.on_conn) m->cb.on_conn(m->cb.ctx, m);
+        } else {
+          record_failure(m, we, we == SD_E_EXISTS ? "target_in_use" : NULL, "webdav mount failed");
+          teardown(m);
+        }
+      } else {
+        record_failure(m, SD_E_ACCESS_DENIED, "token_only_refused", "token-only WebDAV was not confirmed");
+        teardown(m);
       }
       break;
     case EV_PROMPT_CLOSED:
@@ -1464,6 +1566,9 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   /* M5: a global mount needs its volume security descriptor (service_access, D35) */
   if (p->global_mount && (p->volume_sd == NULL || p->volume_sd_len == 0))
     return SD_E_INVALID_PARAM;
+  /* TM-R19: token-only WebDAV is never used by a global (service) mount */
+  if (p->global_mount && p->token_only)
+    return SD_E_INVALID_PARAM;
   m = (sd_mount *)sd_calloc(1, sizeof(*m));
   if (m == NULL)
     return SD_E_NO_MEMORY;
@@ -1482,6 +1587,8 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->methods = p->auth_methods ? p->auth_methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
   m->letter = p->letter;
   m->global_mount = p->global_mount ? 1 : 0;
+  m->token_only = p->token_only ? 1 : 0;
+  m->token_only_confirmed = p->token_only_confirmed ? 1 : 0;
   if (p->volume_sd && p->volume_sd_len) {
     m->volume_sd = (uint8_t *)sd_alloc(p->volume_sd_len);
     if (m->volume_sd == NULL) {
@@ -1757,6 +1864,8 @@ sd_err sd_mount_answer_ex(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind 
   sd_err e;
   if (m == NULL)
     return SD_E_INVALID_PARAM;
+  if (take_consent(m, prompt_id, kind))
+    return SD_OK;                   /* TM-R19: the token-only question has no sd_prompt behind it */
   if (!take_prompt_by_id(m, prompt_id, &p, &pk, &pp))
     return SD_E_NOT_FOUND;
   if (pk == SD_MP_HOSTKEY && (kind == SD_MA_HOSTKEY_TRUST || kind == SD_MA_HOSTKEY_ONCE)) {

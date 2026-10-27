@@ -33,7 +33,8 @@ typedef enum ui_prompt_kind {
   UI_PK_KBDINT,
   UI_PK_PASSWORD_CHANGE,              /* current, new, confirm (3 responses, 01 §6.1) */
   UI_PK_LEGACY_ACK,
-  UI_PK_PROXY_PASSWORD
+  UI_PK_PROXY_PASSWORD,
+  UI_PK_WEBDAV_TOKEN_ONLY             /* webdav_token_only: continue without SSPI for this enable (TM-R19, 03 §7.5) */
 } ui_prompt_kind;
 
 typedef struct ui_prompt_item {

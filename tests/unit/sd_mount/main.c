@@ -14,6 +14,11 @@ SD_TEST_DECL(mount_backend_selection);
 SD_TEST_DECL(mount_m3_test_only_probe);
 SD_TEST_DECL(mount_m3_refresh_stats_cache_and_stop);
 SD_TEST_DECL(mount_m3_webdav_attach_port);
+SD_TEST_DECL(mount_token_only_params_reach_webdav_cfg);
+SD_TEST_DECL(mount_token_only_refused_for_global);
+SD_TEST_DECL(mount_token_consent_accept_and_once);
+SD_TEST_DECL(mount_token_consent_reject_fails);
+SD_TEST_DECL(mount_token_only_asks_before_webdav_start);
 SD_TEST_DECL(mount_reconnect_keeps_drive);
 SD_TEST_DECL(mount_write_failed_and_identity);
 SD_TEST_DECL(mount_m2_chain_and_proxies);
@@ -40,6 +45,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(mount_m3_test_only_probe),
   SD_TEST_ENTRY(mount_m3_refresh_stats_cache_and_stop),
   SD_TEST_ENTRY(mount_m3_webdav_attach_port),
+  SD_TEST_ENTRY(mount_token_only_params_reach_webdav_cfg),
+  SD_TEST_ENTRY(mount_token_only_refused_for_global),
+  SD_TEST_ENTRY(mount_token_consent_accept_and_once),
+  SD_TEST_ENTRY(mount_token_consent_reject_fails),
+  SD_TEST_ENTRY(mount_token_only_asks_before_webdav_start),
   SD_TEST_ENTRY(mount_reconnect_keeps_drive),
   SD_TEST_ENTRY(mount_write_failed_and_identity),
   SD_TEST_ENTRY(mount_m2_chain_and_proxies),

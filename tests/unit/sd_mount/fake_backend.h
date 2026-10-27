@@ -35,6 +35,11 @@ const char *fake_backend_last_remote_root(void);
 void     fake_backend_set_webclient(sd_webdav_client_state st, int startable);
 uint32_t fake_backend_webclient_starts(void);     /* ensure_client calls since reset (TM-R21 checks) */
 uint32_t fake_backend_webdav_mounts(void);
+/* TM-R19: no SSPI for non-token-only WebDAV mounts (reset by fake_backend_reset) */
+void     fake_backend_set_webdav_noauth(int on);
+uint32_t fake_backend_webdav_calls(void);          /* webdav_mount_start calls since reset */
+int      fake_backend_last_webdav_token_only(void); /* cfg of the last webdav_mount_start */
+int      fake_backend_last_webdav_confirmed(void);
 uint32_t fake_backend_last_request_timeout(void);
 /* M1: "flaky*" hosts stay READY until fake_backend_drop(): then DISCONNECTED, RECONNECT_WAIT(attempt 1),
    CONNECTING and READY of the next generation (or FAILED with fail = 1). */

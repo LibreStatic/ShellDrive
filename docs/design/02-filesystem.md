@@ -1453,6 +1453,13 @@ Design:
     interactive session at enable time and at each mount (`WTSEnumerateSessionsW`); otherwise it is refused;
   - policy `AllowWebDavTokenOnly` is not `0` (03 policy schema).
   Global WebDAV mounts refuse token-only always.
+  **Implementation status (r10):** the trigger is only the no-SSPI case: `sd_webdav` returns
+  `SD_WD_E_AUTH_UNAVAILABLE` (03 §6.2 exit 4) when SSPI cannot be initialised, and the host's mount asks the
+  `webdav.token_only_ask` question before any token-only start. The mount-time WinHTTP probe with
+  `WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW` that detects a redirector authentication failure described above is
+  **not implemented**; the existing `sd_webdav_token_selftest` only verifies a token-only export (token request 2xx,
+  token-less request 4xx) and reports `SD_E_AUTH_FAILED` otherwise. A host-requested token-only mount (no
+  confirmation yet) is also asked first.
 - If the redirector ever prompts for credentials, the mount is unmapped, the profile is flagged, and the
   host notifies the user with the cause (autologon disabled by policy) and the token-only option above. It
   is **not** switched to token-only on the next start.
