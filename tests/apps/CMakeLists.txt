@@ -20,7 +20,8 @@ set_target_properties(sd-test-host-fake PROPERTIES FOLDER "tests")
 add_executable(sd-test-cli "${_cli_dir}/main.c" ${SD_CLI_SOURCES})
 target_compile_definitions(sd-test-cli PRIVATE SD_CLI_TEST_HOOKS=1)
 target_include_directories(sd-test-cli PRIVATE "${_cli_dir}")
-target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base)
+target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform
+                      sd_base sd_ssh)
 set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps

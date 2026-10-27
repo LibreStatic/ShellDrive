@@ -1,14 +1,17 @@
-/* shelldrive.exe commands over IPC (03 §6): mount, unmount, list, agent stop, help, version.
+/* shelldrive.exe commands over IPC (03 §6): mount, unmount, list, agent stop, help, version. The
+ * profile, hostkey and status commands live in cli_cmds2.c and the shared helpers in cli_common.c.
  *
  * Every user-facing string comes from the cli catalog (sd_l10n); JSON keys, codes and `detail` stay
  * English. Prompts (2.5): the CLI declares prompts.console when it can ask (an interactive console,
  * or --stdin), answers prompt.request events for its own mount with prompt.answer and wipes the
  * secret buffers afterwards. Host key TOFU defaults to "no" (TM-R03); a changed key is never a
- * prompt (the mount fails with host_key_mismatch, exit 6). */
+ * prompt (the mount fails with host_key_mismatch, exit 6). The same question and default rule
+ * applies to "Save the answer?" (4.2) and to the legacy-algorithms ack (2.5): empty input, EOF or
+ * anything else says no. */
 #include <windows.h>
 #include <string.h>
 
-#include "cli.h"
+#include "cli_int.h"
 #include "sd/version.h"
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
@@ -17,285 +20,153 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_cli_ids.h"
 
-#define CALL_TIMEOUT 15000
-
-/* ---- message helpers ---- */
-
-static void say(sd_msg_id id, const sd_arg *args, size_t n, int to_stderr)
-{
-  wchar_t *s = sd_l10n_format_alloc(id, args, n);
-  if (s == NULL)
-    return;
-  if (to_stderr) cli_eprint(s); else cli_print(s);
-  sd_free(s);
-}
-
-static wchar_t *wide(const char *utf8)
-{
-  wchar_t *w = NULL;
-  if (utf8 == NULL || sd_utf8_to_wide_alloc(utf8, (size_t)-1, SD_UTF_REPLACE, &w) != SD_OK)
-    return NULL;
-  return w;
-}
-
-/* Plain decimal for identifiers (ports, line numbers): SD_ARG_INT groups digits per user locale. */
-static const wchar_t *decimal(wchar_t *buf, size_t cch, long long v)
-{
-  wchar_t tmp[24];
-  size_t n = 0, i = 0;
-  unsigned long long m = v < 0 ? (unsigned long long)0 - (unsigned long long)v : (unsigned long long)v;
-  do { tmp[n++] = (wchar_t)(L'0' + (m % 10u)); m /= 10u; } while (m);
-  if (v < 0 && i + 1 < cch) buf[i++] = L'-';
-  while (n && i + 1 < cch) buf[i++] = tmp[--n];
-  buf[i] = 0;
-  return buf;
-}
-
-static void say1(sd_msg_id id, const char *name, const char *utf8, int to_stderr)
-{
-  wchar_t *w = wide(utf8 ? utf8 : "");
-  sd_arg a[1];
-  a[0].name = name; a[0].type = SD_ARG_STR; a[0].v.s = w ? w : L"";
-  say(id, a, 1, to_stderr);
-  sd_free(w);
-}
-
-static void say1w(sd_msg_id id, const char *name, const wchar_t *w, int to_stderr)
-{
-  sd_arg a[1];
-  a[0].name = name; a[0].type = SD_ARG_STR; a[0].v.s = w ? w : L"";
-  say(id, a, 1, to_stderr);
-}
-
-/* ---- JSON output (03 §6.3) ---- */
-
-static void json_ok(const sd_json *result)
-{
-  sd_wr w;
-  sd_json_writer jw;
-  sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
-  sd_jw_init(&jw, &w);
-  sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "ok"); sd_jw_bool(&jw, 1);
-  sd_jw_key(&jw, "result");
-  if (result) sd_jw_value(&jw, result);
-  else { sd_jw_obj_begin(&jw); sd_jw_obj_end(&jw); }
-  sd_jw_obj_end(&jw);
-  if (sd_jw_finish(&jw) == SD_OK)
-    cli_print_utf8_line((const char *)w.p, w.len);
-  sd_wr_free(&w);
-}
-
-static void json_err(const char *code, const char *detail, int exit_code)
-{
-  sd_wr w;
-  sd_json_writer jw;
-  sd_wr_init(&w, 64 * 1024);
-  sd_jw_init(&jw, &w);
-  sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "ok"); sd_jw_bool(&jw, 0);
-  sd_jw_key(&jw, "error");
-  sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, code);
-  sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, detail ? detail : "");
-  sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, exit_code);
-  sd_jw_obj_end(&jw);
-  sd_jw_obj_end(&jw);
-  if (sd_jw_finish(&jw) == SD_OK)
-    cli_print_utf8_line((const char *)w.p, w.len);
-  sd_wr_free(&w);
-}
-
-/* ---- localized errors ---- */
-
-typedef struct err_ctx {
-  const char *host;          /* UTF-8, for {host} */
-  const wchar_t *name;       /* profile / target as typed, for {name} */
-  wchar_t target[4];         /* "Z:" */
-  const sd_json *detail;     /* error object from the agent (mismatch details) */
-} err_ctx;
-
-static int is(const char *a, const char *b) { return a && strcmp(a, b) == 0; }
-
-static void print_error(const cli_args *a, const char *code, const char *detail, int exit_code, const err_ctx *ec)
-{
-  const char *host = ec && ec->host ? ec->host : "";
-  if (a->json) {
-    json_err(code, detail, exit_code);
-    return;
-  }
-  if (is(code, "auth_failed")) say1(SD_MSG_CLI_ERROR_AUTH_FAILED, "host", host, 1);
-  else if (is(code, "prompt_required")) say1(SD_MSG_CLI_ERROR_PROMPT_REQUIRED, "host", host, 1);
-  else if (is(code, "host_key_unknown")) say1(SD_MSG_CLI_ERROR_HOST_KEY_UNKNOWN, "host", host, 1);
-  else if (is(code, "host_key_rejected")) say1(SD_MSG_CLI_ERROR_HOST_KEY_REJECTED, "host", host, 1);
-  else if (is(code, "host_key_mismatch")) {
-    say1(SD_MSG_CLI_ERROR_HOST_KEY_MISMATCH, "host", host, 1);
-    if (ec && ec->detail) {
-      const sd_json *d = ec->detail;
-      wchar_t *t = wide(sd_json_get_str(d, "stored_type")), *f = wide(sd_json_get_str(d, "stored_fp"));
-      wchar_t *file = wide(sd_json_get_str(d, "store_path"));
-      wchar_t *ot = wide(sd_json_get_str(d, "offered_type")), *of = wide(sd_json_get_str(d, "offered_fp"));
-      int64_t line = 0;
-      wchar_t lbuf[24];
-      sd_arg args[4];
-      sd_json_get_int64(d, "store_line", &line);
-      if (f && f[0]) {
-        args[0].name = "type"; args[0].type = SD_ARG_STR; args[0].v.s = t ? t : L"";
-        args[1].name = "fingerprint"; args[1].type = SD_ARG_STR; args[1].v.s = f;
-        args[2].name = "file"; args[2].type = SD_ARG_STR; args[2].v.s = file ? file : L"";
-        args[3].name = "line"; args[3].type = SD_ARG_STR; args[3].v.s = decimal(lbuf, SD_COUNTOF(lbuf), line);
-        say(SD_MSG_CLI_HK_MISMATCH_STORED, args, 4, 1);
-      }
-      if (of && of[0]) {
-        args[0].name = "type"; args[0].type = SD_ARG_STR; args[0].v.s = ot ? ot : L"";
-        args[1].name = "fingerprint"; args[1].type = SD_ARG_STR; args[1].v.s = of;
-        say(SD_MSG_CLI_HK_MISMATCH_OFFERED, args, 2, 1);
-      }
-      say(SD_MSG_CLI_HK_MISMATCH_HINT, NULL, 0, 1);
-      sd_free(t); sd_free(f); sd_free(file); sd_free(ot); sd_free(of);
-    }
-  }
-  else if (is(code, "host_key_type_unavailable")) say1(SD_MSG_CLI_ERROR_HOST_KEY_TYPE_UNAVAILABLE, "host", host, 1);
-  else if (is(code, "host_key_revoked")) say1(SD_MSG_CLI_ERROR_HOST_KEY_REVOKED, "host", host, 1);
-  else if (is(code, "dns_failed")) say1(SD_MSG_CLI_ERROR_DNS_FAILED, "host", host, 1);
-  else if (is(code, "conn_refused")) say1(SD_MSG_CLI_ERROR_CONN_REFUSED, "host", host, 1);
-  else if (is(code, "net_unreachable")) say1(SD_MSG_CLI_ERROR_NET_UNREACHABLE, "host", host, 1);
-  else if (is(code, "connect_failed") || is(code, "disconnected") || is(code, "protocol"))
-    say1(SD_MSG_CLI_ERROR_CONNECT_FAILED, "host", host, 1);
-  else if (is(code, "kex_failed")) say1(SD_MSG_CLI_ERROR_KEX_FAILED, "host", host, 1);
-  else if (is(code, "legacy_refused")) say1(SD_MSG_CLI_ERROR_LEGACY_REFUSED, "host", host, 1);
-  else if (is(code, "bad_passphrase")) say(SD_MSG_CLI_ERROR_BAD_PASSPHRASE, NULL, 0, 1);
-  else if (is(code, "key_format") || is(code, "key_unsupported")) say(SD_MSG_CLI_ERROR_KEY_FORMAT, NULL, 0, 1);
-  else if (is(code, "timeout")) say(SD_MSG_CLI_ERROR_TIMEOUT, NULL, 0, 1);
-  else if (is(code, "cancelled")) say(SD_MSG_CLI_ERROR_CANCELLED, NULL, 0, 1);
-  else if (is(code, "agent_unavailable")) say(SD_MSG_CLI_ERROR_AGENT_UNAVAILABLE, NULL, 0, 1);
-  else if (is(code, "agent_untrusted")) say(SD_MSG_CLI_ERROR_AGENT_UNTRUSTED, NULL, 0, 1);
-  else if (is(code, "access_denied")) say(SD_MSG_CLI_ERROR_ACCESS_DENIED, NULL, 0, 1);
-  else if (is(code, "proto_unsupported")) say(SD_MSG_CLI_ERROR_PROTO_UNSUPPORTED, NULL, 0, 1);
-  else if (is(code, "profile_not_found")) say1w(SD_MSG_CLI_ERROR_PROFILE_NOT_FOUND, "name", ec ? ec->name : NULL, 1);
-  else if (is(code, "mount_not_found")) say1w(SD_MSG_CLI_ERROR_MOUNT_NOT_FOUND, "name", ec ? ec->name : NULL, 1);
-  else if (is(code, "target_in_use")) {
-    wchar_t t[3];
-    size_t n = detail ? strlen(detail) : 0;
-    t[0] = ec ? ec->target[0] : L'?';
-    if ((t[0] == L'?' || t[0] == 0) && n >= 2 && detail[n - 1] == ':')
-      t[0] = (wchar_t)(unsigned char)detail[n - 2];     /* "drive letter in use: X:" */
-    t[1] = L':';
-    t[2] = 0;
-    say1w(SD_MSG_CLI_ERROR_TARGET_IN_USE, "target", t, 1);
-  }
-  else if (is(code, "invalid_target")) say1w(SD_MSG_CLI_ERROR_INVALID_TARGET, "value", ec ? ec->target : NULL, 1);
-  else if (is(code, "already_mounted")) say(SD_MSG_CLI_ERROR_ALREADY_MOUNTED, NULL, 0, 1);
-  else if (is(code, "webclient_disabled")) say(SD_MSG_CLI_ERROR_WEBCLIENT_DISABLED, NULL, 0, 1);
-  else if (is(code, "backend_unavailable") && detail && strstr(detail, "WebClient"))
-    say(SD_MSG_CLI_ERROR_WEBDAV_UNAVAILABLE, NULL, 0, 1);
-  else if (is(code, "backend_unavailable")) say(SD_MSG_CLI_ERROR_BACKEND_UNAVAILABLE, NULL, 0, 1);
-  else say1(SD_MSG_CLI_ERROR_GENERIC, "code", code, 1);
-}
-
-static int fail_ipc(const cli_args *a, const sd_ipc_error *e, const err_ctx *ec)
-{
-  int xc = e->exit_code ? e->exit_code : sd_ipc_exit_code_for_code(e->code);
-  print_error(a, e->code[0] ? e->code : "internal", e->detail, xc, ec);
-  return xc;
-}
-
-static int fail_code(const cli_args *a, const char *code, const char *detail, const err_ctx *ec)
-{
-  int xc = sd_ipc_exit_code_for_code(code);
-  print_error(a, code, detail, xc, ec);
-  return xc;
-}
-
-/* ---- connection ---- */
-
-static int can_prompt(const cli_args *a)
-{
-  if (a->prompt == CLI_PROMPT_NONE || a->prompt == CLI_PROMPT_GUI)
-    return 0;
-  return cli_stdin_is_console() || a->use_stdin;
-}
-
-static int connect_agent(const cli_args *a, int start, sd_ipc_conn **c, const err_ctx *ec)
-{
-  sd_ipc_hello h;
-  sd_err e;
-  memset(&h, 0, sizeof(h));
-  h.client_kind = "cli";
-  h.client_version = SD_VERSION_STRING;
-  h.lang = sd_l10n_lang_code(sd_l10n_lang());
-  h.caps = can_prompt(a) ? SD_IPC_CAP_PROMPTS_CONSOLE : 0;
-  e = sd_ipc_connect(SD_IPC_AGENT, &h, start, 10000, c);
-  if (e == SD_OK)
-    return 0;
-  if (e == SD_E_ACCESS_DENIED) {
-    fail_code(a, "agent_untrusted", "agent pipe owner check failed", ec);
-    return 9;
-  }
-  if (e == SD_E_PROTOCOL)
-    return fail_code(a, "proto_unsupported", "no common protocol version", ec);
-  return fail_code(a, "agent_unavailable", "cannot connect to the agent", ec);
-}
-
-static int subscribe(sd_ipc_conn *c, const char *topic)
-{
-  char buf[96];
-  sd_ipc_error err;
-  sd_json *res = NULL;
-  size_t n = strlen(topic);
-  sd_err e;
-  if (n > 32) return 0;
-  memcpy(buf, "{\"topics\":[\"", 12);
-  memcpy(buf + 12, topic, n);
-  memcpy(buf + 12 + n, "\"]}", 4);
-  e = sd_ipc_call_raw(c, "subscribe", buf, 12 + n + 3, CALL_TIMEOUT, &res, &err);
-  sd_json_free(res);
-  return e == SD_OK;
-}
-
 /* ---- prompts ---- */
 
-static int answer(sd_ipc_conn *c, const char *prompt_id, const char *action, const char *secret)
+/* Prints the chain context of a prompt: the hop line (2.5) and, for hop i >= 1, the jump host the
+   connection really went through (TM-R03). data holds "hop", "hops", "host" and "via_host". */
+static void print_prompt_place(const sd_json *d)
 {
-  sd_wr w;
-  sd_json_writer jw;
-  sd_ipc_error err;
-  sd_json *res = NULL;
-  sd_err e;
-  sd_wr_init_secret(&w, 64 * 1024);
-  sd_jw_init(&jw, &w);
-  sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, prompt_id);
-  sd_jw_key(&jw, "action"); sd_jw_cstr(&jw, action);
-  if (secret) {
-    sd_jw_key(&jw, "responses");
-    sd_jw_arr_begin(&jw);
-    sd_jw_cstr(&jw, secret);
-    sd_jw_arr_end(&jw);
+  int64_t hop = 0, hops = 0;
+  const char *host = sd_json_get_str(d, "host"), *via = sd_json_get_str(d, "via_host");
+  wchar_t *wh = wide(host), *wv = wide(via);
+  wchar_t hbuf[8], gbuf[8];
+  sd_arg args[3];
+  sd_json_get_int64(d, "hop", &hop);
+  sd_json_get_int64(d, "hops", &hops);
+  if (hops > 1) {
+    args[0].name = "hop"; args[0].type = SD_ARG_STR; args[0].v.s = decimal(hbuf, SD_COUNTOF(hbuf), hop);
+    args[1].name = "hops"; args[1].type = SD_ARG_STR; args[1].v.s = decimal(gbuf, SD_COUNTOF(gbuf), hops);
+    args[2].name = "host"; args[2].type = SD_ARG_STR; args[2].v.s = wh ? wh : L"";
+    say(SD_MSG_CLI_PROMPT_HOP, args, 3, 1);
   }
-  sd_jw_obj_end(&jw);
-  e = sd_jw_finish(&jw);
-  if (e == SD_OK)
-    e = sd_ipc_call_raw(c, "prompt.answer", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err);
-  sd_wr_free(&w);    /* secret writer: wiped */
-  sd_json_free(res);
-  return e == SD_OK;
+  if (via && via[0])
+    say1w(SD_MSG_CLI_PROMPT_VIA, "host", wv ? wv : L"", 1);
+  sd_free(wh);
+  sd_free(wv);
 }
 
-/* Compares an answer with a localized letter or word, case-insensitively. */
-static int answer_is(const char *ans, sd_msg_id letter, sd_msg_id word)
+/* Sends the answer to a secret prompt (password, passphrase, proxy password). When the prompt is
+   savable (4.2), first asks "Save the answer for the next connection?" and sends the secret together
+   with the decision. The default is no: empty input, EOF or anything other than the localized yes
+   says no; EOF on the secret itself cancels the prompt. */
+static void answer_secret(const cli_args *a, sd_ipc_conn *c, const sd_json *d, const char *pid, int ok,
+                          const char *secret)
 {
-  wchar_t wa[64];
-  size_t got = 0;
-  const wchar_t *l = sd_l10n_get(letter), *wd = sd_l10n_get(word);
-  if (sd_utf8_to_utf16(ans, strlen(ans), wa, SD_COUNTOF(wa) - 1, &got, SD_UTF_REPLACE) != SD_OK)
-    return 0;
-  wa[got] = 0;
-  while (got && (wa[got - 1] == L' ' || wa[got - 1] == L'\t')) wa[--got] = 0;
-  if (got == 0)
-    return 0;
-  return CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE, wa, -1, l, -1) == CSTR_EQUAL ||
-         CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE, wa, -1, wd, -1) == CSTR_EQUAL;
+  int can_save = 0;
+  if (!ok) {
+    answer(c, pid, "cancel", NULL);
+    return;
+  }
+  sd_json_get_bool(d, "can_save", &can_save);
+  if (can_save) {
+    char save_line[16];
+    cli_eprint_raw(sd_l10n_get(SD_MSG_CLI_PROMPT_SAVE));
+    if (cli_read_line(save_line, sizeof(save_line), 1, a->use_stdin) &&
+        answer_is(save_line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES)) {
+      const char *comment = sd_json_get_str(d, "profile_name");
+      wchar_t *wc = wide(comment && comment[0] ? comment : "");
+      answer_ex(c, pid, "answer", secret, 1, wc);
+      sd_free(wc);
+      return;
+    }
+  }
+  answer(c, pid, "answer", secret);
+}
+
+/* One round of keyboard-interactive prompts (or the SSH_MSG_USERAUTH_PASSWD_CHANGEREQ questions,
+   which the agent serializes the same way): print the server text, read one line per prompt and
+   answer all of them at once. intro selects the first line. */
+static void answer_kbdint(const cli_args *a, sd_ipc_conn *c, const sd_json *d, const char *pid,
+                          const sd_json *k, sd_msg_id intro)
+{
+  const sd_json *prompts = sd_json_get(k, "prompts");
+  size_t i, n = sd_json_count(prompts);
+  char *answers[8];
+  int ok;
+  say1(intro, "host", sd_json_get_str(d, "host"), 1);
+  if (n == 0 || n > 8) {
+    answer(c, pid, "cancel", NULL);
+    return;
+  }
+  {
+    const char *name = sd_json_get_str(k, "name"), *instr = sd_json_get_str(k, "instruction");
+    wchar_t *w;
+    if (name && name[0] && (w = wide(name)) != NULL) { cli_eprint(w); sd_free(w); }
+    if (instr && instr[0] && (w = wide(instr)) != NULL) { cli_eprint(w); sd_free(w); }
+  }
+  memset(answers, 0, sizeof(answers));
+  ok = 1;
+  for (i = 0; i < n && ok; i++) {
+    const sd_json *it = sd_json_at(prompts, i);
+    int echo = 0;
+    wchar_t *w = wide(sd_json_get_str(it, "text"));
+    sd_json_get_bool(it, "echo", &echo);
+    if (w) { cli_eprint_raw(w); sd_free(w); }
+    answers[i] = (char *)sd_alloc(1024);
+    ok = answers[i] && cli_read_line(answers[i], 1024, echo, a->use_stdin);
+  }
+  if (ok) {
+    sd_wr w;
+    sd_json_writer jw;
+    sd_ipc_error err;
+    sd_json *res = NULL;
+    sd_wr_init_secret(&w, 64 * 1024);
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, pid);
+    sd_jw_key(&jw, "action"); sd_jw_cstr(&jw, "answer");
+    sd_jw_key(&jw, "responses");
+    sd_jw_arr_begin(&jw);
+    for (i = 0; i < n; i++) sd_jw_cstr(&jw, answers[i]);
+    sd_jw_arr_end(&jw);
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) == SD_OK)
+      sd_ipc_call_raw(c, "prompt.answer", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err);
+    sd_json_free(res);
+    sd_wr_free(&w);
+  } else {
+    answer(c, pid, "cancel", NULL);
+  }
+  for (i = 0; i < 8; i++)
+    if (answers[i]) sd_secure_free(answers[i], 1024);
+}
+
+/* The legacy-algorithms ack (2.5, C21): the profile said legacy_algorithms = ask. Continue is
+   explicit; the default (and the answer on EOF) is no. */
+static void answer_legacy_ack(const cli_args *a, sd_ipc_conn *c, const sd_json *d, const char *pid)
+{
+  const sd_json *algos = sd_json_get(d, "algorithms");
+  wchar_t *wh = wide(sd_json_get_str(d, "host"));
+  wchar_t *list;
+  size_t i, n = sd_json_count(algos);
+  sd_arg args[2];
+  char line[64];
+  /* joined, comma-separated algorithm names for the message */
+  {
+    char joined[512];
+    size_t len = 0;
+    joined[0] = 0;
+    for (i = 0; i < n; i++) {
+      const char *nm = sd_json_str(sd_json_at(algos, i), NULL);
+      size_t k, m = nm ? strlen(nm) : 0;
+      if (m == 0) continue;
+      if (len && len + 1 < sizeof(joined)) joined[len++] = ',';
+      for (k = 0; k < m && len + 1 < sizeof(joined); k++) joined[len++] = nm[k];
+    }
+    joined[len] = 0;
+    list = wide(joined);
+  }
+  args[0].name = "host"; args[0].type = SD_ARG_STR; args[0].v.s = wh ? wh : L"";
+  args[1].name = "algorithms"; args[1].type = SD_ARG_STR; args[1].v.s = list ? list : L"";
+  say(SD_MSG_CLI_PROMPT_LEGACY_ACK, args, 2, 1);
+  cli_eprint_raw(sd_l10n_get(SD_MSG_CLI_PROMPT_LEGACY_ACK_QUESTION));
+  if (cli_read_line(line, sizeof(line), 1, a->use_stdin) &&
+      answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES))
+    answer(c, pid, "accept", NULL);
+  else
+    answer(c, pid, "reject", NULL);
+  sd_free(wh);
+  sd_free(list);
 }
 
 static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
@@ -305,6 +176,7 @@ static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
   const char *host = sd_json_get_str(d, "host");
   char line[1024];
   int ok, just = 0;
+  int64_t round = 0;
   if (pid == NULL || kind == NULL)
     return;
   if (strcmp(kind, "hostkey_unknown") == 0) {
@@ -316,6 +188,7 @@ static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
     args[0].name = "host"; args[0].type = SD_ARG_STR; args[0].v.s = wh ? wh : L"";
     args[1].name = "port"; args[1].type = SD_ARG_STR; args[1].v.s = decimal(pbuf, SD_COUNTOF(pbuf), port);
     say(SD_MSG_CLI_HK_UNKNOWN, args, 2, 1);
+    print_prompt_place(d);                     /* "Reached through jump host ..." (TM-R03) */
     args[0].name = "type"; args[0].type = SD_ARG_STR; args[0].v.s = wt ? wt : L"";
     args[1].name = "fingerprint"; args[1].type = SD_ARG_STR; args[1].v.s = wf ? wf : L"";
     say(SD_MSG_CLI_HK_FINGERPRINT, args, 2, 1);
@@ -332,71 +205,51 @@ static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
       answer(c, pid, "reject", NULL);
     return;
   }
-  {
-    int64_t round = 0;
-    sd_json_get_bool(d, "hostkey_just_accepted", &just);
-    sd_json_get_int64(d, "round", &round);
-    if (round > 0)
-      say(SD_MSG_CLI_PROMPT_RETRY, NULL, 0, 1);
-    if (just)
-      say(SD_MSG_PROMPT_HOSTKEY_JUST_ACCEPTED, NULL, 0, 1);
-  }
+  sd_json_get_bool(d, "hostkey_just_accepted", &just);
+  sd_json_get_int64(d, "round", &round);
+  if (round > 0)
+    say(SD_MSG_CLI_PROMPT_RETRY, NULL, 0, 1);
+  if (just)
+    say(SD_MSG_PROMPT_HOSTKEY_JUST_ACCEPTED, NULL, 0, 1);
   if (strcmp(kind, "kbdint") == 0) {
-    const sd_json *k = sd_json_get(d, "kbdint"), *prompts = sd_json_get(k, "prompts");
-    size_t i, n = sd_json_count(prompts);
-    char *answers[8];
-    say1(SD_MSG_CLI_PROMPT_SERVER_SAYS, "host", host, 1);
-    if (n == 0 || n > 8) {
-      answer(c, pid, "cancel", NULL);
-      return;
-    }
-    {
-      const char *name = sd_json_get_str(k, "name"), *instr = sd_json_get_str(k, "instruction");
-      wchar_t *w;
-      if (name && name[0] && (w = wide(name)) != NULL) { cli_eprint(w); sd_free(w); }
-      if (instr && instr[0] && (w = wide(instr)) != NULL) { cli_eprint(w); sd_free(w); }
-    }
-    memset(answers, 0, sizeof(answers));
-    ok = 1;
-    for (i = 0; i < n && ok; i++) {
-      const sd_json *it = sd_json_at(prompts, i);
-      int echo = 0;
-      wchar_t *w = wide(sd_json_get_str(it, "text"));
-      sd_json_get_bool(it, "echo", &echo);
-      if (w) { cli_eprint_raw(w); sd_free(w); }
-      answers[i] = (char *)sd_alloc(1024);
-      ok = answers[i] && cli_read_line(answers[i], 1024, echo, a->use_stdin);
-    }
-    if (ok) {
-      sd_wr w;
-      sd_json_writer jw;
-      sd_ipc_error err;
-      sd_json *res = NULL;
-      sd_wr_init_secret(&w, 64 * 1024);
-      sd_jw_init(&jw, &w);
-      sd_jw_obj_begin(&jw);
-      sd_jw_key(&jw, "prompt_id"); sd_jw_cstr(&jw, pid);
-      sd_jw_key(&jw, "action"); sd_jw_cstr(&jw, "answer");
-      sd_jw_key(&jw, "responses");
-      sd_jw_arr_begin(&jw);
-      for (i = 0; i < n; i++) sd_jw_cstr(&jw, answers[i]);
-      sd_jw_arr_end(&jw);
-      sd_jw_obj_end(&jw);
-      if (sd_jw_finish(&jw) == SD_OK)
-        sd_ipc_call_raw(c, "prompt.answer", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err);
-      sd_json_free(res);
-      sd_wr_free(&w);
-    } else {
-      answer(c, pid, "cancel", NULL);
-    }
-    for (i = 0; i < 8; i++)
-      if (answers[i]) sd_secure_free(answers[i], 1024);
+    print_prompt_place(d);
+    answer_kbdint(a, c, d, pid, sd_json_get(d, "kbdint"), SD_MSG_CLI_PROMPT_SERVER_SAYS);
+    return;
+  }
+  if (strcmp(kind, "password_change") == 0) {
+    /* SSH_MSG_USERAUTH_PASSWD_CHANGEREQ (2.5): same shape as kbd-int, own intro. */
+    print_prompt_place(d);
+    answer_kbdint(a, c, d, pid, sd_json_get(d, "kbdint"), SD_MSG_CLI_PROMPT_PASSWORD_CHANGE);
+    return;
+  }
+  if (strcmp(kind, "legacy_ack") == 0) {
+    answer_legacy_ack(a, c, d, pid);
+    return;
+  }
+  if (strcmp(kind, "proxy_password") == 0) {
+    wchar_t *s, *wu = wide(sd_json_get_str(d, "user")), *wh = wide(sd_json_get_str(d, "proxy_host"));
+    wchar_t pbuf[24];
+    sd_arg args[3];
+    int64_t pport = 0;
+    sd_json_get_int64(d, "proxy_port", &pport);
+    print_prompt_place(d);
+    args[0].name = "user"; args[0].type = SD_ARG_STR; args[0].v.s = wu ? wu : L"";
+    args[1].name = "proxy_host"; args[1].type = SD_ARG_STR; args[1].v.s = wh ? wh : L"";
+    args[2].name = "proxy_port"; args[2].type = SD_ARG_STR; args[2].v.s = decimal(pbuf, SD_COUNTOF(pbuf), pport);
+    s = sd_l10n_format_alloc(SD_MSG_CLI_PROMPT_PROXY_PASSWORD, args, 3);
+    if (s) { cli_eprint_raw(s); sd_free(s); }
+    sd_free(wu); sd_free(wh);
+    ok = cli_read_line(line, sizeof(line), 0, a->use_stdin);
+    answer_secret(a, c, d, pid, ok, line);
+    SecureZeroMemory(line, sizeof(line));
     return;
   }
   {
+    /* password and key passphrase */
     wchar_t *s;
     sd_arg args[2];
     wchar_t *wu = wide(sd_json_get_str(d, "user")), *wh = wide(host), *wk = wide(sd_json_get_str(d, "key_path"));
+    print_prompt_place(d);
     if (strcmp(kind, "passphrase") == 0) {
       args[0].name = "key"; args[0].type = SD_ARG_STR; args[0].v.s = wk ? wk : L"";
       s = sd_l10n_format_alloc(SD_MSG_CLI_PROMPT_PASSPHRASE, args, 1);
@@ -408,21 +261,32 @@ static void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d)
     if (s) { cli_eprint_raw(s); sd_free(s); }
     sd_free(wu); sd_free(wh); sd_free(wk);
     ok = cli_read_line(line, sizeof(line), 0, a->use_stdin);
-    if (ok)
-      answer(c, pid, "answer", line);
-    else
-      answer(c, pid, "cancel", NULL);
+    answer_secret(a, c, d, pid, ok, line);
     SecureZeroMemory(line, sizeof(line));
   }
 }
 
 /* ---- commands ---- */
 
-static void fill_target(wchar_t out[4], wchar_t l)
+/* Joins the repeatable --jump values into the comma list of proxy.jump (3.8); 0 when an entry does
+   not fit or is not valid UTF-8. */
+static int join_jump(const cli_args *a, char *out, size_t cap)
 {
-  out[0] = l ? l : L'?';
-  out[1] = L':';
-  out[2] = 0;
+  size_t i, len = 0;
+  out[0] = 0;
+  for (i = 0; i < (size_t)a->jump_count; i++) {
+    char one[600];
+    size_t got = 0, k;
+    if (sd_utf16_to_utf8(a->jump[i], wcslen(a->jump[i]), one, sizeof(one) - 1, &got, SD_UTF_STRICT) != SD_OK)
+      return 0;
+    one[got] = 0;
+    if (len + got + 2 > cap)
+      return 0;
+    if (i) out[len++] = ',';
+    for (k = 0; k < got; k++) out[len++] = one[k];
+    out[len] = 0;
+  }
+  return 1;
 }
 
 static int cmd_mount(const cli_args *a)
@@ -476,6 +340,23 @@ static int cmd_mount(const cli_args *a)
       sd_jw_key(&jw, "remote_path"); sd_jw_cstr(&jw, u);
       sd_free(u);
     }
+    if (a->jump_count) {
+      char jl[4096];
+      if (!join_jump(a, jl, sizeof(jl))) {
+        sd_wr_free(&w);
+        return fail_code(a, "usage", "invalid jump host list", &ec);
+      }
+      sd_jw_key(&jw, "jump"); sd_jw_cstr(&jw, jl);
+    }
+    if (a->proxy) {
+      char *u = NULL;
+      if (sd_wide_to_utf8_alloc(a->proxy, (size_t)-1, SD_UTF_STRICT, &u) != SD_OK) {
+        sd_wr_free(&w);
+        return fail_code(a, "usage", "invalid proxy", &ec);
+      }
+      sd_jw_key(&jw, "proxy"); sd_jw_cstr(&jw, u);
+      sd_free(u);
+    }
     sd_jw_obj_end(&jw);
   } else {
     char *u = NULL;
@@ -493,6 +374,7 @@ static int cmd_mount(const cli_args *a)
   }
   if (a->read_only) { sd_jw_key(&jw, "read_only"); sd_jw_bool(&jw, 1); }
   if (a->backend) { sd_jw_key(&jw, "backend"); sd_jw_cstr(&jw, a->backend); }
+  if (a->connections) { sd_jw_key(&jw, "connections"); sd_jw_int(&jw, a->connections); }
   sd_jw_key(&jw, "prompt_mode"); sd_jw_cstr(&jw, can_prompt(a) ? "console" : "none");
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) != SD_OK) {
@@ -622,15 +504,6 @@ static int cmd_mount(const cli_args *a)
   }
   sd_ipc_close(c);
   return rc;
-}
-
-static const sd_ipc_hello *quiet_hello(sd_ipc_hello *h)
-{
-  memset(h, 0, sizeof(*h));
-  h->client_kind = "cli";
-  h->client_version = SD_VERSION_STRING;
-  h->lang = sd_l10n_lang_code(sd_l10n_lang());
-  return h;
 }
 
 static int cmd_unmount(const cli_args *a)
@@ -918,7 +791,7 @@ void cli_print_help(const wchar_t *topic)
   if (topic && wcscmp(topic, L"mount") == 0) {
     help_line(L"mount <profile> [--letter X:] [--backend auto|dokany|webdav] [--read-only] [--prompt auto|console|none] [--stdin] [--no-wait]",
               SD_MSG_CLI_HELP_MOUNT);
-    help_line(L"mount --host [user@]host[:port] [--letter X:] [--identity FILE] [--remote-path PATH] ...",
+    help_line(L"mount --host [user@]host[:port] [--letter X:] [--identity FILE] [--remote-path PATH] [--jump [user@]HOST[:PORT]] [--proxy SPEC] [--connections N] ...",
               SD_MSG_CLI_HELP_MOUNT);
     cli_print(L"");
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
@@ -926,6 +799,9 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--letter X:  (--target X:)", SD_MSG_CLI_HELP_OPT_LETTER);
     help_line(L"--identity FILE  (-i FILE)", SD_MSG_CLI_HELP_OPT_IDENTITY);
     help_line(L"--remote-path PATH  (--path PATH)", SD_MSG_CLI_HELP_OPT_REMOTE_PATH);
+    help_line(L"--jump [user@]HOST[:PORT]", SD_MSG_CLI_HELP_OPT_JUMP);
+    help_line(L"--proxy SPEC", SD_MSG_CLI_HELP_OPT_PROXY);
+    help_line(L"--connections N", SD_MSG_CLI_HELP_OPT_CONNECTIONS);
     help_line(L"--backend auto|dokany|webdav", SD_MSG_CLI_HELP_OPT_BACKEND);
     help_line(L"--read-only", SD_MSG_CLI_HELP_OPT_READ_ONLY);
     help_line(L"--prompt auto|console|none", SD_MSG_CLI_HELP_OPT_PROMPT);
@@ -938,6 +814,25 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--all", SD_MSG_CLI_HELP_OPT_ALL);
   } else if (topic && wcscmp(topic, L"list") == 0) {
     help_line(L"list", SD_MSG_CLI_HELP_LIST);
+  } else if (topic && (wcscmp(topic, L"status") == 0 || wcscmp(topic, L"stats") == 0)) {
+    help_line(L"status [<X:|profile|mount-id>]", SD_MSG_CLI_HELP_STATUS);
+  } else if (topic && wcscmp(topic, L"profile") == 0) {
+    help_line(L"profile import putty [<session>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
+    help_line(L"profile import ssh-config [<file>] [--dry-run]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--dry-run", SD_MSG_CLI_HELP_OPT_DRY_RUN);
+  } else if (topic && wcscmp(topic, L"hostkey") == 0) {
+    help_line(L"hostkey list <host[:port]> [--announced]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey import --from putty|openssh [FILE]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey remove <host[:port]> [--type T]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey accept-announced <id> [--add-only]", SD_MSG_CLI_HELP_HOSTKEY);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--announced", SD_MSG_CLI_HELP_OPT_ANNOUNCED);
+    help_line(L"--from putty|openssh", SD_MSG_CLI_HELP_OPT_FROM);
+    help_line(L"--type T", SD_MSG_CLI_HELP_OPT_TYPE);
+    help_line(L"--add-only", SD_MSG_CLI_HELP_OPT_ADD_ONLY);
   } else if (topic && wcscmp(topic, L"agent") == 0) {
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
   } else {
@@ -945,6 +840,9 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"mount <profile> | --host [user@]host[:port]", SD_MSG_CLI_HELP_MOUNT);
     help_line(L"unmount <X:|profile> | --all", SD_MSG_CLI_HELP_UNMOUNT);
     help_line(L"list", SD_MSG_CLI_HELP_LIST);
+    help_line(L"status [<X:|profile>]", SD_MSG_CLI_HELP_STATUS);
+    help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
+    help_line(L"hostkey list | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
     help_line(L"version", SD_MSG_CLI_HELP_VERSION);
     help_line(L"help [command]", SD_MSG_CLI_HELP_HELP);
@@ -986,6 +884,9 @@ int cli_run(const cli_args *a)
   case CLI_CMD_UNMOUNT:    return cmd_unmount(a);
   case CLI_CMD_LIST:       return cmd_list(a);
   case CLI_CMD_AGENT_STOP: return cmd_agent_stop(a);
+  case CLI_CMD_STATUS:     return cli_run_status(a);
+  case CLI_CMD_PROFILE:    return cli_run_profile(a);
+  case CLI_CMD_HOSTKEY:    return cli_run_hostkey(a);
   default:
     cli_print_help(NULL);
     return 2;

@@ -460,6 +460,8 @@ int sd_ipc_exit_code_for_err(sd_err e)
 static const struct { const char *code; int exit_code; } k_codes[] = {
   { "usage", 2 }, { "service_access_required", 2 }, { "invalid_target", 2 },
   { "profile_not_found", 3 }, { "mount_not_found", 3 },
+  { "host_key_not_found", 3 }, { "announcement_not_found", 3 },
+  { "session_not_found", 3 }, { "putty_not_found", 3 }, { "file_not_found", 3 },
   { "host_key_unknown", 5 },
   { "connect_failed", 7 },
   { "agent_unavailable", 8 }, { "service_not_installed", 8 }, { "too_many_connections", 8 },

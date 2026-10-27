@@ -245,6 +245,13 @@ static void write_conn_json(sd_json_writer *jw, host_mount *h)
   if (c.reason != SD_OK) {
     sd_jw_key(jw, "reason"); sd_jw_cstr(jw, sd_err_name(c.reason));
   }
+  if (c.pool || c.pool_wanted > 1) {
+    /* pool size and the requested one (03 §2.4 status detail; the 2FA rule shows as pool < wanted) */
+    sd_jw_key(jw, "pool"); sd_jw_int(jw, c.pool);
+    if (c.pool_wanted > 1) {
+      sd_jw_key(jw, "pool_wanted"); sd_jw_int(jw, c.pool_wanted);
+    }
+  }
   sd_jw_obj_end(jw);
   sd_jw_key(jw, "write_failed"); sd_jw_int(jw, c.write_failed);
   if (c.write_failed) {

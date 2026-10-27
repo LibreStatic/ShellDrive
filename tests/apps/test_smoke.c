@@ -3,6 +3,7 @@
  * (the real agent sources + the fake backend + SD_HOST_TEST_HOOKS) and both run under an isolated
  * instance suffix and configuration root, so a real agent of the user is never touched. */
 #include <windows.h>
+#include <sddl.h>
 #include <string.h>
 
 #include "sd_test.h"
@@ -169,6 +170,53 @@ static int agent_running(void)
 #define EXPECT(cond, what) do { if (!(cond)) sd_test_fail(sd_t_, __FILE__, __LINE__, "%s\n  stdout: %s\n  stderr: %s", \
                                                      (what), r.out, r.err); } while (0)
 
+/* Writes a text file into the isolated configuration root. */
+static HANDLE write_root_file(const wchar_t *name, const char *content)
+{
+  wchar_t p[MAX_PATH];
+  HANDLE h;
+  DWORD put;
+  wcscpy_s(p, MAX_PATH, g_root);
+  wcscat_s(p, MAX_PATH, name);
+  h = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h != INVALID_HANDLE_VALUE)
+    WriteFile(h, content, (DWORD)strlen(content), &put, NULL);
+  return h;
+}
+
+/* A known_hosts file in a directory whose DACL passes the live-source check (TM-R06, 01 §7.2):
+   only the owner, SYSTEM and Administrators may write. temp folders do not always qualify. */
+static int write_trusted_hk_file(const char *content)
+{
+  wchar_t dir[MAX_PATH], path[MAX_PATH];
+  PSECURITY_DESCRIPTOR sd = NULL;
+  HANDLE h;
+  DWORD put;
+  int ok;
+  wcscpy_s(dir, MAX_PATH, g_root);
+  wcscat_s(dir, MAX_PATH, L"\\hkimp");
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)", SDDL_REVISION_1, &sd, NULL))
+    return 0;
+  ok = CreateDirectoryW(dir, NULL) != 0 || GetLastError() == ERROR_ALREADY_EXISTS;
+  if (ok) ok = SetFileSecurityW(dir, DACL_SECURITY_INFORMATION, sd) != 0;
+  LocalFree(sd);
+  if (!ok) return 0;
+  wcscpy_s(path, MAX_PATH, dir);
+  wcscat_s(path, MAX_PATH, L"\\known_hosts");
+  h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  WriteFile(h, content, (DWORD)strlen(content), &put, NULL);
+  CloseHandle(h);
+  sd = NULL;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)", SDDL_REVISION_1, &sd, NULL))
+    return 0;
+  ok = SetFileSecurityW(path, DACL_SECURITY_INFORMATION, sd) != 0;
+  LocalFree(sd);
+  return ok;
+}
+
 SD_TEST(smoke_version_help_usage)
 {
   static run_result r;   /* 32 KiB: off the stack */
@@ -238,10 +286,10 @@ SD_TEST(smoke_mount_prompts_and_errors)
   add_letter(args, 512, l2);
   EXPECT(RUN(args, "\n") == 5 && strstr(r.err, "(port 2222)") != NULL, "port not grouped");
 
-  /* wrong password twice: auth_failed (4) */
+  /* wrong password twice: auth_failed (4); each answer asks "Save the answer?" (4.2) */
   wcscpy_s(args, 512, L"mount --host dave@pw.test --stdin --letter ");
   add_letter(args, 512, l2);
-  EXPECT(RUN(args, "o\nwrong\nwrong\n") == 4 && strstr(r.err, "Signing in to pw.test failed") != NULL, "auth_failed");
+  EXPECT(RUN(args, "o\nwrong\nn\nwrong\nn\n") == 4 && strstr(r.err, "Signing in to pw.test failed") != NULL, "auth_failed");
 
   /* "once" did not store the key: pw.test asks again; EOF on stdin rejects (5) */
   EXPECT(RUN(args, "") == 5, "once is not stored");
@@ -287,4 +335,205 @@ SD_TEST(smoke_mount_prompts_and_errors)
   }
   SD_CHECK(!agent_running());
   EXPECT(RUN(L"agent stop", NULL) == 0 && strstr(r.out, "not running") != NULL, "agent stop again");
+}
+
+/* M2 CLI: --jump, --proxy, password change, legacy ack and the save question over --stdin. */
+SD_TEST(smoke_mount_m2_flags_and_prompts)
+{
+  static run_result r;   /* 32 KiB: off the stack */
+  wchar_t l1, l2, args[768];
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1 && l2);
+
+  /* jump chain + keyboard-interactive OTP: bastion TOFU, bastion password, no save,
+     target TOFU, the kbd password round, the OTP round */
+  wcscpy_s(args, 768, L"mount --host carol@kbd.test --jump alice@bastion.test --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nsecret\nn\ny\nsecret\n123456\n") == 0, "jump + kbdint mount");
+  EXPECT(strstr(r.err, "Jump host 1 of 2") != NULL && strstr(r.err, "Reached through jump host") != NULL,
+         "jump chain prompt lines");
+  EXPECT(strstr(r.err, "Verification code") != NULL, "otp prompt text");
+
+  /* proxy with a user: the proxy password is asked (not saved), then TOFU and the server password */
+  wcscpy_s(args, 768, L"mount --host dave@pw.test --proxy http://pu@10.0.0.1:3128 --stdin --letter ");
+  add_letter(args, 768, l2);
+  EXPECT(RUN(args, "proxypw\nn\ny\nsecret\n") == 0, "proxy password mount");
+  EXPECT(strstr(r.err, "Password for the proxy") != NULL, "proxy prompt");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount all");
+
+  /* password change (SSH_MSG_USERAUTH_PASSWD_CHANGEREQ): TOFU, current, new, confirm */
+  wcscpy_s(args, 768, L"mount --host erin@chpw.test --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nsecret\nn\nsecret\nn3w\nn3w\n") == 0, "password change mount");
+  EXPECT(strstr(r.err, "change the password") != NULL && strstr(r.err, "Your password has expired.") != NULL,
+         "password change prompts");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount all");
+
+  /* legacy ack (profile with legacy_algorithms = ask): TOFU, continue?, password */
+  {
+    wchar_t p[MAX_PATH];
+    char ini[256];
+    HANDLE h;
+    DWORD put;
+    wcscpy_s(p, MAX_PATH, g_root);
+    wcscat_s(p, MAX_PATH, L"\\profiles\\legacyask.ini");
+    strcpy_s(ini, sizeof(ini), "[profile]\r\nname = LegacyAsk\r\nhost = legacy.test\r\nuser = lara\r\n"
+                               "[security]\r\nlegacy_algorithms = ask\r\n[mount]\r\ntarget = ?:\r\n");
+    *strchr(ini, '?') = (char)l2;
+    h = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    SD_REQUIRE(h != INVALID_HANDLE_VALUE);
+    WriteFile(h, ini, (DWORD)strlen(ini), &put, NULL);
+    CloseHandle(h);
+  }
+  EXPECT(RUN(L"mount LegacyAsk --stdin", "y\ny\nsecret\nn\n") == 0, "legacy ask mount");
+  EXPECT(strstr(r.err, "uses outdated encryption") != NULL && strstr(r.err, "3des-cbc,hmac-sha1") != NULL &&
+         strstr(r.err, "Continue anyway") != NULL, "legacy ack prompt");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount all");
+
+  /* the save question is offered (can_save); the default answer keeps nothing */
+  wcscpy_s(args, 768, L"mount --host gina@save.test --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nsecret\nn\n") == 0, "save question asked");
+  EXPECT(strstr(r.err, "Save the answer") != NULL, "save question text");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount all");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+}
+
+/* M2 CLI: --connections reaches the pool, and status reports the 2FA rule (pool < wanted, D18). */
+SD_TEST(smoke_status_and_pool_flag)
+{
+  static run_result r;
+  wchar_t l1, l2, args[512];
+  int i;
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1);
+
+  /* publickey only (identity): the mount needs no typed answer; the pool member still asks for a
+     password and is cancelled, so the pool stays at 1 of 3 */
+  wcscpy_s(args, 512, L"mount --host gus@pool.test --connections 3 --identity C:\\k\\id --stdin --json --letter ");
+  add_letter(args, 512, l1);
+  EXPECT(RUN(args, "y\n") == 0 && strstr(r.out, "\"state\":\"mounted\"") != NULL, "pool flag mount");
+  for (i = 0; i < 30; i++) {
+    if (RUN(L"status --json", NULL) == 0 && strstr(r.out, "\"pool_wanted\":3") != NULL)
+      break;
+    Sleep(100);
+  }
+  EXPECT(i < 30, "status shows the pool rule");
+  EXPECT(RUN(L"status pool.test", NULL) == 0 && strstr(r.out, "pool.test") != NULL, "status by profile");
+  EXPECT(RUN(L"status nosuchstat", NULL) == 3 && strstr(r.err, "No ShellDrive drive matches") != NULL,
+         "status not found");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+}
+
+/* M2 CLI: profile import from ssh_config (preview, dry run, duplicates, write, mount). */
+SD_TEST(smoke_profile_import)
+{
+  static run_result r;
+  wchar_t l1, l2, args[768], p[MAX_PATH];
+  HANDLE h;
+  static const char cfg[] =
+    "Host smokeimp\r\n  HostName good.test\r\n  User bob\r\n  IdentityFile C:\\k\\id_ed25519\r\n"
+    "\r\nHost webdup\r\n  HostName good.test\r\n  User alice\r\n";
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1);
+  h = write_root_file(L"\\smokecfg", cfg);
+  SD_REQUIRE(h != INVALID_HANDLE_VALUE);
+  CloseHandle(h);
+  wcscpy_s(p, MAX_PATH, g_root);
+  wcscat_s(p, MAX_PATH, L"\\smokecfg");
+
+  /* dry run: the duplicate of the "web" profile is unselected, nothing is written */
+  wcscpy_s(args, 768, L"profile import ssh-config ");
+  wcscat_s(args, 768, p);
+  wcscat_s(args, 768, L" --dry-run --json");
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"dry_run\":true") != NULL &&
+         strstr(r.out, "\"source\":\"webdup\"") != NULL && strstr(r.out, "\"selected\":false") != NULL,
+         "profile import dry run");
+  EXPECT(RUN(L"mount smokeimp --prompt none", NULL) == 3, "dry run wrote nothing");
+
+  /* real import: the duplicate stays out, smokeimp is written */
+  wcscpy_s(args, 768, L"profile import ssh-config ");
+  wcscat_s(args, 768, p);
+  wcscat_s(args, 768, L" --json");
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"imported\":1") != NULL, "profile import writes one");
+
+  /* the imported profile mounts (publickey; only the key trust is asked) */
+  wcscpy_s(args, 768, L"mount smokeimp --stdin --json --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\n") == 0 && strstr(r.out, "\"state\":\"mounted\"") != NULL, "imported profile mounts");
+
+  /* error cases: unknown session and unreadable file are "not found" (3) */
+  EXPECT(RUN(L"profile import putty NoSuchSessionXYZ", NULL) == 3, "putty session not found");
+  wcscpy_s(args, 768, L"profile import ssh-config ");
+  wcscat_s(args, 768, g_root);
+  wcscat_s(args, 768, L"\\nosuch.cfg");
+  EXPECT(RUN(args, NULL) == 3, "ssh_config not found");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+}
+
+/* M2 CLI: hostkey list/import/remove in this process, and the UpdateHostKeys review (5.6) over IPC. */
+SD_TEST(smoke_hostkey_commands)
+{
+  static run_result r;
+  wchar_t l1, l2, args[768], p[MAX_PATH];
+  HANDLE h;
+  int i;
+  /* a real ed25519 public blob (throwaway key generated for this test) */
+  static const char kh_line[] = "smokehk.test ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIJPQ/a+syj5MkprlW0zba5copBFI6SboNSepzryXyz6Q added=2026-10-27 by=shelldrive-test\n";
+  static const char imp_line[] = "imp.test ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIJPQ/a+syj5MkprlW0zba5copBFI6SboNSepzryXyz6Q\n";
+  SD_REQUIRE(setup());
+  h = write_root_file(L"\\known_hosts", kh_line);
+  SD_REQUIRE(h != INVALID_HANDLE_VALUE);
+  CloseHandle(h);
+  SD_REQUIRE(write_trusted_hk_file(imp_line));
+
+  EXPECT(RUN(L"hostkey list smokehk.test --json", NULL) == 0 && strstr(r.out, "\"store\":\"user\"") != NULL &&
+         strstr(r.out, "SHA256:") != NULL && strstr(r.out, "\"type\":\"ssh-ed25519\"") != NULL,
+         "hostkey list json");
+  EXPECT(RUN(L"hostkey list smokehk.test", NULL) == 0 && strstr(r.out, "ssh-ed25519") != NULL, "hostkey list text");
+  EXPECT(RUN(L"hostkey list nokey.test", NULL) == 0 && strstr(r.out, "No host key is stored") != NULL,
+         "hostkey list empty");
+  EXPECT(RUN(L"hostkey list", NULL) == 2, "hostkey list needs a host");
+
+  wcscpy_s(p, MAX_PATH, g_root);
+  wcscat_s(p, MAX_PATH, L"\\hkimp\\known_hosts");
+  wcscpy_s(args, 768, L"hostkey import --from openssh ");
+  wcscat_s(args, 768, p);
+  wcscat_s(args, 768, L" --json");
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"imported\":1") != NULL, "hostkey import");
+  EXPECT(RUN(L"hostkey list imp.test --json", NULL) == 0 && strstr(r.out, "\"store\":\"user\"") != NULL,
+         "imported key is listed");
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"already_present\":1") != NULL, "import again keeps");
+
+  EXPECT(RUN(L"hostkey remove smokehk.test --json", NULL) == 0, "hostkey remove");
+  EXPECT(RUN(L"hostkey remove smokehk.test", NULL) == 3 && strstr(r.err, "No host key of") != NULL,
+         "remove again is not found");
+
+  EXPECT(RUN(L"hostkey list --announced --json", NULL) == 0, "no announcements without an agent");
+
+  /* the review path: a mount whose server announces new keys keeps the announcement in the agent */
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1);
+  wcscpy_s(args, 768, L"mount --host fay@rotate.test --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nsecret\nn\n") == 0, "rotate mount");
+  for (i = 0; i < 30; i++) {
+    if (RUN(L"hostkey list --announced --json", NULL) == 0 && strstr(r.out, "rotate.test") != NULL &&
+        strstr(r.out, "\"id\":\"a-") != NULL)
+      break;
+    Sleep(100);
+  }
+  EXPECT(i < 30, "announcement listed");
+  EXPECT(RUN(L"hostkey accept-announced a-1 --add-only --json", NULL) == 0 &&
+         strstr(r.out, "\"removed\":0") != NULL, "accept add-only");
+  EXPECT(RUN(L"hostkey accept-announced a-1", NULL) == 3, "announcement consumed");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
 }

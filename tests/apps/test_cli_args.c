@@ -116,3 +116,68 @@ SD_TEST(cli_parse_other_commands)
            wcscmp(a.lang, L"es") == 0);
   SD_CHECK(parse_line(L"sd agent stop", &a) == CLI_OK && a.cmd == CLI_CMD_AGENT_STOP);
 }
+
+SD_TEST(cli_parse_mount_m2_options)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd mount --host t.test --jump bastion.test --jump admin@b2.test:2222 "
+                      L"--proxy socks5://alice@p.test:1080 --connections 3", &a) == CLI_OK);
+  SD_CHECK(a.jump_count == 2 && wcscmp(a.jump[0], L"bastion.test") == 0 &&
+           wcscmp(a.jump[1], L"admin@b2.test:2222") == 0);
+  SD_CHECK(wcscmp(a.proxy, L"socks5://alice@p.test:1080") == 0 && a.connections == 3);
+  SD_CHECK(parse_line(L"sd mount --host h --connections 0", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd mount --host h --connections 5", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd mount --host h --connections 2x", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd mount --host h --connections", &a) == CLI_E_MISSING_VALUE);
+  SD_CHECK(parse_line(L"sd mount --host h --proxy", &a) == CLI_E_MISSING_VALUE);
+  SD_CHECK(parse_line(L"sd mount web --connections 2", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd mount web --jump b", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd mount web --proxy p", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd list --connections 2", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd status --jump b", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd mount --host h --jump 1 --jump 2 --jump 3 --jump 4 --jump 5 --jump 6 --jump 7 --jump 8",
+           &a) == CLI_OK && a.jump_count == 8);
+  SD_CHECK(parse_line(L"sd mount --host h --jump 1 --jump 2 --jump 3 --jump 4 --jump 5 --jump 6 --jump 7 --jump 8 --jump 9",
+           &a) == CLI_E_BAD_VALUE);   /* one hop too many */
+}
+
+SD_TEST(cli_parse_profile_hostkey_status)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd profile import putty MySession", &a) == CLI_OK && a.cmd == CLI_CMD_PROFILE &&
+           wcscmp(a.subverb, L"import") == 0 && wcscmp(a.arg2, L"putty") == 0 &&
+           wcscmp(a.arg3, L"MySession") == 0);
+  SD_CHECK(parse_line(L"sd profile import ssh-config", &a) == CLI_OK && a.arg3 == NULL);
+  SD_CHECK(parse_line(L"sd profile import ssh-config C:\\cfg --dry-run", &a) == CLI_OK && a.dry_run &&
+           wcscmp(a.arg3, L"C:\\cfg") == 0);
+  SD_CHECK(parse_line(L"sd profile", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd profile frobnicate", &a) == CLI_E_UNKNOWN_COMMAND && wcscmp(a.bad, L"frobnicate") == 0);
+  SD_CHECK(parse_line(L"sd profile import regedit4", &a) == CLI_E_UNKNOWN_COMMAND);
+  SD_CHECK(parse_line(L"sd profile import putty s extra", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd profile import putty --json -q", &a) == CLI_OK && a.json && a.quiet);
+
+  SD_CHECK(parse_line(L"sd hostkey list good.test", &a) == CLI_OK && a.cmd == CLI_CMD_HOSTKEY &&
+           wcscmp(a.subverb, L"list") == 0 && wcscmp(a.arg2, L"good.test") == 0);
+  SD_CHECK(parse_line(L"sd hostkey list good.test --announced", &a) == CLI_OK && a.announced);
+  SD_CHECK(parse_line(L"sd hostkey list", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey list --announced", &a) == CLI_OK && a.announced && a.arg2 == NULL);
+  SD_CHECK(parse_line(L"sd hostkey list h --type ed", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--type") == 0);
+  SD_CHECK(parse_line(L"sd hostkey import", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey import --from putty", &a) == CLI_OK && wcscmp(a.from, L"putty") == 0 &&
+           a.arg2 == NULL);
+  SD_CHECK(parse_line(L"sd hostkey import --from openssh C:\\hk --dry-run", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey import --from kermit", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd hostkey remove host:2222 --type ssh-ed25519", &a) == CLI_OK &&
+           wcscmp(a.hk_type, L"ssh-ed25519") == 0);
+  SD_CHECK(parse_line(L"sd hostkey remove", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --add-only", &a) == CLI_OK && a.add_only);
+  SD_CHECK(parse_line(L"sd hostkey accept-announced", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --announced", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey frobnicate", &a) == CLI_E_UNKNOWN_COMMAND);
+
+  SD_CHECK(parse_line(L"sd status", &a) == CLI_OK && a.cmd == CLI_CMD_STATUS && a.positional == NULL);
+  SD_CHECK(parse_line(L"sd stats web", &a) == CLI_OK && a.cmd == CLI_CMD_STATUS &&
+           wcscmp(a.positional, L"web") == 0);
+  SD_CHECK(parse_line(L"sd status a b", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey list h --json -q", &a) == CLI_OK && a.json && a.quiet);
+}

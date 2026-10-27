@@ -9,8 +9,11 @@
 
 typedef enum cli_cmd {
   CLI_CMD_NONE, CLI_CMD_HELP, CLI_CMD_VERSION, CLI_CMD_MOUNT, CLI_CMD_UNMOUNT, CLI_CMD_LIST,
-  CLI_CMD_AGENT_STOP
+  CLI_CMD_AGENT_STOP, CLI_CMD_STATUS, CLI_CMD_PROFILE, CLI_CMD_HOSTKEY
 } cli_cmd;
+
+/* Repeatable --jump: at most SD_PROFILE_MAX_HOPS hops before the parse rejects one more. */
+#define CLI_MAX_JUMP 8
 
 typedef enum cli_prompt_mode { CLI_PROMPT_AUTO, CLI_PROMPT_CONSOLE, CLI_PROMPT_GUI, CLI_PROMPT_NONE } cli_prompt_mode;
 
@@ -33,12 +36,23 @@ typedef struct cli_args {
   int json, quiet, use_stdin, no_wait, read_only, all, force, help;
   cli_prompt_mode prompt;
   const wchar_t *lang;
-  const wchar_t *positional; /* mount: profile; unmount: X: | profile | mount id; help: topic */
+  const wchar_t *positional; /* mount: profile; unmount: X: | profile | mount id; help: topic;
+                                profile/hostkey: the sub-verb ("import", "list", ...); status: filter */
+  const wchar_t *arg2;       /* profile import: "putty" | "ssh-config"; hostkey: host / file / id */
+  const wchar_t *arg3;       /* profile import putty: session; profile import ssh-config: file */
+  const wchar_t *subverb;    /* alias of positional for profile/hostkey (readability) */
   const wchar_t *host_spec;  /* mount --host [user@]host[:port] */
   wchar_t letter;            /* --letter / --target, 0 = auto */
   const wchar_t *identity;   /* --identity FILE */
   const wchar_t *remote_path;/* --remote-path / --path */
   const char *backend;       /* mount --backend: "auto" | "dokany" | "webdav"; NULL = profile/auto */
+  const wchar_t *jump[CLI_MAX_JUMP];   /* mount --jump, one entry per repeat, in order */
+  int jump_count;
+  const wchar_t *proxy;      /* mount --proxy scheme://[user@]host[:port] */
+  int connections;           /* mount --connections N (1..4); 0 = not given */
+  const wchar_t *hk_type;    /* hostkey remove --type T */
+  const wchar_t *from;       /* hostkey import --from putty|openssh */
+  int dry_run, add_only, announced;
   cli_usage_err err;
   const wchar_t *bad;
   const wchar_t *bad_value;
@@ -64,8 +78,12 @@ int  cli_stdin_is_console(void);
    console. Returns 0 on EOF / error. */
 int  cli_read_line(char *out, size_t cap, int echo, int from_stdin);
 
-/* ---- commands (cli_cmds.c) ---- */
+/* ---- commands (cli_cmds.c, cli_cmds2.c) ---- */
 int cli_run(const cli_args *a);                /* returns the process exit code (03 §6.2) */
 void cli_print_help(const wchar_t *topic);
+int cli_run_status(const cli_args *a);         /* cli_cmds2.c: status (03 §6.1) */
+int cli_run_profile(const cli_args *a);        /* cli_cmds2.c: profile import (03 §3.7, §6.1) */
+int cli_run_hostkey(const cli_args *a);        /* cli_cmds2.c: hostkey list/import/remove/accept-announced
+                                                  (03 §5.5, §5.6, §6.1) */
 
 #endif /* SD_CLI_H */
