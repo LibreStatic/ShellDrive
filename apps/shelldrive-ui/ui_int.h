@@ -4,7 +4,8 @@
  *
  * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c), the import wizard
  * (ui_import.c), the .sdmount verb, the secondary windows of M3 (ui_win.h: host keys, Logs, Settings, About) and
- * the prompt host (prompts.ui, ui_prompt.c) are in. Not yet: reconnect and the balloon rate limit of 7.7. */
+ * the prompt host (prompts.ui, ui_prompt.c), the first-run wizard (ui_wizard.c), the balloon rate limit and queue
+ * (ui_tray.c, ui_notify_model.c) and dark title bars (ui_dark.c) are in. Not yet: reconnect. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 
@@ -28,6 +29,8 @@
 /* Timer of the prompt host (--prompt-host): once a second, the idle exit of 60 s is counted. */
 #define UI_TIMER_PROMPT_IDLE  1
 #define UI_PROMPT_IDLE_MS     60000u
+/* Timer of the queued balloons (7.7): once a second while balloons wait; ui_tray_flush shows the next one. */
+#define UI_TIMER_NOTIFY       2
 
 /* Command ids of the tray menu and the main window controls. */
 #define UI_CMD_OPEN          1001
@@ -151,6 +154,10 @@ void   ui_tray_callback(LPARAM mouse_message);
 void   ui_tray_balloon(const char *code, const wchar_t *drive);
 /* Balloon with one catalog message; arg fills the placeholder called name ("drive" or "profile"). */
 void   ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg);
+/* hostkeys.announced: the balloon "example.org offered new host keys. Review" when notifications are on. */
+void   ui_tray_on_hostkeys_announced(const sd_json *data);
+/* Shows the next queued balloon that the rate limit allows (UI_TIMER_NOTIFY, once a second). */
+void   ui_tray_flush(void);
 
 /* ---- ui_prompt.c: prompt dialogs (03 §2.5, §5.2, §7.6) ---- */
 void   ui_prompt_on_request(const sd_json *data);

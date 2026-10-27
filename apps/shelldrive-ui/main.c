@@ -26,7 +26,9 @@
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
+#include "ui_dark.h"
 #include "ui_dpi.h"
+#include "ui_wizard.h"
 #include "sd_config/sd_config.h"
 #include "ui_int.h"
 #include "ui_sdmount.h"
@@ -267,6 +269,7 @@ void ui_app_on_event(sd_json *ev)
   } else if (name != NULL && strcmp(name, "prompt.closed") == 0) {
     ui_prompt_on_closed(sd_json_get_str(data, "prompt_id"), sd_json_get_str(data, "reason"));
   } else if (name != NULL && strcmp(name, "hostkeys.announced") == 0) {
+    ui_tray_on_hostkeys_announced(data);
     ui_windows_on_event(name, data);
   }
   sd_json_free(ev);
@@ -281,6 +284,10 @@ void ui_app_on_prompt_list(sd_json *result)
 /* Once a second. The prompt host leaves after UI_PROMPT_IDLE_MS with no open prompt (03 §1.4). */
 void ui_app_on_timer(UINT_PTR id)
 {
+  if (id == UI_TIMER_NOTIFY) {
+    ui_tray_flush();                      /* queued balloons (7.7), only while some wait */
+    return;
+  }
   if (id != UI_TIMER_PROMPT_IDLE || !g_app.prompt_host)
     return;
   if (ui_prompt_count() > 0) {
@@ -493,7 +500,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   build_class_names();
 
   if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
-                   wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0)) {
+                   wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
+                   wcscmp(argv[1], L"--test-wizard") == 0)) {
     /* the smoke tests never read or write the user's profiles: the store is a temporary folder */
     wchar_t tmp[MAX_PATH];
     if (GetTempPathW(SD_COUNTOF(tmp), tmp) > 0 && wcslen(tmp) < SD_COUNTOF(tmp) - 32) {
@@ -519,6 +527,10 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     rc = ui_windows_smoke_test() ? 0 : 1;
     goto done;
   }
+  if (argc > 1 && wcscmp(argv[1], L"--test-wizard") == 0) {
+    rc = ui_wizard_smoke_test() ? 0 : 1;
+    goto done;
+  }
 
   if (ui_request_from_args(argc - 1, (const wchar_t *const *)(argv + 1), &req) != SD_OK) {
     SD_LOGW("ui", "command line not recognized");
@@ -537,6 +549,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   }
 
+  /* dark title bars (7.4): the hook is installed before the first window of this process exists */
+  ui_dark_init();
   if (!register_ctrl_class(inst) || !ui_main_register_class(inst, g_app.class_main))
     goto done;
   g_app.ctrl = CreateWindowExW(0, g_app.class_ctrl, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
@@ -551,6 +565,9 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   if (ui_ipc_start() != SD_OK)
     goto done;
   ui_app_handle_request(&req);
+  /* first run (7.5): only for the plain start and "show"; --tray and the prompt host never open it */
+  if (req.verb == UI_VERB_NONE || req.verb == UI_VERB_SHOW)
+    ui_wizard_run_if_needed(g_app.main, 0, g_app.prompt_host);
 
   while (GetMessageW(&msg, NULL, 0, 0) > 0) {
     if (ui_prompt_filter(&msg))
@@ -567,6 +584,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     DestroyWindow(g_app.main);
   if (g_app.ctrl != NULL && IsWindow(g_app.ctrl))
     DestroyWindow(g_app.ctrl);
+  ui_dark_shutdown();
   ui_icon_free_all();
 
 done:

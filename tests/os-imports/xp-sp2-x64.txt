@@ -433,11 +433,13 @@ shell32.dll!Shell_NotifyIconW
 
 # user32: windows, menus, icons and the message-only forwarding window (documentation: Windows 2000 or XP). Pending capture.
 user32.dll!AppendMenuW
+user32.dll!CallNextHookEx
 user32.dll!CreateIconIndirect
 user32.dll!CreatePopupMenu
 user32.dll!DestroyIcon
 user32.dll!DestroyMenu
 user32.dll!EnableWindow
+user32.dll!EnumThreadWindows
 user32.dll!FindWindowExW
 user32.dll!GetClassInfoExW
 user32.dll!GetClientRect
@@ -456,8 +458,11 @@ user32.dll!MoveWindow
 user32.dll!PostQuitMessage
 user32.dll!RegisterWindowMessageW
 user32.dll!ReleaseDC
+user32.dll!SetDlgItemTextW
 user32.dll!SetForegroundWindow
 user32.dll!SetMenuDefaultItem
+user32.dll!SetWindowsHookExW
+user32.dll!UnhookWindowsHookEx
 user32.dll!SetWindowPos
 user32.dll!ShowWindow
 user32.dll!SystemParametersInfoW

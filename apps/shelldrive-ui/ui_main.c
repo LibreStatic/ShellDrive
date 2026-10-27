@@ -18,6 +18,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
+#include "ui_dark.h"
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_profile_model.h"
@@ -634,6 +635,11 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   case WM_DPICHANGED:
     on_dpi(hwnd, (unsigned)LOWORD(wp), (const RECT *)lp);
     return 0;
+  case WM_SETTINGCHANGE:
+    /* the app theme changed (7.4): dark title bars follow it; the broadcast reaches every top-level window */
+    if (lp != 0 && wcscmp((const wchar_t *)lp, L"ImmersiveColorSet") == 0)
+      ui_dark_refresh();
+    break;
   case WM_DESTROY:
     if (g_app.font)
       DeleteObject(g_app.font);
