@@ -166,11 +166,11 @@ sd_err ui_request_from_args(int argc, const wchar_t *const *argv, ui_request *re
         return SD_E_INVALID_PARAM;
       }
       r.verb = wcscmp(v, L"mount") == 0 ? UI_VERB_MOUNT : UI_VERB_RECONNECT;
-    } else if (wcscmp(v, L"unmount") == 0) {
+    } else if (wcscmp(v, L"unmount") == 0 || wcscmp(v, L"open") == 0) {
       if (!ui_drive_normalize(t, r.target))
         return SD_E_INVALID_PARAM;
       r.kind = UI_TARGET_DRIVE;
-      r.verb = UI_VERB_UNMOUNT;
+      r.verb = wcscmp(v, L"open") == 0 ? UI_VERB_OPEN : UI_VERB_UNMOUNT;
     } else if (wcscmp(v, L"mount-file") == 0) {
       if (!ui_path_valid(t) || wcscpy_s(r.target, UI_WIRE_MAX_UNITS + 1, t) != 0)
         return SD_E_INVALID_PARAM;

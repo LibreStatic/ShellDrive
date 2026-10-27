@@ -21,6 +21,7 @@
 #include "sd_platform/sd_time.h"
 #include "ui_dlg.h"
 #include "ui_int.h"
+#include "ui_measure.h"
 #include "ui_prompt_model.h"
 
 #define UI_PROMPT_MAX_OPEN   16
@@ -63,94 +64,6 @@ static void wipe_text(wchar_t *s, size_t units)
 {
   if (s != NULL)
     SecureZeroMemory(s, units * sizeof(wchar_t));
-}
-
-/* ---- measurement (the dialog font of the current DPI) ---- */
-
-typedef struct pmeasure {
-  HDC dc;
-  HFONT font;
-  HFONT old;
-  int base_x;                        /* average character width, pixels */
-  int base_y;                        /* text height, pixels */
-} pmeasure;
-
-static int measure_cb(void *ctx, const wchar_t *text, int width_dlu, int *natural)
-{
-  pmeasure *m = (pmeasure *)ctx;
-  RECT r;
-  int px_w = width_dlu * m->base_x / 4;
-  int h;
-  SetRect(&r, 0, 0, px_w, 0);
-  DrawTextW(m->dc, text, -1, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-  h = (r.bottom * 8 + m->base_y - 1) / m->base_y;
-  if (natural != NULL) {
-    RECT one;
-    SetRect(&one, 0, 0, 0, 0);
-    DrawTextW(m->dc, text, -1, &one, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
-    *natural = (one.right * 4 + m->base_x - 1) / m->base_x;
-  }
-  return h;
-}
-
-/* Message font of the system (Segoe UI on Vista and later, Tahoma or MS Shell Dlg on XP), read with
-   SystemParametersInfo and sized for the screen DPI (03 §7.1). */
-static void message_font(wchar_t face[UI_DLG_FACE_MAX], WORD *points, int *dpi)
-{
-  NONCLIENTMETRICSW ncm;
-  HDC screen = GetDC(NULL);
-  int d = screen != NULL ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
-  if (screen != NULL)
-    ReleaseDC(NULL, screen);
-  if (d <= 0)
-    d = 96;
-  wcscpy_s(face, UI_DLG_FACE_MAX, L"MS Shell Dlg");
-  *points = 8;
-  memset(&ncm, 0, sizeof(ncm));
-  ncm.cbSize = sizeof(ncm);
-  if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-    wcsncpy_s(face, UI_DLG_FACE_MAX, ncm.lfMessageFont.lfFaceName, _TRUNCATE);
-    if (ncm.lfMessageFont.lfHeight != 0) {
-      int pt = MulDiv(-ncm.lfMessageFont.lfHeight, 72, d);
-      if (pt > 0 && pt < 72)
-        *points = (WORD)pt;
-    }
-  }
-  *dpi = d;
-}
-
-static void measure_init(pmeasure *m, const wchar_t *face, WORD points, int dpi)
-{
-  LOGFONTW lf;
-  TEXTMETRICW tm;
-  SIZE sz;
-  static const wchar_t alpha[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  memset(m, 0, sizeof(*m));
-  m->dc = CreateCompatibleDC(NULL);
-  memset(&lf, 0, sizeof(lf));
-  lf.lfHeight = -MulDiv((int)points, dpi, 72);
-  lf.lfCharSet = DEFAULT_CHARSET;
-  lf.lfQuality = DEFAULT_QUALITY;
-  wcsncpy_s(lf.lfFaceName, SD_COUNTOF(lf.lfFaceName), face, _TRUNCATE);
-  m->font = CreateFontIndirectW(&lf);
-  m->old = (HFONT)SelectObject(m->dc, m->font);
-  GetTextMetricsW(m->dc, &tm);
-  GetTextExtentPoint32W(m->dc, alpha, (int)wcslen(alpha), &sz);
-  m->base_x = (sz.cx + 26) / 52;
-  m->base_y = tm.tmHeight > 0 ? tm.tmHeight : 12;
-  if (m->base_x < 1)
-    m->base_x = 1;
-}
-
-static void measure_free(pmeasure *m)
-{
-  if (m->dc != NULL) {
-    SelectObject(m->dc, m->old);
-    DeleteDC(m->dc);
-  }
-  if (m->font != NULL)
-    DeleteObject(m->font);
-  memset(m, 0, sizeof(*m));
 }
 
 /* ---- dialog layout ---- */
@@ -493,14 +406,14 @@ static sd_err build_dialog(const ui_prompt *p, ui_dlg *d, unsigned char **blob, 
   wchar_t face[UI_DLG_FACE_MAX];
   WORD points;
   int dpi;
-  pmeasure m;
+  ui_measure m;
   wchar_t *title;
   sd_err e;
 
-  message_font(face, &points, &dpi);
-  measure_init(&m, face, points, dpi);
+  ui_message_font(face, &points, &dpi);
+  ui_measure_init(&m, face, points, dpi);
   title = dialog_title(p);
-  e = ui_dlg_init(d, title ? title : L"ShellDrive", UI_PROMPT_WIDTH, face, points, measure_cb, &m);
+  e = ui_dlg_init(d, title ? title : L"ShellDrive", UI_PROMPT_WIDTH, face, points, ui_measure_cb, &m);
   if (e == SD_OK) {
     switch (p->kind) {
     case UI_PK_HOSTKEY:
@@ -533,7 +446,7 @@ static sd_err build_dialog(const ui_prompt *p, ui_dlg *d, unsigned char **blob, 
     }
   }
   sd_free(title);
-  measure_free(&m);
+  ui_measure_free(&m);
   if (e == SD_OK)
     e = ui_dlg_build(d, blob, len);
   return e;

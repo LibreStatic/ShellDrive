@@ -68,10 +68,10 @@ msgctxt "ui.main.col_server"
 msgid "Server"
 msgstr "Servidor"
 
-#. Main window button that starts a new mount. The ellipsis marks a dialog.
+#. Main window button that mounts the selected connection.
 msgctxt "ui.main.mount"
-msgid "Mount…"
-msgstr "Montar…"
+msgid "Mount"
+msgstr "Montar"
 
 #. Main window button that unmounts the selected drive.
 msgctxt "ui.main.unmount"
@@ -440,3 +440,1084 @@ msgstr[2] "Tiempo para responder: unos {count} minutos."
 msgctxt "ui.prompt.timeout"
 msgid "A sign-in for {profile} timed out. Open ShellDrive to try again."
 msgstr "Se agotó el tiempo de ingreso a {profile}. Abrí ShellDrive para intentarlo de nuevo."
+
+#. Property sheet tab: general connection settings.
+msgctxt "ui.tab.general"
+msgid "General"
+msgstr "General"
+
+#. Property sheet tab: how to sign in.
+msgctxt "ui.tab.auth"
+msgid "Authentication"
+msgstr "Autenticación"
+
+#. Property sheet tab: jump hosts, proxy and connection count.
+msgctxt "ui.tab.conn"
+msgid "Connection"
+msgstr "Conexión"
+
+#. Property sheet tab: the drive that is shown.
+msgctxt "ui.tab.mount"
+msgid "Mount"
+msgstr "Montaje"
+
+#. Property sheet tab: algorithms and host keys.
+msgctxt "ui.tab.security"
+msgid "Security"
+msgstr "Seguridad"
+
+#. Caption of the editor opened by New.
+msgctxt "ui.editor.caption_new"
+msgid "New connection"
+msgstr "Nueva conexión"
+
+#. Caption of the editor opened by Edit.
+msgctxt "ui.editor.caption_edit"
+msgid "Edit connection"
+msgstr "Editar conexión"
+
+#. Caption of the quick mount dialog (no saved profile).
+msgctxt "ui.editor.caption_adhoc"
+msgid "Quick mount"
+msgstr "Montaje rápido"
+
+#. General page: one line of help above the fields.
+msgctxt "ui.general.intro"
+msgid "Where the server is and which folder to show. Leave the user name empty to use your Windows user name."
+msgstr "Dónde está el servidor y qué carpeta mostrar. Dejá vacío el usuario para usar el de Windows."
+
+#. General page: the name of the saved connection.
+msgctxt "ui.general.name"
+msgid "Name"
+msgstr "Nombre"
+
+#. General page: server name or address.
+msgctxt "ui.general.host"
+msgid "Server address"
+msgstr "Dirección del servidor"
+
+#. General page: SSH port number.
+msgctxt "ui.general.port"
+msgid "Port"
+msgstr "Puerto"
+
+#. General page: user name on the server.
+msgctxt "ui.general.user"
+msgid "User name"
+msgstr "Nombre de usuario"
+
+#. General page: folder on the server that the drive shows.
+msgctxt "ui.general.remote_path"
+msgid "Remote folder (empty = the login folder)"
+msgstr "Carpeta remota (vacío = carpeta de inicio)"
+
+#. Authentication page: key file sign-in check box.
+msgctxt "ui.auth.method_publickey"
+msgid "Use a &key file"
+msgstr "Usar un &archivo de clave"
+
+#. Authentication page: keyboard-interactive check box.
+msgctxt "ui.auth.method_kbdint"
+msgid "Use &questions from the server (keyboard-interactive)"
+msgstr "Usar preguntas del servidor (&keyboard-interactive)"
+
+#. Authentication page: password sign-in check box.
+msgctxt "ui.auth.method_password"
+msgid "Use a &password"
+msgstr "Usar una &contraseña"
+
+#. Authentication page: label of the key file path.
+msgctxt "ui.auth.identity"
+msgid "Key file"
+msgstr "Archivo de clave"
+
+#. Authentication page: button that opens a file picker for the key file.
+msgctxt "ui.auth.browse"
+msgid "&Browse…"
+msgstr "&Examinar…"
+
+#. Authentication page: label of the certificate file.
+msgctxt "ui.auth.certificate"
+msgid "Certificate file (optional)"
+msgstr "Archivo de certificado (opcional)"
+
+#. Authentication page: label of the key agent list.
+msgctxt "ui.auth.agent"
+msgid "Key agent"
+msgstr "Agente de claves"
+
+#. Authentication page: label of the identities-only list.
+msgctxt "ui.auth.identities_only"
+msgid "Offer only the selected keys (recommended)"
+msgstr "Ofrecer solo las claves seleccionadas (recomendado)"
+
+#. Authentication page: keep the password on this computer.
+msgctxt "ui.auth.save_password"
+msgid "&Save the password on this computer"
+msgstr "&Guardar la contraseña en este equipo"
+
+#. Authentication page: remember the password for reconnects.
+msgctxt "ui.auth.cache_secrets"
+msgid "Re&member the password for reconnects"
+msgstr "Recordar la contraseña para reconec&tar"
+
+#. Connection page: one line of help above the fields.
+msgctxt "ui.conn.intro"
+msgid "How to reach the server: a jump host, a proxy and the number of connections."
+msgstr "Cómo llegar al servidor: un host de salto, un proxy y la cantidad de conexiones."
+
+#. Connection page: jump host list (profile names or host names).
+msgctxt "ui.conn.jump"
+msgid "Jump hosts (profile names or host names, separated by commas)"
+msgstr "Hosts de salto (nombres de perfil o de host, separados por comas)"
+
+#. Connection page: proxy type list.
+msgctxt "ui.conn.proxy_kind"
+msgid "Proxy"
+msgstr "Proxy"
+
+#. Connection page: proxy server name or address.
+msgctxt "ui.conn.proxy_host"
+msgid "Proxy server"
+msgstr "Servidor proxy"
+
+#. Connection page: proxy port number.
+msgctxt "ui.conn.proxy_port"
+msgid "Proxy port"
+msgstr "Puerto del proxy"
+
+#. Connection page: proxy user name; its password is asked when needed.
+msgctxt "ui.conn.proxy_user"
+msgid "Proxy user name (the password is asked when needed)"
+msgstr "Usuario del proxy (la contraseña se pide cuando hace falta)"
+
+#. Connection page: proxy authentication list.
+msgctxt "ui.conn.proxy_auth"
+msgid "Proxy authentication"
+msgstr "Autenticación del proxy"
+
+#. Connection page: number of parallel connections list.
+msgctxt "ui.conn.connections"
+msgid "Parallel connections (1 to 4; use 1 with two-step sign-in)"
+msgstr "Conexiones en paralelo (1 a 4; usá 1 con ingreso en dos pasos)"
+
+#. Connection page: keepalive interval in milliseconds.
+msgctxt "ui.conn.keepalive"
+msgid "Keepalive interval in milliseconds (0 = default)"
+msgstr "Intervalo de keepalive en milisegundos (0 = predeterminado)"
+
+#. Connection page: connect timeout in milliseconds.
+msgctxt "ui.conn.connect_timeout"
+msgid "Connect timeout in milliseconds (0 = default)"
+msgstr "Tiempo límite de conexión en milisegundos (0 = predeterminado)"
+
+#. Mount page: drive letter list; auto lets Windows choose.
+msgctxt "ui.mount.target"
+msgid "Drive letter"
+msgstr "Letra de unidad"
+
+#. Mount page: storage backend list.
+msgctxt "ui.mount.backend"
+msgid "Backend"
+msgstr "Backend"
+
+#. Mount page: read-only check box (mount group letters must be unique).
+msgctxt "ui.mount.read_only"
+msgid "&Read only"
+msgstr "Solo &lectura"
+
+#. Mount page: write mode list.
+msgctxt "ui.mount.write_mode"
+msgid "Writes"
+msgstr "Escrituras"
+
+#. Mount page: symbolic link handling list.
+msgctxt "ui.mount.symlinks"
+msgid "Symbolic links"
+msgstr "Enlaces simbólicos"
+
+#. Mount page: label of the drive in Explorer.
+msgctxt "ui.mount.label"
+msgid "Drive label"
+msgstr "Etiqueta de unidad"
+
+#. Mount page: how long to wait for the server when offline, in milliseconds.
+msgctxt "ui.mount.offline_wait"
+msgid "Wait for the server when offline, in milliseconds (0 = default)"
+msgstr "Esperar al servidor si está sin conexión, en milisegundos (0 = predeterminado)"
+
+#. Mount page: adds a Network locations entry in This PC (mount group letters must be unique).
+msgctxt "ui.mount.network_location"
+msgid "&Show in This PC under Network locations"
+msgstr "&Mostrar en Este equipo, en Ubicaciones de red"
+
+#. Mount page: size of the disk cache in megabytes.
+msgctxt "ui.mount.disk_cache"
+msgid "Disk cache size in MB (0 = off)"
+msgstr "Tamaño de la caché en disco en MB (0 = desactivada)"
+
+#. Drive letter list: first entry, Windows chooses the letter.
+msgctxt "ui.target.auto"
+msgid "Choose automatically"
+msgstr "Elegir automáticamente"
+
+#. Backend list: Windows chooses the backend.
+msgctxt "ui.backend.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Backend list: the Dokany driver (a product name).
+msgctxt "ui.backend.dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+#. Backend list: WebDAV (a protocol name).
+msgctxt "ui.backend.webdav"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+#. Writes list: wait for the server on every write (default).
+msgctxt "ui.write.through"
+msgid "Wait for the server to confirm each write (safer)"
+msgstr "Esperar la confirmación del servidor en cada escritura (más seguro)"
+
+#. Writes list: acknowledge writes before the server confirms them.
+msgctxt "ui.write.behind"
+msgid "Write in the background (faster; recent changes can be lost if the connection drops)"
+msgstr "Escribir en segundo plano (más rápido; si se corta la conexión, se pueden perder cambios recientes)"
+
+#. Symbolic links list: links must stay inside the remote folder (default).
+msgctxt "ui.symlinks.inside"
+msgid "Stay inside the remote folder"
+msgstr "Quedarse dentro de la carpeta remota"
+
+#. Symbolic links list: follow links.
+msgctxt "ui.symlinks.follow"
+msgid "Follow"
+msgstr "Seguir"
+
+#. Symbolic links list: hide links.
+msgctxt "ui.symlinks.hide"
+msgid "Hide"
+msgstr "Ocultar"
+
+#. Security page: explains the outdated algorithms setting (03 7.6 warning).
+msgctxt "ui.security.legacy_text"
+msgid "Some servers still offer old encryption methods. They work, but they are easier to attack."
+msgstr "Algunos servidores todavía ofrecen métodos de cifrado antiguos. Funcionan, pero son más fáciles de atacar."
+
+#. Security page: outdated algorithms list.
+msgctxt "ui.security.legacy"
+msgid "Outdated algorithms"
+msgstr "Algoritmos desactualizados"
+
+#. Security page: optional host key name.
+msgctxt "ui.security.host_key_alias"
+msgid "Host key name (optional)"
+msgstr "Nombre de la clave del host (opcional)"
+
+#. Security page: what to do when the server offers new host keys.
+msgctxt "ui.security.update_host_keys"
+msgid "When the server offers new host keys"
+msgstr "Cuando el servidor ofrezca claves de host nuevas"
+
+#. Security page: refuse servers open to the Terrapin attack (group ui.security).
+msgctxt "ui.security.refuse_terrapin"
+msgid "&Refuse servers that are open to the Terrapin attack"
+msgstr "&Rechazar servidores expuestos al ataque Terrapin"
+
+#. Outdated algorithms list: allow silently.
+msgctxt "ui.legacy.allow"
+msgid "Allow"
+msgstr "Permitir"
+
+#. Outdated algorithms list: warn once per server (default).
+msgctxt "ui.legacy.warn"
+msgid "Warn (default)"
+msgstr "Advertir (predeterminado)"
+
+#. Outdated algorithms list: ask before the connection starts.
+msgctxt "ui.legacy.ask"
+msgid "Ask first"
+msgstr "Preguntar antes"
+
+#. Outdated algorithms list: refuse outdated algorithms.
+msgctxt "ui.legacy.refuse"
+msgid "Refuse"
+msgstr "Rechazar"
+
+#. Host key update list: ask the user.
+msgctxt "ui.hku.ask"
+msgid "Ask me"
+msgstr "Preguntarme"
+
+#. Host key update list: save new keys automatically.
+msgctxt "ui.hku.save"
+msgid "Save them automatically"
+msgstr "Guardarlas automáticamente"
+
+#. Host key update list: ignore the new keys.
+msgctxt "ui.hku.ignore"
+msgid "Ignore"
+msgstr "Ignorar"
+
+#. Key agent list: Automatic.
+msgctxt "ui.agent.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Key agent list: the Pageant key agent (a product name).
+msgctxt "ui.agent.pageant"
+msgid "Pageant"
+msgstr "Pageant"
+
+#. Key agent list: the OpenSSH agent of Windows.
+msgctxt "ui.agent.openssh"
+msgid "OpenSSH agent"
+msgstr "Agente OpenSSH"
+
+#. Key agent list: no agent.
+msgctxt "ui.agent.none"
+msgid "None"
+msgstr "Ninguno"
+
+#. Identities-only list: the default when no setting is saved.
+msgctxt "ui.idonly.unset"
+msgid "Automatic (on when a key file is set)"
+msgstr "Automático (activo cuando hay un archivo de clave)"
+
+#. Identities-only list: yes.
+msgctxt "ui.idonly.yes"
+msgid "Yes"
+msgstr "Sí"
+
+#. Identities-only list: no.
+msgctxt "ui.idonly.no"
+msgid "No"
+msgstr "No"
+
+#. Proxy list: no proxy.
+msgctxt "ui.proxy.none"
+msgid "No proxy"
+msgstr "Sin proxy"
+
+#. Proxy list: HTTP proxy (a protocol name).
+msgctxt "ui.proxy.http"
+msgid "HTTP proxy"
+msgstr "Proxy HTTP"
+
+#. Proxy list: SOCKS5 proxy (a protocol name).
+msgctxt "ui.proxy.socks5"
+msgid "SOCKS5 proxy"
+msgstr "Proxy SOCKS5"
+
+#. Proxy list: the proxy of the Windows settings.
+msgctxt "ui.proxy.system"
+msgid "Use the system proxy settings"
+msgstr "Usar la configuración de proxy del sistema"
+
+#. Proxy authentication list: automatic.
+msgctxt "ui.pauth.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Proxy authentication list: basic authentication.
+msgctxt "ui.pauth.basic"
+msgid "Basic"
+msgstr "Básica"
+
+#. Proxy authentication list: Negotiate, the Windows sign-in.
+msgctxt "ui.pauth.negotiate"
+msgid "Negotiate (Windows sign-in)"
+msgstr "Negotiate (ingreso de Windows)"
+
+#. Proxy authentication list: no authentication.
+msgctxt "ui.pauth.none"
+msgid "None"
+msgstr "Ninguna"
+
+#. Main window button: new connection.
+msgctxt "ui.main.new"
+msgid "New"
+msgstr "Nueva"
+
+#. Main window button: edit the selected connection.
+msgctxt "ui.main.edit"
+msgid "Edit"
+msgstr "Editar"
+
+#. Main window button: copy the selected connection.
+msgctxt "ui.main.duplicate"
+msgid "Duplicate"
+msgstr "Duplicar"
+
+#. Main window button: delete the selected connection.
+msgctxt "ui.main.delete"
+msgid "Delete"
+msgstr "Eliminar"
+
+#. Main window button: mount a connection that is not saved. The ellipsis marks a dialog.
+msgctxt "ui.main.quick_mount"
+msgid "Quick mount…"
+msgstr "Montaje rápido…"
+
+#. Main window button: show the selected mounted drive in Explorer.
+msgctxt "ui.main.open"
+msgid "Open"
+msgstr "Abrir"
+
+#. Main window state column: the connection is saved but not mounted.
+msgctxt "ui.main.not_mounted"
+msgid "Not mounted"
+msgstr "No montada"
+
+#. Shown when a connection cannot be written to the profile store.
+msgctxt "ui.error.save"
+msgid "The connection could not be saved. Check that you can write to your ShellDrive folder."
+msgstr "No se pudo guardar la conexión. Revisá que puedas escribir en la carpeta de ShellDrive."
+
+#. Shown when a connection cannot be deleted.
+msgctxt "ui.error.delete"
+msgid "The connection could not be deleted."
+msgstr "No se pudo eliminar la conexión."
+
+#. Shown when a mount request does not start in the agent.
+msgctxt "ui.error.mount"
+msgid "ShellDrive could not start this connection. Check the settings, then try again."
+msgstr "ShellDrive no pudo iniciar esta conexión. Revisá la configuración y volvé a intentarlo."
+
+#. Editor error: the name is empty.
+msgctxt "ui.error.name"
+msgid "Enter a name for this connection."
+msgstr "Escribí un nombre para esta conexión."
+
+#. Editor error: the server address is empty.
+msgctxt "ui.error.host"
+msgid "Enter the server address."
+msgstr "Escribí la dirección del servidor."
+
+#. Editor error: the port is not 1 to 65535.
+msgctxt "ui.error.port"
+msgid "Enter a port number from 1 to 65535."
+msgstr "Escribí un puerto del 1 al 65535."
+
+#. Editor error: a number field holds text.
+msgctxt "ui.error.number"
+msgid "Enter a whole number in this field."
+msgstr "Escribí un número entero en este campo."
+
+#. Editor error: the parallel connections are not 1 to 4.
+msgctxt "ui.error.connections"
+msgid "Choose 1 to 4 parallel connections."
+msgstr "Elegí de 1 a 4 conexiones en paralelo."
+
+#. Editor error: no sign-in method is selected.
+msgctxt "ui.error.methods"
+msgid "Choose at least one way to sign in."
+msgstr "Elegí al menos una forma de ingreso."
+
+#. Editor error: a proxy is selected without a server.
+msgctxt "ui.error.proxy_host"
+msgid "Enter the proxy server address."
+msgstr "Escribí la dirección del servidor proxy."
+
+#. Editor error: the proxy port is not 1 to 65535.
+msgctxt "ui.error.proxy_port"
+msgid "Enter a proxy port number from 1 to 65535."
+msgstr "Escribí un puerto de proxy del 1 al 65535."
+
+#. Editor error: sd_config rejects a value that has no field of its own.
+msgctxt "ui.error.other"
+msgid "This setting is not valid. Check the value."
+msgstr "Este ajuste no es válido. Revisá el valor."
+
+#. File picker filter: all files.
+msgctxt "ui.file.any"
+msgid "All files"
+msgstr "Todos los archivos"
+
+#. Title of the delete confirmation.
+msgctxt "ui.delete.title"
+msgid "Delete connection"
+msgstr "Eliminar conexión"
+
+#. Delete confirmation text. {name} is the connection name.
+msgctxt "ui.delete.text"
+msgid "Delete the connection {name}? Its saved settings are removed. Drives that are mounted stay mounted."
+msgstr "¿Eliminar la conexión {name}? Se quitan sus ajustes guardados. Las unidades montadas siguen montadas."
+
+#. Delete confirmation: the destructive button.
+msgctxt "ui.delete.yes"
+msgid "Delete"
+msgstr "Eliminar"
+
+#. Delete confirmation: keeps the connection.
+msgctxt "ui.delete.no"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Title of the .sdmount confirmation (the product name).
+msgctxt "ui.mount_file.title"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+#. Shown for an .sdmount file that is invalid or names no profile of the user (03 8.1).
+msgctxt "ui.mount_file.invalid"
+msgid "This file does not refer to one of your ShellDrive connections."
+msgstr "Este archivo no corresponde a ninguna conexión de ShellDrive."
+
+#. Question for a .sdmount file that came from another computer. {name} is the connection.
+msgctxt "ui.mount_file.mark"
+msgid "This file came from another computer. Connect to {name}?"
+msgstr "Este archivo vino de otra computadora. ¿Conectar con {name}?"
+
+#. Button of the .sdmount question: connect.
+msgctxt "ui.mount_file.connect"
+msgid "Connect"
+msgstr "Conectar"
+
+#. Button of the .sdmount question: do nothing.
+msgctxt "ui.mount_file.cancel"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Main window button: import connections from PuTTY or OpenSSH. The ellipsis marks a dialog.
+msgctxt "ui.main.import"
+msgid "Import…"
+msgstr "Importar…"
+
+#. Title of the import dialog.
+msgctxt "ui.import.title"
+msgid "Import connections"
+msgstr "Importar conexiones"
+
+#. Import dialog: how the preview works.
+msgctxt "ui.import.intro"
+msgid "Read connections from PuTTY or from your OpenSSH config file. Check the ones to add. Connections that already exist are not checked."
+msgstr "Leé las conexiones de PuTTY o del archivo de configuración de OpenSSH. Marcá las que querés agregar; las que ya existen no vienen marcadas."
+
+#. Import dialog: read the PuTTY saved sessions.
+msgctxt "ui.import.putty"
+msgid "PuTTY sessions"
+msgstr "Sesiones de PuTTY"
+
+#. Import dialog: read the OpenSSH client configuration file.
+msgctxt "ui.import.openssh"
+msgid "OpenSSH config"
+msgstr "Configuración de OpenSSH"
+
+#. Import dialog: writes the checked connections.
+msgctxt "ui.import.run"
+msgid "Import"
+msgstr "Importar"
+
+#. Import dialog: closes without writing.
+msgctxt "ui.import.close"
+msgid "Close"
+msgstr "Cerrar"
+
+#. Import list column: connection name.
+msgctxt "ui.import.col_name"
+msgid "Name"
+msgstr "Nombre"
+
+#. Import list column: server name or address.
+msgctxt "ui.import.col_server"
+msgid "Server"
+msgstr "Servidor"
+
+#. Import list column: user name.
+msgctxt "ui.import.col_user"
+msgid "User"
+msgstr "Usuario"
+
+#. Import list column: why a row is unchecked or skipped.
+msgctxt "ui.import.col_note"
+msgid "Note"
+msgstr "Nota"
+
+#. Import list note: a connection with the same host, port and user exists.
+msgctxt "ui.import.note_duplicate"
+msgid "Already saved"
+msgstr "Ya guardada"
+
+#. Import list note: an imported key file is the only key offered (D37).
+msgctxt "ui.import.note_only_key"
+msgid "Only this key is offered"
+msgstr "Solo se ofrece esta clave"
+
+#. Import list note: an entry the importer does not support. {item} is the setting.
+msgctxt "ui.import.note_skipped"
+msgid "Not imported: {item}"
+msgstr "No importada: {item}"
+
+#. Shown when the PuTTY sessions cannot be read.
+msgctxt "ui.import.error_putty"
+msgid "No PuTTY sessions could be read."
+msgstr "No se pudieron leer las sesiones de PuTTY."
+
+#. Shown when the OpenSSH config file cannot be read.
+msgctxt "ui.import.error_openssh"
+msgid "The OpenSSH config file could not be read."
+msgstr "No se pudo leer el archivo de configuración de OpenSSH."
+
+#. Host key manager window title.
+msgctxt "ui.hostkeys.title"
+msgid "Host keys"
+msgstr "Claves de host"
+
+#. Host key manager tab: keys stored in the known hosts files.
+msgctxt "ui.hostkeys.tab_known"
+msgid "Known keys"
+msgstr "Claves conocidas"
+
+#. Host key manager tab: keys the server offered to add or remove (UpdateHostKeys).
+msgctxt "ui.hostkeys.tab_announced"
+msgid "Announced keys"
+msgstr "Claves anunciadas"
+
+#. Host key list column: host name.
+msgctxt "ui.hostkeys.col_host"
+msgid "Host"
+msgstr "Host"
+
+#. Host key list column: TCP port.
+msgctxt "ui.hostkeys.col_port"
+msgid "Port"
+msgstr "Puerto"
+
+#. Host key list column: SSH key type.
+msgctxt "ui.hostkeys.col_type"
+msgid "Key type"
+msgstr "Tipo de clave"
+
+#. Host key list column: SHA256 fingerprint of the key.
+msgctxt "ui.hostkeys.col_fp"
+msgid "SHA256 fingerprint"
+msgstr "Huella SHA256"
+
+#. Host key list column: the store the key comes from.
+msgctxt "ui.hostkeys.col_source"
+msgid "Source"
+msgstr "Origen"
+
+#. Announced keys column: whether the key is added or removed.
+msgctxt "ui.hostkeys.col_change"
+msgid "Change"
+msgstr "Cambio"
+
+#. Host key list: the host name of a hashed known_hosts entry (it cannot be read).
+msgctxt "ui.hostkeys.hashed"
+msgid "(hashed)"
+msgstr "(cifrado)"
+
+#. Host key list: source of a key in the machine store (read-only here).
+msgctxt "ui.hostkeys.src_machine"
+msgid "Machine (read-only)"
+msgstr "Equipo (solo lectura)"
+
+#. Host key list: source of a key in the user store.
+msgctxt "ui.hostkeys.src_user"
+msgid "ShellDrive (user)"
+msgstr "ShellDrive (usuario)"
+
+#. Announced keys: the key is added to the store.
+msgctxt "ui.hostkeys.action_add"
+msgid "Add"
+msgstr "Agregar"
+
+#. Announced keys: the key is removed from the store.
+msgctxt "ui.hostkeys.action_remove"
+msgid "Remove"
+msgstr "Quitar"
+
+#. Host key manager button: removes the selected key from the user store.
+msgctxt "ui.hostkeys.btn_remove"
+msgid "Remove"
+msgstr "Quitar"
+
+#. Host key manager button: copies the PuTTY host keys into the user store.
+msgctxt "ui.hostkeys.btn_import_putty"
+msgid "Import from PuTTY"
+msgstr "Importar desde PuTTY"
+
+#. Host key manager button: opens a known_hosts file and copies its keys.
+msgctxt "ui.hostkeys.btn_import_openssh"
+msgid "Import from OpenSSH…"
+msgstr "Importar desde OpenSSH…"
+
+#. Announced keys button: adds the proven keys of the announcement.
+msgctxt "ui.hostkeys.btn_add"
+msgid "Add keys"
+msgstr "Agregar claves"
+
+#. Announced keys button: adds the keys and removes the ones the server no longer uses.
+msgctxt "ui.hostkeys.btn_add_all"
+msgid "Add and remove"
+msgstr "Agregar y quitar"
+
+#. Confirmation before a key is removed. {host} is the host name, {type} the key type.
+msgctxt "ui.hostkeys.confirm_remove"
+msgid "Remove the {type} key of {host} from your known hosts? ShellDrive asks again the next time it connects to {host}."
+msgstr "¿Quitar la clave {type} de {host} de tus hosts conocidos? ShellDrive volverá a preguntar la próxima vez que se conecte a {host}."
+
+#. Confirmation before an announcement that also removes keys is applied.
+msgctxt "ui.hostkeys.confirm_accept_removals"
+msgid "Also remove the keys the server no longer uses? They are deleted from your known hosts."
+msgstr "¿Quitar también las claves que el servidor ya no usa? Se borran de tus hosts conocidos."
+
+#. File filter name in the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.file_all"
+msgid "All files"
+msgstr "Todos los archivos"
+
+#. Title of the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.pick_title"
+msgid "Choose an OpenSSH known_hosts file"
+msgstr "Elegí un archivo known_hosts de OpenSSH"
+
+#. Host key manager: the known hosts files could not be opened.
+msgctxt "ui.hostkeys.store_failed"
+msgid "The known hosts could not be opened."
+msgstr "No se pudieron abrir los hosts conocidos."
+
+#. Host key manager: a key was removed.
+msgctxt "ui.hostkeys.removed"
+msgid "The host key was removed."
+msgstr "Se quitó la clave del host."
+
+#. Host key manager: a key could not be removed. {code} is the error name.
+msgctxt "ui.hostkeys.remove_failed"
+msgid "The host key could not be removed ({code})."
+msgstr "No se pudo quitar la clave del host ({code})."
+
+#. Host key manager: the import failed. {code} is the error name.
+msgctxt "ui.hostkeys.import_failed"
+msgid "The host keys could not be imported ({code})."
+msgstr "No se pudieron importar las claves ({code})."
+
+#. Host key manager: the import source had no keys.
+msgctxt "ui.hostkeys.import_none"
+msgid "No host keys were found in that source."
+msgstr "No se encontraron claves en ese origen."
+
+#. Host key manager: number of keys imported.
+#, plural-arg=count
+msgctxt "ui.hostkeys.imported"
+msgid "{count} host key imported."
+msgid_plural "{count} host keys imported."
+msgstr[0] "{count} clave importada."
+msgstr[1] "{count} claves importadas."
+msgstr[2] "{count} claves importadas."
+
+#. Host key manager: the agent is not running, so announcements cannot be read.
+msgctxt "ui.hostkeys.agent_down"
+msgid "The agent is not running."
+msgstr "El agente no está en ejecución."
+
+#. Host key manager: the announcements could not be read.
+msgctxt "ui.hostkeys.announced_failed"
+msgid "The announced keys could not be read."
+msgstr "No se pudieron leer las claves anunciadas."
+
+#. Host key manager: applying an announcement failed. {code} is the error name.
+msgctxt "ui.hostkeys.accept_failed"
+msgid "The host keys could not be applied ({code})."
+msgstr "No se pudieron aplicar las claves ({code})."
+
+#. Host key manager: the request could not be queued for the agent.
+msgctxt "ui.hostkeys.accept_failed_queue"
+msgid "The request could not be sent to the agent. Try again."
+msgstr "No se pudo enviar el pedido al agente. Volvé a intentarlo."
+
+#. Host key manager: an announcement was applied. {host} is the host name.
+msgctxt "ui.hostkeys.accepted"
+msgid "Host keys for {host} were updated."
+msgstr "Se actualizaron las claves de {host}."
+
+#. Host key manager status line: number of keys listed.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_known"
+msgid "{count} host key."
+msgid_plural "{count} host keys."
+msgstr[0] "{count} clave."
+msgstr[1] "{count} claves."
+msgstr[2] "{count} claves."
+
+#. Host key manager status line: number of announced keys.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_announced"
+msgid "{count} announced key."
+msgid_plural "{count} announced keys."
+msgstr[0] "{count} clave anunciada."
+msgstr[1] "{count} claves anunciadas."
+msgstr[2] "{count} claves anunciadas."
+
+#. Logs viewer window title.
+msgctxt "ui.logs.title"
+msgid "Logs"
+msgstr "Registros"
+
+#. Logs viewer: label of the level filter.
+msgctxt "ui.logs.level_label"
+msgid "Show"
+msgstr "Mostrar"
+
+#. Logs viewer: label of the search box.
+msgctxt "ui.logs.search_label"
+msgid "Search"
+msgstr "Buscar"
+
+#. Logs viewer level filter: errors only.
+msgctxt "ui.logs.level_error"
+msgid "Errors only"
+msgstr "Solo errores"
+
+#. Logs viewer level filter: warnings and errors.
+msgctxt "ui.logs.level_warn"
+msgid "Warnings and errors"
+msgstr "Advertencias y errores"
+
+#. Logs viewer level filter: information and more severe records.
+msgctxt "ui.logs.level_info"
+msgid "Information and above"
+msgstr "Información y superiores"
+
+#. Logs viewer level filter: debug and more severe records.
+msgctxt "ui.logs.level_debug"
+msgid "Debug and above"
+msgstr "Depuración y superiores"
+
+#. Logs viewer level filter: every record.
+msgctxt "ui.logs.level_trace"
+msgid "All records"
+msgstr "Todos los registros"
+
+#. Logs viewer button: copies the selected lines (all lines when nothing is selected).
+msgctxt "ui.logs.btn_copy"
+msgid "Copy selection"
+msgstr "Copiar selección"
+
+#. Logs viewer button: opens the folder with the log files.
+msgctxt "ui.logs.btn_folder"
+msgid "Open log folder"
+msgstr "Abrir carpeta de registros"
+
+#. Logs viewer status line: number of records shown.
+#, plural-arg=count
+msgctxt "ui.logs.status_count"
+msgid "{count} record shown."
+msgid_plural "{count} records shown."
+msgstr[0] "{count} registro mostrado."
+msgstr[1] "{count} registros mostrados."
+msgstr[2] "{count} registros mostrados."
+
+#. Logs viewer status line: records the agent dropped before the ones shown.
+#, plural-arg=count
+msgctxt "ui.logs.dropped"
+msgid "{count} older record was dropped."
+msgid_plural "{count} older records were dropped."
+msgstr[0] "Se descartó {count} registro anterior."
+msgstr[1] "Se descartaron {count} registros anteriores."
+msgstr[2] "Se descartaron {count} registros anteriores."
+
+#. Logs viewer: the agent is not running; the records already shown stay.
+msgctxt "ui.logs.agent_down"
+msgid "The agent is not running. Records already shown are kept."
+msgstr "El agente no está en ejecución. Se mantienen los registros ya mostrados."
+
+#. Logs viewer: the running agent has no log.tail method.
+msgctxt "ui.logs.old_agent"
+msgid "The running agent is too old to show its log."
+msgstr "El agente en ejecución es demasiado antiguo para mostrar su registro."
+
+#. Logs viewer: reading the log failed. {code} is the error name.
+msgctxt "ui.logs.read_failed"
+msgid "The log could not be read ({code})."
+msgstr "No se pudo leer el registro ({code})."
+
+#. Logs viewer: the agent sent a malformed log.tail reply.
+msgctxt "ui.logs.bad_reply"
+msgid "The agent sent a log that could not be read."
+msgstr "El agente envió un registro que no se pudo leer."
+
+#. Logs viewer: the log folder could not be opened.
+msgctxt "ui.logs.open_failed"
+msgid "The log folder could not be opened."
+msgstr "No se pudo abrir la carpeta de registros."
+
+#. Logs viewer: first poll in progress.
+msgctxt "ui.logs.loading"
+msgid "Loading the log…"
+msgstr "Cargando el registro…"
+
+#. Settings window title.
+msgctxt "ui.settings.title"
+msgid "Settings"
+msgstr "Configuración"
+
+#. Settings: label of the language list.
+msgctxt "ui.settings.language"
+msgid "Language"
+msgstr "Idioma"
+
+#. Settings: the first language entry, the Windows language.
+msgctxt "ui.settings.lang_system"
+msgid "System default"
+msgstr "Predeterminado del sistema"
+
+#. Settings: checkbox for balloon notifications.
+msgctxt "ui.settings.notify"
+msgid "Show notifications"
+msgstr "Mostrar notificaciones"
+
+#. Settings: checkbox that starts the tray icon at sign-in (Run key, this user only).
+msgctxt "ui.settings.logon"
+msgid "Start the tray icon at sign-in"
+msgstr "Iniciar el ícono de la bandeja al iniciar sesión"
+
+#. Settings: label of the default backend list.
+msgctxt "ui.settings.backend"
+msgid "Default backend"
+msgstr "Backend predeterminado"
+
+#. Settings: default backend choice, chosen by Windows.
+msgctxt "ui.settings.backend_auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Settings: default backend choice, the Dokany product name.
+msgctxt "ui.settings.backend_dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+#. Settings: default backend choice, the WebDAV protocol name.
+msgctxt "ui.settings.backend_webdav"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+#. Settings: label of the memory cache budget field.
+msgctxt "ui.settings.cache"
+msgid "Memory cache (MB)"
+msgstr "Caché en memoria (MB)"
+
+#. Settings: explains the values of the memory cache budget field.
+msgctxt "ui.settings.cache_hint"
+msgid "0 uses the default. Otherwise 16 to 65536."
+msgstr "0 usa el valor predeterminado. Si no, de 16 a 65536."
+
+#. Settings: heading of the update group.
+msgctxt "ui.settings.group_updates"
+msgid "Updates"
+msgstr "Actualizaciones"
+
+#. Settings: checkbox for automatic update checks (disabled until the agent offers it).
+msgctxt "ui.settings.check_updates"
+msgid "Check for updates automatically"
+msgstr "Buscar actualizaciones automáticamente"
+
+#. Settings: shown when the agent cannot check for updates.
+msgctxt "ui.settings.updates_unavailable"
+msgid "Updates are not available in this version of the agent."
+msgstr "Las actualizaciones no están disponibles en esta versión del agente."
+
+#. Settings: which changes take effect without a restart.
+msgctxt "ui.settings.live_note"
+msgid "Notifications, the backend and the cache apply to new mounts and connections after the agent reloads the file."
+msgstr "Las notificaciones, el backend y la caché se aplican a los nuevos montajes y conexiones cuando el agente recarga el archivo."
+
+#. Settings: shown after a language change, which is read at start-up.
+msgctxt "ui.settings.restart_note"
+msgid "The language changes when you restart ShellDrive."
+msgstr "El idioma cambia al reiniciar ShellDrive."
+
+#. Settings button: saves the file and applies it.
+msgctxt "ui.settings.btn_save"
+msgid "Save"
+msgstr "Guardar"
+
+#. Settings button: closes without saving.
+msgctxt "ui.settings.btn_cancel"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Settings: the memory cache field holds a value outside 0 and 16 to 65536.
+msgctxt "ui.settings.cache_invalid"
+msgid "Enter 0, or a size from 16 to 65536 MB."
+msgstr "Escribí 0, o un tamaño de 16 a 65536 MB."
+
+#. Settings: saving settings.ini failed. {code} is the error name.
+msgctxt "ui.settings.save_failed"
+msgid "The settings could not be saved ({code})."
+msgstr "No se pudo guardar la configuración ({code})."
+
+#. Settings: the Run key for start at sign-in could not be written.
+msgctxt "ui.settings.run_failed"
+msgid "Start at sign-in could not be changed."
+msgstr "No se pudo cambiar el inicio al iniciar sesión."
+
+#. About window title.
+msgctxt "ui.about.title"
+msgid "About ShellDrive"
+msgstr "Acerca de ShellDrive"
+
+#. About window: the version line. {version} is the product version.
+msgctxt "ui.about.version"
+msgid "Version {version}"
+msgstr "Versión {version}"
+
+#. About window: the license line.
+msgctxt "ui.about.license"
+msgid "Licensed under the MIT License."
+msgstr "Licencia MIT."
+
+#. About window: the copyright line.
+msgctxt "ui.about.copyright"
+msgid "Copyright (C) LibreStatic"
+msgstr "Derechos de autor (C) LibreStatic"
+
+#. About window button: opens the project web page in the browser.
+msgctxt "ui.about.btn_project"
+msgid "Project page"
+msgstr "Sitio del proyecto"
+
+#. About window button: closes the window.
+msgctxt "ui.about.btn_close"
+msgid "Close"
+msgstr "Cerrar"
+
+#. About window: the browser could not be started.
+msgctxt "ui.about.open_failed"
+msgid "The project page could not be opened in the browser."
+msgstr "No se pudo abrir el sitio del proyecto en el navegador."
+
+#. Menu item: opens the host key manager.
+msgctxt "ui.menu.hostkeys"
+msgid "Host keys…"
+msgstr "Claves de host…"
+
+#. Menu item: opens the Logs viewer.
+msgctxt "ui.menu.logs"
+msgid "Logs…"
+msgstr "Registros…"
+
+#. Menu item: opens Settings.
+msgctxt "ui.menu.settings"
+msgid "Settings…"
+msgstr "Configuración…"
+
+#. Menu item: opens the About window.
+msgctxt "ui.menu.about"
+msgid "About ShellDrive"
+msgstr "Acerca de ShellDrive"
+
+#. Menu bar: the Tools menu.
+msgctxt "ui.menu.tools"
+msgid "Tools"
+msgstr "Herramientas"
+
+#. Menu bar: the Help menu.
+msgctxt "ui.menu.help"
+msgid "Help"
+msgstr "Ayuda"
+

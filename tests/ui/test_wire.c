@@ -264,6 +264,24 @@ SD_TEST(verbs_reconnect_and_mount_file)
   SD_CHECK_EQ_INT(ui_request_from_args(3, file_ctl, &req), SD_E_INVALID_PARAM);
 }
 
+SD_TEST(verbs_open_drive)
+{
+  static const wchar_t *const open_e[] = { L"--action", L"open", L"e:" };
+  static const wchar_t *const open_bad[] = { L"--action", L"open", L"E:\\x" };
+  static const wchar_t *const open_path[] = { L"--action", L"open", L"C:\\Users" };
+  static const wchar_t *const open_id[] = { L"--action", L"open", L"0123456789abcdef0123456789abcdef" };
+  ui_request req;
+
+  SD_CHECK_EQ_INT(ui_request_from_args(3, open_e, &req), SD_OK);
+  SD_CHECK_EQ_INT(req.verb, UI_VERB_OPEN);
+  SD_CHECK_EQ_INT(req.kind, UI_TARGET_DRIVE);
+  SD_CHECK(wcscmp(req.target, L"E:") == 0);
+  SD_CHECK_EQ_INT(ui_request_from_args(3, open_bad, &req), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(ui_request_from_args(3, open_path, &req), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(ui_request_from_args(3, open_id, &req), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(ui_request_from_args(2, open_e, &req), SD_E_INVALID_PARAM);
+}
+
 SD_TEST(verbs_unknown_are_rejected)
 {
   static const wchar_t *const format[] = { L"--action", L"format", L"E:" };

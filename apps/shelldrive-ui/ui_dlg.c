@@ -20,6 +20,7 @@
 #define CLASS_BUTTON     0x0080u
 #define CLASS_EDIT       0x0081u
 #define CLASS_STATIC     0x0082u
+#define CLASS_COMBO      0x0085u
 #define DLG_MIN_TEXT_DLU 8
 #define DLG_TEXT_PAD     2
 #define DLG_BUTTON_PAD   8
@@ -98,6 +99,7 @@ sd_err ui_dlg_init(ui_dlg *d, const wchar_t *title, int width_dlu, const wchar_t
   d->width = width_dlu;
   d->margin = DLG_DEFAULT_MARGIN;
   d->cursor = DLG_DEFAULT_MARGIN;
+  d->min_height = 0;
   d->style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_CENTER;
   d->measure = measure;
   d->measure_ctx = measure_ctx;
@@ -181,6 +183,22 @@ sd_err ui_dlg_multiline(ui_dlg *d, WORD id, const wchar_t *text, int max_lines)
   it->cy = (short)h;
   set_text(it, text);
   d->cursor += h + UI_DLG_GAP;
+  return SD_OK;
+}
+
+sd_err ui_dlg_combo(ui_dlg *d, WORD id)
+{
+  ui_dlg_item *it;
+  if (d == NULL || (it = next_item(d)) == NULL)
+    return SD_E_INVALID_PARAM;
+  it->cls = UI_DLG_COMBO;
+  it->id = id;
+  it->style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_HASSTRINGS | CBS_AUTOHSCROLL;
+  it->x = (short)d->margin;
+  it->y = (short)d->cursor;
+  it->cx = (short)(d->width - 2 * d->margin);
+  it->cy = UI_DLG_EDIT_HEIGHT;
+  d->cursor += UI_DLG_EDIT_HEIGHT + UI_DLG_GAP;
   return SD_OK;
 }
 
@@ -271,6 +289,8 @@ sd_err ui_dlg_build(ui_dlg *d, unsigned char **out, size_t *out_bytes)
   *out_bytes = 0;
   memset(&b, 0, sizeof(b));
   height = d->cursor + d->margin;
+  if (height < d->min_height)
+    height = d->min_height;
   if (height > 0x7FFF)
     return SD_E_INVALID_PARAM;
 
@@ -296,7 +316,8 @@ sd_err ui_dlg_build(ui_dlg *d, unsigned char **out, size_t *out_bytes)
   for (i = 0; i < d->count; i++) {
     const ui_dlg_item *it = &d->items[i];
     unsigned ord = it->cls == UI_DLG_EDIT ? CLASS_EDIT
-                 : it->cls == UI_DLG_STATIC ? CLASS_STATIC : CLASS_BUTTON;
+                 : it->cls == UI_DLG_STATIC ? CLASS_STATIC
+                 : it->cls == UI_DLG_COMBO ? CLASS_COMBO : CLASS_BUTTON;
     db_align4(&b);
     db_u32(&b, 0);                                /* help id */
     db_u32(&b, 0);                                /* extended style */

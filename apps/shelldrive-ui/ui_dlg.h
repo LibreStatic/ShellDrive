@@ -24,7 +24,8 @@ typedef enum ui_dlg_class {
   UI_DLG_STATIC = 0,
   UI_DLG_EDIT,
   UI_DLG_BUTTON,
-  UI_DLG_CHECK
+  UI_DLG_CHECK,
+  UI_DLG_COMBO
 } ui_dlg_class;
 
 typedef struct ui_dlg_item {
@@ -46,6 +47,7 @@ typedef struct ui_dlg {
   int width;                            /* dialog width in dialog units */
   int cursor;                           /* next free y, dialog units */
   int margin;                           /* left, right and bottom margin */
+  int min_height;                       /* dialog units: the height is at least this (pages of one sheet) */
   DWORD style;                          /* dialog style, DS_SETFONT is added by ui_dlg_build */
   ui_dlg_measure_fn measure;
   void *measure_ctx;
@@ -68,6 +70,10 @@ sd_err ui_dlg_multiline(ui_dlg *d, WORD id, const wchar_t *text, int max_lines);
 
 /* Check box, full width. */
 sd_err ui_dlg_check(ui_dlg *d, WORD id, const wchar_t *text);   /* starts unchecked; the caller sets BM_SETCHECK */
+
+/* Drop-down list (CBS_DROPDOWNLIST), full width. The template height is the closed height of the box; the
+   page code grows the box while the list is open (ui_editor.c, combo_resize). Items are added at run time. */
+sd_err ui_dlg_combo(ui_dlg *d, WORD id);
 
 /* Vertical space in dialog units. */
 sd_err ui_dlg_space(ui_dlg *d, int dlu);
