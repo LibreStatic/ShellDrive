@@ -217,9 +217,8 @@ Code: `apps/shelldrive-shellext/` (COM server, reader, registration), tests: `te
 
 ### Open items
 
-- **UI grammar:** `apps/shelldrive-ui/ui_wire.c` does not accept `--action open <X:>` yet (its documented verbs are mount,
-  mount-file, unmount, reconnect, show). The DLL sends `open E:` for the Open item, so until the UI accepts it the item does
-  nothing. This is an additive UI change for the UI package (03 §1.4, §8.2.1).
+- **UI grammar:** resolved: `ui_wire.c` accepts `--action open <X:>` (the profile editor package) and opens the drive
+  in Explorer.
 - **Not implemented from 8.2:** Copy remote path (drive, directory, `*`); the Directory, `*` and This PC registrations;
   "Mount with ShellDrive" under This PC (needs `menu.cache`); menu icons (`hbmpItem`, Vista+).
 - **`.sdmount` verb:** the Mount item for `.sdmount` files is the static `HKCR\LibreStatic.ShellDrive.Mount` verb of 8.1, not
