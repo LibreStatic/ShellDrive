@@ -546,7 +546,7 @@ SD_TEST(striping_units_route_by_member_in_order)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(8 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   uint64_t last[4];
@@ -653,7 +653,7 @@ SD_TEST(striping_refused_sub_open_falls_back_to_primary)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -710,7 +710,7 @@ SD_TEST(striping_barrier_waits_for_data_wires)
   sd_sftp_file *f;
   sd_sftp_attrs a;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int base;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -786,7 +786,7 @@ SD_TEST(striping_fsync_settles_on_every_sub_handle)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   SD_REQUIRE(x != NULL && buf != NULL);
   f = xf_open_striped(x, SD_SFTP_O_READ | SD_SFTP_O_WRITE);
@@ -838,7 +838,7 @@ SD_TEST(striping_close_settles_on_every_sub_handle)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   SD_REQUIRE(x != NULL && buf != NULL);
   f = xf_open_striped(x, SD_SFTP_O_READ | SD_SFTP_O_WRITE);
@@ -872,7 +872,7 @@ SD_TEST(striping_write_units_route_and_place_bytes)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *src = (uint8_t *)sd_alloc(4 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && src != NULL);
@@ -934,7 +934,7 @@ SD_TEST(striping_write_failure_refines_to_no_space)
   sd_sftp_reqopt no_refine = { SD_SFTP_REQ_NO_REFINE, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *src = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   SD_REQUIRE(x != NULL && src != NULL);
   f = xf_open_striped(x, SD_SFTP_O_WRITE);
@@ -996,7 +996,7 @@ static uint32_t gate_wire_bytes(uint32_t unit) { return unit + 27; }
 static int gate_wait_parked(xf *x, waiter *w, int want1, int want3)
 {
   uint64_t end = sd_tick_ms() + 5000;
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   for (;;) {
     LONG n = tr_snapshot(&x->sv, ev, TR_MAX);
     if (tr_n(ev, n, TR_WRITE, 1) >= want1 && tr_n(ev, n, TR_WRITE, 3) >= want3) {
@@ -1021,7 +1021,7 @@ SD_TEST(striping_write_parks_at_max_inflight_reqs)
   sd_sftp_file *f;
   uint8_t *src = (uint8_t *)sd_alloc(400 * ST_UNIT);
   uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
@@ -1075,7 +1075,7 @@ SD_TEST(striping_write_parks_at_obuf_high_water)
   sd_sftp_file *f;
   uint8_t *src = (uint8_t *)sd_alloc(160 * ST_LIMIT);
   uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_LIMIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
@@ -1127,7 +1127,7 @@ SD_TEST(striping_write_parks_at_max_inflight_bytes)
   sd_sftp_file *f;
   uint8_t *src = (uint8_t *)sd_alloc(100 * ST_LIMIT);
   uint8_t *pre = (uint8_t *)sd_alloc(3 * ST_LIMIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && src != NULL && pre != NULL);
@@ -1178,7 +1178,7 @@ SD_TEST(striping_member_loss_reissues_reads_on_primary)
   sd_sftp_file *f, *f2;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
   uint8_t *buf2 = (uint8_t *)sd_alloc(2 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL && buf2 != NULL);
@@ -1287,7 +1287,7 @@ SD_TEST(striping_route_recomputed_after_member_loss)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(4 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -1408,7 +1408,7 @@ SD_TEST(striping_member_drop_during_barrier_counts_it_done)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   SD_REQUIRE(x != NULL && buf != NULL);
   f = xf_open_striped(x, SD_SFTP_O_READ | SD_SFTP_O_WRITE);
@@ -1560,7 +1560,7 @@ SD_TEST(striping_transport_without_members_never_stripes)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -1611,7 +1611,7 @@ SD_TEST(striping_member_drop_reported_twice_acts_once)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -1815,7 +1815,7 @@ SD_TEST(striping_stripe_unit_clamped_to_negotiated_limits)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(4 * ST_LIMIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n;
   int i, ok = 1;
   SD_REQUIRE(x != NULL && buf != NULL);
@@ -1889,7 +1889,7 @@ SD_TEST(striping_short_read_reissues_the_missing_range)
   sd_sftp_reqopt o = { 0, 5000, NULL };
   sd_sftp_file *f;
   uint8_t *buf = (uint8_t *)sd_alloc(3 * ST_UNIT);
-  tr_ev ev[TR_MAX];
+  static tr_ev ev[TR_MAX];
   LONG n, i;
   int ok = 1, reissued = 0;
   SD_REQUIRE(x != NULL && buf != NULL);

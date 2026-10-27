@@ -839,7 +839,7 @@ SD_TEST(m2_striping_member_lost_mid_transfer)
   xfer t;
   sd_sftp_stats st;
   sd_sftp_reqopt o = { 0, 60000, NULL };
-  waiter bw[M2_BURST];
+  static waiter bw[M2_BURST];
   uint8_t *bb[M2_BURST];
   uint8_t *ref;
   uint64_t off, done, s1_tx;
