@@ -1192,9 +1192,20 @@ ICE clean with the suppressions below). ARM32 is authored but has no preset, so 
   see mapped drives" (`ENABLELINKEDCONNECTIONS`, written as the `EnableLinkedConnections` value of 6.7 and D24). The package does not
   install or remove the Dokany driver (setup does, 7.3). The license page shows the repository `LICENSE` (MIT), converted to RTF
   by `build-msi.cmake` at build time (no RTF copy is kept). The install folder is fixed (no `ConfigurableDirectory`, 8.2).
-  `ARPNOMODIFY=0` is explicit, so "Change" is offered. Interactive maintenance starts the options page with the installed choices
-  (`SD_DOKANY_INI` reads `settings.ini`, `SD_ELC_EXISTS` the registry value); silent runs keep the public property defaults
-  (open item 7). The strings are in `packaging/msi/wixui` (overrides) and `l10n/installer` (`msi.options.*`).
+  `ARPNOMODIFY=0` is explicit, so "Change" is offered. The options page starts with the effective choices (command line, then
+  the remembered choice, then the default; see the next paragraph). The strings are in `packaging/msi/wixui` (overrides) and
+  `l10n/installer` (`msi.options.*`).
+  **Remembered choices.** The package owns `HKLM\SOFTWARE\LibreStatic\ShellDrive\Installer`. The always-installed component
+  `C_Installer` writes `DOKANY`, `ENABLELINKEDCONNECTIONS` and `ELC_OWNED` (`1` or `0`, the effective state of the run). The
+  public `DOKANY` and `ENABLELINKEDCONNECTIONS` have no default: empty means not given. In every run (interactive, `/qn`, repair,
+  maintenance; uninstall reads the same values) the init rows, after `AppSearch`, take the command line value if given, else the
+  `RegistrySearch` value of the key, else the default (DOKANY on, linked connections off). The checkboxes bind to `SD_UI_DOKANY`
+  and `SD_UI_ELC`, which the init sets once (`SD_UI_INIT`), so the execute sequence does not overwrite a UI change.
+  `SD_DOKANY_STATE` drives the `settings.ini` line (`[backend] dokany = no` when 0) and the stored value, so both agree.
+  **EnableLinkedConnections ownership.** `C_LinkedConn` is installed only when `SD_ELC_WRITE = 1`: linked connections are wanted
+  and the value either does not exist (this package creates it, `ELC_OWNED` becomes 1) or the package already owns it. A value
+  that exists and is not ours is never written, changed or removed, also on Change. The component owns the value while it is
+  installed, so uninstall removes the value exactly when this package created it.
 - **Registry (6.6):** `packaging/registration.txt` generates one component per row, in HKLM: `SD_RegCore` (`core` rows) and
   `SD_RegAutostart` (`autostart` rows). The `Uninstall\ShellDrive` rows are skipped because Windows Installer writes the Add/Remove
   entry of an MSI itself. `Software\LibreStatic\ShellDrive\Version` is written by the MSI for Intune detection (8.3).
@@ -1238,10 +1249,10 @@ to the lab (11.4).
    fragment), so the DLL is installed but not registered. The x64 packages do not carry the x86 copy of the DLL (8.3).
 6. Spanish WiX dialog strings are Spain Spanish (`WixUI_es-es.wxl`), not Rioplatense. Either provide the dialog buttons from our
    catalog with voseo, or accept WiX's text for the standard buttons and dialogs only.
-7. Options without the dialog: the options page (8.7) starts with the installed choices only in interactive maintenance. A Repair or
-   Change without UI (`msiexec /f` or `/i` with `/qn`) takes the public property defaults: `DOKANY` back to 1 (the `settings.ini`
-   line is removed with its component) and `ENABLELINKEDCONNECTIONS` to 0 (the value is removed with its component). Pass the same
-   properties again, or persist the choices (lab check needed). The package also does not install or remove the Dokany driver.
+7. Remembered choices (resolved in the M4 follow-up, 8.7): `DOKANY`, `ENABLELINKEDCONNECTIONS` and the ownership of the linked
+   connections value are stored in `HKLM\SOFTWARE\LibreStatic\ShellDrive\Installer` and read back on every run, so a silent
+   repair or maintenance keeps them. Still open: the lab check of the Installer key and of the ownership rules (install, Change,
+   repair, uninstall, and a pre-existing value), and the Dokany driver, which the package does not install or remove.
 8. Reproducibility (12.2): the summary `Created` and `LastSaved` times vary between builds; `SOURCE_DATE_EPOCH` is not applied yet.
 9. ARM32 (D31): no `arm32` preset, so the package is not built. The ARM64 package needs the M6 host-tools path, because an ARM64
    tree cannot run the MSI tools. `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM64 trees.

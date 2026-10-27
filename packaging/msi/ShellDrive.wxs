@@ -29,10 +29,10 @@
          ShellDriveUI dialog set below (04 §6.7). Explicit so that the Property table shows it. -->
     <Property Id="ARPNOMODIFY" Value="0" />
 
-    <!-- Public properties for silent configuration (04 §8.4). Empty means "not given". -->
+    <!-- Public properties for silent configuration (04 §8.4). Empty means "not given": DOKANY and ENABLELINKEDCONNECTIONS
+         are not declared here, so a value on the command line wins, otherwise the choice remembered in the registry
+         (HKLM Installer key, 04 §8.7), otherwise the default (DOKANY on, ENABLELINKEDCONNECTIONS off). -->
     <Property Id="AUTOSTART" Value="1" />
-    <Property Id="DOKANY" Value="1" />
-    <Property Id="ENABLELINKEDCONNECTIONS" Value="0" />
     <Property Id="REMOVEDATA" Value="0" />
     <Property Id="REMOVESECRETS" Value="1" />
     <Property Id="UPDATECHANNEL" Value="stable" />
@@ -51,16 +51,40 @@
       <RegistrySearch Id="SD_ELC_EXISTS_RS" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
                       Name="EnableLinkedConnections" Type="raw" Win64="$(var.SD_WIN64)" />
     </Property>
-    <!-- The state of an installed product, read for the Change options page only (see the SetProperty rows below). -->
-    <!-- IniFileSearch takes no path (no backslash in Name), so the product data folder comes from a property first. -->
-    <SetProperty Id="SD_PRODUCT_DATA" Value="[CommonAppDataFolder]LibreStatic\ShellDrive\" Sequence="first" Before="AppSearch"><![CDATA[1]]></SetProperty>
-    <Property Id="SD_DOKANY_INI">
-      <IniFileSearch Id="SD_DOKANY_INI_IS" Name="[SD_PRODUCT_DATA]settings.ini" Section="backend" Key="dokany" />
+    <!-- Remembered choices (04 §8.7). The Installer key is owned by this package and always installed (C_Installer), so
+         every run reads it back: repair, silent maintenance and uninstall see the same choices as the last install. -->
+    <Property Id="SD_REG_DOKANY">
+      <RegistrySearch Id="SD_REG_DOKANY_RS" Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="DOKANY"
+                      Type="raw" Win64="$(var.SD_WIN64)" />
     </Property>
-    <!-- Interactive maintenance (UILevel above /qn, Installed) starts the options page with the installed choices, so that
-         Next keeps them: the first sequence runs once, before the dialogs, and a silent run keeps the public properties. -->
-    <SetProperty Id="DOKANY" Value="0" Sequence="first" After="AppSearch"><![CDATA[UILevel > 2 AND Installed AND SD_DOKANY_INI = "no" AND DOKANY = "1"]]></SetProperty>
-    <SetProperty Id="ENABLELINKEDCONNECTIONS" Value="1" Sequence="first" After="AppSearch"><![CDATA[UILevel > 2 AND Installed AND SD_ELC_EXISTS = "1" AND ENABLELINKEDCONNECTIONS <> "1"]]></SetProperty>
+    <Property Id="SD_REG_ELC">
+      <RegistrySearch Id="SD_REG_ELC_RS" Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="ENABLELINKEDCONNECTIONS"
+                      Type="raw" Win64="$(var.SD_WIN64)" />
+    </Property>
+    <!-- ELC_OWNED = 1 when this package wrote the EnableLinkedConnections value (it did not exist before). -->
+    <Property Id="SD_REG_ELC_OWNED">
+      <RegistrySearch Id="SD_REG_ELC_OWNED_RS" Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="ELC_OWNED"
+                      Type="raw" Win64="$(var.SD_WIN64)" />
+    </Property>
+
+    <!-- Checkbox state of the options page (SD_UI_*, "1" = checked) and the effective state written to the registry
+         and settings.ini (SD_*_STATE, SD_ELC_WRITE = 1 when the value is written and owned by this package). The
+         defaults below apply until the init rows run (InstallUISequence, and InstallExecuteSequence for a silent run). -->
+    <Property Id="SD_UI_DOKANY" Value="1" />
+    <Property Id="SD_UI_ELC" Value="0" />
+    <Property Id="SD_DOKANY_STATE" Value="1" />
+    <Property Id="SD_ELC_STATE" Value="0" />
+    <Property Id="SD_ELC_WRITE" Value="0" />
+    <!-- Init, once per run (SD_UI_INIT is set by the last init row): command line first, then the remembered choice. -->
+    <SetProperty Id="SD_UI_DOKANY" Value="0" Sequence="both" After="AppSearch"><![CDATA[SD_UI_INIT = "" AND (DOKANY = "0" OR (DOKANY = "" AND SD_REG_DOKANY = "0"))]]></SetProperty>
+    <SetProperty Id="SD_UI_ELC" Value="1" Sequence="both" After="SetSD_UI_DOKANY"><![CDATA[SD_UI_INIT = "" AND (ENABLELINKEDCONNECTIONS = "1" OR (ENABLELINKEDCONNECTIONS = "" AND SD_REG_ELC = "1"))]]></SetProperty>
+    <SetProperty Id="SD_UI_INIT" Value="1" Sequence="both" After="SetSD_UI_ELC"><![CDATA[1]]></SetProperty>
+    <!-- Effective state, before the components are costed. The chain keeps the order of the three rows. -->
+    <SetProperty Id="SD_DOKANY_STATE" Value="0" Sequence="both" After="SetSD_UI_INIT"><![CDATA[SD_UI_DOKANY <> "1"]]></SetProperty>
+    <SetProperty Id="SD_ELC_STATE" Value="1" Sequence="both" After="SetSD_DOKANY_STATE"><![CDATA[SD_UI_ELC = "1"]]></SetProperty>
+    <!-- The value is written when it is wanted and either does not exist yet (this package creates it) or is ours already.
+         A value that exists and was set by someone else is never written, changed or removed (ELC ownership, 04 §8.7). -->
+    <SetProperty Id="SD_ELC_WRITE" Value="1" Sequence="both" After="SetSD_ELC_STATE"><![CDATA[SD_ELC_STATE = "1" AND VersionNT >= 600 AND (SD_ELC_EXISTS = "" OR SD_REG_ELC_OWNED = "1")]]></SetProperty>
 
     <?if $(var.SD_LAUNCH) = "win10" ?>
     <!-- Windows 10 or later: CurrentMajorVersionNumber exists only there (04 §8.2). -->
@@ -139,8 +163,8 @@
                Section="update" Key="manifest_url" Value="[UPDATEURL]" />
     </Component>
     <Component Id="C_Ini_Backend" Guid="$(var.G_C_Ini_Backend)" Directory="SD_CAD_PRODUCT" Win64="$(var.SD_WIN64)">
-      <!-- Unchecked on the options page (DOKANY becomes empty) and DOKANY=0 on the command line both mean "no". -->
-      <Condition><![CDATA[DOKANY <> "1"]]></Condition>
+      <!-- The effective choice (SD_DOKANY_STATE, from the command line, the remembered choice or the options page). -->
+      <Condition><![CDATA[SD_DOKANY_STATE = "0"]]></Condition>
       <CreateFolder />
       <IniFile Id="SD_INI_BACKEND_DOKANY" Action="addLine" Directory="SD_CAD_PRODUCT" Name="settings.ini"
                Section="backend" Key="dokany" Value="no" />
@@ -149,13 +173,23 @@
     <!-- DEFAULTPROFILES (C9) is not authored yet: WiX 3.14 has no element for the MSI MoveFile table (wildcard
          copy). Open item in 04 §8.4; the property is accepted and ignored until the table is added. -->
 
-    <!-- ENABLELINKEDCONNECTIONS (D24): written only when the admin has not set the value already. -->
+    <!-- ENABLELINKEDCONNECTIONS (D24, 04 §8.7): installed only when this package owns the value, that is when it creates it
+         (none existed) or already owns it (ELC_OWNED). The component is installed, so its value is removed on uninstall,
+         exactly when this package created it. A value set by someone else is never taken over. -->
     <Component Id="C_LinkedConn" Guid="$(var.G_C_LinkedConn)" Directory="TARGETDIR" Win64="$(var.SD_WIN64)">
-      <!-- Written when the value does not exist. On a maintenance run the value that this component wrote stays (Installed):
-           unchecking the option removes the component and with it the value. -->
-      <Condition><![CDATA[ENABLELINKEDCONNECTIONS = "1" AND VersionNT >= 600 AND (SD_ELC_EXISTS = "" OR (Installed AND SD_ELC_EXISTS = "1"))]]></Condition>
+      <Condition><![CDATA[SD_ELC_WRITE = "1"]]></Condition>
       <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
                      Name="EnableLinkedConnections" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- The choices of this package (04 §8.7): read back by the RegistrySearch rows on every run. Always installed (Core). -->
+    <Component Id="C_Installer" Guid="$(var.G_C_Installer)" Directory="TARGETDIR" Win64="$(var.SD_WIN64)">
+      <RegistryValue Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="DOKANY" Type="string"
+                     Value="[SD_DOKANY_STATE]" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="ENABLELINKEDCONNECTIONS" Type="string"
+                     Value="[SD_ELC_STATE]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\LibreStatic\ShellDrive\Installer" Name="ELC_OWNED" Type="string"
+                     Value="[SD_ELC_WRITE]" />
     </Component>
 
     <!-- Uninstall-only removal (04 §6.7). Each component's condition is true only while the product is removed. -->
@@ -205,6 +239,7 @@
         <ComponentRef Id="C_Ini_UpdateUrl" />
         <ComponentRef Id="C_Ini_Backend" />
         <ComponentRef Id="C_LinkedConn" />
+        <ComponentRef Id="C_Installer" />
         <ComponentRef Id="C_Rm_Secrets" />
         <ComponentRef Id="C_Rm_Keys" />
         <ComponentRef Id="C_Rm_Data" />
@@ -278,12 +313,12 @@
                  Text="!(loc.OptionsDescription)" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
 
-        <Control Id="DokanyCheckBox" Type="CheckBox" X="20" Y="62" Width="330" Height="18" CheckBoxValue="1" Property="DOKANY"
+        <Control Id="DokanyCheckBox" Type="CheckBox" X="20" Y="62" Width="330" Height="18" CheckBoxValue="1" Property="SD_UI_DOKANY"
                  Text="!(loc.OptionsDokanyCheckbox)" />
         <Control Id="DokanyHint" Type="Text" X="38" Y="82" Width="312" Height="36" Transparent="yes" NoPrefix="yes"
                  Text="!(loc.OptionsDokanyHint)" />
         <Control Id="LinkedConnectionsCheckBox" Type="CheckBox" X="20" Y="130" Width="330" Height="18" CheckBoxValue="1"
-                 Property="ENABLELINKEDCONNECTIONS" Text="!(loc.OptionsLinkedCheckbox)" />
+                 Property="SD_UI_ELC" Text="!(loc.OptionsLinkedCheckbox)" />
         <Control Id="LinkedConnectionsHint" Type="Text" X="38" Y="150" Width="312" Height="48" Transparent="yes" NoPrefix="yes"
                  Text="!(loc.OptionsLinkedHint)" />
 

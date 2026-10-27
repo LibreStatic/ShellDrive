@@ -299,16 +299,24 @@ Dialog set (`ShellDriveUI`, 04 §6.7 and §8.7): the flow of `WixUI_FeatureTree`
 `ARPNOMODIFY` is `0`, set explicitly (Property table checked with `WindowsInstaller.Installer`), so "Change" is offered and
 runs the feature tree and the options page. The install folder is no longer configurable in the dialogs (no
 `ConfigurableDirectory`). The license page shows the repository `LICENSE`, converted to RTF by `build-msi.cmake` (candle gets
-`-dSD_LICENSE_RTF`). The `DOKANY` and `ENABLELINKEDCONNECTIONS` checkboxes are bound to the public properties: unchecked gives
-`DOKANY=""` (the `[backend] dokany = no` line, which is `DOKANY <> "1"`) and `ENABLELINKEDCONNECTIONS=""`.
-Interactive maintenance preselects the installed choices (`SD_DOKANY_INI` through `IniFileSearch` on
-`[SD_PRODUCT_DATA]settings.ini`, `SD_ELC_EXISTS`), so Next does not change them. The condition of `C_LinkedConn` also accepts
-the value this package wrote (`Installed AND SD_ELC_EXISTS = "1"`), so a Change keeps it and unchecking removes it.
+`-dSD_LICENSE_RTF`). The `DOKANY` and `ENABLELINKEDCONNECTIONS` checkboxes are bound to `SD_UI_DOKANY` and `SD_UI_ELC`
+(`CheckBoxValue="1"`), not to the public properties, which have no default (empty = not given).
+Remembered choices (04 §8.7): `C_Installer` (always installed, Core) writes `HKLM\SOFTWARE\LibreStatic\ShellDrive\Installer`
+with `DOKANY`, `ENABLELINKEDCONNECTIONS` and `ELC_OWNED`. Each run reads them with `RegistrySearch` (`SD_REG_*`, `RegLocator`
+rows). The init rows (`SetSD_UI_DOKANY`, `SetSD_UI_ELC`, `SetSD_UI_INIT`, after `AppSearch`) take the command line first, then
+the stored value, then the default, once per run; the state rows (`SD_DOKANY_STATE`, `SD_ELC_STATE`, `SD_ELC_WRITE`) come before
+`CostInitialize`. `C_Ini_Backend` follows `SD_DOKANY_STATE` (`[backend] dokany = no` when 0), so `settings.ini` and the registry
+agree. The `SD_PRODUCT_DATA`, `SD_DOKANY_INI` (IniFileSearch) and `SD_ELC_EXISTS`-only preselection of the earlier draft are gone.
+ELC ownership: `C_LinkedConn` is installed only when `SD_ELC_WRITE = 1` (wanted, and the value does not exist or `ELC_OWNED`
+is 1). `ELC_OWNED` records what the package wrote, so uninstall (which removes an installed keypath value) removes it only when
+this package created it. A value that exists and is not ours is never written, changed or removed.
+Checks: `msi.<flavour>.tables` covers the Property defaults, `ARPNOMODIFY`, the `RegLocator`/`AppSearch` rows, the `C_LinkedConn`
+and `C_Ini_Backend` conditions, the `C_Installer` values and the sequence order.
 The strings of the options page are `msi.options.*` in all six catalogs of `l10n/installer` (`WiX` ids `OptionsTitle`,
 `OptionsDokanyCheckbox`, ...); the WixUI ids of the set are in the overrides, and `dialog-set.txt` lists them.
 
 Open items: DEFAULTPROFILES (no MSI MoveFile authoring in WiX 3.14), `programdata-secure` runs after InstallFiles, hook
 rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, timestamps in the summary
-information (12.2), and the silent maintenance defaults: `msiexec /f /qn` or `/i /qn` without `DOKANY` and
-`ENABLELINKEDCONNECTIONS` resets them to the defaults (pass the same public properties again). The Dokany driver is not installed
-or removed by the MSI (setup does that). The installed behaviour, including the Change run, is for the lab (11.4).
+information (12.2). Lab checks of the installed behaviour (11.4): the Installer key on install, Change, repair and uninstall; the
+ownership rules with a pre-existing `EnableLinkedConnections` value; the options page. The Dokany driver is not installed or
+removed by the MSI (setup does that).
