@@ -360,8 +360,10 @@ sd_err sd_dokan_mount_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
     return SD_E_INVALID_PARAM;
   if (!api)
     return SD_E_UNSUPPORTED;                 /* sd_dokan_probe() first */
-  if (cfg->global_mount)
-    return SD_E_UNSUPPORTED;                 /* service mounts (D35): M5 */
+  /* M5: a global mount (service, D35) has no per-session flag and must carry the volume security descriptor that
+     encodes service_access and service_access_write; without it the volume would get Dokany's default. */
+  if (cfg->global_mount && (!cfg->volume_sd || cfg->volume_sd_len == 0))
+    return SD_E_INVALID_PARAM;
   if (cfg->volume_sd_len > SD_DOKAN_VOLUME_SECURITY_DESCRIPTOR_MAX_SIZE)
     return SD_E_INVALID_PARAM;
   m = (sd_dokan_mount *)sd_calloc(1, sizeof(*m));

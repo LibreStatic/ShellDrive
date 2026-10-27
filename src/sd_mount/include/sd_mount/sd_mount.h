@@ -221,6 +221,12 @@ typedef struct sd_mount_params {
      needed. The result is read with sd_mount_get_probe() once the mount reports UNMOUNTED. */
   int test_only;
   sd_mount_tuning tuning;               /* M3: vfs and session options of the profile (3.4.1); zeros = defaults */
+  /* M5: 1 = global mount (service, scope = service, 03 §1.3): Dokany without DOKAN_OPTION_CURRENT_SESSION.
+     Requires volume_sd (a self-relative security descriptor, copied) that encodes service_access and
+     service_access_write (02 §6.4); the mount is refused with SD_E_INVALID_PARAM without it. */
+  int global_mount;
+  const void *volume_sd;
+  uint32_t volume_sd_len;
 } sd_mount_params;
 
 

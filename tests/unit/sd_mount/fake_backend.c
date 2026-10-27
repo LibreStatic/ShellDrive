@@ -223,6 +223,11 @@ static void trust(const char *host)
   sd_mutex_unlock(&g_lock);
 }
 
+void fake_backend_pre_trust(const char *host)
+{
+  trust(host);
+}
+
 int fake_backend_letter_mounted(wchar_t letter)
 {
   int r;

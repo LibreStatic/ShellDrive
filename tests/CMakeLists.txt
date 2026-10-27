@@ -21,6 +21,7 @@ add_subdirectory(importcheck)
 add_subdirectory(ui)
 add_subdirectory(shellext)
 add_subdirectory(setup)
+add_subdirectory(unit/sd_svc)
 
 # MSI checks (04 §8): only with -DSD_BUILD_MSI=ON, which also builds the package they read (label msi).
 if(SD_BUILD_MSI)

@@ -1,0 +1,36 @@
+/* shelldrive-host service mode: ShellDriveSvc (03 §1.3, §2.2, §2.6; D6, D17, D35).
+ *
+ * svc_run is the one service core. It runs the same code under the Service Control Manager (svc_dispatch) and in
+ * the console (svc_console_run, `shelldrive-host.exe service-debug`), and it is what the in-process tests call with a
+ * fake mount backend (tests/unit/sd_svc). Only one core runs per process. */
+#ifndef SERVICE_H
+#define SERVICE_H
+
+#include <windows.h>
+
+#include "sd_mount/sd_mount.h"
+
+#define SVC_SERVICE_NAME L"ShellDriveSvc"
+
+typedef struct svc_opts {
+  const sd_mount_backend *backend;   /* NULL = host_backend() (the real modules or the unavailable stub) */
+  const wchar_t *machine_root;       /* NULL = %ProgramData%\LibreStatic\ShellDrive (tests: a temp folder) */
+  const wchar_t *secret_dir;         /* NULL = <machine root>\service (tests: a temp folder) */
+  int open_log;                      /* 1 = <machine root>\logs\service.log */
+  void (*on_running)(void *ctx);     /* called once the control pipe listens (SCM: SERVICE_RUNNING) */
+  void *ctx;
+  int test_all_admin;                /* SD_SVC_TEST_HOOKS builds only: every client counts as an elevated admin */
+} svc_opts;
+
+/* Blocks until svc_request_stop (or a stop control). Returns 0, or 1 when the core cannot start (no pipe, no folder
+   rights). Every mount is unmounted (forced) before it returns. */
+int  svc_run(const svc_opts *o);
+/* Any thread. Safe to call when no core runs. */
+void svc_request_stop(void);
+/* Service entry: StartServiceCtrlDispatcherW. Returns the service exit code, or 1 when the process was not started by
+   the SCM (the message says so, localized in the svc domain). */
+int  svc_dispatch(void);
+/* Console mode for `shelldrive-host.exe service-debug`: the same core, Ctrl+C stops it. */
+int  svc_console_run(void);
+
+#endif /* SERVICE_H */

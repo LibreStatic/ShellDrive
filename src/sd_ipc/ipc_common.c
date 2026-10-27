@@ -13,6 +13,7 @@
 
 static wchar_t g_suffix[64];
 static wchar_t g_owner_override[192];
+static wchar_t g_service_owner[192];
 static wchar_t g_agent_path[MAX_PATH];
 
 void sd_ipc_set_instance_suffix(const wchar_t *suffix)
@@ -36,7 +37,17 @@ void sd_ipc_set_agent_path(const wchar_t *path)
     ipc_wcat(g_agent_path, SD_COUNTOF(g_agent_path), path);
 }
 
+/* TEST HOOK (M5): the service pipe is created with this owner instead of SYSTEM (an unelevated test process cannot
+   give a pipe the SYSTEM owner). NULL or empty restores the SYSTEM owner. */
+void sd_ipc_test_set_service_owner(const wchar_t *sid_string)
+{
+  g_service_owner[0] = 0;
+  if (sid_string && sid_string[0])
+    ipc_wcat(g_service_owner, SD_COUNTOF(g_service_owner), sid_string);
+}
+
 const wchar_t *ipc_instance_suffix(void) { return g_suffix; }
+const wchar_t *ipc_service_owner_override(void) { return g_service_owner[0] ? g_service_owner : NULL; }
 const wchar_t *ipc_expected_owner_override(void) { return g_owner_override[0] ? g_owner_override : NULL; }
 const wchar_t *ipc_agent_path_override(void) { return g_agent_path[0] ? g_agent_path : NULL; }
 

@@ -7,3 +7,6 @@ sd_add_l10n_catalog(cli DOMAINS cli)
 sd_add_l10n_catalog(common DOMAINS common)
 sd_add_l10n_catalog(ui DOMAINS ui)
 sd_add_l10n_catalog(shell DOMAINS shell)
+
+# Service strings of shelldrive-host.exe (service-debug and the SCM messages; 03 §1.3, §9.1).
+sd_add_l10n_catalog(svc DOMAINS svc)

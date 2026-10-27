@@ -821,3 +821,59 @@ msgstr "Vide le cache d'un profil, d'un lecteur ou de tous les lecteurs montés.
 msgctxt "cli.help.profile_test"
 msgid "Connect and sign in, then resolve the remote path, without mounting anything."
 msgstr "Se connecte et s'authentifie, puis résout le chemin distant, sans rien monter."
+
+msgctxt "cli.help.service"
+msgid "Global drives (shared by every session): list, mount, unmount and status. Changing them needs an elevated console."
+msgstr "Lecteurs globaux (partagés par toutes les sessions) : list, mount, unmount et status. Les modifier demande une console élevée."
+
+msgctxt "cli.service.need_admin"
+msgid "Changing global drives needs an elevated console. Run it as administrator."
+msgstr "Modifier les lecteurs globaux demande une console élevée. Exécutez-la en tant qu'administrateur."
+
+msgctxt "cli.service.unavailable"
+msgid "The ShellDrive service is not running or not installed."
+msgstr "Le service ShellDrive n'est pas démarré ou n'est pas installé."
+
+msgctxt "cli.service.none"
+msgid "No global drives are mounted."
+msgstr "Aucun lecteur global n'est monté."
+
+msgctxt "cli.service.list_item"
+msgid "{target}  {label}  {state}"
+msgstr "{target}  {label}  {state}"
+
+msgctxt "cli.service.connecting"
+msgid "Connecting {target}..."
+msgstr "Connexion de {target} en cours..."
+
+msgctxt "cli.service.mounted"
+msgid "{target} is mounted."
+msgstr "{target} est monté."
+
+msgctxt "cli.service.unmounting"
+msgid "Unmounting {name}..."
+msgstr "Démontage de {name} en cours..."
+
+msgctxt "cli.service.unimplemented"
+msgid "The service command {verb} is not part of this build yet."
+msgstr "La commande de service {verb} ne fait pas encore partie de cette version."
+
+msgctxt "cli.service.state.connecting"
+msgid "connecting"
+msgstr "connexion en cours"
+
+msgctxt "cli.service.state.mounted"
+msgid "mounted"
+msgstr "monté"
+
+msgctxt "cli.service.state.failed"
+msgid "failed"
+msgstr "échec"
+
+msgctxt "cli.service.state.offline"
+msgid "offline"
+msgstr "hors ligne"
+
+msgctxt "cli.service.state.unmounting"
+msgid "unmounting"
+msgstr "démontage en cours"

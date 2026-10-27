@@ -812,3 +812,59 @@ msgstr "Leere den Cache eines Profils, eines Laufwerks oder aller verbundenen La
 msgctxt "cli.help.profile_test"
 msgid "Connect and sign in, then resolve the remote path, without mounting anything."
 msgstr "Verbinde dich und melde dich an, löse dann den Remote-Pfad auf, ohne etwas einzubinden."
+
+msgctxt "cli.help.service"
+msgid "Global drives (shared by every session): list, mount, unmount and status. Changing them needs an elevated console."
+msgstr "Globale Laufwerke (für alle Sitzungen gemeinsam): list, mount, unmount und status. Zum Ändern ist eine erhöhte Konsole nötig."
+
+msgctxt "cli.service.need_admin"
+msgid "Changing global drives needs an elevated console. Run it as administrator."
+msgstr "Zum Ändern globaler Laufwerke ist eine erhöhte Konsole nötig. Starte das Programm als Administrator."
+
+msgctxt "cli.service.unavailable"
+msgid "The ShellDrive service is not running or not installed."
+msgstr "Der ShellDrive-Dienst läuft nicht oder ist nicht installiert."
+
+msgctxt "cli.service.none"
+msgid "No global drives are mounted."
+msgstr "Es sind keine globalen Laufwerke eingebunden."
+
+msgctxt "cli.service.list_item"
+msgid "{target}  {label}  {state}"
+msgstr "{target}  {label}  {state}"
+
+msgctxt "cli.service.connecting"
+msgid "Connecting {target}..."
+msgstr "Verbindung zu {target} wird hergestellt..."
+
+msgctxt "cli.service.mounted"
+msgid "{target} is mounted."
+msgstr "{target} ist eingebunden."
+
+msgctxt "cli.service.unmounting"
+msgid "Unmounting {name}..."
+msgstr "{name} wird ausgehängt..."
+
+msgctxt "cli.service.unimplemented"
+msgid "The service command {verb} is not part of this build yet."
+msgstr "Der Dienstbefehl {verb} ist in dieser Version noch nicht enthalten."
+
+msgctxt "cli.service.state.connecting"
+msgid "connecting"
+msgstr "verbindet"
+
+msgctxt "cli.service.state.mounted"
+msgid "mounted"
+msgstr "eingebunden"
+
+msgctxt "cli.service.state.failed"
+msgid "failed"
+msgstr "fehlgeschlagen"
+
+msgctxt "cli.service.state.offline"
+msgid "offline"
+msgstr "offline"
+
+msgctxt "cli.service.state.unmounting"
+msgid "unmounting"
+msgstr "wird ausgehängt"

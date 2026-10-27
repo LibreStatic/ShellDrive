@@ -1,0 +1,20 @@
+# ShellDrive service strings, French (vous).
+msgid ""
+msgstr ""
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=((n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+msgctxt "svc.debug_started"
+msgid "ShellDrive service running in console mode. Press Ctrl+C to stop."
+msgstr "Le service ShellDrive fonctionne en mode console. Appuyez sur Ctrl+C pour l'arrêter."
+
+msgctxt "svc.debug_stopped"
+msgid "ShellDrive service stopped."
+msgstr "Le service ShellDrive s'est arrêté."
+
+msgctxt "svc.not_scm"
+msgid "This program is the ShellDrive service and needs the Service Control Manager. To run it in a console, use: shelldrive-host.exe service-debug"
+msgstr "Ce programme est le service ShellDrive et nécessite le gestionnaire de contrôle des services. Pour l'exécuter dans une console, utilisez : shelldrive-host.exe service-debug"
