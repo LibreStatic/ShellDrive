@@ -1,30 +1,65 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Italian overrides of the WixUI_Minimal strings: informal imperative (AGENTS.md). Replaces the WiX stock it-it, which uses the formal infinitive and Lei forms. -->
+<!-- Italian overrides of the ShellDriveUI dialog set strings: informal imperative (AGENTS.md). Replaces the WiX stock it-it, which uses the formal infinitive and Lei forms. -->
 <!-- Every id of packaging/msi/wixui/dialog-set.txt. Values that WiX's stock file already has in the project register are copied from it. -->
 <WixLocalization Culture="it-it" Codepage="1252" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="BrowseDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="BrowseDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="BrowseDlgComboLabel" Overridable="yes">Cerca &amp;in:</String>
+    <String Id="BrowseDlgDescription" Overridable="yes">Scegli la cartella di destinazione</String>
+    <String Id="BrowseDlgNewFolder" Overridable="yes">WixUI_Bmp_New</String>
+    <String Id="BrowseDlgNewFolderTooltip" Overridable="yes">Crea una nuova cartella</String>
+    <String Id="BrowseDlgPathLabel" Overridable="yes">&amp;Nome cartella:</String>
+    <String Id="BrowseDlgTitle" Overridable="yes">{\WixUI_Font_Title}Cambia la cartella di destinazione</String>
+    <String Id="BrowseDlgWixUI_Bmp_Up" Overridable="yes">WixUI_Bmp_Up</String>
+    <String Id="BrowseDlgWixUI_Bmp_UpTooltip" Overridable="yes">Sali di un livello</String>
+    <String Id="CancelDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="CancelDlgIcon" Overridable="yes">WixUI_Ico_Info</String>
     <String Id="CancelDlgIconTooltip" Overridable="yes">Icona informazioni</String>
     <String Id="CancelDlgText" Overridable="yes">Annullare l'installazione di [ProductName]?</String>
-    <String Id="CancelDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="CustomizeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="CustomizeDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="CustomizeDlgBrowse" Overridable="yes">Sfo&amp;glia...</String>
+    <String Id="CustomizeDlgDescription" Overridable="yes">Scegli come vuoi che vengano installate le funzionalità.</String>
+    <String Id="CustomizeDlgDiskCost" Overridable="yes">&amp;Utilizzo disco</String>
+    <String Id="CustomizeDlgItemDescription" Overridable="yes">CustomizeDlgItemDescription-CustomizeDlgItemDescription</String>
+    <String Id="CustomizeDlgItemSize" Overridable="yes">CustomizeDlgItemSize-CustomizeDlgItemSize</String>
+    <String Id="CustomizeDlgLocation" Overridable="yes">CustomizeDlgLocation-CustomizeDlgLocation</String>
+    <String Id="CustomizeDlgLocationLabel" Overridable="yes">Percorso:</String>
+    <String Id="CustomizeDlgReset" Overridable="yes">Ripristi&amp;na</String>
+    <String Id="CustomizeDlgText" Overridable="yes">Fai clic sulle icone nell'albero sottostante per cambiare il modo in cui verranno installate le funzionalità.</String>
+    <String Id="CustomizeDlgTitle" Overridable="yes">{\WixUI_Font_Title}Installazione personalizzata</String>
+    <String Id="CustomizeDlgTree" Overridable="yes">Albero delle selezioni</String>
+    <String Id="DiskCostDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="DiskCostDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="DiskCostDlgDescription" Overridable="yes">Lo spazio su disco necessario per installare le funzionalità selezionate.</String>
+    <String Id="DiskCostDlgText" Overridable="yes">I volumi evidenziati non hanno spazio sufficiente per le funzionalità selezionate. Rimuovi alcuni file dai volumi evidenziati, installa meno funzionalità oppure seleziona altre unità di destinazione.</String>
+    <String Id="DiskCostDlgTitle" Overridable="yes">{\WixUI_Font_Title}Requisiti di spazio su disco</String>
+    <String Id="DiskCostDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
+    <String Id="ErrorDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="ErrorDlgErrorIcon" Overridable="yes">WixUI_Ico_Info</String>
     <String Id="ErrorDlgErrorIconTooltip" Overridable="yes">Icona informazioni</String>
     <String Id="ErrorDlgErrorText" Overridable="yes">Testo informativo</String>
-    <String Id="ErrorDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="ExitDialog_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="ExitDialogBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="ExitDialogDescription" Overridable="yes">Fai clic sul pulsante Fine per uscire dall'Installazione guidata.</String>
     <String Id="ExitDialogTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName] completata</String>
-    <String Id="ExitDialog_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="FatalError_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="FatalErrorBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="FatalErrorDescription1" Overridable="yes">L'Installazione guidata di [ProductName] è terminata prima del completamento a causa di un errore. Il sistema non è stato modificato. Per installare il programma in un secondo momento, esegui di nuovo l'Installazione guidata.</String>
     <String Id="FatalErrorDescription2" Overridable="yes">Fai clic sul pulsante Fine per uscire dall'Installazione guidata.</String>
     <String Id="FatalErrorTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName] terminata prima del completamento</String>
-    <String Id="FatalError_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="FilesInUse_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="FilesInUseBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="FilesInUseDescription" Overridable="yes">Alcuni file che richiedono l'aggiornamento sono attualmente in uso.</String>
     <String Id="FilesInUseExit" Overridable="yes">E&amp;sci</String>
     <String Id="FilesInUseText" Overridable="yes">Le applicazioni seguenti stanno utilizzando file che devono essere aggiornati da questa installazione. Chiudi le applicazioni, quindi fai clic su &amp;Riprova per continuare l'installazione. Per uscire dall'installazione, fai clic su Esci.</String>
     <String Id="FilesInUseTitle" Overridable="yes">{\WixUI_Font_Title}File in uso</String>
-    <String Id="FilesInUse_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="LicenseAgreementDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="LicenseAgreementDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="LicenseAgreementDlgDescription" Overridable="yes">Leggi attentamente il seguente contratto di licenza.</String>
+    <String Id="LicenseAgreementDlgLicenseAcceptedCheckBox" Overridable="yes">Accetto i &amp;termini del contratto di licenza</String>
+    <String Id="LicenseAgreementDlgTitle" Overridable="yes">{\WixUI_Font_Title}Contratto di licenza con l'utente finale</String>
+    <String Id="MaintenanceTypeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="MaintenanceTypeDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="MaintenanceTypeDlgChangeButton" Overridable="yes">&amp;Cambia</String>
     <String Id="MaintenanceTypeDlgChangeButtonTooltip" Overridable="yes">Consente di modificare l'installazione</String>
@@ -40,35 +75,35 @@
     <String Id="MaintenanceTypeDlgRepairDisabledText" Overridable="yes">Impossibile riparare [ProductName].</String>
     <String Id="MaintenanceTypeDlgRepairText" Overridable="yes">Corregge gli errori presenti nell'installazione più recente ripristinando file mancanti o danneggiati, collegamenti e voci del Registro di sistema.</String>
     <String Id="MaintenanceTypeDlgTitle" Overridable="yes">{\WixUI_Font_Title}Modifica, riparazione o rimozione installazione</String>
-    <String Id="MaintenanceTypeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="MaintenanceWelcomeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="MaintenanceWelcomeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="MaintenanceWelcomeDlgDescription" Overridable="yes">L'Installazione guidata consente di cambiare la modalità di installazione delle funzionalità di [ProductName] nel computer oppure di rimuovere il prodotto. Fai clic su Avanti per continuare oppure su Annulla per uscire dall'Installazione guidata.</String>
     <String Id="MaintenanceWelcomeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName]</String>
-    <String Id="MaintenanceWelcomeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="MsiRMFilesInUse_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="MsiRMFilesInUseBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="MsiRMFilesInUseDescription" Overridable="yes">Alcuni file che richiedono l'aggiornamento sono attualmente in uso.</String>
     <String Id="MsiRMFilesInUseDontUseRM" Overridable="yes">&amp;Non chiudere le applicazioni. Sarà necessario riavviare il sistema.</String>
     <String Id="MsiRMFilesInUseText" Overridable="yes">Le applicazioni seguenti utilizzano file che devono essere aggiornati da questa installazione. È possibile consentirne la chiusura e il successivo riavvio da parte dell'Installazione guidata oppure riavviare il computer in seguito.</String>
     <String Id="MsiRMFilesInUseTitle" Overridable="yes">{\WixUI_Font_Title}File in uso</String>
     <String Id="MsiRMFilesInUseUseRM" Overridable="yes">&amp;Chiudi le applicazioni e tenta di riavviarle.</String>
-    <String Id="MsiRMFilesInUse_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="OutOfDiskDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="OutOfDiskDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="OutOfDiskDlgDescription" Overridable="yes">Spazio su disco disponibile insufficiente per l'installazione.</String>
     <String Id="OutOfDiskDlgText" Overridable="yes">Lo spazio su disco disponibile nei volumi evidenziati non è sufficiente per installare le funzionalità attualmente selezionate. Rimuovi alcuni file dai volumi evidenziati, installa un numero minore di funzionalità oppure seleziona un'unità di destinazione diversa.</String>
     <String Id="OutOfDiskDlgTitle" Overridable="yes">{\WixUI_Font_Title}Spazio su disco insufficiente</String>
     <String Id="OutOfDiskDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
-    <String Id="OutOfDiskDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="OutOfRbDiskDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="OutOfRbDiskDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="OutOfRbDiskDlgDescription" Overridable="yes">Spazio su disco disponibile insufficiente per l'installazione.</String>
     <String Id="OutOfRbDiskDlgText" Overridable="yes">Lo spazio su disco disponibile nei volumi evidenziati non è sufficiente per installare le funzionalità attualmente selezionate. Rimuovi alcuni file dai volumi evidenziati, installa un numero minore di funzionalità oppure seleziona un'unità di destinazione diversa.</String>
     <String Id="OutOfRbDiskDlgText2" Overridable="yes">In alternativa, è possibile scegliere di disabilitare la funzionalità di ripristino dello stato precedente all'installazione che consente, nel caso in cui l'installazione venga interrotta, di ripristinare lo stato originario del computer. Per disabilitare la funzionalità di ripristino dello stato precedente all'installazione, fai clic su Sì.</String>
     <String Id="OutOfRbDiskDlgTitle" Overridable="yes">{\WixUI_Font_Title}Spazio su disco insufficiente</String>
     <String Id="OutOfRbDiskDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
-    <String Id="OutOfRbDiskDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="PrepareDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="PrepareDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="PrepareDlgDescription" Overridable="yes">Attendi. È in corso la preparazione dell'Installazione guidata.</String>
     <String Id="PrepareDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName]</String>
-    <String Id="PrepareDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="ProgressDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="ProgressDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="ProgressDlgProgressBar" Overridable="yes">Stato</String>
     <String Id="ProgressDlgStatusLabel" Overridable="yes">Stato:</String>
@@ -82,12 +117,12 @@
     <String Id="ProgressDlgTitleRemoving" Overridable="yes">{\WixUI_Font_Title}Rimozione di [ProductName]</String>
     <String Id="ProgressDlgTitleRepairing" Overridable="yes">{\WixUI_Font_Title}Riparazione di [ProductName]</String>
     <String Id="ProgressDlgTitleUpdating" Overridable="yes">{\WixUI_Font_Title}Aggiornamento di [ProductName]</String>
-    <String Id="ProgressDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="ResumeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="ResumeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="ResumeDlgDescription" Overridable="yes">L'installazione di [ProductName] nel computer in uso verrà completata. Fai clic su Installa per continuare oppure su Annulla per uscire dall'Installazione guidata.</String>
     <String Id="ResumeDlgInstall" Overridable="yes">&amp;Installa</String>
     <String Id="ResumeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Ripresa dell'Installazione guidata di [ProductName]</String>
-    <String Id="ResumeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="UITextbytes" Overridable="yes">byte</String>
     <String Id="UITextGB" Overridable="yes">GB</String>
     <String Id="UITextKB" Overridable="yes">KB</String>
     <String Id="UITextMB" Overridable="yes">MB</String>
@@ -137,12 +172,12 @@
     <String Id="UITextVolumeCostRequired" Overridable="yes">Necessario</String>
     <String Id="UITextVolumeCostSize" Overridable="yes">Dimensioni disco</String>
     <String Id="UITextVolumeCostVolume" Overridable="yes">Volume</String>
-    <String Id="UITextbytes" Overridable="yes">byte</String>
+    <String Id="UserExit_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="UserExitBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="UserExitDescription1" Overridable="yes">L'installazione di [ProductName] è stata interrotta. Il sistema non è stato modificato. Per installare il programma in un secondo momento, esegui di nuovo l'installazione.</String>
     <String Id="UserExitDescription2" Overridable="yes">Fai clic sul pulsante Fine per uscire dall'Installazione guidata.</String>
     <String Id="UserExitTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName] interrotta</String>
-    <String Id="UserExit_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="VerifyReadyDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="VerifyReadyDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="VerifyReadyDlgChange" Overridable="yes">&amp;Cambia</String>
     <String Id="VerifyReadyDlgChangeText" Overridable="yes">Fai clic su Cambia per avviare l'installazione. Fai clic su Indietro per rivedere o modificare le impostazioni di installazione. Fai clic su Annulla per uscire dalla procedura guidata.</String>
@@ -159,21 +194,15 @@
     <String Id="VerifyReadyDlgUpdate" Overridable="yes">A&amp;ggiorna</String>
     <String Id="VerifyReadyDlgUpdateText" Overridable="yes">Fai clic su Aggiorna per eseguire l'aggiornamento di [ProductName] dal computer in uso. Fai clic su Indietro per rivedere o modificare le impostazioni di installazione. Fai clic su Annulla per uscire dalla procedura guidata.</String>
     <String Id="VerifyReadyDlgUpdateTitle" Overridable="yes">{\WixUI_Font_Title}Inizio aggiornamento di [ProductName]</String>
-    <String Id="VerifyReadyDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="WaitForCostingDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="WaitForCostingDlgIcon" Overridable="yes">WixUI_Ico_Exclam</String>
     <String Id="WaitForCostingDlgIconTooltip" Overridable="yes">Icona punto esclamativo</String>
     <String Id="WaitForCostingDlgReturn" Overridable="yes">&amp;Torna indietro</String>
     <String Id="WaitForCostingDlgText" Overridable="yes">Attendi. È in corso il calcolo dello spazio su disco richiesto.</String>
-    <String Id="WaitForCostingDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
+    <String Id="WelcomeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="WelcomeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="WelcomeDlgDescription" Overridable="yes">L'Installazione guidata consente di installare [ProductName] nel computer. Fai clic su Avanti per continuare oppure su Annulla per uscire dall'Installazione guidata.</String>
     <String Id="WelcomeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Installazione guidata di [ProductName]</String>
-    <String Id="WelcomeDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
-    <String Id="WelcomeEulaDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
-    <String Id="WelcomeEulaDlgInstall" Overridable="yes">&amp;Installa</String>
-    <String Id="WelcomeEulaDlgLicenseAcceptedCheckBox" Overridable="yes">&amp;Accetto i termini del Contratto di Licenza</String>
-    <String Id="WelcomeEulaDlgTitle" Overridable="yes">{\WixUI_Font_Title}Leggi il Contratto di Licenza di [ProductName]</String>
-    <String Id="WelcomeEulaDlg_Title" Overridable="yes">Installazione di [ProductName]</String>
     <String Id="WelcomeUpdateDlgDescriptionUpdate" Overridable="yes">Verrà eseguito l'aggiornamento di [ProductName] nel computer in uso. Fai clic su Avanti per continuare oppure su Annulla per uscire dall'Installazione guidata.</String>
     <String Id="WixUIBack" Overridable="yes">In&amp;dietro</String>
     <String Id="WixUICancel" Overridable="yes">Annulla</String>

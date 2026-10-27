@@ -1,30 +1,65 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- German overrides of the WixUI_Minimal strings: informal du (AGENTS.md). Replaces the WiX stock de-de, which uses Sie. -->
+<!-- German overrides of the ShellDriveUI dialog set strings: informal du (AGENTS.md). Replaces the WiX stock de-de, which uses Sie. -->
 <!-- Every id of packaging/msi/wixui/dialog-set.txt. Values that WiX's stock file already has in the project register are copied from it. -->
 <WixLocalization Culture="de-de" Codepage="1252" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="BrowseDlg_Title" Overridable="yes">Setup von [ProductName]</String>
+    <String Id="BrowseDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="BrowseDlgComboLabel" Overridable="yes">&amp;Suchen in:</String>
+    <String Id="BrowseDlgDescription" Overridable="yes">Wähle den Zielordner</String>
+    <String Id="BrowseDlgNewFolder" Overridable="yes">WixUI_Bmp_New</String>
+    <String Id="BrowseDlgNewFolderTooltip" Overridable="yes">Neuen Ordner erstellen</String>
+    <String Id="BrowseDlgPathLabel" Overridable="yes">&amp;Ordnername:</String>
+    <String Id="BrowseDlgTitle" Overridable="yes">{\WixUI_Font_Title}Zielordner ändern</String>
+    <String Id="BrowseDlgWixUI_Bmp_Up" Overridable="yes">WixUI_Bmp_Up</String>
+    <String Id="BrowseDlgWixUI_Bmp_UpTooltip" Overridable="yes">Eine Ebene nach oben</String>
+    <String Id="CancelDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="CancelDlgIcon" Overridable="yes">WixUI_Ico_Info</String>
     <String Id="CancelDlgIconTooltip" Overridable="yes">Informationssymbol</String>
     <String Id="CancelDlgText" Overridable="yes">Möchtest du die Installation von [ProductName] wirklich abbrechen?</String>
-    <String Id="CancelDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="CustomizeDlg_Title" Overridable="yes">Setup von [ProductName]</String>
+    <String Id="CustomizeDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="CustomizeDlgBrowse" Overridable="yes">Dur&amp;chsuchen...</String>
+    <String Id="CustomizeDlgDescription" Overridable="yes">Wähle aus, wie die Features installiert werden sollen.</String>
+    <String Id="CustomizeDlgDiskCost" Overridable="yes">Speicher&amp;bedarf</String>
+    <String Id="CustomizeDlgItemDescription" Overridable="yes">CustomizeDlgItemDescription-CustomizeDlgItemDescription</String>
+    <String Id="CustomizeDlgItemSize" Overridable="yes">CustomizeDlgItemSize-CustomizeDlgItemSize</String>
+    <String Id="CustomizeDlgLocation" Overridable="yes">CustomizeDlgLocation-CustomizeDlgLocation</String>
+    <String Id="CustomizeDlgLocationLabel" Overridable="yes">Speicherort:</String>
+    <String Id="CustomizeDlgReset" Overridable="yes">Zu&amp;rücksetzen</String>
+    <String Id="CustomizeDlgText" Overridable="yes">Klicke unten im Baum auf die Symbole, um zu ändern, wie die Features installiert werden.</String>
+    <String Id="CustomizeDlgTitle" Overridable="yes">{\WixUI_Font_Title}Benutzerdefiniertes Setup</String>
+    <String Id="CustomizeDlgTree" Overridable="yes">Auswahlbaum</String>
+    <String Id="DiskCostDlg_Title" Overridable="yes">Setup von [ProductName]</String>
+    <String Id="DiskCostDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="DiskCostDlgDescription" Overridable="yes">Der Speicherplatz, der für die Installation der ausgewählten Features benötigt wird.</String>
+    <String Id="DiskCostDlgText" Overridable="yes">Markierte Volumes haben nicht genug freien Speicherplatz für die ausgewählten Features. Entferne Dateien von den markierten Volumes, installiere weniger Features oder wähle andere Ziellaufwerke aus.</String>
+    <String Id="DiskCostDlgTitle" Overridable="yes">{\WixUI_Font_Title}Speicherplatzanforderungen</String>
+    <String Id="DiskCostDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
+    <String Id="ErrorDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="ErrorDlgErrorIcon" Overridable="yes">WixUI_Ico_Info</String>
     <String Id="ErrorDlgErrorIconTooltip" Overridable="yes">Informationssymbol</String>
     <String Id="ErrorDlgErrorText" Overridable="yes">Informationstext</String>
-    <String Id="ErrorDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="ExitDialog_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="ExitDialogBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="ExitDialogDescription" Overridable="yes">Klicke auf "Fertig stellen", um den Setup-Assistenten zu beenden.</String>
     <String Id="ExitDialogTitle" Overridable="yes">{\WixUI_Font_Bigger}Der Setup-Assistent für [ProductName] wurde abgeschlossen.</String>
-    <String Id="ExitDialog_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="FatalError_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="FatalErrorBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="FatalErrorDescription1" Overridable="yes">Der Setup-Assistent für [ProductName] wurde aufgrund eines Fehlers vorzeitig beendet. Das System wurde nicht verändert. Du musst den Setup-Assistenten erneut ausführen, um dieses Programm zu einem späteren Zeitpunkt zu installieren.</String>
     <String Id="FatalErrorDescription2" Overridable="yes">Klicke auf "Fertig stellen", um den Setup-Assistenten zu beenden.</String>
     <String Id="FatalErrorTitle" Overridable="yes">{\WixUI_Font_Bigger}Der Setup-Assistent für [ProductName] wurde vorzeitig beendet.</String>
-    <String Id="FatalError_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="FilesInUse_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="FilesInUseBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="FilesInUseDescription" Overridable="yes">Einige Dateien, die aktualisiert werden müssen, werden zurzeit verwendet.</String>
     <String Id="FilesInUseExit" Overridable="yes">Be&amp;enden</String>
     <String Id="FilesInUseText" Overridable="yes">Folgende Anwendungen verwenden Dateien, die aktualisiert werden müssen. Schließe diese Anwendungen, und klicke auf "&amp;Wiederholen", um die Installation fortzusetzen, oder auf "Beenden", um den Vorgang zu beenden.</String>
     <String Id="FilesInUseTitle" Overridable="yes">{\WixUI_Font_Title}Dateien werden verwendet</String>
-    <String Id="FilesInUse_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="LicenseAgreementDlg_Title" Overridable="yes">Setup von [ProductName]</String>
+    <String Id="LicenseAgreementDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
+    <String Id="LicenseAgreementDlgDescription" Overridable="yes">Lies die folgenden Lizenzbedingungen sorgfältig durch.</String>
+    <String Id="LicenseAgreementDlgLicenseAcceptedCheckBox" Overridable="yes">Ich &amp;akzeptiere die Bedingungen der Lizenzvereinbarung</String>
+    <String Id="LicenseAgreementDlgTitle" Overridable="yes">{\WixUI_Font_Title}Endbenutzer-Lizenzvereinbarung</String>
+    <String Id="MaintenanceTypeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="MaintenanceTypeDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="MaintenanceTypeDlgChangeButton" Overridable="yes">&amp;Ändern</String>
     <String Id="MaintenanceTypeDlgChangeButtonTooltip" Overridable="yes">Installation ändern</String>
@@ -40,35 +75,35 @@
     <String Id="MaintenanceTypeDlgRepairDisabledText" Overridable="yes">[ProductName] kann nicht repariert werden.</String>
     <String Id="MaintenanceTypeDlgRepairText" Overridable="yes">Repariert das zuletzt installierte Programm durch Berichtigen von fehlenden und beschädigten Dateien, Verknüpfungen und Registrierungseinträgen.</String>
     <String Id="MaintenanceTypeDlgTitle" Overridable="yes">{\WixUI_Font_Title}Ändern, Reparieren oder Entfernen der Installation</String>
-    <String Id="MaintenanceTypeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="MaintenanceWelcomeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="MaintenanceWelcomeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="MaintenanceWelcomeDlgDescription" Overridable="yes">Mit dem Setup-Assistenten kannst du die Installationsart der [ProductName]-Funktionen auf dem Computer ändern oder das Produkt vom Computer entfernen. Klicke auf "Weiter", um den Vorgang fortzusetzen, oder auf "Abbrechen", um den Setup-Assistenten zu beenden.</String>
     <String Id="MaintenanceWelcomeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Willkommen beim Setup-Assistenten von [ProductName]</String>
-    <String Id="MaintenanceWelcomeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="MsiRMFilesInUse_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="MsiRMFilesInUseBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="MsiRMFilesInUseDescription" Overridable="yes">Einige Dateien, die aktualisiert werden müssen, werden zurzeit verwendet.</String>
     <String Id="MsiRMFilesInUseDontUseRM" Overridable="yes">Anwendungen &amp;nicht schließen (späterer Neustart erforderlich)</String>
     <String Id="MsiRMFilesInUseText" Overridable="yes">Folgende Anwendungen verwenden Dateien, die aktualisiert werden müssen. Du kannst diese vom Setup-Assistenten schließen lassen und versuchen, sie neu zu starten, oder den Computer später neu starten.</String>
     <String Id="MsiRMFilesInUseTitle" Overridable="yes">{\WixUI_Font_Title}Dateien werden verwendet</String>
     <String Id="MsiRMFilesInUseUseRM" Overridable="yes">&amp;Anwendungen zuerst schließen und dann neu starten</String>
-    <String Id="MsiRMFilesInUse_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="OutOfDiskDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="OutOfDiskDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="OutOfDiskDlgDescription" Overridable="yes">Für die Installation ist nicht genügend Speicherplatz verfügbar.</String>
     <String Id="OutOfDiskDlgText" Overridable="yes">Die hervorgehobenen Volumes verfügen nicht über genügend Speicherplatz für die aktuell ausgewählten Funktionen. Du kannst einige Dateien von diesen Volumes entfernen, weniger Funktionen installieren oder ein anderes Ziellaufwerk auswählen.</String>
     <String Id="OutOfDiskDlgTitle" Overridable="yes">{\WixUI_Font_Title}Nicht genügend Speicherplatz</String>
     <String Id="OutOfDiskDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
-    <String Id="OutOfDiskDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="OutOfRbDiskDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="OutOfRbDiskDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="OutOfRbDiskDlgDescription" Overridable="yes">Für die Installation ist nicht genügend Speicherplatz verfügbar.</String>
     <String Id="OutOfRbDiskDlgText" Overridable="yes">Die hervorgehobenen Volumes verfügen nicht über genügend Speicherplatz für die aktuell ausgewählten Funktionen. Du kannst einige Dateien von diesen Volumes entfernen, weniger Funktionen installieren oder ein anderes Ziellaufwerk auswählen.</String>
     <String Id="OutOfRbDiskDlgText2" Overridable="yes">Alternativ kannst du die Rollbackfunktion des Installationsprogramms deaktivieren. Das Deaktivieren des Rollbacks verhindert, dass das Installationsprogramm den Ursprungszustand des Computers wiederherstellen kann, wenn die Installation unterbrochen werden sollte. Klicke auf "Ja", wenn du das Risiko eingehen möchtest, das Rollback zu deaktivieren.</String>
     <String Id="OutOfRbDiskDlgTitle" Overridable="yes">{\WixUI_Font_Title}Nicht genügend Speicherplatz</String>
     <String Id="OutOfRbDiskDlgVolumeList" Overridable="yes">{120}{70}{70}{70}{70}</String>
-    <String Id="OutOfRbDiskDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="PrepareDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="PrepareDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="PrepareDlgDescription" Overridable="yes">Warte, während die Installation vorbereitet wird.</String>
     <String Id="PrepareDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Willkommen beim Setup-Assistenten von [ProductName]</String>
-    <String Id="PrepareDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="ProgressDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="ProgressDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="ProgressDlgProgressBar" Overridable="yes">Ausgeführt</String>
     <String Id="ProgressDlgStatusLabel" Overridable="yes">Status:</String>
@@ -82,12 +117,12 @@
     <String Id="ProgressDlgTitleRemoving" Overridable="yes">{\WixUI_Font_Title}[ProductName] wird entfernt</String>
     <String Id="ProgressDlgTitleRepairing" Overridable="yes">{\WixUI_Font_Title}[ProductName] wird repariert</String>
     <String Id="ProgressDlgTitleUpdating" Overridable="yes">{\WixUI_Font_Title}[ProductName] wird aktualisiert</String>
-    <String Id="ProgressDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="ResumeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="ResumeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="ResumeDlgDescription" Overridable="yes">Die Installation von [ProductName] wird vom Setup-Assistenten auf dem Computer abgeschlossen. Klicke auf "Installieren", um den Vorgang fortzusetzen, oder auf "Abbrechen", um den Setup-Assistenten zu beenden.</String>
     <String Id="ResumeDlgInstall" Overridable="yes">&amp;Installieren</String>
     <String Id="ResumeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Der Setup-Assistent für [ProductName] wird fortgesetzt</String>
-    <String Id="ResumeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="UITextbytes" Overridable="yes">Bytes</String>
     <String Id="UITextGB" Overridable="yes">GB</String>
     <String Id="UITextKB" Overridable="yes">KB</String>
     <String Id="UITextMB" Overridable="yes">MB</String>
@@ -137,12 +172,12 @@
     <String Id="UITextVolumeCostRequired" Overridable="yes">Erforderlich</String>
     <String Id="UITextVolumeCostSize" Overridable="yes">Datenträgergröße</String>
     <String Id="UITextVolumeCostVolume" Overridable="yes">Volume</String>
-    <String Id="UITextbytes" Overridable="yes">Bytes</String>
+    <String Id="UserExit_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="UserExitBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="UserExitDescription1" Overridable="yes">Die [ProductName]-Installation wurde unterbrochen. Das System wurde nicht verändert. Du musst die Installation erneut ausführen, wenn du dieses Programm zu einem späteren Zeitpunkt installieren möchtest.</String>
     <String Id="UserExitDescription2" Overridable="yes">Klicke auf "Fertig stellen", um den Setup-Assistenten zu beenden.</String>
     <String Id="UserExitTitle" Overridable="yes">{\WixUI_Font_Bigger}Der Setup-Assistent für [ProductName] wurde unterbrochen.</String>
-    <String Id="UserExit_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="VerifyReadyDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="VerifyReadyDlgBannerBitmap" Overridable="yes">WixUI_Bmp_Banner</String>
     <String Id="VerifyReadyDlgChange" Overridable="yes">&amp;Ändern</String>
     <String Id="VerifyReadyDlgChangeText" Overridable="yes">Klicke auf "Ändern", um die Installation zu starten. Klicke auf "Zurück", um die Installationseinstellungen zu prüfen oder zu ändern. Klicke auf "Abbrechen", um den Assistenten zu beenden.</String>
@@ -159,21 +194,15 @@
     <String Id="VerifyReadyDlgUpdate" Overridable="yes">&amp;Aktualisieren</String>
     <String Id="VerifyReadyDlgUpdateText" Overridable="yes">Klicke auf "Aktualisieren", um [ProductName] auf deinem Computer zu aktualisieren. Klicke auf "Zurück", um die Installationseinstellungen zu prüfen oder zu ändern. Klicke auf "Abbrechen", um den Assistenten zu beenden.</String>
     <String Id="VerifyReadyDlgUpdateTitle" Overridable="yes">{\WixUI_Font_Title}Bereit zum Aktualisieren von [ProductName]</String>
-    <String Id="VerifyReadyDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="WaitForCostingDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="WaitForCostingDlgIcon" Overridable="yes">WixUI_Ico_Exclam</String>
     <String Id="WaitForCostingDlgIconTooltip" Overridable="yes">Hinweissymbol</String>
     <String Id="WaitForCostingDlgReturn" Overridable="yes">&amp;Zurückspringen</String>
     <String Id="WaitForCostingDlgText" Overridable="yes">Das Installationsprogramm ermittelt den Speicherplatzbedarf. Bitte warte.</String>
-    <String Id="WaitForCostingDlg_Title" Overridable="yes">[ProductName]-Setup</String>
+    <String Id="WelcomeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="WelcomeDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
     <String Id="WelcomeDlgDescription" Overridable="yes">[ProductName] wird auf dem Computer installiert. Klicke auf "Weiter", um den Vorgang fortzusetzen, oder auf "Abbrechen", um den Setup-Assistenten zu beenden.</String>
     <String Id="WelcomeDlgTitle" Overridable="yes">{\WixUI_Font_Bigger}Willkommen beim Setup-Assistenten von [ProductName]</String>
-    <String Id="WelcomeDlg_Title" Overridable="yes">[ProductName]-Setup</String>
-    <String Id="WelcomeEulaDlgBitmap" Overridable="yes">WixUI_Bmp_Dialog</String>
-    <String Id="WelcomeEulaDlgInstall" Overridable="yes">&amp;Installieren</String>
-    <String Id="WelcomeEulaDlgLicenseAcceptedCheckBox" Overridable="yes">Ich &amp;stimme den Bedingungen der Lizenzvereinbarung zu.</String>
-    <String Id="WelcomeEulaDlgTitle" Overridable="yes">{\WixUI_Font_Title}Lies die Lizenzbedingungen für [ProductName].</String>
-    <String Id="WelcomeEulaDlg_Title" Overridable="yes">[ProductName]-Setup</String>
     <String Id="WelcomeUpdateDlgDescriptionUpdate" Overridable="yes">[ProductName] wird auf dem Computer aktualisiert. Klicke auf "Weiter", um den Vorgang fortzusetzen, oder auf "Abbrechen", um den Setup-Assistenten zu beenden.</String>
     <String Id="WixUIBack" Overridable="yes">&amp;Zurück</String>
     <String Id="WixUICancel" Overridable="yes">Abbrechen</String>

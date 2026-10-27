@@ -13,11 +13,12 @@
 #   SD_MSI_BIN (the folder of the four binaries), SD_MSI_ICON, SD_MSI_SRC (packaging/msi), SD_MSI_GEN (build
 #   folder for generated files), SD_MSI_OUT (the final package is SD_MSI_OUT/ShellDrive-<version>-<flavour>.msi),
 #   SD_MSI_REG (packaging/registration.txt), SD_MSI_PO (l10n/installer), SD_MSI_WIX (WiX root folder),
-#   SD_MSIGEN, SD_MSIEMBED (tool paths).
+#   SD_MSI_LICENSE (the LICENSE file of the repository: the license page of the dialog set), SD_MSIGEN, SD_MSIEMBED
+#   (tool paths).
 
 foreach(_v IN ITEMS SD_MSI_FLAVOUR SD_MSI_FAMILY SD_MSI_VERSION SD_MSI_ARCH SD_MSI_INSTALLER_VERSION SD_MSI_PF
                     SD_MSI_WIN64 SD_MSI_LAUNCH SD_MSI_WITH_SERVICE SD_MSI_UPGRADE_CODE SD_MSI_BIN SD_MSI_ICON
-                    SD_MSI_SRC SD_MSI_GEN SD_MSI_OUT SD_MSI_REG SD_MSI_PO SD_MSI_WIX SD_MSIGEN SD_MSIEMBED)
+                    SD_MSI_SRC SD_MSI_GEN SD_MSI_OUT SD_MSI_REG SD_MSI_PO SD_MSI_WIX SD_MSI_LICENSE SD_MSIGEN SD_MSIEMBED)
   if("${${_v}}" STREQUAL "")
     message(FATAL_ERROR "build-msi.cmake: ${_v} is not set")
   endif()
@@ -68,7 +69,7 @@ if(NOT _rc EQUAL 0)
 endif()
 
 set(_components C_Core_Cli C_Core_Host C_Core_Ui C_ShellExt C_StartMenu C_Ini_Update C_Ini_UpdateUrl
-                C_Ini_Backend C_LinkedConn C_Rm_Secrets C_Rm_Keys C_Rm_Data C_Rm_DataProfiles
+                C_Ini_Backend C_LinkedConn C_Installer C_Rm_Secrets C_Rm_Keys C_Rm_Data C_Rm_DataProfiles
                 C_Rm_DataState C_Rm_DataService)
 set(_guids_file "${_work}/Guids.wxi")
 file(WRITE "${_guids_file}" "<Include>\n<?define SD_PRODUCT_CODE = \"${_product_code}\" ?>\n<?define SD_PACKAGE_CODE = \"${_package_code}\" ?>\n")
@@ -85,6 +86,18 @@ file(APPEND "${_guids_file}" "</Include>\n")
 # 2. Registry rows (packaging/registration.txt) and the WiX localization files of every culture.
 sd_msi_step("sd-msigen registry" "${SD_MSIGEN}" registry --in "${SD_MSI_REG}" --out "${_work}/Registry.wxi"
             --flavour "${SD_MSI_FLAVOUR}" --family "${SD_MSI_FAMILY}" --win64 "${SD_MSI_WIN64}")
+
+# 2b. The license page (WixUILicenseRtf): the LICENSE file of the repository, converted to RTF for this build. The text
+#     is the only source; no RTF copy is checked in. Backslash, braces and line ends are escaped as RTF needs.
+file(READ "${SD_MSI_LICENSE}" _license_text)
+string(REPLACE "\r\n" "\n" _license_text "${_license_text}")
+string(REPLACE "\\" "\\\\" _license_text "${_license_text}")
+string(REPLACE "{" "\\{" _license_text "${_license_text}")
+string(REPLACE "}" "\\}" _license_text "${_license_text}")
+string(REPLACE "\n" "\\par\n" _license_text "${_license_text}")
+set(_license_rtf "${_work}/License.rtf")
+file(WRITE "${_license_rtf}"
+     "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fnil\\fcharset0 Tahoma;}}\\viewkind4\\uc1\\pard\\f0\\fs16 ${_license_text}\\par\n}\n")
 
 set(_langs en es fr pt-BR it de)
 set(_cultures en-US es-ES fr-FR pt-BR it-IT de-DE)
@@ -109,6 +122,7 @@ sd_msi_step("candle" "${_candle}" -nologo -arch "${SD_MSI_ARCH}"
             "-dSD_UPGRADE_CODE=${SD_MSI_UPGRADE_CODE}" "-dSD_INSTALLER_VERSION=${SD_MSI_INSTALLER_VERSION}"
             "-dSD_PF_DIR=${SD_MSI_PF}" "-dSD_WIN64=${SD_MSI_WIN64}" "-dSD_BIN_DIR=${SD_MSI_BIN}"
             "-dSD_ICON=${SD_MSI_ICON}" "-dSD_LAUNCH=${SD_MSI_LAUNCH}" "-dSD_WITH_SERVICE=${SD_MSI_WITH_SERVICE}"
+            "-dSD_LICENSE_RTF=${_license_rtf}"
             -out "${_obj}" "${SD_MSI_SRC}/ShellDrive.wxs")
 
 # ICE suppressions (justified in 04 §8.3; every other ICE stays on):

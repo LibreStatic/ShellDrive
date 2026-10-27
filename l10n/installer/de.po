@@ -372,3 +372,38 @@ msgstr "Eine neuere Version von ShellDrive ist bereits installiert."
 msgctxt "msi.os.required"
 msgid "This package of ShellDrive needs Windows 10 or later. Use the package for your version of Windows."
 msgstr "Dieses ShellDrive-Paket benötigt Windows 10 oder neuer. Nimm das Paket für deine Windows-Version."
+
+# WiX string OptionsTitle of the options page of the Change dialog set (04 §6.7).
+msgctxt "msi.options.title"
+msgid "Options of this installation"
+msgstr "Optionen dieser Installation"
+
+#. WiX string OptionsDescription of the options page.
+msgctxt "msi.options.description"
+msgid "Choose the options that ShellDrive uses on this computer."
+msgstr "Wähle die Optionen, die ShellDrive auf diesem Computer verwendet."
+
+#. WiX string OptionsWindowTitle of the options page (window title).
+msgctxt "msi.options.window.title"
+msgid "[ProductName] Setup"
+msgstr "Setup von [ProductName]"
+
+#. WiX string OptionsDokanyCheckbox: the DOKANY option (04 §8.4).
+msgctxt "msi.options.dokany.checkbox"
+msgid "Use Dokany for global drives (recommended)"
+msgstr "Dokany für globale Laufwerke verwenden (empfohlen)"
+
+#. WiX string OptionsDokanyHint: explains the DOKANY option under its checkbox.
+msgctxt "msi.options.dokany.hint"
+msgid "Dokany is a file system driver that this package neither installs nor removes. When unchecked, ShellDrive uses only the WebDAV backend, without Dokany global drives."
+msgstr "Dokany ist ein Dateisystemtreiber, den dieses Paket weder installiert noch entfernt. Wenn du das Häkchen entfernst, verwendet ShellDrive nur das WebDAV-Backend ohne globale Dokany-Laufwerke."
+
+#. WiX string OptionsLinkedCheckbox: the ENABLELINKEDCONNECTIONS option (04 §8.4).
+msgctxt "msi.options.linked.checkbox"
+msgid "Let elevated programs see mapped drives"
+msgstr "Erhöhten Programmen das Sehen verbundener Laufwerke erlauben"
+
+#. WiX string OptionsLinkedHint: explains the ENABLELINKEDCONNECTIONS option under its checkbox.
+msgctxt "msi.options.linked.hint"
+msgid "Sets the Windows EnableLinkedConnections setting, so that programs run as administrator can see the drives that ShellDrive maps. Unchecked by default."
+msgstr "Setzt die Windows-Einstellung EnableLinkedConnections, damit Programme mit Administratorrechten die Laufwerke sehen, die ShellDrive verbindet. Standardmäßig deaktiviert."

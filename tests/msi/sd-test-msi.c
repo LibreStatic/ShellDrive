@@ -200,6 +200,20 @@ static int any_key_contains(MSIHANDLE db, const wchar_t *text)
   return found;
 }
 
+/* Sequence number of an action of an install sequence table, or -1 when the table has no such action. */
+static int seq_of(MSIHANDLE db, const wchar_t *table, const wchar_t *action)
+{
+  wchar_t sql[512], buf[64];
+  swprintf_s(sql, 512, L"SELECT `Sequence` FROM `%ls` WHERE `Action` = '%ls'", table, action);
+  if (!query_first(db, sql, buf, 64))
+    return -1;
+  return _wtoi(buf);
+}
+
+/* The remembered choices of the package (04 §8.7): the RegistrySearch properties and the value names they read. */
+static const wchar_t *g_remembered_prop[] = { L"SD_REG_DOKANY", L"SD_REG_ELC", L"SD_REG_ELC_OWNED" };
+static const wchar_t *g_remembered_name[] = { L"DOKANY", L"ENABLELINKEDCONNECTIONS", L"ELC_OWNED" };
+
 static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t *upgrade, const wchar_t *platform,
                       int installer_version, int launch_count)
 {
@@ -210,7 +224,7 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
   int ival = 0, ok;
   const wchar_t *components[] = {
     L"C_Core_Cli", L"C_Core_Host", L"C_Core_Ui", L"C_ShellExt", L"C_StartMenu", L"C_Ini_Update",
-    L"C_Ini_Backend", L"C_LinkedConn", L"C_Rm_Secrets", L"C_Rm_Keys", L"C_Rm_Data", L"SD_Reg_000"
+    L"C_Ini_Backend", L"C_LinkedConn", L"C_Installer", L"C_Rm_Secrets", L"C_Rm_Keys", L"C_Rm_Data", L"SD_Reg_000"
   };
   const wchar_t *features[] = { L"ShellDrive", L"Core", L"ShellExt", L"StartMenu", L"Autostart" };
   const wchar_t *hooks[] = { L"CA_ProgramDataSecure", L"CA_WebDavTune_Apply", L"CA_WebDavTune_Revert",
@@ -324,6 +338,63 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
     }
   }
   check(ok, "installer hooks: deferred; NoImpersonate exactly where 04 §8.3 says (TM-R35)");
+
+  /* Remembered choices and EnableLinkedConnections ownership (04 §8.7). */
+  check(!query_first(db, L"SELECT `Value` FROM `Property` WHERE `Property` = 'DOKANY'", buf, 2048) &&
+        !query_first(db, L"SELECT `Value` FROM `Property` WHERE `Property` = 'ENABLELINKEDCONNECTIONS'", buf, 2048),
+        "DOKANY and ENABLELINKEDCONNECTIONS have no default: command line, then registry, then default decide");
+  check(query_first(db, L"SELECT `Value` FROM `Property` WHERE `Property` = 'ARPNOMODIFY'", buf, 2048) &&
+        wcscmp(buf, L"0") == 0, "ARPNOMODIFY is 0 (Change offered, 04 §6.7)");
+
+  ok = 1;
+  for (i = 0; i < sizeof(g_remembered_prop) / sizeof(g_remembered_prop[0]); i++) {
+    swprintf_s(sql, 512, L"SELECT `RegLocator`.`Signature_` FROM `RegLocator`, `AppSearch`"
+                         L" WHERE `AppSearch`.`Signature_` = `RegLocator`.`Signature_`"
+                         L" AND `AppSearch`.`Property` = '%ls' AND `RegLocator`.`Name` = '%ls'"
+                         L" AND `RegLocator`.`Key` = 'SOFTWARE\\LibreStatic\\ShellDrive\\Installer'"
+                         L" AND `RegLocator`.`Root` = 2", g_remembered_prop[i], g_remembered_name[i]);
+    if (count_rows(db, sql) != 1) {
+      printf("     no RegLocator/AppSearch row for %ls\n", g_remembered_prop[i]);
+      ok = 0;
+    }
+  }
+  check(ok, "RegistrySearch rows read the Installer key: DOKANY, ENABLELINKEDCONNECTIONS, ELC_OWNED (04 §8.7)");
+
+  check(query_first(db, L"SELECT `Condition` FROM `Component` WHERE `Component` = 'C_LinkedConn'", buf, 2048) &&
+        contains_ci(buf, L"SD_ELC_WRITE") && !contains_ci(buf, L"Installed"),
+        "C_LinkedConn is installed only when the package owns the value (SD_ELC_WRITE, 04 §8.7)");
+  check(query_first(db, L"SELECT `Condition` FROM `Component` WHERE `Component` = 'C_Ini_Backend'", buf, 2048) &&
+        contains_ci(buf, L"SD_DOKANY_STATE"), "C_Ini_Backend follows the effective DOKANY state (settings.ini as stored)");
+  check(count_rows(db, L"SELECT `Name` FROM `Registry` WHERE `Component_` = 'C_Installer'") == 3,
+        "C_Installer writes DOKANY, ENABLELINKEDCONNECTIONS and ELC_OWNED (always installed)");
+
+  /* Order: the registry is read in AppSearch, the choices are initialised once, the effective state is set before costing. */
+  {
+    static const wchar_t *ui_order[] = { L"AppSearch", L"SetSD_UI_DOKANY", L"SetSD_UI_ELC", L"SetSD_UI_INIT" };
+    static const wchar_t *exec_order[] = { L"AppSearch", L"SetSD_UI_DOKANY", L"SetSD_UI_ELC", L"SetSD_UI_INIT",
+                                           L"SetSD_DOKANY_STATE", L"SetSD_ELC_STATE", L"SetSD_ELC_WRITE" };
+    int cost = seq_of(db, L"InstallExecuteSequence", L"CostInitialize");
+    int prev = -1;
+    ok = 1;
+    for (i = 0; i < sizeof(ui_order) / sizeof(ui_order[0]); i++) {
+      int s = seq_of(db, L"InstallUISequence", ui_order[i]);
+      if (s <= prev) {
+        printf("     InstallUISequence %ls out of order (%d)\n", ui_order[i], s);
+        ok = 0;
+      }
+      prev = s;
+    }
+    prev = -1;
+    for (i = 0; i < sizeof(exec_order) / sizeof(exec_order[0]); i++) {
+      int s = seq_of(db, L"InstallExecuteSequence", exec_order[i]);
+      if (s <= prev || s >= cost) {
+        printf("     InstallExecuteSequence %ls out of order (%d, costing %d)\n", exec_order[i], s, cost);
+        ok = 0;
+      }
+      prev = s;
+    }
+    check(ok, "options: registry read, init, then effective state, before CostInitialize (04 §8.7)");
+  }
 
   MsiCloseHandle(db);
   return g_failures == 0;
