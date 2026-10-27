@@ -21,4 +21,6 @@ add_executable(sd-test-webdav-redirector test_redirector.c)
 target_link_libraries(sd-test-webdav-redirector PRIVATE sd_test_harness sd_webdav_fake)
 set_target_properties(sd-test-webdav-redirector PROPERTIES FOLDER "tests")
 add_test(NAME webdav.redirector COMMAND sd-test-webdav-redirector)
-set_tests_properties(webdav.redirector PROPERTIES LABELS webdav SKIP_RETURN_CODE 77 TIMEOUT 900)
+# Both pick the first free drive letter (test_redirector.c, test_dokany_mount.c): drive_letter keeps them apart.
+set_tests_properties(webdav.redirector PROPERTIES LABELS webdav SKIP_RETURN_CODE 77 TIMEOUT 900
+  RESOURCE_LOCK drive_letter)

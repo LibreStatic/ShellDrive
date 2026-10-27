@@ -29,5 +29,6 @@ target_compile_definitions(sd-test-vfs-bench PRIVATE
   SD_SSH_WSL_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/wsl-sshd")
 set_target_properties(sd-test-vfs-bench PROPERTIES FOLDER "tests")
 add_test(NAME bench.vfs_pool COMMAND sd-test-vfs-bench)
+# Throughput measurement (RUN_SERIAL) against the shared sshd fixture (wsl_sshd_fixture).
 set_tests_properties(bench.vfs_pool PROPERTIES LABELS bench TIMEOUT 1800 SKIP_RETURN_CODE 77
-  RESOURCE_LOCK wsl_sshd_fixture)
+  RESOURCE_LOCK wsl_sshd_fixture RUN_SERIAL TRUE)

@@ -18,4 +18,6 @@ add_executable(sd-test-dokany test_dokany_mount.c)
 target_link_libraries(sd-test-dokany PRIVATE sd_test_harness sd_dokan_fake)
 set_target_properties(sd-test-dokany PROPERTIES FOLDER "tests")
 add_test(NAME dokany.mount COMMAND sd-test-dokany)
-set_tests_properties(dokany.mount PROPERTIES LABELS dokany SKIP_RETURN_CODE 77 TIMEOUT 900)
+# Picks the first free drive letter, as webdav.redirector does: drive_letter keeps the two apart.
+set_tests_properties(dokany.mount PROPERTIES LABELS dokany SKIP_RETURN_CODE 77 TIMEOUT 900
+  RESOURCE_LOCK drive_letter)
