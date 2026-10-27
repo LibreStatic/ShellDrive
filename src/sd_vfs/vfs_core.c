@@ -1478,6 +1478,7 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (v->wb_window_mount < v->wb_window) v->wb_window_mount = v->wb_window;
   v->grace = o->reconnect_grace_ms == 0xFFFFFFFFu ? 0 : def_u(o->reconnect_grace_ms, VFS_DEF_GRACE);
   v->offline_wait = def_u(o->offline_wait_ms, VFS_DEF_OFFLINE_WAIT);
+  v->stripe_min_file = def_u(o->stripe_min_file, VFS_DEF_STRIPE_FILE);
   v->mount_id = vc_new_mount_id();
   v->label = vfs_wcsdup(o->volume_label ? o->volume_label : L"ShellDrive");
   v->fs_name = vfs_wcsdup(o->volume_fs_name ? o->volume_fs_name : L"NTFS");

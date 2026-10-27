@@ -41,6 +41,11 @@ SD_TEST_DECL(vfs_identity_home_owner_then_first_create);
 SD_TEST_DECL(vfs_disk_cache_persists_across_mounts);
 SD_TEST_DECL(vfs_disk_cache_refused_unsafe_directories);
 SD_TEST_DECL(vfs_disk_cache_trim_to_limit);
+SD_TEST_DECL(vfs_striping_size_threshold);
+SD_TEST_DECL(vfs_striping_sequential_write_threshold);
+SD_TEST_DECL(vfs_striping_write_behind_kick);
+SD_TEST_DECL(vfs_striping_needs_more_than_the_primary);
+SD_TEST_DECL(vfs_striping_append_and_directory_excluded);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_err_table_covers_every_value),
@@ -84,6 +89,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_disk_cache_persists_across_mounts),
   SD_TEST_ENTRY(vfs_disk_cache_refused_unsafe_directories),
   SD_TEST_ENTRY(vfs_disk_cache_trim_to_limit),
+  SD_TEST_ENTRY(vfs_striping_size_threshold),
+  SD_TEST_ENTRY(vfs_striping_sequential_write_threshold),
+  SD_TEST_ENTRY(vfs_striping_write_behind_kick),
+  SD_TEST_ENTRY(vfs_striping_needs_more_than_the_primary),
+  SD_TEST_ENTRY(vfs_striping_append_and_directory_excluded),
 };
 
 int main(int argc, char **argv)

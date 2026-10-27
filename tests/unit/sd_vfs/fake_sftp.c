@@ -74,6 +74,7 @@ struct sd_sftp_session {
   fake_config cfg;
   sd_sftp_state state;
   uint32_t counts[FOP_COUNT];
+  uint32_t striped_opens;             /* OPENs executed with SD_SFTP_O_STRIPED */
   LONG open_handles;
   int fail_op; sd_err fail_err;
   inj *injected;
@@ -415,6 +416,7 @@ static void execute(sd_sftp_session *s, freq *r)
   c.server_message = "";
   EnterCriticalSection(&s->lock);
   if (r->op >= 0 && r->op < FOP_COUNT) s->counts[r->op]++;
+  if (r->op == FOP_OPEN && (r->flags & SD_SFTP_O_STRIPED)) s->striped_opens++;
   if (r->cancelled) {
     err = SD_E_CANCELLED;
   } else if (s->state != SD_SFTP_ST_READY) {
@@ -983,7 +985,7 @@ sd_err sd_sftp_session_info(sd_sftp_session *s, sd_sftp_server_info *copy_out, c
   copy_out->limits.max_write = s->cfg.max_write;
   copy_out->limits.max_open_handles = 1024;
   copy_out->channels = 1;
-  copy_out->connections = 1;
+  copy_out->connections = s->cfg.connections ? s->cfg.connections : 1;
   if (home_buf && home_len) {
     strcpy_s(home_buf, home_len, s->home);
     copy_out->home = home_buf;
@@ -1158,7 +1160,17 @@ void fake_reset_counts(sd_sftp_session *s)
 {
   EnterCriticalSection(&s->lock);
   memset(s->counts, 0, sizeof(s->counts));
+  s->striped_opens = 0;
   LeaveCriticalSection(&s->lock);
+}
+
+uint32_t fake_striped_opens(sd_sftp_session *s)
+{
+  uint32_t c;
+  EnterCriticalSection(&s->lock);
+  c = s->striped_opens;
+  LeaveCriticalSection(&s->lock);
+  return c;
 }
 
 uint32_t fake_open_handles(sd_sftp_session *s) { return (uint32_t)InterlockedCompareExchange(&s->open_handles, 0, 0); }

@@ -58,6 +58,8 @@
 #define VFS_DEF_WB_MOUNT      (64u << 20)
 #define VFS_DEF_GRACE         60000u
 #define VFS_DEF_OFFLINE_WAIT  3000u
+#define VFS_DEF_STRIPE_FILE   (8u << 20)  /* stripe_min_file default (02 §5.6) */
+#define VFS_STRIPE_MIN_WRITE  (1u << 20)  /* sequential write that opts a handle in (02 §5.6) */
 #define VFS_WB_COALESCE_MS    500u
 #define VFS_WB_COALESCE_MAX   (1u << 20)
 #define VFS_HOT_WINDOW_S      2
@@ -159,6 +161,8 @@ typedef struct vfs_node {
   uint32_t  open_count;                 /* handles not yet closed */
   uint32_t  uncleaned;                  /* handles not yet cleaned up */
   sd_sftp_file *fh; int fh_write;       /* lazily opened remote handle (02 §2.1) */
+  int       stripe_wish;                /* a sequential write reached VFS_STRIPE_MIN_WRITE or the
+                                           file grew past stripe_min_file (02 §5.6) */
   BOOL      reopening;                  /* a reopen after reconnect is running (02 §5.3) */
   vfs_extent *wext; uint32_t nwext, capwext;   /* write-through writes in flight (no two overlap) */
   vfs_waiter *waiters;                  /* woken on wext release, fetch processed, reopen done */
@@ -214,6 +218,7 @@ struct sd_vfs {
   BOOL write_behind;
   int  symlinks;
   uint32_t max_readahead, wb_window, wb_window_mount, grace, offline_wait;
+  uint32_t stripe_min_file;             /* striping size threshold (02 §5.6) */
   uint32_t umask, attr_ttl, dir_ttl, neg_ttl, req_timeout, list_entries, list_bytes, list_deadline,
            link_stats;
   int  revalidate;
@@ -393,7 +398,8 @@ void      vfs_timer_start(sd_vfs *v);
 void      vfs_timer_stop(sd_vfs *v);
 void      vfs_handle_init_ra(sd_vfs_handle *h);
 /* Referenced remote handle, reopened after a reconnect with the identity check (02 §5.3). */
-sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out);
+sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out,
+                         BOOL seq);    /* seq: the caller's access looks sequential (02 §5.6) */
 
 /* ---- vfs_cache.c: process-wide memory tier (02 §4.2) ---- */
 typedef struct vc_key { uint64_t mount_id, file_id, blk; uint32_t vgen; } vc_key;

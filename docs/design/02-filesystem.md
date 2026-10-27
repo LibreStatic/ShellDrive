@@ -897,6 +897,25 @@ Explorer/`copy` patterns, or the read-ahead state of 4.3). Small files, random I
 directories never stripe. Everything else is 01's: sub-handles opened lazily on the members with
 `oflags & ~(CREAT|TRUNC|EXCL)`, `stripe_bytes` units (1 MiB) assigned `k mod live_members`, requests
 split at unit boundaries, ordering per byte range, `max-open-handles` per member (01 §10.9).
+
+Implemented decision (as landed in `sd_vfs`): the pool size is re-read from
+`server_info.connections` at every data-handle open, so a handle qualifies only while the pool is
+actually up. The size threshold compares the node's cached size against `stripe_min_file`
+(`sd_vfs_options.stripe_min_file`, default 8 MiB) at the moment the data handle is opened. The
+write threshold is any single sequential write call of `VFS_STRIPE_MIN_WRITE` (1 MiB) or more — not
+only the first — and it is latched for the node (`stripe_wish`), so once a large sequential write
+has run, every later data-handle open of that node asks for striping; a stream of smaller
+sequential writes qualifies the same way once the file has grown past `stripe_min_file`.
+Sequential means `SEQUENTIAL_ONLY`, a write continuing at the file's end, or a read continuing
+where the handle's read-ahead (4.3) expects the next one; `RANDOM_ACCESS` is never sequential.
+`APPEND`-only handles and `SD_VFS_EOF` writes are excluded on the vfs side (the vfs never opens a
+remote handle with `SD_SFTP_O_APPEND`, so it never asks for what `sd_sftp` refuses); directories
+have no data handle at all. A handle opened before its node qualified is replaced by a striped one
+on the next data access (in-flight requests keep the old handle; a failed replacement open is not
+an error — striping is only an optimization). The vfs leaves `sd_sftp_options.stripe_bytes` at the
+1 MiB default; `sd_sftp` clamps the unit at striped-open time to the smaller of the negotiated
+`max_read`/`max_write` (512-byte floor), so one unit always fits one request even when the server
+advertises less than 1 MiB (01 §10.9).
 - The read-ahead window (4.3) is issued in chunk-sized reads as usual; results land in cache blocks, so
   arrival order does not matter.
 - Write chunks never overlap in flight (4.4). A size-extending chunk sent on member B before a lower

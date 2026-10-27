@@ -221,6 +221,57 @@ bin\Debug\sd-test-sftp-ssh-interop.exe --filter m2_striping   # only the 2 strip
 ("Transport view", "Striping", "Per-connection reconnect"); the vfs-side policy that decides which
 handles get `SD_SFTP_O_STRIPED` is 02 §5.6 and still open.
 
+## Vfs striping policy and the 1 GiB pool measurement (02 §5.6)
+
+Implements the vfs-side decision of 02 §5.6 ("Striping policy (vfs side)", updated in the same
+commit): `sd_vfs` opens a data handle with `SD_SFTP_O_STRIPED` only while the pool reports more
+than one member (`server_info.connections`, re-read at every data-handle open), the access is
+sequential (`SEQUENTIAL_ONLY`, a write continuing at the file's end, or a read continuing the
+handle's read-ahead sequence; `RANDOM_ACCESS` never), and the file is at least `stripe_min_file`
+(`sd_vfs_options.stripe_min_file`, default 8 MiB) or a sequential write call of 1 MiB or more has
+run on the node (latched as `stripe_wish`, so later data-handle opens of the node reopen striped).
+`APPEND`-only handles and `SD_VFS_EOF` writes never qualify — the vfs never opens a remote handle
+with `SD_SFTP_O_APPEND`, so it never asks for what `sd_sftp` refuses — and directories have no
+data handle at all. A handle opened before its node qualified is replaced by a striped one at the
+next data access (in-flight requests keep the old handle; a failed replacement open is not an
+error). `stripe_bytes` stays at the `sd_sftp` default of 1 MiB, which `sd_sftp` clamps at
+striped-open time to the smaller of the negotiated `max_read`/`max_write` (512-byte floor).
+Files: `src/sd_vfs/vfs_data.c` (`stripe_oflags`, the `vfs_get_fh` policy, the read/write `seq`
+classification, the write-behind kick), `vfs_core.c` (the option), `vfs_internal.h`
+(`stripe_wish`, the 1 MiB constant); the fake gained `fake_config.connections` and
+`fake_striped_opens()`.
+
+Tests: five `SD_TEST` entries in `tests/unit/sd_vfs/test_vfs_stripe.c` (`unit.vfs`): the size
+threshold (9 MiB sequential read stripes, 7 MiB does not), the sequential-write threshold (one
+1 MiB write qualifies at once; 256 KiB writes qualify only once the file passes 8 MiB; random
+256 KiB writes never), the write-behind kick (the deferred send stripes the qualified stream),
+the pool gate (`connections = 1` never stripes) and the `APPEND`/directory exclusions.
+
+**1 GiB measurement** (`bench.vfs_pool`, `tests/unit/sd_vfs/bench_pool.c`, label `bench`): plain
+`ctest` skips it (exit 77); with `SD_IT_BENCH=1` and the wsl-sshd fixture up it writes and reads
+1 GiB through `sd_vfs` (`SEQUENTIAL_ONLY`, 1 MiB calls, write-through, pattern-verified) with
+`connections = 1` and then `connections = 3` striped, deleting the file afterwards. Measured run
+(x64-modern Debug, fixture over 127.0.0.1:2222, 2026-10-26):
+
+| Pattern | Write | Read |
+|---|---|---|
+| `connections = 1` | 52.2 MB/s | 49.9 MB/s |
+| `connections = 3` striped | 53.4 MB/s | 92.2 MB/s |
+
+Read throughput scales with the pool (1.85x); the write path does not on this fixture (1.02x) —
+with `max_write` at 256 KiB the per-call chunk fan-out already saturates the primary's bulk
+channel, and the write-through mode acks every call, so the pool helps only the read-ahead side
+here. Write-behind plus larger server limits is the follow-up lever, not more connections.
+
+```text
+cmake --build --preset x64-modern-debug                # from the tree root
+cd build\x64-modern
+ctest -C Debug -R "^unit\.vfs$" --output-on-failure
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\wsl-sshd\start.ps1  # if down
+$env:SD_IT_BENCH = "1"; bin\Debug\sd-test-vfs-bench.exe
+ctest -C Debug -R bench          # without SD_IT_BENCH: skipped (exit 77)
+```
+
 ## x64-analysis brought back to green (backend, M2 order step 6 prep)
 
 The analysis preset had not run since the M2 area work landed. Library fixes: bn.c montmul zeroes

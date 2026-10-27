@@ -508,13 +508,31 @@ static sd_vfs_status reopen_node(sd_vfs *v, vfs_node *n, sd_sftp_file *f, uint64
   return st;
 }
 
-sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out)
+/* Striping decision (02 §5.6): a data handle is opened with SD_SFTP_O_STRIPED only while the pool
+   has more than the primary connection (`conns`, 0 when not READY), for a file (never a directory)
+   accessed sequentially, and only when the file is at least stripe_min_file (8 MiB) or a sequential
+   write has reached VFS_STRIPE_MIN_WRITE (1 MiB, n->stripe_wish). Append-only handles never
+   qualify: sd_vfs_write keeps them out of the sequential class and never opens a remote handle with
+   SD_SFTP_O_APPEND, so it never asks for what sd_sftp refuses (01 §10.9). v->lock held. */
+static uint32_t stripe_oflags(uint32_t conns, const sd_vfs *v, const vfs_node *n, BOOL need_write, BOOL seq)
+{
+  if (conns < 2 || !seq || vfs_node_is_dir(n))
+    return 0;
+  if (n->attr.size < v->stripe_min_file && !(need_write && n->stripe_wish))
+    return 0;
+  return SD_SFTP_O_STRIPED;
+}
+
+sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out, BOOL seq)
 {
   sd_sftp_file *f = NULL, *old = NULL;
   char *path;
   sd_err e;
+  sd_sftp_server_info info;
+  uint32_t conns, ofl;
   *out = NULL;
   vfs_sync_generation(v);
+  conns = sd_sftp_session_info(v->s, &info, NULL, 0) == SD_OK ? info.connections : 0;
   for (;;) {
     sd_sftp_file_info fi;
     sd_mutex_lock(&v->lock);
@@ -549,6 +567,39 @@ sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, s
           return st;
         continue;
       }
+      {
+        /* Striping upgrade (02 §5.6): a handle opened before the node qualified is replaced by a
+           striped one. In-flight requests keep the old handle (writes are serialized per extent,
+           4.4); a failed open is not an error, striping is only an optimization. */
+        uint32_t want = stripe_oflags(conns, v, n, need_write, seq);
+        if (want && !(fi.oflags & SD_SFTP_O_STRIPED) && !n->reopening) {
+          BOOL was_write = n->fh_write;
+          sd_sftp_file *cur = n->fh;
+          sd_sftp_file_addref(cur);
+          path = vfs_strndup(n->epath, strlen(n->epath));
+          sd_mutex_unlock(&v->lock);
+          f = NULL;
+          e = SD_E_DISCONNECTED;
+          if (path && vfs_online(v))
+            e = vr_open(v, path, SD_SFTP_O_READ | (was_write ? SD_SFTP_O_WRITE : 0) | want, NULL, dl, &f, NULL);
+          sd_free(path);
+          sd_mutex_lock(&v->lock);
+          if (e == SD_OK && n->fh == cur) {
+            n->fh = f;                        /* cur keeps its references until the last request */
+            n->fh_write = was_write;
+            sd_sftp_file_addref(f);
+            *out = f;
+            sd_mutex_unlock(&v->lock);
+            sd_sftp_file_release(cur);
+            return SD_VFS_OK;
+          }
+          sd_mutex_unlock(&v->lock);
+          if (e == SD_OK)
+            sd_sftp_file_release(f);          /* another thread swapped the handle meanwhile */
+          sd_sftp_file_release(cur);
+          sd_mutex_lock(&v->lock);
+        }
+      }
       sd_sftp_file_addref(n->fh);
       *out = n->fh;
       sd_mutex_unlock(&v->lock);
@@ -564,7 +615,10 @@ sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, s
     sd_free(path);
     return SD_VFS_E_DISCONNECTED;
   }
-  e = vr_open(v, path, SD_SFTP_O_READ | (need_write ? SD_SFTP_O_WRITE : 0), NULL, dl, &f, NULL);
+  sd_mutex_lock(&v->lock);
+  ofl = stripe_oflags(conns, v, n, need_write, seq);
+  sd_mutex_unlock(&v->lock);
+  e = vr_open(v, path, SD_SFTP_O_READ | (need_write ? SD_SFTP_O_WRITE : 0) | ofl, NULL, dl, &f, NULL);
   sd_free(path);
   if (e != SD_OK)
     return vfs_map_err(e);
@@ -860,7 +914,7 @@ sd_vfs_status sd_vfs_read(sd_vfs_handle *h, UINT64 off, void *buf, UINT32 len, U
   sd_vfs_status st = SD_VFS_OK;
   uint64_t dl, end, ra_from = 0, ra_to = 0;
   uint32_t pos = 0, vgen, attempt;
-  BOOL eof = FALSE, do_ra;
+  BOOL eof = FALSE, do_ra, seq;
   uint8_t *tmp = NULL;
   struct vfs_dc *dc;
   if (got) *got = 0;
@@ -878,6 +932,10 @@ sd_vfs_status sd_vfs_read(sd_vfs_handle *h, UINT64 off, void *buf, UINT32 len, U
     return SD_VFS_OK;
   if (sd_add_ovf_u64(off, len, &end))
     return SD_VFS_E_END_OF_FILE;
+  /* Sequential access (02 §5.6): SEQUENTIAL_ONLY, or a read continuing where the handle's
+     read-ahead (4.3) expects the next one. RANDOM_ACCESS is never sequential. */
+  seq = !(h->opts & SD_VFS_FILE_RANDOM_ACCESS) &&
+        ((h->opts & SD_VFS_FILE_SEQUENTIAL_ONLY) || off == h->ra_next);
   enter(v);
   dl = vfs_deadline(v);
   dc = ensure_dc(v, n);
@@ -890,7 +948,7 @@ sd_vfs_status sd_vfs_read(sd_vfs_handle *h, UINT64 off, void *buf, UINT32 len, U
     sd_mutex_lock(&v->lock);
     stale = n->fh && sd_sftp_file_get_info(n->fh, &fi) == SD_OK && fi.stale;
     sd_mutex_unlock(&v->lock);
-    if (stale && vfs_online(v) && vfs_get_fh(v, n, FALSE, dl, &f) == SD_VFS_OK) {
+    if (stale && vfs_online(v) && vfs_get_fh(v, n, FALSE, dl, &f, seq) == SD_VFS_OK) {
       sd_sftp_file_release(f);
       f = NULL;
     }
@@ -911,9 +969,9 @@ sd_vfs_status sd_vfs_read(sd_vfs_handle *h, UINT64 off, void *buf, UINT32 len, U
     pos = read_cached(v, n, vgen, dc, off, (uint8_t *)buf, len, pos, &eof, &tmp);
     if ((pos >= len || eof) && !do_ra)
       break;
-    st = vfs_get_fh(v, n, FALSE, dl, &f);
+    st = vfs_get_fh(v, n, FALSE, dl, &f, seq);
     if (st == SD_VFS_E_DISCONNECTED && pos < len && !eof && vfs_wait_online(v))
-      st = vfs_get_fh(v, n, FALSE, dl, &f);
+      st = vfs_get_fh(v, n, FALSE, dl, &f, seq);
     if (st != SD_VFS_OK) {
       if (pos >= len || eof)
         st = SD_VFS_OK;                     /* only the read-ahead could not be issued */
@@ -1068,7 +1126,7 @@ sd_vfs_status vfs_ext_drain(sd_vfs *v, vfs_node *n, uint64_t dl)
 static sd_vfs_status wb_drain(sd_vfs *v, vfs_node *n, uint64_t dl, BOOL wait_reconnect);
 
 static sd_vfs_status write_through(sd_vfs_handle *h, uint64_t off, const uint8_t *buf, uint32_t len, uint32_t *done,
-                                   uint64_t dl)
+                                   uint64_t dl, BOOL seq)
 {
   sd_vfs *v = h->v;
   vfs_node *n = h->node;
@@ -1082,7 +1140,7 @@ static sd_vfs_status write_through(sd_vfs_handle *h, uint64_t off, const uint8_t
     if (st != SD_VFS_OK)
       return st;
   }
-  st = vfs_get_fh(v, n, TRUE, dl, &f);
+  st = vfs_get_fh(v, n, TRUE, dl, &f, seq);
   if (st != SD_VFS_OK)
     return st;
   sd_mutex_lock(&v->lock);
@@ -1273,6 +1331,7 @@ static void wb_kick(sd_vfs *v, vfs_node *n, BOOL all, uint64_t dl)
   wb_send send[64];
   uint32_t ns = 0, i, chunk;
   uint64_t now = sd_tick_ms(), unsent = 0;
+  int wish = 0;
   sd_vfs_status st;
   vfs_defer d;
   memset(&d, 0, sizeof(d));
@@ -1281,10 +1340,11 @@ static void wb_kick(sd_vfs *v, vfs_node *n, BOOL all, uint64_t dl)
   sd_mutex_lock(&v->lock);
   for (e = n->wq_head; e; e = e->next)
     if (!e->b) unsent += e->len;
+  wish = n->stripe_wish;                  /* the queued stream qualified (5.6) */
   sd_mutex_unlock(&v->lock);
   if (unsent == 0)
     return;
-  st = vfs_get_fh(v, n, TRUE, dl, &f);
+  st = vfs_get_fh(v, n, TRUE, dl, &f, wish != 0);
   if (st != SD_VFS_OK)
     return;                                 /* kept: retried by the timer, failed by grace */
   chunk = max_write(v);
@@ -1439,6 +1499,8 @@ static sd_vfs_status wb_drain(sd_vfs *v, vfs_node *n, uint64_t dl, BOOL wait_rec
   return st;
 }
 
+/* Write-behind queues the extent; the kick that later opens the handle reads the node's
+   stripe_wish (5.6), so the caller's instantaneous seq flag is not needed here. */
 static sd_vfs_status write_behind(sd_vfs_handle *h, uint64_t off, const uint8_t *buf, uint32_t len, uint32_t *done,
                                   uint64_t dl)
 {
@@ -1446,7 +1508,7 @@ static sd_vfs_status write_behind(sd_vfs_handle *h, uint64_t off, const uint8_t 
   vfs_node *n = h->node;
   vfs_wb *e = NULL, *t;
   uint64_t end = off + len;
-  BOOL seq, urgent;
+  BOOL wseq, urgent;
   sd_vfs_status st = SD_VFS_OK;
   vfs_defer d;
   memset(&d, 0, sizeof(d));
@@ -1525,9 +1587,9 @@ static sd_vfs_status write_behind(sd_vfs_handle *h, uint64_t off, const uint8_t 
   h->wrote = TRUE;
   vfs_listing_sync(v, n);
   wb_list(v, n);
-  seq = off == n->wq_seq_end;
+  wseq = off == n->wq_seq_end;
   n->wq_seq_end = end;
-  urgent = seq || len >= VFS_WB_COALESCE_MAX;
+  urgent = wseq || len >= VFS_WB_COALESCE_MAX;
   sd_mutex_unlock(&v->lock);
   /* Sequential writes are sent at once; small random ones coalesce up to 500 ms / 1 MiB (the
      background timer sends them). */
@@ -1545,7 +1607,7 @@ sd_vfs_status sd_vfs_write(sd_vfs_handle *h, UINT64 off, const void *buf, UINT32
   sd_vfs_status st;
   uint64_t dl, end;
   uint32_t d = 0;
-  BOOL behind;
+  BOOL behind, seq = FALSE;
   if (done) *done = 0;
   if (!h || (!buf && len))
     return SD_VFS_E_INVALID_NAME;
@@ -1571,6 +1633,14 @@ sd_vfs_status sd_vfs_write(sd_vfs_handle *h, UINT64 off, const void *buf, UINT32
   }
   if (off == SD_VFS_EOF || (!paging_io && (h->access & ACC_DATA_WRITE) == FILE_APPEND_DATA))
     off = n->attr.size;                     /* append: cached EOF (02 §2.2) */
+  else if ((h->opts & SD_VFS_FILE_SEQUENTIAL_ONLY) || off == n->attr.size) {
+    /* Sequential access (02 §5.6): SEQUENTIAL_ONLY, or a write that continues the file. A write of
+       VFS_STRIPE_MIN_WRITE or more, or any sequential write on a file past stripe_min_file, keeps
+       the node stripe-eligible for its later data-handle (re)opens. */
+    seq = TRUE;
+    if (len >= VFS_STRIPE_MIN_WRITE || n->attr.size >= v->stripe_min_file)
+      n->stripe_wish = 1;
+  }
   if (paging_io) {
     /* Paging writes never extend the file (NT rule, 02 §6.5). */
     if (off >= n->attr.size) {
@@ -1588,7 +1658,7 @@ sd_vfs_status sd_vfs_write(sd_vfs_handle *h, UINT64 off, const void *buf, UINT32
     return SD_VFS_E_TOO_LARGE;
   }
   st = behind ? write_behind(h, off, (const uint8_t *)buf, len, &d, dl)
-              : write_through(h, off, (const uint8_t *)buf, len, &d, dl);
+              : write_through(h, off, (const uint8_t *)buf, len, &d, dl, seq);
   if (done) *done = d;
   sd_atomic_add64(&v->bytes_wr, d);
   leave(v);
@@ -1658,7 +1728,7 @@ sd_vfs_status sd_vfs_truncate(sd_vfs_handle *h, UINT64 size)
   if (st == SD_VFS_OK && v->write_behind)
     st = wb_drain(v, n, dl, FALSE);
   if (st == SD_VFS_OK)
-    st = vfs_get_fh(v, n, TRUE, dl, &f);
+    st = vfs_get_fh(v, n, TRUE, dl, &f, FALSE);   /* fsetstat is not a data access (5.6) */
   if (st == SD_VFS_OK) {
     memset(&a, 0, sizeof(a));
     a.valid = SD_SFTP_ATTR_SIZE;

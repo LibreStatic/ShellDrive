@@ -22,6 +22,7 @@ typedef struct fake_config {
   uint32_t max_read, max_write;   /* default 256 KiB */
   uint32_t uid, gid;          /* identity of the account (default 1000/1000), home owner */
   uint32_t latency_ms;        /* per-request delay before execution (pipelined, FIFO); 0 = none */
+  uint32_t connections;       /* pool members server_info reports (striping gate, 02 §5.6); 0/1 = 1 */
   int home_uid_set; uint32_t home_uid;   /* owner of the home directory if it differs (D10 tests) */
 } fake_config;
 
@@ -51,6 +52,8 @@ enum { FOP_OPEN, FOP_OPENDIR, FOP_READDIR, FOP_READ, FOP_WRITE, FOP_STAT, FOP_LS
 uint32_t fake_count(sd_sftp_session *s, int op);
 void     fake_reset_counts(sd_sftp_session *s);
 uint32_t fake_open_handles(sd_sftp_session *s);
+/* OPENs executed with SD_SFTP_O_STRIPED (striping decision of 02 §5.6); reset with the counters. */
+uint32_t fake_striped_opens(sd_sftp_session *s);
 
 /* Simulated link state: SD_SFTP_ST_READY or SD_SFTP_ST_DISCONNECTED (every request then fails,
    handles stay valid: a short blip without a reconnect). */
