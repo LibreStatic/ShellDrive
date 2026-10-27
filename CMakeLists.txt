@@ -53,6 +53,7 @@ add_subdirectory(l10n)
 add_subdirectory(apps/shelldrive)
 add_subdirectory(apps/shelldrive-host)
 add_subdirectory(apps/shelldrive-ui)
+add_subdirectory(apps/shelldrive-shellext)
 
 # Unit tests and other test suites.
 add_subdirectory(tests)

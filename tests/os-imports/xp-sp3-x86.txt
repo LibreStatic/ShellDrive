@@ -458,3 +458,11 @@ user32.dll!SetWindowPos
 user32.dll!ShowWindow
 user32.dll!SystemParametersInfoW
 user32.dll!TrackPopupMenu
+
+# shelldrive-shellext (M3, apps/shelldrive-shellext): the Explorer context menu DLL. Each entry is from the Microsoft documentation
+# of the function (minimum client: Windows 2000 or later, as the documentation states). Not captured on the clean XP lab
+# VM yet; pending that capture (04 section 11.4).
+kernel32.dll!DisableThreadLibraryCalls
+ole32.dll!ReleaseStgMedium
+shell32.dll!DragQueryFileW
+user32.dll!InsertMenuItemW

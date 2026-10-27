@@ -1,4 +1,4 @@
-# ShellDrive shell strings, English source of truth (03 §9.1). No strings yet.
+# ShellDrive shell strings, English source of truth (03 §9.1). msgctxt is the stable symbolic id; msgid is the English source.
 msgid ""
 msgstr ""
 "Language: en\n"
@@ -6,3 +6,39 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Explorer context menu on a ShellDrive drive: opens the drive in ShellDrive.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.open"
+msgid "Open in ShellDrive"
+msgstr ""
+
+#. Explorer context menu on a ShellDrive drive: disconnects the drive.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.unmount"
+msgid "Unmount"
+msgstr ""
+
+#. Explorer context menu on a ShellDrive drive: reconnects a drive that went offline or failed.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.reconnect"
+msgid "Reconnect"
+msgstr ""
+
+#. Status bar help text for the Open item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.open"
+msgid "Open this ShellDrive drive in ShellDrive."
+msgstr ""
+
+#. Status bar help text for the Unmount item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.unmount"
+msgid "Disconnect this ShellDrive drive."
+msgstr ""
+
+#. Status bar help text for the Reconnect item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.reconnect"
+msgid "Reconnect this ShellDrive drive."
+msgstr ""
