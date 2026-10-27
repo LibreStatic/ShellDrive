@@ -3,6 +3,7 @@
 #include <shlobj.h>
 #include <sddl.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "sd_config/sd_config.h"
 #include "config_internal.h"
@@ -643,12 +644,27 @@ sd_err sd_config_identity_store(const wchar_t *dir, const char *hostkey_fp, uint
   return e;
 }
 
+/* [ui] language: a BCP 47 style tag of letters and hyphens, 1 to 15 characters, or "system" (= ""). */
+static int settings_lang_valid(const char *v)
+{
+  size_t i, n = strlen(v);
+  if (strcmp(v, "system") == 0) return 1;
+  if (n == 0 || n > 15) return 0;
+  for (i = 0; i < n; i++) {
+    char c = v[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-')) return 0;
+  }
+  return 1;
+}
+
 void sd_settings_defaults(sd_settings *s)
 {
   memset(s, 0, sizeof(*s));
   s->log_level = 2;
   s->openssh_source = 1;
   s->putty_source = 1;
+  s->notify = 1;
+  s->default_backend = SD_PROFILE_BACKEND_AUTO;
 }
 
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
@@ -685,6 +701,21 @@ sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
       else { SD_LOGW("config", "settings.ini: invalid [credentials] persist"); e = SD_E_INVALID_PARAM; }
     }
   }
+  if ((v = sd_ini_get(ini, "ui", "language")) != NULL) {
+    if (settings_lang_valid(v)) { strcpy_s(s->ui_language, sizeof(s->ui_language), v); }
+    else { SD_LOGW("config", "settings.ini: invalid [ui] language"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "ui", "notify")) != NULL) {
+    int b;
+    if (sd_ini_parse_bool(v, &b)) s->notify = b;
+    else { SD_LOGW("config", "settings.ini: invalid [ui] notify"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "defaults", "backend")) != NULL) {
+    if (strcmp(v, "auto") == 0) s->default_backend = SD_PROFILE_BACKEND_AUTO;
+    else if (strcmp(v, "dokany") == 0) s->default_backend = SD_PROFILE_BACKEND_DOKANY;
+    else if (strcmp(v, "webdav") == 0) s->default_backend = SD_PROFILE_BACKEND_WEBDAV;
+    else { SD_LOGW("config", "settings.ini: invalid [defaults] backend"); e = SD_E_INVALID_PARAM; }
+  }
   return e;
 }
 
@@ -702,6 +733,67 @@ sd_err sd_settings_load(sd_settings *s)
     return SD_OK;                     /* no settings file: defaults */
   e = sd_settings_from_ini(ini, s);
   sd_ini_free(ini);
+  return e;
+}
+
+static void put_size(char out[32], uint64_t v)
+{
+  static const uint64_t g = 1024u * 1024u * 1024u, m = 1024u * 1024u, k = 1024u;
+  if (v && v % g == 0) sprintf_s(out, 32, "%uG", (unsigned)(v / g));
+  else if (v && v % m == 0) sprintf_s(out, 32, "%uM", (unsigned)(v / m));
+  else if (v && v % k == 0) sprintf_s(out, 32, "%uK", (unsigned)(v / k));
+  else sprintf_s(out, 32, "%llu", (unsigned long long)v);
+}
+
+sd_err sd_settings_save(const sd_settings *s)
+{
+  static const char *const levels[] = { "error", "warn", "info", "debug", "trace" };
+  static const char *const backends[] = { "auto", "dokany", "webdav" };
+  wchar_t path[MAX_PATH];
+  sd_ini *ini = NULL;
+  HANDLE lock = NULL;
+  sd_wr w;
+  char num[32];
+  sd_err e;
+  int lvl;
+  if (s == NULL || s->default_backend < 0 || s->default_backend > 2)
+    return SD_E_INVALID_PARAM;
+  if ((e = sd_config_ensure_dirs()) != SD_OK)
+    return e;
+  if ((e = sd_config_root(path, SD_COUNTOF(path))) != SD_OK)
+    return e;
+  if (!wcat(path, SD_COUNTOF(path), L"\\settings.ini"))
+    return SD_E_NAME_TOO_LONG;
+  if ((e = sd_config_lock(&lock, 5000)) != SD_OK)
+    return e;
+  if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+    e = sd_ini_new(&ini);
+  } else {
+    e = load_ini(path, &ini);
+  }
+  lvl = s->log_level < 0 ? 0 : (s->log_level > 4 ? 4 : s->log_level);
+  if (e == SD_OK) e = sd_ini_set(ini, "log", "level", levels[lvl]);
+  if (e == SD_OK) {
+    if (s->cache_memory) { put_size(num, s->cache_memory); e = sd_ini_set(ini, "cache", "memory", num); }
+    else { (void)sd_ini_remove(ini, "cache", "memory"); }
+  }
+  if (e == SD_OK) e = sd_ini_set(ini, "hostkeys", "openssh_source", s->openssh_source ? "yes" : "no");
+  if (e == SD_OK) e = sd_ini_set(ini, "hostkeys", "putty_source", s->putty_source ? "yes" : "no");
+  if (e == SD_OK) e = sd_ini_set(ini, "credentials", "persist", s->persist_enterprise ? "enterprise" : "local");
+  if (e == SD_OK) {
+    if (s->ui_language[0]) e = sd_ini_set(ini, "ui", "language", s->ui_language);
+    else (void)sd_ini_remove(ini, "ui", "language");
+  }
+  if (e == SD_OK) e = sd_ini_set(ini, "ui", "notify", s->notify ? "yes" : "no");
+  if (e == SD_OK) e = sd_ini_set(ini, "defaults", "backend", backends[s->default_backend]);
+  if (e == SD_OK) {
+    sd_wr_init(&w, SD_INI_MAX_BYTES);
+    e = sd_ini_serialize(ini, &w);
+    if (e == SD_OK) e = write_atomic(path, w.p, w.len);
+    sd_wr_free(&w);
+  }
+  sd_ini_free(ini);
+  sd_config_unlock(lock);
   return e;
 }
 

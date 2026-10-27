@@ -21,6 +21,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_profile_model.h"
+#include "ui_win.h"
 
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
@@ -478,6 +479,12 @@ static void on_command(WORD id)
   case UI_CMD_UNMOUNT:     do_unmount_selected(); break;
   case UI_CMD_OPEN_DRIVE:  do_open_selected(); break;
   case UI_CMD_REFRESH:     ui_ipc_list(); break;
+  case UI_CMD_HOSTKEYS:
+  case UI_CMD_LOGS:
+  case UI_CMD_SETTINGS:
+  case UI_CMD_ABOUT:
+    ui_windows_command(id);
+    break;
   default:
     break;
   }
@@ -506,6 +513,27 @@ static HWND make_button(HWND parent, sd_msg_id text, int id)
                          10, 10, parent, (HMENU)(UINT_PTR)id, g_app.inst, NULL);
 }
 
+static HMENU build_menu(void)
+{
+  HMENU bar = CreateMenu();
+  HMENU tools = CreatePopupMenu();
+  HMENU help = CreatePopupMenu();
+  if (bar == NULL || tools == NULL || help == NULL) {
+    if (bar) DestroyMenu(bar);
+    if (tools) DestroyMenu(tools);
+    if (help) DestroyMenu(help);
+    return NULL;
+  }
+  AppendMenuW(tools, MF_STRING, UI_CMD_HOSTKEYS, sd_l10n_get(SD_MSG_UI_MENU_HOSTKEYS));
+  AppendMenuW(tools, MF_STRING, UI_CMD_LOGS, sd_l10n_get(SD_MSG_UI_MENU_LOGS));
+  AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
+  AppendMenuW(tools, MF_STRING, UI_CMD_SETTINGS, sd_l10n_get(SD_MSG_UI_MENU_SETTINGS));
+  AppendMenuW(help, MF_STRING, UI_CMD_ABOUT, sd_l10n_get(SD_MSG_UI_MENU_ABOUT));
+  AppendMenuW(bar, MF_POPUP, (UINT_PTR)tools, sd_l10n_get(SD_MSG_UI_MENU_TOOLS));
+  AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, sd_l10n_get(SD_MSG_UI_MENU_HELP));
+  return bar;
+}
+
 static int on_create(HWND hwnd)
 {
   LVCOLUMNW col;
@@ -513,6 +541,7 @@ static int on_create(HWND hwnd)
 
   g_app.dpi = ui_dpi_window(hwnd);
   g_app.font = make_font(g_app.dpi);
+  SetMenu(hwnd, build_menu());
 
   g_app.btn_new = make_button(hwnd, SD_MSG_UI_MAIN_NEW, UI_CMD_NEW);
   g_app.btn_edit = make_button(hwnd, SD_MSG_UI_MAIN_EDIT, UI_CMD_EDIT);

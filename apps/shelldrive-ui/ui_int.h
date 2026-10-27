@@ -2,9 +2,9 @@
  * ui_ipc.c, ui_model.c, ui_tray.c, ui_main.c and ui_icon.c. Only the UI thread touches g_app; the IPC
  * thread talks to the UI thread through PostMessage (the messages below) and never reads g_app.
  *
- * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c) and the .sdmount
- * verb are in. Not yet: import (03 §3.7 wizard), reconnect, host keys, logs, settings and the balloon rate
- * limit of 7.7. The prompt host (prompts.ui, ui_prompt.c) is in. */
+ * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c), the import wizard
+ * (ui_import.c), the .sdmount verb, the secondary windows of M3 (ui_win.h: host keys, Logs, Settings, About) and
+ * the prompt host (prompts.ui, ui_prompt.c) are in. Not yet: reconnect and the balloon rate limit of 7.7. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 
@@ -48,7 +48,13 @@
 
 #define UI_MAX_MOUNTS 64
 
-typedef enum ui_ipc_kind { UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER, UI_IPC_RELOAD } ui_ipc_kind;
+typedef enum ui_ipc_kind {
+  UI_IPC_LIST, UI_IPC_UNMOUNT, UI_IPC_MOUNT, UI_IPC_ANSWER,
+  UI_IPC_RELOAD,      /* config.reload (ui_ipc_config_reload, ui_settings.c) */
+  UI_IPC_ANNOUNCED,   /* hostkey.announced.list (ui_hostkeys.c) */
+  UI_IPC_ACCEPT,      /* hostkey.announced.accept (ui_hostkeys.c) */
+  UI_IPC_LOG          /* log.tail (ui_logs.c) */
+} ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
   ui_ipc_kind kind;
@@ -87,6 +93,8 @@ typedef struct ui_app {
   wchar_t class_main[320];      /* com.librestatic.shelldrive.ui.<SID>.main */
   HANDLE mutex;                 /* SD_IPC_OBJ_UI_MUTEX, held for the life of the first instance */
   int agent_up;
+  int agent_features;           /* UI_FEAT_* of the connected agent (hello), 0 when none */
+  int notify_on;                /* [ui] notify (settings.ini): balloons other than write_failed are shown when set */
   int quit;
   int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
   unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
@@ -130,6 +138,9 @@ sd_err ui_ipc_mount_params(const char *json);
 sd_err ui_ipc_config_reload(void);
 /* prompt.answer, see ui_ipc.c: the JSON is copied; the caller wipes its own copy. */
 sd_err ui_ipc_answer(const char *json, size_t len);
+/* Generic call for the secondary windows: the reply comes back as UI_WM_IPC_REPLY with this kind. params may be
+   NULL. */
+sd_err ui_ipc_call(ui_ipc_kind kind, const char *method, const char *params);
 
 /* ---- ui_tray.c: notification area icon ---- */
 sd_err ui_tray_add(void);

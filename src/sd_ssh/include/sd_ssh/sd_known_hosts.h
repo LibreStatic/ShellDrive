@@ -111,6 +111,22 @@ typedef int (*sd_kh_entry_cb)(void *ctx, const sd_kh_entry *e);
 sd_err sd_known_hosts_list(sd_known_hosts *kh, sd_kh_store_kind store, const char *lookup_name,
                            sd_kh_entry_cb cb, void *ctx);
 
+/* Every plain key of one file store (SD_KH_STORE_MACHINE or SD_KH_STORE_USER), for the host key manager
+   (03 §5.1): pattern is the host field as written ("host", "[host]:port", a comma list, or a hashed
+   "|1|salt|hash" when hashed is set). No name filter; @revoked and @cert-authority lines are not listed.
+   Live sources are not enumerated (SD_E_INVALID_PARAM). Return nonzero from the callback to stop. Pointers
+   are valid during the callback only. SD_E_NOT_FOUND when the store has no file. */
+typedef struct sd_kh_all_entry {
+  const char *pattern;     /* NUL-terminated copy, at most 255 bytes */
+  const uint8_t *blob;
+  size_t len;
+  const char *type;
+  uint32_t line;
+  int hashed;
+} sd_kh_all_entry;
+typedef int (*sd_kh_all_cb)(void *ctx, const sd_kh_all_entry *e);
+sd_err sd_known_hosts_list_all(sd_known_hosts *kh, sd_kh_store_kind store, sd_kh_all_cb cb, void *ctx);
+
 /* Applies a reviewed UpdateHostKeys announcement (01 §7.5, SD_HKEV_ANNOUNCED): adds the proven keys
    with "# updated-by=hostkeys-00 added=<date>" (keys already present are skipped) and removes the
    listed keys (sd_known_hosts_remove_key). sd_ssh never calls this itself; the host does, at once for

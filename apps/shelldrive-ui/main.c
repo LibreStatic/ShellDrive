@@ -30,6 +30,7 @@
 #include "sd_config/sd_config.h"
 #include "ui_int.h"
 #include "ui_sdmount.h"
+#include "ui_win.h"
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
@@ -214,6 +215,7 @@ void ui_app_handle_request(const ui_request *req)
 void ui_app_on_agent_state(int up)
 {
   g_app.agent_up = up ? 1 : 0;
+  ui_windows_on_agent_state(g_app.agent_up);
   if (!up) {
     /* the agent is gone: its prompts are gone with it (dialogs close without an answer) */
     ui_model_clear(&g_app.model);
@@ -264,6 +266,8 @@ void ui_app_on_event(sd_json *ev)
     ui_prompt_on_request(data);
   } else if (name != NULL && strcmp(name, "prompt.closed") == 0) {
     ui_prompt_on_closed(sd_json_get_str(data, "prompt_id"), sd_json_get_str(data, "reason"));
+  } else if (name != NULL && strcmp(name, "hostkeys.announced") == 0) {
+    ui_windows_on_event(name, data);
   }
   sd_json_free(ev);
 }
@@ -292,7 +296,9 @@ void ui_app_on_timer(UINT_PTR id)
 
 void ui_app_on_reply(ui_ipc_reply *r)
 {
-  if (r->kind == UI_IPC_ANSWER) {
+  if (r->kind >= UI_IPC_ANNOUNCED) {
+    ui_windows_on_reply((int)r->kind, r->err, r->result);
+  } else if (r->kind == UI_IPC_ANSWER) {
     /* answers close their dialog when queued; a refused one (answered elsewhere) needs no message */
     if (r->err != SD_OK)
       SD_LOGI("ui", "prompt answer not accepted by the agent (%s)", sd_err_name(r->err));
@@ -470,10 +476,16 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
       SD_COUNTOF(lang_buf) - 1u)
     lang = lang_buf;
   sd_l10n_init(&sd_l10n_catalog_ui, lang);
+  {
+    sd_settings st;
+    sd_settings_defaults(&st);
+    (void)sd_settings_load(&st);
+    g_app.notify_on = st.notify ? 1 : 0;
+  }
 
   memset(&icc, 0, sizeof(icc));
   icc.dwSize = sizeof(icc);
-  icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES;
+  icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_TAB_CLASSES;
   InitCommonControlsEx(&icc);
 
   if (sd_ipc_current_identity(g_sid, SD_COUNTOF(g_sid), &session) != SD_OK || !read_self())
@@ -481,7 +493,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   build_class_names();
 
   if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
-                   wcscmp(argv[1], L"--test-editor") == 0)) {
+                   wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0)) {
     /* the smoke tests never read or write the user's profiles: the store is a temporary folder */
     wchar_t tmp[MAX_PATH];
     if (GetTempPathW(SD_COUNTOF(tmp), tmp) > 0 && wcslen(tmp) < SD_COUNTOF(tmp) - 32) {
@@ -501,6 +513,10 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-editor") == 0) {
     rc = ui_editor_smoke_test() ? 0 : 1;
+    goto done;
+  }
+  if (argc > 1 && wcscmp(argv[1], L"--test-windows") == 0) {
+    rc = ui_windows_smoke_test() ? 0 : 1;
     goto done;
   }
 
@@ -544,6 +560,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   }
   rc = 0;
 
+  ui_windows_close_all();
   ui_ipc_stop();
   ui_tray_remove();
   if (g_app.main != NULL && IsWindow(g_app.main))

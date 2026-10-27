@@ -507,3 +507,17 @@ user32.dll!ScreenToClient
 user32.dll!SetPropW
 user32.dll!wsprintfW
 user32.dll!MapWindowPoints
+# M3 UI (shelldrive-ui: host key manager, Logs viewer, Settings, About): Windows 2000 and XP APIs, reviewed
+# per function against the documented minimum OS version (Windows 2000 unless noted).
+kernel32.dll!GlobalAlloc
+kernel32.dll!GlobalLock
+kernel32.dll!GlobalUnlock
+user32.dll!CloseClipboard
+user32.dll!CreateMenu
+user32.dll!EmptyClipboard
+user32.dll!EnumChildWindows
+user32.dll!LoadIconW
+user32.dll!OpenClipboard
+user32.dll!SetClipboardData
+user32.dll!SetMenu
+gdi32.dll!CreateFontW

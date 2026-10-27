@@ -1,0 +1,5 @@
+/* shelldrive-ui icon resources (03 §7.2, §8.3). The ids match apps/shelldrive-ui/ui_res.h: 1 is index 0 of the
+   executable's icons (the application icon), 2 is index 1 (the mounted drive icon of the snapshot). The
+   icon files are made by res/icons/make-icons.pl. Configured by apps/shelldrive-ui/CMakeLists.txt. */
+1 ICON "@SD_UI_ICON_DIR@/shelldrive.ico"
+2 ICON "@SD_UI_ICON_DIR@/shelldrive-mounted.ico"
