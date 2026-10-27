@@ -5,6 +5,87 @@ Date: 2026-10-25. Repo `github.com/LibreStatic/ShellDrive`. Backend work continu
 of every milestone** in `docs/design/00-integration-review.md` §6. Frontend (GUI) work is handed off separately to
 the lead session, which validates and implements it.
 
+## State update: 2026-10-27, M2 code complete; only the acceptance doc, the D38 package and the final -Clean remain
+
+Read this first; it supersedes every section below. Branch `wip/m2-backend`, tree clean at `cbe6439`. The
+striping worktree (`C:\Users\facum\ShellDrive-striping`, branch `wip/m2-striping`, clean at `dccb8c2`) is
+fully merged - all later work went straight onto `wip/m2-backend`.
+
+### What this session did (commits, oldest first)
+
+- `cc0cd3a`: the CI repairs - `unit.crypto_pk` gets a 3600 s ctest TIMEOUT on the x86 flavours only (the
+  suite passes by hand in ~25-30 min; x64 keeps 300 s), and the `reconnect_drop_during_pipelined_reads`
+  race is fixed in `req_submit` (sftp_session.c): an operation carrying a handle submitted while the
+  session is not READY returns `SD_E_STALE_HANDLE` per the M1 contract; path ops keep `SD_E_DISCONNECTED`.
+  Verified 12x on x64-analysis.
+- `c4934e9`..`dccb8c2` (11 commits): the striping branch rebased and landed. Increment 2 (stream idx 0-4,
+  Q_STRIPE/PH_STRIPED, unit routing with quiescent recompute, lazy sub-handles, barriers, member-loss
+  semantics), the real `s->live` accounting fix, 22 fake-transport unit tests, the per-member generation
+  guard, the member-lost write-wires fix (`64409dc`: a dropped member's sibling wires stay answerable or
+  the server hangs the session), interop coverage with a deterministic single-member drop
+  (freeze - burst - kill - thaw), the independent review's fixes, and the contract docs (01 section 10.9,
+  02 section 5.6 pointer, m2-notes).
+- `2d26f5e`: pool increment 3 - 500 ms admission stagger (per-pool timer thread), backoff 500 ms then 2 s,
+  abandonment after 3 transient refusals until the next generation via the new `SD_E_POOL_ABANDONED`
+  (all consumers updated); identity mismatch still stops the generation instantly. 4 tests. Also fixed a
+  pre-existing `InterlockedOr` gap on XP x86.
+- `bdf8156`: system proxy opt-in (TM-R10) - pure decision function `ssh_sysproxy_decide()`, new
+  `allow_system` field (policy `AllowSystemProxy`, default reject) on `sd_proxy_cfg`/`sd_mount_proxy`,
+  fail-fast in `ssh_pxcfg_copy`, SSPI verdict `!discovered || AllowSystemProxySspi` in one place, WinHTTP
+  for discovery only; documented in 01 section 5.2. Decision-matrix and boundary tests in `unit.ssh`.
+- `5966ee3`: vfs striping policy (02 section 5.6) - `SD_SFTP_O_STRIPED` only when pool > 1 connection,
+  sequential access, file >= 8 MiB (`stripe_min_file`) or >= 1 MiB sequential write latch; never APPEND or
+  directories. 5 tests (`unit.vfs` 46/46). Bench `bench.vfs_pool` (label `bench`, gated behind
+  `SD_IT_BENCH=1`): 1 GiB vs the wsl-sshd fixture - read 1.85x with 3 members (49.9 -> 92.2 MB/s), write
+  does not scale (write-through saturates the primary bulk channel); numbers in m2-notes.
+- `4871fcb` + `cabdd7f`: gate repairs - C28182 (`_Analysis_assume_(r->f != NULL)` in the REOPEN arm),
+  ci-local excludes labels with the single expression `-LE 'matrix|bench'` (repeated -LE flags REPLACE,
+  they do not accumulate), and the big striping test frames made `static` for the 16 KB analysis stack
+  budget. After these, the full incremental `ci-local` run was GREEN on all five presets.
+- `1fee8ee`: the M2 CLI - `profile import putty [<session>]|ssh-config [<file>] [--dry-run]`,
+  `hostkey list [--announced]|import --from putty|openssh|remove|accept-announced <id> [--add-only]`
+  (list/import/remove run sd_known_hosts in-process per 03 section 5/C19; accept-announced drives the
+  existing IPC hostkey methods), `status`, `--jump` (repeatable, max 8), `--proxy`, `--connections`;
+  console flows for password change, proxy password, legacy acknowledge, save-response, and TM-R03 jump
+  lines. Agent conn JSON gains `pool`/`pool_wanted`; five new exit codes. The sd_mount mapping itself was
+  already complete (`agent.c` build_chain/handle_mount_body). 56 new strings registered; parsing + smoke
+  tests added.
+- `cbe6439`: those 56 strings localized into es (rioplatense voseo), fr (vous), pt-BR, it, de (informal),
+  CLDR plurals, prompt answer letters matched per locale; `sdl10n --check` and the `l10n.*` gates green.
+
+### What remains of M2 (in order)
+
+1. Acceptance: run `tests\interop\run-matrix.ps1` once with the matrix fixtures up (squid/dante down is
+   the established green state) and write `docs/dev/m2-acceptance.md` following `m1-acceptance.md`'s
+   conventions (scoped per 00 section 6 M2 row; striping numbers from m2-notes; exact reviewer commands;
+   date 2026-10-27; no local user names or machine paths).
+2. The D38 review pass 1 package (decisions.md D38): all of sd_crypto (pk+pq) and sd_ssh - sources
+   reviewed, test evidence with commands and current results (unit suites, wycheproof, CNG-diff, the CT
+   gate output, XP import floors), the TST mapping from 05-threat-model.md, open findings. It prepares
+   the human pass 1; it does not replace it.
+3. A fresh `tools\ci-local.ps1 -Clean` for the record (the incremental run is green at `cbe6439`; -Clean
+   is the milestone gate).
+4. Then M1 remainder, M3-M6 as listed below. M3's IPC surface is what the frontend track consumes - it
+   is the next backend priority after M2 closes.
+
+### Contract changes this session (frontend-relevant)
+
+- `sd_err`: new code `SD_E_POOL_ABANDONED` (01 section 10.2 schema, IPC exit-code table, vfs mapping).
+- CLI: the verbs and options above; exit codes `host_key_not_found`, `announcement_not_found`,
+  `session_not_found`, `putty_not_found`, `file_not_found` (03 section 7).
+- Agent connection JSON: `pool` and `pool_wanted` fields.
+- `sd_ssh`: `allow_system` on `sd_proxy_cfg` (policy `AllowSystemProxy`, default 0); see 01 section 5.2.
+- l10n: 56 new strings in the `l10n/cli` domain, complete in all six locales.
+- ci-local now runs ctest with `-LE 'matrix|bench'`; benchmarks are opt-in via `SD_IT_BENCH=1`.
+
+### Environment
+
+- Fixtures up: all matrix instances except squid/dante (never run), wsl-sshd up. No CI running.
+- Providers seen from the workflow subagents: TokenHarbor `deepseek-v4.1-flash:free$high` works but
+  queues long; NIM rejects the harness reasoning parameters (`enable_thinking`/`reasoning`) with 400 on
+  every model and level tried - unusable until that clears; `z-ai-individual-coding-plan` GLM-5.3-Flash
+  `$high` did all of this session's subagent work reliably.
+
 ## State update: 2026-10-26, striping session: unit-tested, hardened, interop covered, contract documented; CI gate red
 
 Read this first; on striping state it supersedes the two 2026-10-25 sections below.
