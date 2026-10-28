@@ -3,7 +3,7 @@
  * refusal tests); the agent reads it when it asks for the backend, so the variable must be set before it starts.
  * SHELLDRIVE_TEST_WD_NOAUTH=1 makes WebClient startable and the WebDAV start fail without SSPI (TM-R19 tests).
  *
- * hostkey add (hostkeys_fetch) is scripted by the host name, so the smoke tests need no network:
+ * hostkey add (a hostkey mount on a fake connection) is scripted by the host name, so the smoke tests need no network:
  *   *.known.test      a stored key verifies the connection; the server has an ECDSA and an ssh-rsa key besides it
  *   *.changed.test    the stored key does not match (SD_E_HOSTKEY_MISMATCH)
  *   anything else     first contact: the server presents one ssh-ed25519 key (TOFU, 5.2) */
@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "host.h"
+#include "sd_base/sd_mem.h"
 #include "sd_config/sd_config.h"
 #include "fake_backend.h"
 
@@ -75,43 +76,127 @@ static sd_err hk_apply_user_store(sd_known_hosts *kh, sd_kh_store_kind target, c
   return e;
 }
 
-static sd_err fake_hostkeys_fetch(const char *host, uint16_t port, const char *type, sd_mount_hk_fetch *out)
+/* hostkey add (M5): the fake sd_ssh connection of a hostkey mount. The mount's callbacks are driven as sd_ssh would:
+   a first contact raises the TOFU prompt (answered ACCEPT_ONCE by the mount), the verified fetch then returns the
+   scripted keys or fails with SD_E_HOSTKEY_REJECTED for a first contact, as sd_ssh does (01 §4.3). */
+typedef struct hk_fake {
+  char host[256];
+  sd_ssh_callbacks cb;
+  int first;                     /* first contact: no stored key */
+  int changed;                   /* a stored key that does not match */
+  uint8_t ed[4 + 11 + 4 + 32];   /* the presented ssh-ed25519 key blob */
+  size_t ed_len;
+  char ed_fp[64];
+} hk_fake;
+
+static char k_hk_prompt_marker;  /* the prompt object the fake raises (answered by hk_prompt_answer) */
+
+static sd_err (*k_fake_prompt_answer_hostkey)(sd_prompt *p, sd_hostkey_decision d);
+
+static sd_err hk_prompt_answer_hostkey(sd_prompt *p, sd_hostkey_decision d)
 {
-  uint8_t blob[600];
-  size_t n;
-  uint8_t pt[65];
-  uint8_t mod[256];
-  static const uint8_t e65537[3] = { 0x01, 0x00, 0x01 };
-  SD_UNUSED(port);
-  if (ends_with(host, ".changed.test"))
-    return SD_E_HOSTKEY_MISMATCH;
-  if (ends_with(host, ".known.test")) {
-    out->verified = 1;
-    /* ecdsa-sha2-nistp256: type, curve, the uncompressed point */
-    memset(pt, 0x11, sizeof(pt));
-    pt[0] = 0x04;
-    n = put_str(blob, 0, "ecdsa-sha2-nistp256", 19);
-    n = put_str(blob, n, "nistp256", 8);
-    n = put_str(blob, n, pt, sizeof(pt));
-    if (type == NULL || strcmp(type, "ecdsa-sha2-nistp256") == 0)
-      add_key(out, "ecdsa-sha2-nistp256", blob, n);
-    /* ssh-rsa: type, exponent, modulus */
-    memset(mod, 0x5a, sizeof(mod));
-    n = put_str(blob, 0, "ssh-rsa", 7);
-    n = put_str(blob, n, e65537, sizeof(e65537));
-    n = put_str(blob, n, mod, sizeof(mod));
-    if (type == NULL || strcmp(type, "ssh-rsa") == 0)
-      add_key(out, "ssh-rsa", blob, n);
+  if ((void *)p == (void *)&k_hk_prompt_marker)
+    return SD_OK;
+  return k_fake_prompt_answer_hostkey(p, d);
+}
+
+static sd_err hk_fake_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
+{
+  hk_fake *c = (hk_fake *)sd_calloc(1, sizeof(*c));
+  const sd_ssh_hop *last;
+  if (c == NULL)
+    return SD_E_NO_MEMORY;
+  last = &cfg->hops[cfg->hop_count - 1];
+  WideCharToMultiByte(CP_UTF8, 0, last->host, -1, c->host, sizeof(c->host), NULL, NULL);
+  c->cb = *cb;
+  c->changed = ends_with(c->host, ".changed.test");
+  c->first = !c->changed && !ends_with(c->host, ".known.test");
+  /* the presented key of a first contact: an ed25519 key with a 32-byte value */
+  {
+    uint8_t pk[32];
+    memset(pk, 0x33, sizeof(pk));
+    memset(c->ed, 0, sizeof(c->ed));
+    c->ed_len = put_str(c->ed, 0, "ssh-ed25519", 11);
+    c->ed_len = put_str(c->ed, c->ed_len, pk, sizeof(pk));
+  }
+  sd_hostkey_fingerprint_sha256(c->ed, c->ed_len, c->ed_fp);
+  *out = (sd_ssh_conn *)c;
+  return SD_OK;
+}
+
+static sd_err hk_fake_connect(sd_ssh_conn *cc, sd_ssh_done_cb done, void *ctx)
+{
+  hk_fake *c = (hk_fake *)cc;
+  if (c->changed) {
+    done(ctx, SD_E_HOSTKEY_MISMATCH, 0);
     return SD_OK;
   }
-  /* first contact: one ed25519 key */
-  memset(mod, 0x33, 32);
-  n = put_str(blob, 0, "ssh-ed25519", 11);
-  n = put_str(blob, n, mod, 32);
-  out->verified = 0;
-  if (type == NULL || strcmp(type, "ssh-ed25519") == 0)
-    add_key(out, "ssh-ed25519", blob, n);
+  if (c->first) {
+    sd_hostkey_prompt_info hk;
+    memset(&hk, 0, sizeof(hk));
+    hk.host = c->host;
+    hk.port = 22;
+    hk.lookup_name = c->host;
+    hk.key_type = "ssh-ed25519";
+    hk.key_bits = 256;
+    hk.fp_sha256 = c->ed_fp;
+    hk.fp_md5 = "";
+    hk.status = SD_HK_NEW;
+    hk.blob = c->ed;
+    hk.blob_len = c->ed_len;
+    c->cb.on_prompt(c->cb.ctx, (sd_prompt *)&k_hk_prompt_marker, NULL, &hk);
+  }
+  done(ctx, SD_OK, 0);
   return SD_OK;
+}
+
+static sd_err hk_fake_fetch(sd_ssh_conn *cc, uint32_t hop, const char *const *types, uint32_t ntypes,
+                            sd_ssh_hostkeys_cb done, void *ctx)
+{
+  static uint8_t blob_ec[600], blob_rsa[600];
+  static sd_hk_key keys[2];
+  static const char *const fp_ec = "SHA256:ecdsa-fake", *const fp_rsa = "SHA256:rsa-fake";
+  uint8_t pt[65], mod[256];
+  static const uint8_t e65537[3] = { 0x01, 0x00, 0x01 };
+  hk_fake *c = (hk_fake *)cc;
+  size_t n;
+  uint32_t i, k = 0, want_ec = 1, want_rsa = 1;
+  SD_UNUSED(hop);
+  if (c->first) {
+    done(ctx, SD_E_HOSTKEY_REJECTED, NULL, 0);
+    return SD_OK;
+  }
+  if (ntypes) {
+    want_ec = want_rsa = 0;
+    for (i = 0; i < ntypes; i++) {
+      if (strcmp(types[i], "ecdsa-sha2-nistp256") == 0) want_ec = 1;
+      if (strcmp(types[i], "ssh-rsa") == 0) want_rsa = 1;
+    }
+  }
+  /* ecdsa-sha2-nistp256: type, curve, the uncompressed point */
+  memset(pt, 0x11, sizeof(pt));
+  pt[0] = 0x04;
+  n = put_str(blob_ec, 0, "ecdsa-sha2-nistp256", 19);
+  n = put_str(blob_ec, n, "nistp256", 8);
+  n = put_str(blob_ec, n, pt, sizeof(pt));
+  if (want_ec) {
+    keys[k].blob = blob_ec; keys[k].len = n; keys[k].type = "ecdsa-sha2-nistp256"; keys[k].fp_sha256 = fp_ec; k++;
+  }
+  /* ssh-rsa: type, exponent, modulus */
+  memset(mod, 0x5a, sizeof(mod));
+  n = put_str(blob_rsa, 0, "ssh-rsa", 7);
+  n = put_str(blob_rsa, n, e65537, sizeof(e65537));
+  n = put_str(blob_rsa, n, mod, sizeof(mod));
+  if (want_rsa) {
+    keys[k].blob = blob_rsa; keys[k].len = n; keys[k].type = "ssh-rsa"; keys[k].fp_sha256 = fp_rsa; k++;
+  }
+  done(ctx, SD_OK, keys, k);
+  return SD_OK;
+}
+
+static void hk_fake_destroy(sd_ssh_conn *cc)
+{
+  sd_free(cc);
 }
 
 const sd_mount_backend *host_backend(void)
@@ -123,9 +208,14 @@ const sd_mount_backend *host_backend(void)
   if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_WD_NOAUTH", v, 32) > 0 && v[0] == L'1')
     fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
   if (!k_host_ready) {
-    /* the fake table plus hostkeys_fetch and the real user store writer (see above) */
+    /* the fake table plus the hostkey connection and the real user store writer (see above) */
     k_host = *fake_backend();
-    k_host.hostkeys_fetch = fake_hostkeys_fetch;
+    k_fake_prompt_answer_hostkey = k_host.prompt_answer_hostkey;
+    k_host.prompt_answer_hostkey = hk_prompt_answer_hostkey;
+    k_host.hk_conn_create = hk_fake_create;
+    k_host.hk_conn_connect = hk_fake_connect;
+    k_host.hk_conn_fetch = hk_fake_fetch;
+    k_host.hk_conn_destroy = hk_fake_destroy;
     k_host.kh_apply_hostkeys = hk_apply_user_store;
     k_host_ready = 1;
   }

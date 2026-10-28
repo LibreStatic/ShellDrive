@@ -507,6 +507,8 @@ static void raise_hostkey_prompt(sd_ssh_conn *c)
   hi->fp_md5 = "";
   hi->status = SD_HK_NEW;
   hi->is_reconnect = c->is_reconnect;
+  hi->blob = ssh_prompt_blob(p, c->hostkey, c->hostkey_len);
+  hi->blob_len = hi->blob ? c->hostkey_len : 0;
   ssh_prompt_raise(c, p);
 }
 

@@ -173,10 +173,15 @@ typedef struct sd_mount_backend {
   void   (*vfs_cache_clear)(sd_vfs *v, int disk_too);
   UINT64 (*vfs_write_behind_bytes)(sd_vfs *v);
   uint16_t (*webdav_port)(const sd_webdav_mount *m);
-  /* hostkey add (03 §6.1; added last, NULL in older fakes: the call answers SD_E_UNSUPPORTED). Connects to host:port
-     offering the stored key types of the host (TM-R04), then collects the other host keys (only `type` when given)
-     inside that connection. A blocking call: the caller runs it on a worker. Fills out->verified and out->keys. */
-  sd_err (*hostkeys_fetch)(const char *host, uint16_t port, const char *type, sd_mount_hk_fetch *out);
+  /* hostkey add (M5 part 8, 03 §6.1; added last, NULL in older fakes: the hostkey mount answers SD_E_UNSUPPORTED).
+     The connection of a hostkey mount is an sd_ssh connection without sftp: create, connect (the profile's
+     authentication), then fetch the other host keys inside the verified connection. Callbacks run on the sd_ssh
+     I/O thread; hk_conn_destroy runs on the control thread. */
+  sd_err (*hk_conn_create)(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out);
+  sd_err (*hk_conn_connect)(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx);
+  sd_err (*hk_conn_fetch)(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
+                          sd_ssh_hostkeys_cb done, void *ctx);
+  void   (*hk_conn_destroy)(sd_ssh_conn *c);
 } sd_mount_backend;
 
 const char *sd_mount_backend_kind_name(sd_mount_backend_kind k);         /* "auto", "dokany", "webdav" */
@@ -255,6 +260,12 @@ typedef struct sd_mount_params {
      SID pointers, deep-copied at create; the vfs checks every request against them (02 §6.7, 7.7). */
   void *const *access_sids; uint32_t n_access;
   void *const *write_sids;  uint32_t n_write;
+  /* M5 hostkey add (03 §6.1, TM-R04): 1 = connect and fetch host keys inside the connection (test_only implied:
+     no sftp session, no vfs, no drive). Authentication is the profile's, prompts go to the usual callbacks. The
+     result is read with sd_mount_get_hostkeys() once the mount reports UNMOUNTED or FAILED. hostkey_type NULL =
+     the default set of key types. */
+  int hostkey_fetch;
+  const char *hostkey_type;
 } sd_mount_params;
 
 
@@ -352,11 +363,11 @@ typedef struct sd_mount_announcement {
 sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
                                const sd_mount_announcement *a, int add_only);
 
-/* hostkey add core (03 §6.1), shared by the per-user agent and, later, the service: validates the host and port,
-   sets out->lookup_name from `lookup` (the caller's canonical name) and calls the backend. Blocking; any thread
-   that may wait for the network. The caller owns *out (large: allocate it). */
-sd_err sd_mount_hostkeys_fetch(const sd_mount_backend *be, const char *host, uint16_t port, const char *lookup,
-                               const char *type, sd_mount_hk_fetch *out);
+/* hostkey add result of a mount created with params.hostkey_fetch (03 §6.1): verified = 1 when the connection
+   matched a stored key (the keys are the other host keys of the server); verified = 0 on first contact, where the
+   one key the server presented is returned and nothing is stored by sd_mount. Control thread; valid once the
+   mount is final. out->lookup_name is left empty (the caller knows its lookup name). */
+sd_err sd_mount_get_hostkeys(const sd_mount *m, sd_mount_hk_fetch *out);
 
 /* Details kept for the error report of a failed mount. */
 typedef struct sd_mount_failure {

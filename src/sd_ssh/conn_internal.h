@@ -68,6 +68,7 @@ typedef struct ssh_prompt_answer {
 /* Creates a prompt bound to c; strings are copied. Raises on_prompt (I/O thread). */
 sd_prompt *ssh_prompt_new(sd_ssh_conn *c, ssh_prompt_purpose purpose, sd_prompt_kind kind);
 const char *ssh_prompt_str(sd_prompt *p, const char *s);           /* copy owned by the prompt */
+const uint8_t *ssh_prompt_blob(sd_prompt *p, const uint8_t *b, size_t n);   /* copy owned by the prompt */
 sd_auth_prompt_info *ssh_prompt_auth_info(sd_prompt *p);
 sd_hostkey_prompt_info *ssh_prompt_hk_info(sd_prompt *p);
 sd_prompt_item *ssh_prompt_items(sd_prompt *p, uint32_t n);        /* storage for n items (n <= 16) */

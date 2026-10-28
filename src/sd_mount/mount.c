@@ -29,7 +29,8 @@ enum { EV_READY, EV_FAILED, EV_DISCONNECTED, EV_CLOSED, EV_PROMPT, EV_PROMPT_CLO
        EV_CONN, EV_AUTH_REQUIRED, EV_WRITE_FAILED, EV_NOTICE, EV_IDENTITY,
        EV_WARNING, EV_ANNOUNCED,
        EV_TOKEN_ASK,            /* TM-R19: raise SD_MP_WEBDAV_TOKEN_ONLY (it->prompt) */
-       EV_TOKEN_ONLY };         /* TM-R19: the answer (err SD_OK = accept, otherwise refused) */
+       EV_TOKEN_ONLY,           /* TM-R19: the answer (err SD_OK = accept, otherwise refused) */
+       EV_HK_DONE };            /* M5 hostkey mount: the connect and the fetch ended (err = the failure) */
 
 /* M2: owned copy of one hop (sd_mount_hop) */
 typedef struct owned_hop {
@@ -142,6 +143,13 @@ struct sd_mount {
   int legacy_seen;                /* an outdated algorithm was negotiated on some hop */
   int probe_ok;                   /* probe holds the profile.test result */
   sd_mount_probe probe;
+  /* M5 hostkey mount (params.hostkey_fetch): no sftp session; the connection is hk_conn */
+  int hk_fetch;
+  char hk_type[64];               /* "" = the default key types */
+  sd_ssh_conn *hk_conn;
+  int hk_presented;               /* first contact: the presented key was taken (I/O thread, under lock) */
+  sd_mount_hostkey hk_key;        /* the presented key (first contact) */
+  sd_mount_hk_fetch hk_res;       /* the result (under lock) */
 };
 
 static const char *const k_sess_names[] = {
@@ -372,6 +380,9 @@ static void record_failure(sd_mount *m, sd_err e, const char *code, const char *
 
 static void run_item(void *arg);
 static void post_item(sd_mount *m, int kind, sd_err err, uint32_t prompt_id, sd_mount_prompt *prompt);
+static void build_ssh_config(sd_mount *m);
+static sd_err hk_start(sd_mount *m);
+static void hk_finish(sd_mount *m);
 
 /* Dokany thread: post only (sd_dokan.h). */
 static void dokan_on_unmounted(void *ctx, sd_dokan_mount *dm)
@@ -995,6 +1006,11 @@ static void run_item(void *arg)
         teardown(m);
       }
       break;
+    case EV_HK_DONE:
+      if (it->err != SD_OK && !m->finished)
+        record_failure(m, it->err, NULL, "hostkey fetch failed");
+      hk_finish(m);
+      break;
     case EV_PROMPT_CLOSED:
       if (m->cb.on_prompt_closed)
         m->cb.on_prompt_closed(m->cb.ctx, m, it->prompt_id);
@@ -1078,6 +1094,23 @@ static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *au
   char target[TARGET_CAP];
   owned_hop *oh;
   target[0] = 0;
+  if (hk && m->hk_fetch) {
+    /* M5: first contact (or an accept-once case): the presented key is taken and nothing is stored; the agent
+       asks the user (5.2). The connection goes on, and the fetch then reports verified = 0. */
+    sd_mutex_lock(&m->lock);
+    m->hk_presented = 0;
+    memset(&m->hk_key, 0, sizeof(m->hk_key));
+    if (hk->blob && hk->blob_len && hk->blob_len <= sizeof(m->hk_key.blob)) {
+      scopy(m->hk_key.type, sizeof(m->hk_key.type), hk->key_type);
+      scopy(m->hk_key.fp_sha256, sizeof(m->hk_key.fp_sha256), hk->fp_sha256);
+      m->hk_key.len = hk->blob_len;
+      memcpy(m->hk_key.blob, hk->blob, hk->blob_len);
+      m->hk_presented = 1;
+    }
+    sd_mutex_unlock(&m->lock);
+    m->be->prompt_answer_hostkey(p, SD_HK_ACCEPT_ONCE);
+    return;
+  }
   if (hk) {
     kind = SD_MP_HOSTKEY;
   } else if (auth && auth->kind == SD_PROMPT_PASSWORD) {
@@ -1397,6 +1430,99 @@ static void copy_hk(sd_mount_hostkey *d, const sd_hk_key *k)
   if (d->len) memcpy(d->blob, k->blob, d->len);
 }
 
+/* ---- M5 hostkey mount (params.hostkey_fetch, 03 §6.1, 01 §4.3, TM-R04) ----
+   The connection is the profile's own (every hop, the profile's authentication, the same prompts through the
+   broker), without sftp. Its host key is verified as usual: a stored key must match (MISMATCH and type
+   restrictions fail as they do for a mount). The other host keys come from sd_ssh_conn_fetch_hostkeys inside
+   that verified connection. First contact (no stored key, 5.2) accepts the presented key ONCE, nothing stored:
+   the result is that one key with verified = 0, and the caller's confirmation is the trust decision. */
+
+static const char *const k_hk_default_types[] = {
+  "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"
+};
+
+static void hk_on_fetched(void *ctx, sd_err err, const sd_hk_key *keys, uint32_t count)
+{
+  sd_mount *m = (sd_mount *)ctx;
+  sd_err out = SD_OK;
+  uint32_t i;
+  sd_mutex_lock(&m->lock);
+  memset(&m->hk_res.keys, 0, sizeof(m->hk_res.keys));
+  m->hk_res.count = 0;
+  m->hk_res.verified = 0;
+  if (err == SD_OK || err == SD_E_HOSTKEY_TYPE_UNAVAILABLE) {
+    /* verified: the other keys (none is not an error here; the caller says so) */
+    m->hk_res.verified = 1;
+    if (err == SD_OK)
+      for (i = 0; i < count && i < SD_MOUNT_ANNOUNCE_MAX; i++) {
+        copy_hk(&m->hk_res.keys[m->hk_res.count], &keys[i]);
+        if (m->hk_res.keys[m->hk_res.count].len) m->hk_res.count++;
+      }
+  } else if (err == SD_E_HOSTKEY_REJECTED && m->hk_presented) {
+    /* first contact: the one presented key, not stored */
+    m->hk_res.count = 1;
+    m->hk_res.keys[0] = m->hk_key;
+    err = SD_OK;
+  } else {
+    out = err;
+  }
+  sd_mutex_unlock(&m->lock);
+  post_item(m, EV_HK_DONE, out, 0, NULL);
+}
+
+static void hk_on_connected(void *ctx, sd_err err, uint32_t failed_hop)
+{
+  sd_mount *m = (sd_mount *)ctx;
+  const char *types[SD_COUNTOF(k_hk_default_types)];
+  uint32_t n = 0, i;
+  sd_err e;
+  SD_UNUSED(failed_hop);
+  if (err != SD_OK) {
+    post_item(m, EV_HK_DONE, err, 0, NULL);
+    return;
+  }
+  if (m->hk_type[0]) {
+    types[n++] = m->hk_type;
+  } else {
+    for (i = 0; i < SD_COUNTOF(k_hk_default_types); i++) types[n++] = k_hk_default_types[i];
+  }
+  e = m->be->hk_conn_fetch(m->hk_conn, m->nhops ? m->nhops - 1 : 0, types, n, hk_on_fetched, m);
+  if (e != SD_OK)
+    post_item(m, EV_HK_DONE, e, 0, NULL);
+}
+
+static sd_err hk_start(sd_mount *m)
+{
+  sd_err e = SD_OK;
+  if (!m->be->hk_conn_create || !m->be->hk_conn_connect || !m->be->hk_conn_fetch || !m->be->hk_conn_destroy)
+    e = SD_E_UNSUPPORTED;
+  if (e == SD_OK) {
+    build_ssh_config(m);
+    e = m->be->hk_conn_create(&m->ssh, &m->sshcb, &m->hk_conn);
+  }
+  if (e == SD_OK)
+    e = m->be->hk_conn_connect(m->hk_conn, hk_on_connected, m);
+  /* a synchronous failure is reported like any other end of the mount (its callback did not run) */
+  if (e != SD_OK)
+    post_item(m, EV_HK_DONE, e, 0, NULL);
+  if (m->cb.on_state)
+    m->cb.on_state(m->cb.ctx, m, SD_MOUNT_CONNECTING, SD_OK);
+  return SD_OK;
+}
+
+/* control thread: the connection is closed and destroyed (sd_ssh_conn_destroy waits for its I/O thread), the
+   mount ends (on_state reports UNMOUNTED, or FAILED with the recorded failure). */
+static void hk_finish(sd_mount *m)
+{
+  sd_mount_cancel_prompts(m);
+  m->stopping = 1;
+  if (m->hk_conn) {
+    m->be->hk_conn_destroy(m->hk_conn);
+    m->hk_conn = NULL;
+  }
+  finish(m);
+}
+
 static void ssh_on_hostkey_event(void *ctx, const sd_hostkey_event *e)
 {
   sd_mount *m = (sd_mount *)ctx;
@@ -1619,6 +1745,9 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   /* TM-R19: token-only WebDAV is never used by a global (service) mount */
   if (p->global_mount && p->token_only)
     return SD_E_INVALID_PARAM;
+  /* M5: a hostkey mount is never global, and its key type fits the buffer */
+  if (p->hostkey_fetch && (p->global_mount || (p->hostkey_type && strlen(p->hostkey_type) >= 64)))
+    return SD_E_INVALID_PARAM;
   m = (sd_mount *)sd_calloc(1, sizeof(*m));
   if (m == NULL)
     return SD_E_NO_MEMORY;
@@ -1690,6 +1819,11 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->connections = p->connections >= 1 && p->connections <= 4 ? p->connections : 1;
   m->conn.pool_wanted = m->connections;
   m->test_only = p->test_only ? 1 : 0;
+  m->hk_fetch = p->hostkey_fetch ? 1 : 0;
+  if (m->hk_fetch) {
+    m->test_only = 1;               /* connect and authenticate only; no vfs */
+    scopy(m->hk_type, sizeof(m->hk_type), p->hostkey_type ? p->hostkey_type : "");
+  }
   m->keepalive = p->keepalive_ms;
   m->ctimeout = p->connect_timeout_ms;
   m->profile_name = wdup(p->profile_name);
@@ -1743,6 +1877,78 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   return SD_OK;
 }
 
+/* The sd_ssh configuration of every hop (01 §5.1), shared by the sftp session and the hostkey connection. */
+static void build_ssh_config(sd_mount *m)
+{
+  uint32_t i, k;
+  memset(m->sshhops, 0, sizeof(m->sshhops));
+  memset(m->ids, 0, sizeof(m->ids));
+  for (i = 0; i < m->nhops; i++) {
+    owned_hop *oh = &m->hops[i];
+    sd_ssh_hop *sh = &m->sshhops[i];
+    sd_ssh_identity *id = m->ids[i];
+    uint32_t n = 0;
+    for (k = 0; k < oh->nident; k++) {
+      id[n].kind = SD_ID_FILE;
+      id[n].path = oh->ident[k];
+      if (k == 0) id[n].cert_path = oh->cert;
+      n++;
+    }
+    if (oh->blob) {
+      id[n].kind = SD_ID_BLOB;
+      id[n].blob = oh->blob;
+      id[n].blob_len = oh->blob_len;
+      id[n].label = oh->label;
+      if (oh->nident == 0) id[n].cert_path = oh->cert;
+      n++;
+    }
+    for (k = 0; k < oh->nagent_keys; k++) {
+      id[n].kind = SD_ID_AGENT_KEY;
+      id[n].agent_fingerprint = oh->agent_key[k];
+      n++;
+    }
+    sh->host = oh->host;
+    sh->port = oh->port;
+    sh->host_key_alias = oh->alias;
+    sh->auth.user = oh->user;
+    sh->auth.identities = n ? id : NULL;
+    sh->auth.identity_count = n;
+    sh->auth.methods = oh->methods | ((oh->nident || oh->blob) ? SD_AUTH_PUBLICKEY : 0);
+    sh->auth.agents = oh->agents;
+    sh->auth.identities_only = oh->ident_only;
+    sh->auth.cache_secrets_for_reconnect = m->no_secret_cache ? 0 : 1;   /* 03 §3.4 default yes */
+    sh->proxy.kind = (sd_proxy_kind)oh->pkind;
+    sh->proxy.host = oh->phost;
+    sh->proxy.port = oh->pport;
+    sh->proxy.auth = oh->pauth;
+    sh->proxy.allow_discovered_sspi = oh->psspi;
+    sh->proxy.allow_system = oh->psys;
+    sh->proxy.user = oh->puser;
+    sh->proxy.remote_dns = 1;                /* socks5h semantics (3.8) */
+    sh->proxy.fallback_direct = oh->pfallback;
+    sh->update_host_keys = (sd_hku_mode)oh->hku;
+  }
+  memset(&m->ssh, 0, sizeof(m->ssh));
+  m->ssh.struct_size = sizeof(m->ssh);
+  m->ssh.hops = m->sshhops;
+  m->ssh.hop_count = m->nhops;
+  m->ssh.algos.legacy_policy = (sd_legacy_policy)m->legacy_policy;
+  m->ssh.algos.refuse_terrapin_exposed = m->refuse_terrapin;
+  m->ssh.connect_timeout_ms = m->ctimeout;
+  m->ssh.keepalive_interval_ms = m->keepalive;
+  m->ssh.known_hosts = m->kh;
+  memset(&m->sshcb, 0, sizeof(m->sshcb));
+  m->sshcb.ctx = m;
+  m->sshcb.on_prompt = ssh_on_prompt;
+  m->sshcb.on_prompt_withdrawn = ssh_on_prompt_withdrawn;
+  m->sshcb.on_banner = ssh_on_banner;
+  m->sshcb.on_negotiated = ssh_on_negotiated;
+  m->sshcb.on_hostkey_event = ssh_on_hostkey_event;
+}
+
+static sd_err hk_start(sd_mount *m);
+static void hk_finish(sd_mount *m);
+
 sd_err sd_mount_start(sd_mount *m)
 {
   sd_err e;
@@ -1763,71 +1969,10 @@ sd_err sd_mount_start(sd_mount *m)
       e = m->be->kh_open(&m->store, 1, &m->kh);
     }
   }
+  if (e == SD_OK && m->hk_fetch)
+    return hk_start(m);            /* M5: a hostkey mount has no sftp session */
   if (e == SD_OK) {
-    uint32_t i, k;
-    memset(m->sshhops, 0, sizeof(m->sshhops));
-    memset(m->ids, 0, sizeof(m->ids));
-    for (i = 0; i < m->nhops; i++) {
-      owned_hop *oh = &m->hops[i];
-      sd_ssh_hop *sh = &m->sshhops[i];
-      sd_ssh_identity *id = m->ids[i];
-      uint32_t n = 0;
-      for (k = 0; k < oh->nident; k++) {
-        id[n].kind = SD_ID_FILE;
-        id[n].path = oh->ident[k];
-        if (k == 0) id[n].cert_path = oh->cert;
-        n++;
-      }
-      if (oh->blob) {
-        id[n].kind = SD_ID_BLOB;
-        id[n].blob = oh->blob;
-        id[n].blob_len = oh->blob_len;
-        id[n].label = oh->label;
-        if (oh->nident == 0) id[n].cert_path = oh->cert;
-        n++;
-      }
-      for (k = 0; k < oh->nagent_keys; k++) {
-        id[n].kind = SD_ID_AGENT_KEY;
-        id[n].agent_fingerprint = oh->agent_key[k];
-        n++;
-      }
-      sh->host = oh->host;
-      sh->port = oh->port;
-      sh->host_key_alias = oh->alias;
-      sh->auth.user = oh->user;
-      sh->auth.identities = n ? id : NULL;
-      sh->auth.identity_count = n;
-      sh->auth.methods = oh->methods | ((oh->nident || oh->blob) ? SD_AUTH_PUBLICKEY : 0);
-      sh->auth.agents = oh->agents;
-      sh->auth.identities_only = oh->ident_only;
-      sh->auth.cache_secrets_for_reconnect = m->no_secret_cache ? 0 : 1;   /* 03 §3.4 default yes */
-      sh->proxy.kind = (sd_proxy_kind)oh->pkind;
-      sh->proxy.host = oh->phost;
-      sh->proxy.port = oh->pport;
-      sh->proxy.auth = oh->pauth;
-      sh->proxy.allow_discovered_sspi = oh->psspi;
-      sh->proxy.allow_system = oh->psys;
-      sh->proxy.user = oh->puser;
-      sh->proxy.remote_dns = 1;                /* socks5h semantics (3.8) */
-      sh->proxy.fallback_direct = oh->pfallback;
-      sh->update_host_keys = (sd_hku_mode)oh->hku;
-    }
-    memset(&m->ssh, 0, sizeof(m->ssh));
-    m->ssh.struct_size = sizeof(m->ssh);
-    m->ssh.hops = m->sshhops;
-    m->ssh.hop_count = m->nhops;
-    m->ssh.algos.legacy_policy = (sd_legacy_policy)m->legacy_policy;
-    m->ssh.algos.refuse_terrapin_exposed = m->refuse_terrapin;
-    m->ssh.connect_timeout_ms = m->ctimeout;
-    m->ssh.keepalive_interval_ms = m->keepalive;
-    m->ssh.known_hosts = m->kh;
-    memset(&m->sshcb, 0, sizeof(m->sshcb));
-    m->sshcb.ctx = m;
-    m->sshcb.on_prompt = ssh_on_prompt;
-    m->sshcb.on_prompt_withdrawn = ssh_on_prompt_withdrawn;
-    m->sshcb.on_banner = ssh_on_banner;
-    m->sshcb.on_negotiated = ssh_on_negotiated;
-    m->sshcb.on_hostkey_event = ssh_on_hostkey_event;
+    build_ssh_config(m);
     memset(&m->sopt, 0, sizeof(m->sopt));
     m->sopt.struct_size = sizeof(m->sopt);
     m->sopt.channels = m->channels;            /* meta + bulk (D19) unless the profile says 1 */
@@ -2007,25 +2152,14 @@ sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *st
   return e;
 }
 
-sd_err sd_mount_hostkeys_fetch(const sd_mount_backend *be, const char *host, uint16_t port, const char *lookup,
-                               const char *type, sd_mount_hk_fetch *out)
+sd_err sd_mount_get_hostkeys(const sd_mount *cm, sd_mount_hk_fetch *out)
 {
-  sd_err e;
-  size_t n;
-  if (be == NULL || host == NULL || host[0] == 0 || lookup == NULL || out == NULL || port == 0)
+  sd_mount *m = (sd_mount *)(uintptr_t)cm;
+  if (cm == NULL || out == NULL || !cm->hk_fetch)
     return SD_E_INVALID_PARAM;
-  n = strlen(lookup);
-  if (n >= sizeof(out->lookup_name))
-    return SD_E_INVALID_PARAM;
-  memset(out, 0, sizeof(*out));
-  memcpy(out->lookup_name, lookup, n + 1);
-  if (be->hostkeys_fetch == NULL)
-    return SD_E_UNSUPPORTED;
-  e = be->hostkeys_fetch(host, port, type, out);
-  if (e != SD_OK)
-    return e;
-  if (out->count > SD_MOUNT_ANNOUNCE_MAX)
-    return SD_E_PROTOCOL;
+  sd_mutex_lock(&m->lock);
+  *out = m->hk_res;
+  sd_mutex_unlock(&m->lock);
   return SD_OK;
 }
 

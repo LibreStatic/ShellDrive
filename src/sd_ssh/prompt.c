@@ -76,6 +76,18 @@ const char *ssh_prompt_str(sd_prompt *p, const char *s)
 }
 
 sd_auth_prompt_info *ssh_prompt_auth_info(sd_prompt *p) { return &p->ainfo; }
+const uint8_t *ssh_prompt_blob(sd_prompt *p, const uint8_t *b, size_t n)
+{
+  uint8_t *d;
+  if (!b || !n) return NULL;
+  if (p->nstrs >= SD_COUNTOF(p->strs)) return NULL;
+  d = (uint8_t *)sd_alloc(n);
+  if (!d) return NULL;
+  memcpy(d, b, n);
+  p->strs[p->nstrs++] = (char *)d;   /* freed with the other strings of the prompt */
+  return d;
+}
+
 sd_hostkey_prompt_info *ssh_prompt_hk_info(sd_prompt *p) { return &p->hinfo; }
 
 sd_prompt_item *ssh_prompt_items(sd_prompt *p, uint32_t n)
