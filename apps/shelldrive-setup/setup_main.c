@@ -20,6 +20,7 @@
 #include "setup_elevate.h"
 #include "setup_flow.h"
 #include "setup_trust.h"
+#include "setup_payload_sig.h"
 #include "setup_ui.h"
 
 #ifndef SD_VERSION_STRING_W
@@ -325,6 +326,12 @@ static int run_install(HINSTANCE inst, const sd_setup_args *args, sd_setup_resul
     fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED);
     return SD_SETUP_EXIT_FATAL;
   }
+  /* TM-R38: the table must carry a valid release signature (PAYLOAD_SIG); fails closed. */
+  if (sd_setup_payload_sig_check(inst, (const unsigned char *)LockResource(htglob), SizeofResource(inst, htab)) !=
+      SD_SETUP_PSIG_OK) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED);
+    return SD_SETUP_EXIT_FATAL;
+  }
 
   if (!args->quiet && sd_setup_ui_create(inst, SD_TITLE, &ui) != 0)
     ui = NULL;
@@ -411,6 +418,13 @@ static int load_payload(HINSTANCE inst, sd_setup_flavour flavour, sd_setup_paylo
   if (htglob == NULL ||
       sd_setup_payload_table_lookup((const char *)LockResource(htglob), SizeofResource(inst, htab),
                                     sd_setup_flavour_name(flavour), expected) != 0) {
+    *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED;
+    return 1;
+  }
+  /* TM-R38: the table must carry a valid release signature (PAYLOAD_SIG) in every path that extracts, the elevated
+     stage 2 included; fails closed. */
+  if (sd_setup_payload_sig_check(inst, (const unsigned char *)LockResource(htglob), SizeofResource(inst, htab)) !=
+      SD_SETUP_PSIG_OK) {
     *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED;
     return 1;
   }

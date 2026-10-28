@@ -24,6 +24,7 @@ if(NOT SD_ARM32)
   add_subdirectory(shellext)
 endif()
 add_subdirectory(setup)
+add_subdirectory(release)
 add_subdirectory(unit/sd_svc)
 
 # MSI checks (04 §8): only with -DSD_BUILD_MSI=ON, which also builds the package they read (label msi).

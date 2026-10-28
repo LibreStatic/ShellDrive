@@ -67,7 +67,10 @@ build\x86-fuzz\bin\Debug\sd-fuzz-json-libfuzzer.exe C:\scratch\json -max_total_t
   finding.
 - Last recorded campaign (2026-10-27): 13 targets x 150 s, about 29.5 million executions, no crash, no timeout.
 
-## Nightly fuzzing (intended CI, 04 section 11.2 `fuzz.yml`; not wired yet)
+## Nightly fuzzing (`.github/workflows/nightly.yml`, 04 section 11.2)
+
+Wired on `wip/r16-release` as the `fuzz` and `ct` jobs of `nightly.yml` (the spec names `fuzz.yml` and `ct.yml`; they
+are one workflow here). The design below is the target; the deviations are listed after it.
 
 1. Runner: `windows-2022` with the "C++ AddressSanitizer" component (see above). Matrix over the 13 targets (add new
    ones here).
@@ -430,3 +433,30 @@ only with `--include-dumps`).
 - `ChangeServiceConfigW` is resolved at run time (it is not on the XP import floor list `tests/os-imports/xp-sp3-x86.txt`);
   the rest of the new imports are on that list.
 - The bundle's text is English (logs and JSON); README and the human output are localized (cli catalog, six locales).
+
+## Nightly workflow status (wip/r16-release)
+
+What `.github/workflows/nightly.yml` runs (schedule 03:17 UTC and manual; read-only token; no secrets; no cache):
+
+| Job | Runs | Fails when |
+|---|---|---|
+| `workflow-lint` | `tools/check-workflows.ps1` | a `uses:` is not a first-party action pinned by a 40-hex SHA, a `pull_request_target` appears, the top-level token is not `contents: read`, or release workflows restore caches or artifacts |
+| `fuzz` (matrix, 14 targets) | `x86-fuzz` preset, `sd-fuzz-<t>-libfuzzer` in Debug, 600 s per target on a scratch copy of `tests/fuzz/corpus/<t>` | the fuzzer reports a finding or times out; the input is uploaded as `fuzz-crash-<t>` |
+| `ct` (x86-ia32, x64-modern) | `-DSD_CT_TIMING=ON`, `sd-ct-dudect` in Release, all primitives at the default sample count | the exit code is non-zero (a timing difference above the threshold, or inputs the test rejects); the report is uploaded as `ct-<preset>` |
+
+The target list is the 14 `sd_add_fuzz_target` lines of `tests/fuzz/CMakeLists.txt` (it now includes `inflate`; the
+2026-10-27 campaign above ran 13). Keep the matrix in step with that file.
+
+Deviations from 04 section 11.2 and the design above, recorded so they are not mistaken for done:
+
+1. No corpus cache. The spec allows `actions/cache` for fuzz corpora, but no pinned cache action is in the repository
+   and the pins are not invented here. Each night starts from the repository corpus. Add a pinned cache action (same
+   review as ci.yml) to keep the grown corpus between nights, and minimize weekly.
+2. No `ctest --preset x86-fuzz -L fuzz` step in the fuzz jobs: it needs the whole fuzz tree built per job. The replay
+   drivers run in the ordinary `ctest` runs (label `fuzz`) of the other workflows.
+3. No pull request fuzz run (60 s per target on the touched modules). It needs a path filter and is not in this change.
+4. The timing job does not rerun on the lab machine (04 section 11.2). A failure is reported on the hosted runner only;
+   the rerun on the lab is manual. The arm64 and x86-sse2 timing builds are not in the matrix yet.
+5. The fuzz presets are x86 (`x86-fuzz`, v143 Win32). The spec says "v143 x64"; there is no x64 fuzz preset in the tree.
+6. The workflow lint is also a job of `ci.yml`. CODEOWNERS is still missing: the lint reports it as a warning (run with
+   `-RequireCodeowners` to make it fail). The owner handle is a maintainer decision and is not guessed here.

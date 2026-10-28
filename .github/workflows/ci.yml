@@ -96,3 +96,19 @@ jobs:
       - name: Test
         shell: pwsh
         run: ctest --preset x64-analysis
+
+  # TM-R39 / TST-32: the workflow lint (tools/check-workflows.ps1). Read-only; CODEOWNERS is reported as a warning
+  # until the maintainer review owner is recorded.
+  workflow-lint:
+    name: workflow lint
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint the workflows
+        shell: pwsh
+        run: ./tools/check-workflows.ps1

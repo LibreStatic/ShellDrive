@@ -40,6 +40,20 @@ SD_TEST_DECL(setup_dokany_pe_malformed_fails_closed);
 SD_TEST_DECL(setup_dokany_choose_chain);
 SD_TEST_DECL(setup_dokany_command_lines);
 SD_TEST_DECL(setup_dokany_run_gate);
+SD_TEST_DECL(psig_valid_stable_table);
+SD_TEST_DECL(psig_tampered_table_refused);
+SD_TEST_DECL(psig_raw_table_without_domain_refused);
+SD_TEST_DECL(psig_wrong_build_channel_refused);
+SD_TEST_DECL(psig_beta_table_signed_by_stable_key_refused);
+SD_TEST_DECL(psig_unknown_key_refused);
+SD_TEST_DECL(psig_empty_keyring_fails_closed);
+SD_TEST_DECL(psig_revoked_and_expired_keys_refused);
+SD_TEST_DECL(psig_key_rotation_both_keys_accepted);
+SD_TEST_DECL(psig_header_and_format_refused);
+SD_TEST_DECL(psig_signature_line_format_refused);
+SD_TEST_DECL(psig_size_limits);
+SD_TEST_DECL(psig_base64_canonical_only);
+SD_TEST_DECL(psig_channel_helper_and_missing_resource);
 
 SD_TEST_DECL(setup_elev_pipe_names);
 SD_TEST_DECL(setup_elev_pipe_roundtrip);
@@ -111,6 +125,20 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_elev_parent_cancelled_uac),
   SD_TEST_ENTRY(setup_elev_parent_silent_channel_fails),
   SD_TEST_ENTRY(setup_elev_parent_in_process_when_elevated),
+  SD_TEST_ENTRY(psig_valid_stable_table),
+  SD_TEST_ENTRY(psig_tampered_table_refused),
+  SD_TEST_ENTRY(psig_raw_table_without_domain_refused),
+  SD_TEST_ENTRY(psig_wrong_build_channel_refused),
+  SD_TEST_ENTRY(psig_beta_table_signed_by_stable_key_refused),
+  SD_TEST_ENTRY(psig_unknown_key_refused),
+  SD_TEST_ENTRY(psig_empty_keyring_fails_closed),
+  SD_TEST_ENTRY(psig_revoked_and_expired_keys_refused),
+  SD_TEST_ENTRY(psig_key_rotation_both_keys_accepted),
+  SD_TEST_ENTRY(psig_header_and_format_refused),
+  SD_TEST_ENTRY(psig_signature_line_format_refused),
+  SD_TEST_ENTRY(psig_size_limits),
+  SD_TEST_ENTRY(psig_base64_canonical_only),
+  SD_TEST_ENTRY(psig_channel_helper_and_missing_resource),
 };
 
 int main(int argc, char **argv)
