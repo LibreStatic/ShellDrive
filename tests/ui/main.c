@@ -51,6 +51,18 @@ SD_TEST_DECL(mainview_dont_warn_again_hash_ignores_order);
 SD_TEST_DECL(mainview_status_kinds_and_icons);
 SD_TEST_DECL(mainview_groups_follow_the_scope);
 SD_TEST_DECL(mainview_algorithm_categories_and_reasons);
+SD_TEST_DECL(hkissue_type_unavailable_lists_stored_and_offered_types);
+SD_TEST_DECL(hkissue_type_unavailable_without_offered_key_or_arrays);
+SD_TEST_DECL(hkissue_names_are_reduced_to_printable_ascii_and_capped);
+SD_TEST_DECL(hkissue_store_kind_decides_the_source);
+SD_TEST_DECL(mainview_list_security_fields_are_read_from_the_mount);
+SD_TEST_DECL(mainview_legacy_flag_without_a_list_keeps_the_names_unknown);
+SD_TEST_DECL(mainview_scope_tokens_give_the_groups);
+SD_TEST_DECL(notice_mount_state_changes);
+SD_TEST_DECL(notice_warning_codes);
+SD_TEST_DECL(notice_every_kind_has_its_switch);
+SD_TEST_DECL(notice_attention_only_when_the_count_grows);
+SD_TEST_DECL(notice_proxy_password_once_per_profile_and_proxy);
 
 SD_TEST_DECL(wire_roundtrip_and_empty);
 SD_TEST_DECL(wire_rejects_bad_header);
@@ -276,6 +288,18 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(mainview_status_kinds_and_icons),
   SD_TEST_ENTRY(mainview_groups_follow_the_scope),
   SD_TEST_ENTRY(mainview_algorithm_categories_and_reasons),
+  SD_TEST_ENTRY(hkissue_type_unavailable_lists_stored_and_offered_types),
+  SD_TEST_ENTRY(hkissue_type_unavailable_without_offered_key_or_arrays),
+  SD_TEST_ENTRY(hkissue_names_are_reduced_to_printable_ascii_and_capped),
+  SD_TEST_ENTRY(hkissue_store_kind_decides_the_source),
+  SD_TEST_ENTRY(mainview_list_security_fields_are_read_from_the_mount),
+  SD_TEST_ENTRY(mainview_legacy_flag_without_a_list_keeps_the_names_unknown),
+  SD_TEST_ENTRY(mainview_scope_tokens_give_the_groups),
+  SD_TEST_ENTRY(notice_mount_state_changes),
+  SD_TEST_ENTRY(notice_warning_codes),
+  SD_TEST_ENTRY(notice_every_kind_has_its_switch),
+  SD_TEST_ENTRY(notice_attention_only_when_the_count_grows),
+  SD_TEST_ENTRY(notice_proxy_password_once_per_profile_and_proxy),
 };
 
 int main(int argc, char **argv)

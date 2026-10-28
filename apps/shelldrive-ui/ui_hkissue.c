@@ -9,8 +9,11 @@
  * the file and offers "Open file location" and "Stop using keys from this source" (turns the source off in settings.ini,
  * because a mismatch in any source blocks, D7).
  *
- * host_key_type_unavailable raises its own balloon; a click opens the host key manager, where the user can add a key of
- * another type with "Add key from server..." (verified inside a connection that uses the stored key). */
+ * host_key_type_unavailable raises its own balloon; a click opens the details dialog of 5.2: the key types stored for the
+ * name next to the host key algorithms the server offered (and the key it presented, with its SHA-256 fingerprint), so a
+ * key type change is always visible. Buttons: "Manage host keys..." and "Add key from server..." (opens the manager and
+ * the review of the server's keys, verified inside a connection that uses the stored key). The agent sends no fingerprint
+ * of the stored keys (the known_hosts type list has none), so the stored side shows types only. */
 #include <windows.h>
 #include <shellapi.h>
 #include <string.h>
@@ -31,6 +34,7 @@
 #define HKI_ID_MANAGE 4502
 #define HKI_ID_OPEN   4503
 #define HKI_ID_STOP   4504
+#define HKI_ID_ADD    4505
 #define HKI_WIDTH     300
 
 static ui_hki g_last;                  /* the issue the last balloon was about */
@@ -56,7 +60,15 @@ static int user_store_path(wchar_t *out, size_t cap)
 static ui_hki_source source_of(const ui_hki *h)
 {
   wchar_t user[MAX_PATH];
-  return ui_hki_classify(h->path, user_store_path(user, SD_COUNTOF(user)) ? user : NULL);
+  return ui_hki_source_of(h, user_store_path(user, SD_COUNTOF(user)) ? user : NULL);
+}
+
+static void widen_ascii(const char *s, wchar_t *out, size_t cch)
+{
+  size_t i;
+  for (i = 0; i + 1 < cch && s[i] != 0; i++)
+    out[i] = (wchar_t)(unsigned char)s[i];
+  out[i] = 0;
 }
 
 /* ---- the balloons ---- */
@@ -74,11 +86,11 @@ void ui_hkissue_on_mount_state(const sd_json *data, const char *host, const wcha
     ui_tray_notify_msg(SD_MSG_UI_HKI_NOTIFY_CHANGED, "host", whost);
   } else if (ui_hki_has_stored_type(&h)) {
     sd_arg a[2];
-    wchar_t stored[UI_HKI_TYPE_MAX], *text;
-    size_t i;
-    for (i = 0; i + 1 < SD_COUNTOF(stored) && h.stored_type[i] != 0; i++)
-      stored[i] = (wchar_t)(unsigned char)h.stored_type[i];
-    stored[i] = 0;
+    wchar_t stored[UI_HKI_STORED_MAX * (UI_HKI_TYPE_MAX + 2)], *text;
+    char list[UI_HKI_STORED_MAX * (UI_HKI_TYPE_MAX + 2)];
+    if (ui_hki_stored_list(&h, list, sizeof(list)) == 0)
+      strcpy_s(list, sizeof(list), h.stored_type);
+    widen_ascii(list, stored, SD_COUNTOF(stored));
     a[0].name = "host";
     a[0].type = SD_ARG_STR;
     a[0].v.s = whost;
@@ -223,6 +235,89 @@ static sd_err build_dialog(const ui_hki *h, ui_hki_source src, unsigned char **b
   return e;
 }
 
+/* "Stored key types: ..." and "Offered by the server: ..." and, when the server presented a key, "Offered now: ...". */
+static void type_lines(const ui_hki *h, wchar_t *out, size_t cap)
+{
+  char list[UI_HKI_OFFERED_MAX * (UI_HKI_TYPE_MAX + 2)];
+  wchar_t wl[UI_HKI_OFFERED_MAX * (UI_HKI_TYPE_MAX + 2)];
+  wchar_t *line;
+  sd_arg a[1];
+  out[0] = 0;
+  if (ui_hki_stored_list(h, list, sizeof(list)) == 0)
+    strcpy_s(list, sizeof(list), h->stored_type);
+  widen_ascii(list, wl, SD_COUNTOF(wl));
+  a[0].name = "types";
+  a[0].type = SD_ARG_STR;
+  a[0].v.s = wl[0] != 0 ? wl : sd_l10n_get(SD_MSG_UI_HKI_TYPES_NONE);
+  line = sd_l10n_format_alloc(SD_MSG_UI_HKI_LINE_STORED_TYPES, a, 1);
+  if (line != NULL) {
+    wcscat_s(out, cap, line);
+    sd_free(line);
+  }
+  wcscat_s(out, cap, L"\r\n");
+  if (ui_hki_offered_list(h, list, sizeof(list)) == 0)
+    list[0] = 0;
+  widen_ascii(list, wl, SD_COUNTOF(wl));
+  a[0].v.s = wl[0] != 0 ? wl : sd_l10n_get(SD_MSG_UI_HKI_TYPES_NONE);
+  line = sd_l10n_format_alloc(SD_MSG_UI_HKI_LINE_OFFERED_TYPES, a, 1);
+  if (line != NULL) {
+    wcscat_s(out, cap, line);
+    sd_free(line);
+  }
+  if (ui_hki_has_offered_key(h)) {
+    line = fmt_type_fp(SD_MSG_UI_HKI_LINE_OFFERED, h->offered_type, h->offered_fp);
+    wcscat_s(out, cap, L"\r\n");
+    if (line != NULL) {
+      wcscat_s(out, cap, line);
+      sd_free(line);
+    }
+  }
+}
+
+/* Builds the template of the key type dialog (5.2). Release *blob with sd_free. */
+static sd_err build_type_dialog(const ui_hki *h, unsigned char **blob, size_t *len)
+{
+  static const WORD ids[3] = { HKI_ID_MANAGE, HKI_ID_ADD, IDCANCEL };
+  const wchar_t *texts[3];
+  wchar_t face[UI_DLG_FACE_MAX];
+  WORD points = 8;
+  int dpi = 96;
+  ui_measure m;
+  wchar_t whost[UI_HKI_HOST_MAX];
+  wchar_t lines[(UI_HKI_STORED_MAX + UI_HKI_OFFERED_MAX) * (UI_HKI_TYPE_MAX + 2) + 2 * (UI_HKI_TYPE_MAX + UI_HKI_FP_MAX + 64)];
+  wchar_t *intro;
+  sd_arg a[1];
+  ui_dlg *d = (ui_dlg *)sd_calloc(1, sizeof(ui_dlg));
+  sd_err e;
+  if (d == NULL)
+    return SD_E_NO_MEMORY;
+  host_wide(h, whost, SD_COUNTOF(whost));
+  a[0].name = "host";
+  a[0].type = SD_ARG_STR;
+  a[0].v.s = whost;
+  intro = sd_l10n_format_alloc(SD_MSG_UI_HKI_TYPE_INTRO, a, 1);
+  type_lines(h, lines, SD_COUNTOF(lines));
+  ui_message_font(face, &points, &dpi);
+  ui_measure_init(&m, face, points, dpi);
+  texts[0] = sd_l10n_get(SD_MSG_UI_HKI_BTN_MANAGE);
+  texts[1] = sd_l10n_get(SD_MSG_UI_HKI_BTN_ADD);
+  texts[2] = sd_l10n_get(SD_MSG_UI_HKI_BTN_CLOSE);
+  e = ui_dlg_init(d, sd_l10n_get(SD_MSG_UI_HKI_TYPE_TITLE), HKI_WIDTH, face, points, ui_measure_cb, &m);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, intro != NULL ? intro : L"", SS_NOPREFIX);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, sd_l10n_get(SD_MSG_UI_HKI_KEYS_LABEL), 0);
+  if (e == SD_OK) e = ui_dlg_multiline(d, HKI_ID_KEYS, lines, 6);
+  if (e == SD_OK) e = ui_dlg_space(d, 2);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, sd_l10n_get(SD_MSG_UI_HKI_TYPE_TODO), SS_NOPREFIX);
+  if (e == SD_OK) e = ui_dlg_space(d, 4);
+  /* Close is the default button: Enter never adds a key */
+  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 3, IDCANCEL);
+  if (e == SD_OK) e = ui_dlg_build(d, blob, len);
+  ui_measure_free(&m);
+  sd_free(d);
+  sd_free(intro);
+  return e;
+}
+
 /* "Stop using keys from this source": asks, then turns the source off in settings.ini and tells the agent. */
 static void stop_source(HWND owner, ui_hki_source src)
 {
@@ -278,6 +373,9 @@ static INT_PTR CALLBACK hki_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case HKI_ID_MANAGE:
       EndDialog(hwnd, HKI_ID_MANAGE);
       return TRUE;
+    case HKI_ID_ADD:
+      EndDialog(hwnd, HKI_ID_ADD);
+      return TRUE;
     case HKI_ID_OPEN:
       open_location(hwnd, &c->issue);
       return TRUE;
@@ -312,12 +410,29 @@ static void show_changed(const ui_hki *h)
     ui_hostkeys_open_for(h->host);
 }
 
+static void show_type(const ui_hki *h)
+{
+  unsigned char *blob = NULL;
+  size_t len = 0;
+  hki_dlg c;
+  INT_PTR r = IDCANCEL;
+  c.issue = *h;
+  c.src = UI_HKI_SRC_USER;
+  if (build_type_dialog(h, &blob, &len) == SD_OK && blob != NULL)
+    r = DialogBoxIndirectParamW(g_app.inst, (LPCDLGTEMPLATEW)blob, g_app.main, hki_proc, (LPARAM)&c);
+  sd_free(blob);
+  if (r == HKI_ID_MANAGE)
+    ui_hostkeys_open_for(h->host);
+  else if (r == HKI_ID_ADD)
+    ui_hostkeys_add_for(h->host, ui_hki_add_target(h));
+}
+
 void ui_hkissue_open_last(void)
 {
   if (g_last.kind == UI_HKI_CHANGED)
     show_changed(&g_last);
   else if (g_last.kind == UI_HKI_TYPE_UNAVAILABLE)
-    ui_hostkeys_open_for(g_last.host);
+    show_type(&g_last);
 }
 
 /* --test-windows: the template builds and parses for every source, with and without the optional buttons. */
@@ -346,6 +461,31 @@ int ui_hkissue_smoke(void)
     ok = build_dialog(&h, k_src[i], &blob, &len) == SD_OK && blob != NULL &&
          ui_dlg_parse_check(blob, len, &count, offs, SD_COUNTOF(offs)) == SD_OK && count == want;
     sd_free(blob);
+  }
+  if (ok) {
+    /* the key type dialog (5.2): without and with the key the server presented */
+    unsigned char *blob = NULL;
+    size_t len = 0, j;
+    ui_hki t;
+    memset(&t, 0, sizeof(t));
+    t.kind = UI_HKI_TYPE_UNAVAILABLE;
+    strcpy_s(t.host, sizeof(t.host), "example.org");
+    strcpy_s(t.stored_types[0], UI_HKI_TYPE_MAX, "ssh-ed25519");
+    strcpy_s(t.stored_types[1], UI_HKI_TYPE_MAX, "ssh-rsa");
+    t.n_stored = 2;
+    strcpy_s(t.offered_types[0], UI_HKI_TYPE_MAX, "ecdsa-sha2-nistp256");
+    t.n_offered = 1;
+    for (j = 0; j < 2 && ok; j++) {
+      if (j == 1) {
+        strcpy_s(t.offered_type, sizeof(t.offered_type), "ecdsa-sha2-nistp256");
+        strcpy_s(t.offered_fp, sizeof(t.offered_fp), "SHA256:ZYXWVUTSRQPONMLKJIHGFEDCBA9876543210zyxwvut");
+      }
+      /* intro, label, edit, todo, then Manage, Add and Close */
+      ok = build_type_dialog(&t, &blob, &len) == SD_OK && blob != NULL &&
+           ui_dlg_parse_check(blob, len, &count, offs, SD_COUNTOF(offs)) == SD_OK && count == 7;
+      sd_free(blob);
+      blob = NULL;
+    }
   }
   return ok;
 }

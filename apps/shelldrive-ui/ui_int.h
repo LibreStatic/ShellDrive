@@ -17,6 +17,7 @@
 #include "sd_config/sd_config.h"
 #include "sd_l10n/sd_l10n_catalog.h"
 #include "ui_events_model.h"
+#include "ui_notice_model.h"
 #include "ui_wire.h"
 
 /* Messages posted to the control window (WM_APP range). */
@@ -65,7 +66,8 @@ typedef enum ui_ipc_kind {
   UI_IPC_UPDATE_CHECK, /* update.check (ui_update.c) */
   UI_IPC_UPDATE_APPLY, /* update.apply, consent true (ui_update.c) */
   UI_IPC_HK_ADD,       /* hostkey.add (ui_hostkeys.c): the agent connects to the server, which can take a while */
-  UI_IPC_HK_REJECT     /* hostkey.announced.reject (ui_hostkeys.c): a declined offer leaves the announcements */
+  UI_IPC_HK_REJECT,    /* hostkey.announced.reject (ui_hostkeys.c): a declined offer leaves the announcements */
+  UI_IPC_AGENT_START   /* the result of ui_ipc_start_agent (status bar): err is SD_OK or why the agent did not start */
 } ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
@@ -89,7 +91,10 @@ typedef struct ui_mount {
   char session[24];             /* connection.session ("" when the agent sent none), for the Reconnecting status */
   int attempt;                  /* connection.attempt */
   unsigned sec;                 /* UI_MV_SEC_* bits: legacy_algorithms and terrapin_exposed warnings (7.6) */
-  char algos[256];              /* comma-joined algorithm names of the last legacy_algorithms warning, "" if unseen */
+  char algos[256];              /* comma-joined outdated algorithm names (list legacy_algorithms, or the last warning event) */
+  unsigned char algo_cat[16];   /* ui_mv_cat of the name at the same position in algos; 0 (other) when not reported */
+  int scope;                    /* SD_PROFILE_SCOPE_* from the list's scope token; -1 when the agent sent none */
+  int sec_from_list;            /* 1 when sec came from the mount's own legacy/terrapin_exposed fields (current connection) */
 } ui_mount;
 
 typedef struct ui_model {
@@ -153,6 +158,9 @@ wchar_t    *ui_format_count(sd_msg_id msg_id, long long count);
 sd_err ui_ipc_start(void);
 void   ui_ipc_stop(void);
 sd_err ui_ipc_list(void);
+/* "Agent not running - Start" (03 §7.5): connects now and starts the agent when it is not running
+   (sd_ipc_connect_agent_or_start). The outcome of a failed start is a UI_IPC_AGENT_START reply. */
+sd_err ui_ipc_start_agent(void);
 sd_err ui_ipc_unmount(const wchar_t *drive);
 sd_err ui_ipc_mount(const char *profile_id);
 /* mount with the complete params object of 03 §2.4 (ui_mount_params_json). */
@@ -197,6 +205,9 @@ void   ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg);
 void   ui_tray_notify_text(sd_msg_id msg, const wchar_t *subject, const wchar_t *text);
 /* hostkeys.announced: the balloon "example.org offered new host keys. Review" when notifications are on. */
 void   ui_tray_on_hostkeys_announced(const sd_json *data);
+/* The notices of 7.7 that follow the agent's state (ui_notice_model.h): recorded in the event list always, shown as a balloon
+   when [ui] notify and the kind's switch allow it. detail: the proxy (host:port) or the host; count: prompts waiting. */
+void   ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *detail, int count);
 /* Shows the next queued balloon that the rate limit allows (UI_TIMER_NOTIFY, once a second). */
 void   ui_tray_flush(void);
 
@@ -241,6 +252,10 @@ int    ui_main_test_controls(void);
 const sd_profile *ui_main_selected_profile(void);
 ui_mount         *ui_main_selected_mount(void);
 void   ui_main_reload_profiles(void);
+/* The status bar's "Agent not running - Start": asks the IPC thread to start and connect (once at a time). */
+void   ui_main_start_agent(void);
+/* The outcome of that request (UI_IPC_AGENT_START): a failed start says so; a started agent is the state going up. */
+void   ui_main_agent_start_done(sd_err err);
 /* Shows a drive in Explorer (ShellExecuteW "explore"); drive is "X:". */
 void   ui_open_drive(const wchar_t *drive);
 

@@ -88,6 +88,7 @@ static ui_row g_rows[UI_ROWS_MAX];
 static size_t g_nrows;
 static HIMAGELIST g_images;
 static int g_groups_on;
+static int g_agent_starting;      /* "Start" was clicked and the IPC thread has not answered yet */
 
 static int dpx(int v)
 {
@@ -223,6 +224,8 @@ static void build_rows(void)
     for (j = 0; j < g_app.model.count; j++) {
       if (p->id[0] && strcmp(g_app.model.items[j].profile_id, p->id) == 0) {
         r->mount = (int)j;
+        if (g_app.model.items[j].scope >= 0)       /* the agent knows the scope of a mount it runs (round 17) */
+          r->group = (int)ui_mv_group_of_scope(g_app.model.items[j].scope);
         break;
       }
     }
@@ -233,7 +236,9 @@ static void build_rows(void)
       continue;
     all[n].profile = -1;
     all[n].mount = (int)j;
-    all[n].group = (int)ui_mv_group_of_scope(-1);
+    /* a mount without a profile in the user's store: an ad-hoc mount, or a drive of the organization or all users, whose
+       profile this list does not read; the scope comes from the agent */
+    all[n].group = (int)ui_mv_group_of_scope(m->scope);
     n++;
   }
   g_nrows = 0;
@@ -357,8 +362,11 @@ static void set_status_text(void)
   const wchar_t *text;
   if (!g_app.status)
     return;
+  if (g_app.agent_up)
+    g_agent_starting = 0;
   if (!g_app.agent_up) {
-    text = sd_l10n_get(SD_MSG_UI_STATUS_AGENT_DOWN);
+    /* "ShellDrive is not running. Click here to start it." while a click starts it: "Starting ShellDrive..." */
+    text = sd_l10n_get(g_agent_starting ? SD_MSG_UI_STATUS_AGENT_STARTING : SD_MSG_UI_STATUS_AGENT_DOWN);
     SendMessageW(g_app.status, SB_SETTEXTW, 0, (LPARAM)text);
     return;
   }
@@ -806,8 +814,40 @@ static int on_create(HWND hwnd)
   return 0;
 }
 
+void ui_main_start_agent(void)
+{
+  if (g_app.agent_up || g_agent_starting)
+    return;
+  if (ui_ipc_start_agent() != SD_OK)
+    return;
+  g_agent_starting = 1;
+  set_status_text();
+}
+
+void ui_main_agent_start_done(sd_err err)
+{
+  g_agent_starting = 0;
+  if (err != SD_OK && !g_app.agent_up) {
+    wchar_t *t;
+    wchar_t code[64];
+    ui_text_utf8(sd_err_name(err), code, SD_COUNTOF(code));
+    t = ui_format1(SD_MSG_UI_STATUS_AGENT_START_FAILED, "code", code);
+    if (t != NULL) {
+      MessageBoxW(g_app.main, t, L"ShellDrive", MB_OK | MB_ICONERROR);
+      sd_free(t);
+    }
+  }
+  set_status_text();
+}
+
 static void on_notify(const NMHDR *nm)
 {
+  if (nm->idFrom == UI_CTL_STATUS) {
+    /* the status bar is the Start button while the agent is not running (7.5) */
+    if ((nm->code == NM_CLICK || nm->code == NM_DBLCLK) && !g_app.agent_up)
+      ui_main_start_agent();
+    return;
+  }
   if (nm->idFrom != UI_CTL_LIST)
     return;
   if (nm->code == LVN_ITEMCHANGED) {

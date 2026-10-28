@@ -70,6 +70,80 @@ size_t ui_mv_algos_join(const sd_json *data, char *csv, size_t cap)
   return kept;
 }
 
+ui_mv_cat ui_mv_cat_of_token(const char *token)
+{
+  if (token == NULL)
+    return UI_MV_CAT_OTHER;
+  if (strcmp(token, "kex") == 0)
+    return UI_MV_CAT_KEX;
+  if (strcmp(token, "hostkey") == 0)
+    return UI_MV_CAT_HOSTKEY;
+  if (strcmp(token, "cipher") == 0)
+    return UI_MV_CAT_CIPHER;
+  if (strcmp(token, "mac") == 0)
+    return UI_MV_CAT_MAC;
+  return UI_MV_CAT_OTHER;
+}
+
+int ui_mv_scope_of_token(const char *token)
+{
+  if (token == NULL)
+    return -1;
+  if (strcmp(token, "user") == 0)
+    return SD_PROFILE_SCOPE_USER;
+  if (strcmp(token, "machine_template") == 0)
+    return SD_PROFILE_SCOPE_USERS;
+  if (strcmp(token, "global") == 0)
+    return SD_PROFILE_SCOPE_SERVICE;
+  return -1;
+}
+
+void ui_mv_security_from_mount(const sd_json *mount, const sd_json *warnings, const char *mount_id, ui_mv_security *out)
+{
+  int legacy = 0, terrapin = 0;
+  int has_legacy = sd_json_get_bool(mount, "legacy", &legacy);
+  int has_terrapin = sd_json_get_bool(mount, "terrapin_exposed", &terrapin);
+  memset(out, 0, sizeof(*out));
+  if (!has_legacy && !has_terrapin) {
+    out->sec = ui_mv_sec_from_warnings(warnings, mount_id);
+    return;
+  }
+  out->from_mount = 1;
+  if (legacy)
+    out->sec |= UI_MV_SEC_LEGACY;
+  if (terrapin)
+    out->sec |= UI_MV_SEC_TERRAPIN;
+  {
+    const sd_json *arr = sd_json_get(mount, "legacy_algorithms");
+    size_t i, n = sd_json_count(arr), len = 0;
+    if (sd_json_type_of(arr) != SD_JSON_ARRAY)
+      return;
+    for (i = 0; i < n && out->n_algos < UI_MV_ALGOS_N; i++) {
+      const sd_json *e = sd_json_at(arr, i);
+      const char *name = sd_json_get_str(e, "name");
+      size_t j, sl;
+      int ok = 1;
+      if (name == NULL || name[0] == 0)
+        continue;
+      sl = strlen(name);
+      if (sl > 63)
+        continue;
+      for (j = 0; j < sl; j++)
+        if (!name_char_ok((unsigned char)name[j]))
+          ok = 0;
+      if (!ok || len + sl + 2 > sizeof(out->algos))
+        continue;
+      if (len > 0)
+        out->algos[len++] = ',';
+      memcpy(out->algos + len, name, sl);
+      len += sl;
+      out->algos[len] = 0;
+      out->cats[out->n_algos++] = (unsigned char)ui_mv_cat_of_token(sd_json_get_str(e, "category"));
+    }
+    /* a mount with the flag but no list (an older agent): the names stay unknown */
+  }
+}
+
 size_t ui_mv_algos_split(const char *csv, char names[][64], size_t cap)
 {
   size_t n = 0;

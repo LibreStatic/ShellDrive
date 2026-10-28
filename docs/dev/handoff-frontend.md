@@ -292,3 +292,50 @@ new dialogs in the lab, XP behaviour of anything (no lab).
   reconnected, so the text is the new state.
 - Logs viewer: `[log] privacy` and `diag.collect`.
 
+
+## Round 18 (branch `wip/r18-uiconsume`): the UI consumes the round 17 agent data
+
+- **Wrong key type details dialog (5.2).** A click on the balloon of `host_key_type_unavailable` opens a dialog (`ui_hkissue.c`,
+  `build_type_dialog`): the key types stored for the name, the host key algorithms the server offered (`offered_types`) and, when
+  the server presented a key, its type and SHA-256 fingerprint (`offered_type`, `offered_fp`). Buttons **Manage host keys...**
+  (manager with the host selected), **Add key from server...** (opens the manager and starts the add dialog prefilled with
+  `lookup_name`, else the host: `ui_hostkeys_add_for`) and **Close** (default). The balloon names the stored types from
+  `stored_types[]`. **Not shown: fingerprints of the stored keys** (the agent has none, see round 17).
+- **`store_kind` (item 2).** `ui_hki_source_of` uses `error.store_kind` (`machine`, `user`, `openssh`, `putty`); the path
+  classification (`ui_hki_classify`) is only the fallback for an agent or an unknown token without it.
+- **Security column and groups from `list` (item 3).** `ui_mv_security_from_mount` reads `legacy`, `legacy_algorithms[{category,
+  name}]` and `terrapin_exposed` of each mount (the current connection); `ui_mount` keeps the names and their categories
+  (`algo_cat`), so the Security column and the legacy/Terrapin dialog work after a UI restart, "Don't warn again" included. The
+  dialog shows the category the agent sent; the reason line is still derived from the name. A mount without those fields (older
+  agent) still gets its bits from the `warnings` ring and from warning events. When the fields are there they replace the bits
+  the UI had accumulated, so a mount that reconnected without the outdated algorithm stops showing it after the next `list`.
+  `scope` (`user`, `machine_template`, `global`) puts a mount in My connections, Provided by your organization or Global drives
+  (`ui_mv_scope_of_token`); a mount without a profile in the user's store (the other two groups) is a row of its own.
+- **"Agent not running - Start" (item 4).** The status bar reads "ShellDrive is not running. Click here to start it."; a click
+  (`NM_CLICK`) calls `ui_ipc_start_agent`, which wakes the IPC thread to connect with `sd_ipc_connect_agent_or_start`. The status
+  line says "Starting ShellDrive...", a failed start shows the error name, and a started agent is the usual state change. A
+  prompt host never starts the agent (1.4). There is no keyboard path yet (the status bar is not focusable).
+- **Notices of 7.7 (item 5), `ui_notice_model.c` + `ui_tray_notice`.** Derived from what the agent sends: `mount.state`
+  (mounted -> offline = connection lost, offline -> mounted = reconnected, other -> mounted = mounted, -> failed = mount failed;
+  a host key error keeps its own always-on balloon), `warning` codes `proxy_cleartext` (once per profile and proxy per UI run),
+  `pool_limited` and `disk_cache_refused`, `hostkeys.announced` with `applied = true` (host keys saved; before this the UI said
+  "offered new host keys" for them) and the service `attention` count going up (administrators; the text is the tray menu's plural
+  item and a click opens the administrator window). Each is recorded in the event list always and shown as a balloon only when
+  `[ui] notify` and the kind's `notify_<kind>` allow it, with the 60 s rate limit per (drive, kind). A change that has a notice is
+  recorded by the notice (not twice as a plain state entry).
+- Strings: `ui.notice.*` (8), `ui.hki.type_*`, `ui.hki.line_*_types`, `ui.hki.types_none`, `ui.hki.btn_add`,
+  `ui.status.agent_starting|agent_start_failed` in six locales; `ui.status.agent_down` now says to click. Mnemonics of `ui.hki`
+  are unique in every locale (`btn_add`: A, G, A, A, V, H for en, es, fr, pt-BR, it, de).
+- Tests: `tests/ui/test_notice.c` (5), `test_hkissue.c` (+4), `test_mainview.c` (+3); `ui_hkissue_smoke` builds the new dialog in
+  `--test-windows`.
+
+### Backend missing (round 18)
+
+- The settings backend maps the code `proxy_password` to its switch, but the agent raises `proxy_cleartext`; the UI accepts
+  both. `sd_notify_kind_from_code` should learn `proxy_cleartext`.
+- Every kind of item 5 has a triggering event. Not emitted by the agent: `hostkey_source_insecure` (kind `notify_hostkeys_source`,
+  no code path sends it) and `update_stale` as a `warning` (it is an `update.*` event). No event says why a drive reconnected
+  (the UI only sees offline -> mounted).
+- `sd_profile_enum` still reads the per-user store: org and global profiles appear as rows only while mounted (their group now
+  comes from `scope`), and cannot be listed before a mount.
+- Stored key fingerprints for the type dialog (see round 17).

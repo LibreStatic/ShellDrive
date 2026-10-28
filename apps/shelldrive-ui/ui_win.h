@@ -64,6 +64,7 @@ int    ui_windows_smoke_test(void);
 /* ---- ui_hostkeys.c: the host key manager (03 §5.1, §5.5, §5.6) ---- */
 void   ui_hostkeys_open(void);
 void   ui_hostkeys_open_for(const char *host);   /* opens the manager with the first key of host selected */
+void   ui_hostkeys_add_for(const char *host, const char *target);   /* opens at host and starts "Add key from server" */
 void   ui_hostkeys_close(void);
 void   ui_hostkeys_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_hostkeys_on_event(void);

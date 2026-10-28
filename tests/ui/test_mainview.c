@@ -135,3 +135,71 @@ SD_TEST(mainview_algorithm_categories_and_reasons)
   ui_mv_algo_info(NULL, &c, &w);
   SD_CHECK_EQ_INT((int)c, (int)UI_MV_CAT_OTHER);
 }
+
+SD_TEST(mainview_list_security_fields_are_read_from_the_mount)
+{
+  sd_json *j = parse("{\"mounts\":[{\"mount_id\":\"m-1\",\"legacy\":true,\"terrapin_exposed\":true,"
+                     "\"legacy_algorithms\":[{\"category\":\"cipher\",\"name\":\"3des-cbc\"},"
+                     "{\"category\":\"mac\",\"name\":\"hmac-sha1\"},{\"category\":\"weird\",\"name\":\"x-new\"},"
+                     "{\"category\":\"kex\",\"name\":\"bad name;\"},{\"category\":\"kex\"}]},"
+                     "{\"mount_id\":\"m-2\",\"legacy\":false,\"terrapin_exposed\":false,\"legacy_algorithms\":[]},"
+                     "{\"mount_id\":\"m-3\"}],"
+                     "\"warnings\":[{\"code\":\"legacy_algorithms\",\"mount_id\":\"m-2\"},"
+                     "{\"code\":\"terrapin_exposed\",\"mount_id\":\"m-3\"}]}");
+  const sd_json *mounts = sd_json_get(j, "mounts");
+  const sd_json *warnings = sd_json_get(j, "warnings");
+  ui_mv_security s;
+  char names[4][64];
+  SD_CHECK(j != NULL);
+  ui_mv_security_from_mount(sd_json_at(mounts, 0), warnings, "m-1", &s);
+  SD_CHECK_EQ_INT(s.from_mount, 1);
+  SD_CHECK_EQ_INT((int)s.sec, (int)(UI_MV_SEC_LEGACY | UI_MV_SEC_TERRAPIN));
+  SD_CHECK_EQ_INT((int)s.n_algos, 3);                /* the name with a space and the entry without a name are dropped */
+  SD_CHECK_STR(s.algos, "3des-cbc,hmac-sha1,x-new");
+  SD_CHECK_EQ_INT((int)s.cats[0], (int)UI_MV_CAT_CIPHER);
+  SD_CHECK_EQ_INT((int)s.cats[1], (int)UI_MV_CAT_MAC);
+  SD_CHECK_EQ_INT((int)s.cats[2], (int)UI_MV_CAT_OTHER);
+  /* names and categories stay aligned for the dialog and for the "Don't warn again" hash */
+  SD_CHECK_EQ_INT((int)ui_mv_algos_split(s.algos, names, 4), 3);
+  SD_CHECK_STR(names[2], "x-new");
+  /* the mount's own fields win over a stale warning in the ring */
+  ui_mv_security_from_mount(sd_json_at(mounts, 1), warnings, "m-2", &s);
+  SD_CHECK_EQ_INT(s.from_mount, 1);
+  SD_CHECK_EQ_INT((int)s.sec, 0);
+  SD_CHECK_EQ_INT((int)s.n_algos, 0);
+  /* an agent that sends no such fields: the warnings ring */
+  ui_mv_security_from_mount(sd_json_at(mounts, 2), warnings, "m-3", &s);
+  SD_CHECK_EQ_INT(s.from_mount, 0);
+  SD_CHECK_EQ_INT((int)s.sec, (int)UI_MV_SEC_TERRAPIN);
+  sd_json_free(j);
+}
+
+SD_TEST(mainview_legacy_flag_without_a_list_keeps_the_names_unknown)
+{
+  sd_json *j = parse("{\"mount_id\":\"m\",\"legacy\":true}");
+  ui_mv_security s;
+  SD_CHECK(j != NULL);
+  ui_mv_security_from_mount(j, NULL, "m", &s);
+  SD_CHECK_EQ_INT((int)s.sec, (int)UI_MV_SEC_LEGACY);
+  SD_CHECK_EQ_INT((int)s.n_algos, 0);
+  sd_json_free(j);
+}
+
+SD_TEST(mainview_scope_tokens_give_the_groups)
+{
+  SD_CHECK_EQ_INT(ui_mv_scope_of_token("user"), SD_PROFILE_SCOPE_USER);
+  SD_CHECK_EQ_INT(ui_mv_scope_of_token("machine_template"), SD_PROFILE_SCOPE_USERS);
+  SD_CHECK_EQ_INT(ui_mv_scope_of_token("global"), SD_PROFILE_SCOPE_SERVICE);
+  SD_CHECK_EQ_INT(ui_mv_scope_of_token("elsewhere"), -1);
+  SD_CHECK_EQ_INT(ui_mv_scope_of_token(NULL), -1);
+  /* a mount from the organization or from all users lands in its own group, one without a scope in "My connections" */
+  SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(ui_mv_scope_of_token("machine_template")), (int)UI_MV_GROUP_ORG);
+  SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(ui_mv_scope_of_token("global")), (int)UI_MV_GROUP_GLOBAL);
+  SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(ui_mv_scope_of_token(NULL)), (int)UI_MV_GROUP_MINE);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token("kex"), (int)UI_MV_CAT_KEX);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token("hostkey"), (int)UI_MV_CAT_HOSTKEY);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token("cipher"), (int)UI_MV_CAT_CIPHER);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token("mac"), (int)UI_MV_CAT_MAC);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token("compression"), (int)UI_MV_CAT_OTHER);
+  SD_CHECK_EQ_INT((int)ui_mv_cat_of_token(NULL), (int)UI_MV_CAT_OTHER);
+}

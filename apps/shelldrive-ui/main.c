@@ -291,6 +291,50 @@ static void record_mount_event(const ui_mount *m, const sd_json *data, const cha
   ui_events_record(UI_EV_DRIVE, subject, text);
 }
 
+/* The name a notice carries: the drive letter, else the profile or the server; for a mount this UI has not listed, the
+   target of the event (target_obj is the event data, or the data of a warning). */
+static void notice_subject(const ui_mount *m, const sd_json *target_obj, wchar_t *out, size_t cch)
+{
+  out[0] = 0;
+  if (m != NULL) {
+    wcsncpy_s(out, cch, m->drive[0] != 0 ? m->drive : (m->profile[0] != 0 ? m->profile : m->server), _TRUNCATE);
+    return;
+  }
+  ui_text_utf8(sd_json_get_str(target_obj, "target"), out, cch);
+}
+
+/* A mount.state change that leads to a notice of 7.7 (connection lost, reconnected, mounted, mount failed). */
+static void notice_mount_state(ui_nt_kind kind, const ui_mount *m, const sd_json *data)
+{
+  wchar_t subject[UI_EV_SUBJECT_MAX];
+  wchar_t code[64];
+  const char *c = sd_json_get_str(sd_json_get(data, "error"), "code");
+  notice_subject(m, data, subject, SD_COUNTOF(subject));
+  ui_text_utf8(c != NULL ? c : "error", code, SD_COUNTOF(code));
+  ui_tray_notice(kind, subject, code, 0);
+}
+
+/* A `warning` with the code proxy_cleartext, pool_limited or disk_cache_refused. The proxy password notice is once per
+   (profile, proxy) for the life of the UI (7.7); the agent says it once per mount and hop. */
+static void notice_warning(ui_nt_kind kind, const ui_mount *m, const sd_json *ev_data)
+{
+  static ui_nt_once once;
+  const sd_json *d = sd_json_get(ev_data, "data");
+  const char *detail = sd_json_get_str(d, "detail");
+  wchar_t subject[UI_EV_SUBJECT_MAX];
+  wchar_t wdetail[160];
+  notice_subject(m, d, subject, SD_COUNTOF(subject));
+  wdetail[0] = 0;
+  if (kind == UI_NT_PROXY_PASSWORD) {
+    char key[UI_NT_ONCE_KEY_MAX];
+    const char *who = m != NULL && m->profile_id[0] != 0 ? m->profile_id : sd_json_get_str(ev_data, "mount_id");
+    if (!ui_nt_once_key(who, detail, key, sizeof(key)) || !ui_nt_once_take(&once, key))
+      return;
+    ui_text_utf8(detail != NULL ? detail : "", wdetail, SD_COUNTOF(wdetail));
+  }
+  ui_tray_notice(kind, subject, wdetail, 0);
+}
+
 void ui_app_on_event(sd_json *ev)
 {
   const char *name = sd_json_get_str(ev, "event");
@@ -300,7 +344,12 @@ void ui_app_on_event(sd_json *ev)
     const char *id = sd_json_get_str(data, "mount_id");
     const char *st = sd_json_get_str(data, "state");
     ui_mount *m = ui_model_find_id(&g_app.model, id);
-    record_mount_event(m, data, st);
+    ui_nt_kind nk = ui_nt_of_mount_state(m != NULL ? m->state : "", st, sd_json_get_str(sd_json_get(data, "error"), "code"));
+    /* a change the user is told about (7.7) is recorded by its notice, the others by the plain state entry */
+    if (nk != UI_NT_NONE)
+      notice_mount_state(nk, m, data);
+    else
+      record_mount_event(m, data, st);
     if (m == NULL) {
       /* A mount this UI has not listed yet: ask for the list again. */
       if (st != NULL && strcmp(st, "unmounted") != 0)
@@ -326,11 +375,17 @@ void ui_app_on_event(sd_json *ev)
     if (m != NULL && flag != 0) {
       /* the Security column and the details dialog (7.6); a legacy warning names the algorithms */
       m->sec |= flag;
-      if (flag == UI_MV_SEC_LEGACY)
-        (void)ui_mv_algos_join(sd_json_get(data, "data"), m->algos, sizeof(m->algos));
+      if (flag == UI_MV_SEC_LEGACY && ui_mv_algos_join(sd_json_get(data, "data"), m->algos, sizeof(m->algos)) > 0)
+        memset(m->algo_cat, 0, sizeof(m->algo_cat));    /* an event names no categories: the dialog derives them */
       ui_main_refresh();
     }
-    ui_tray_balloon(code, m ? m->drive : L"");
+    {
+      ui_nt_kind nk = ui_nt_of_warning_code(code);
+      if (nk != UI_NT_NONE)
+        notice_warning(nk, m, data);
+      else
+        ui_tray_balloon(code, m ? m->drive : L"");
+    }
   } else if (name != NULL && strcmp(name, "prompt.request") == 0) {
     ui_prompt_on_request(data);
   } else if (name != NULL && strcmp(name, "prompt.closed") == 0) {
@@ -361,8 +416,11 @@ void ui_app_on_prompt_list(sd_json *result)
 /* attention {count} from the service (ui_svc.c): the tray shows it to an administrator only. */
 void ui_app_on_attention(int count)
 {
+  int previous = g_app.attention;
   g_app.attention = ui_admin_attention_shown(count, g_app.user_admin) ? count : 0;
   ui_tray_update();
+  if (ui_nt_attention_grew(previous, g_app.attention))
+    ui_tray_notice(UI_NT_SERVICE_ATTENTION, L"", NULL, g_app.attention);   /* administrators only (7.7) */
 }
 
 /* Once a second. The prompt host leaves after UI_PROMPT_IDLE_MS with no open prompt (03 §1.4). */
@@ -387,7 +445,9 @@ void ui_app_on_timer(UINT_PTR id)
 
 void ui_app_on_reply(ui_ipc_reply *r)
 {
-  if (r->kind >= UI_IPC_ANNOUNCED) {
+  if (r->kind == UI_IPC_AGENT_START) {
+    ui_main_agent_start_done(r->err);
+  } else if (r->kind >= UI_IPC_ANNOUNCED) {
     ui_windows_on_reply((int)r->kind, r->err, r->result);
   } else if (r->kind == UI_IPC_ANSWER) {
     /* answers close their dialog when queued; a refused one (answered elsewhere) needs no message */

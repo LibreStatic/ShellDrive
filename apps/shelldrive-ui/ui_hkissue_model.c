@@ -20,6 +20,74 @@ static void ascii_copy(const sd_json *obj, const char *key, char *out, size_t ca
   out[i] = 0;
 }
 
+static void ascii_cut(const char *s, char *out, size_t cap)
+{
+  size_t i;
+  for (i = 0; i + 1 < cap && s[i] != 0; i++) {
+    unsigned char c = (unsigned char)s[i];
+    out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+  }
+  out[i] = 0;
+}
+
+/* Reads a JSON array of strings into names; returns the number kept (empty strings are skipped). */
+static size_t read_names(const sd_json *obj, const char *key, char (*names)[UI_HKI_TYPE_MAX], size_t max)
+{
+  const sd_json *arr = sd_json_get(obj, key);
+  size_t i, n = sd_json_count(arr), kept = 0;
+  if (sd_json_type_of(arr) != SD_JSON_ARRAY)
+    return 0;
+  for (i = 0; i < n && kept < max; i++) {
+    const char *s = sd_json_str(sd_json_at(arr, i), NULL);
+    if (s == NULL || s[0] == 0)
+      continue;
+    ascii_cut(s, names[kept], UI_HKI_TYPE_MAX);
+    kept++;
+  }
+  return kept;
+}
+
+/* Splits a comma-joined list ("ssh-rsa,ssh-ed25519") into names. */
+static size_t split_names(const char *csv, char (*names)[UI_HKI_TYPE_MAX], size_t max)
+{
+  size_t kept = 0;
+  const char *p = csv;
+  while (p != NULL && *p != 0 && kept < max) {
+    const char *e = strchr(p, ',');
+    size_t len = e != NULL ? (size_t)(e - p) : strlen(p);
+    while (len > 0 && *p == ' ') {
+      p++;
+      len--;
+    }
+    if (len > 0) {
+      size_t k;
+      for (k = 0; k + 1 < UI_HKI_TYPE_MAX && k < len; k++) {
+        unsigned char c = (unsigned char)p[k];
+        names[kept][k] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+      }
+      names[kept][k] = 0;
+      kept++;
+    }
+    p = e != NULL ? e + 1 : NULL;
+  }
+  return kept;
+}
+
+static ui_hki_store store_of_token(const char *s)
+{
+  if (s == NULL)
+    return UI_HKI_STORE_UNKNOWN;
+  if (strcmp(s, "machine") == 0)
+    return UI_HKI_STORE_MACHINE;
+  if (strcmp(s, "user") == 0)
+    return UI_HKI_STORE_USER;
+  if (strcmp(s, "openssh") == 0)
+    return UI_HKI_STORE_OPENSSH;
+  if (strcmp(s, "putty") == 0)
+    return UI_HKI_STORE_PUTTY;
+  return UI_HKI_STORE_UNKNOWN;
+}
+
 static int ends_with_i(const wchar_t *s, const wchar_t *suffix)
 {
   size_t n = wcslen(s), m = wcslen(suffix);
@@ -52,6 +120,12 @@ ui_hki_kind ui_hki_parse(const sd_json *data, const char *fallback_host, ui_hki 
     }
     out->host[i] = 0;
   }
+  ascii_copy(err, "lookup_name", out->lookup_name, sizeof(out->lookup_name));
+  out->store = store_of_token(sd_json_get_str(err, "store_kind"));
+  if (out->kind == UI_HKI_TYPE_UNAVAILABLE) {
+    out->n_stored = read_names(err, "stored_types", out->stored_types, UI_HKI_STORED_MAX);
+    out->n_offered = read_names(err, "offered_types", out->offered_types, UI_HKI_OFFERED_MAX);
+  }
   ascii_copy(err, "stored_type", out->stored_type, sizeof(out->stored_type));
   ascii_copy(err, "stored_fp", out->stored_fp, sizeof(out->stored_fp));
   ascii_copy(err, "offered_type", out->offered_type, sizeof(out->offered_type));
@@ -67,6 +141,8 @@ ui_hki_kind ui_hki_parse(const sd_json *data, const char *fallback_host, ui_hki 
     }
     out->path[o] = 0;
   }
+  if (out->kind == UI_HKI_TYPE_UNAVAILABLE && out->n_stored == 0)
+    out->n_stored = split_names(out->stored_type, out->stored_types, UI_HKI_STORED_MAX);   /* an older agent */
   if (sd_json_get_int64(err, "store_line", &line) && line > 0 && line < 100000000)
     out->line = (unsigned)line;
   return out->kind;
@@ -171,5 +247,59 @@ ui_hki_todo ui_hki_todo_of(ui_hki_source s)
 
 int ui_hki_has_stored_type(const ui_hki *h)
 {
-  return h != NULL && h->stored_type[0] != 0;
+  return h != NULL && (h->n_stored > 0 || h->stored_type[0] != 0);
+}
+
+ui_hki_source ui_hki_source_of(const ui_hki *h, const wchar_t *user_store)
+{
+  switch (h->store) {
+  case UI_HKI_STORE_MACHINE: return UI_HKI_SRC_MACHINE;
+  case UI_HKI_STORE_USER:    return UI_HKI_SRC_USER;
+  case UI_HKI_STORE_OPENSSH: return UI_HKI_SRC_OPENSSH;
+  case UI_HKI_STORE_PUTTY:   return UI_HKI_SRC_PUTTY;
+  default:                   return ui_hki_classify(h->path, user_store);
+  }
+}
+
+static size_t join_types(const char (*types)[UI_HKI_TYPE_MAX], size_t n, char *out, size_t cap)
+{
+  size_t i, len = 0, written = 0;
+  if (out == NULL || cap == 0)
+    return 0;
+  out[0] = 0;
+  for (i = 0; i < n; i++) {
+    size_t tl = strlen(types[i]);
+    size_t need = (i > 0 ? 2u : 0u) + tl;
+    if (len + need + 1 > cap)
+      break;
+    if (i > 0) {
+      out[len++] = ',';
+      out[len++] = ' ';
+    }
+    memcpy(out + len, types[i], tl);
+    len += tl;
+    out[len] = 0;
+    written++;
+  }
+  return written;
+}
+
+size_t ui_hki_stored_list(const ui_hki *h, char *out, size_t cap)
+{
+  return join_types((const char (*)[UI_HKI_TYPE_MAX])h->stored_types, h->n_stored, out, cap);
+}
+
+size_t ui_hki_offered_list(const ui_hki *h, char *out, size_t cap)
+{
+  return join_types((const char (*)[UI_HKI_TYPE_MAX])h->offered_types, h->n_offered, out, cap);
+}
+
+int ui_hki_has_offered_key(const ui_hki *h)
+{
+  return h != NULL && h->offered_type[0] != 0 && h->offered_fp[0] != 0;
+}
+
+const char *ui_hki_add_target(const ui_hki *h)
+{
+  return h->lookup_name[0] != 0 ? h->lookup_name : h->host;
 }

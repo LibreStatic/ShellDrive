@@ -94,8 +94,8 @@ msgstr[2] "{count} unidades montadas."
 
 #. Status bar when the agent is not running.
 msgctxt "ui.status.agent_down"
-msgid "ShellDrive is not running."
-msgstr "O ShellDrive não está em execução."
+msgid "ShellDrive is not running. Click here to start it."
+msgstr "O ShellDrive não está em execução. Clique aqui para iniciá-lo."
 
 #. Mount state in the list: the agent is opening the connection.
 msgctxt "ui.state.connecting"
@@ -2663,3 +2663,96 @@ msgid_plural "{count} events."
 msgstr[0] "{count} evento."
 msgstr[1] "{count} de eventos."
 msgstr[2] "{count} eventos."
+
+#. Status bar while ShellDrive is being started after a click on the not-running text.
+msgctxt "ui.status.agent_starting"
+msgid "Starting ShellDrive…"
+msgstr "Iniciando o ShellDrive…"
+
+#. Message when the click on the status bar could not start ShellDrive. {code} is the error name.
+msgctxt "ui.status.agent_start_failed"
+msgid "ShellDrive could not be started ({code}). Try again in a moment."
+msgstr "Não foi possível iniciar o ShellDrive ({code}). Tente novamente em instantes."
+
+#. Balloon: a mounted drive lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.lost"
+msgid "{name}: the connection was lost. ShellDrive is trying to reconnect."
+msgstr "{name}: a conexão foi perdida. O ShellDrive está tentando reconectar."
+
+#. Balloon: a drive is connected again after it lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected"
+msgid "{name}: connected again."
+msgstr "{name}: conectado novamente."
+
+#. Balloon: a drive could not be connected (03 7.7). {name} is the drive letter or the connection name, {code} the error name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mount_failed"
+msgid "ShellDrive could not connect {name} ({code}). Open ShellDrive for details."
+msgstr "O ShellDrive não conseguiu conectar {name} ({code}). Abra o ShellDrive para ver os detalhes."
+
+#. Balloon: a drive is connected (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mounted"
+msgid "{name}: connected."
+msgstr "{name}: conectado."
+
+#. Balloon: the proxy of a connection receives the proxy password unencrypted (03 3.8, 7.7). {name} is the connection, {proxy} the proxy as host:port.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.proxy_password"
+msgid "{name}: the proxy {proxy} receives your proxy password unencrypted."
+msgstr "{name}: o proxy {proxy} recebe sua senha de proxy sem criptografia."
+
+#. Balloon: extra connections of a drive are not used because signing in needs typing (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.pool_limited"
+msgid "{name}: extra connections are not used because signing in needs you to type."
+msgstr "{name}: as conexões extras não são usadas porque o login exige que você digite algo."
+
+#. Balloon: ShellDrive saved new host keys of a server by itself (03 5.6, 7.7). {host} is the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkeys_saved"
+msgid "ShellDrive saved new host keys for {host}."
+msgstr "O ShellDrive salvou novas chaves de host de {host}."
+
+#. Balloon: the disk cache was not used because its folder is on a volume without file permissions (03 1.9, 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.disk_cache"
+msgid "{name}: ShellDrive did not use the disk cache because its folder is on a volume without file permissions."
+msgstr "{name}: o ShellDrive não usou o cache em disco porque a pasta dele está em um volume sem permissões de arquivo."
+
+#. Title of the dialog that explains a wrong host key type (03 5.2).
+msgctxt "ui.hki.type_title"
+msgid "Host key type not offered"
+msgstr "Tipo de chave de host não oferecido"
+
+#. Wrong host key type dialog: what happened. {host} is the server. Nothing is trusted automatically.
+msgctxt "ui.hki.type_intro"
+msgid "ShellDrive stopped the connection to {host} because the server did not offer any of the host key types ShellDrive has stored for it. The server may have been reinstalled or upgraded, or someone may be intercepting your connection. ShellDrive does not trust a key of another type by itself."
+msgstr "O ShellDrive interrompeu a conexão com {host} porque o servidor não ofereceu nenhum dos tipos de chave de host que o ShellDrive guardou para ele. O servidor pode ter sido reinstalado ou atualizado, ou alguém pode estar interceptando sua conexão. O ShellDrive não confia por conta própria em uma chave de outro tipo."
+
+#. Wrong host key type dialog: the key types stored for the server. {types} is a comma separated list.
+msgctxt "ui.hki.line_stored_types"
+msgid "Stored key types: {types}"
+msgstr "Tipos de chave guardados: {types}"
+
+#. Wrong host key type dialog: the host key types the server offers. {types} is a comma separated list.
+msgctxt "ui.hki.line_offered_types"
+msgid "Types the server offers: {types}"
+msgstr "Tipos oferecidos pelo servidor: {types}"
+
+#. Wrong host key type dialog: shown in place of the list of key types when there is none.
+msgctxt "ui.hki.types_none"
+msgid "none"
+msgstr "nenhum"
+
+#. Wrong host key type dialog: what to do. It names the button Add key from server.
+msgctxt "ui.hki.type_todo"
+msgid "If you expected this change, check the new fingerprint with the server's administrator, then add the key with the Add key from server button. If you did not expect it, do not connect."
+msgstr "Se você esperava essa mudança, confira a nova impressão digital com o administrador do servidor e depois adicione a chave com o botão Adicionar chave do servidor. Se não esperava, não se conecte."
+
+#. Wrong host key type dialog button: opens the host key manager and the review of the server's keys. The ellipsis marks a window.
+msgctxt "ui.hki.btn_add"
+msgid "&Add key from server…"
+msgstr "&Adicionar chave do servidor…"
