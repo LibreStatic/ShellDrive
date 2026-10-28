@@ -1410,7 +1410,7 @@ SD_TEST(svc_profile_file_with_an_open_acl_is_not_loaded)
   PSECURITY_DESCRIPTOR open_sd = NULL, closed_sd = NULL;
   PACL open_dacl = NULL, closed_dacl = NULL;
   BOOL present = FALSE, defaulted = FALSE;
-  int64_t n = -1;
+  int64_t n = -1, base = -1;
   SD_REQUIRE(ensure_core());
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\profiles\\a-mounted.ini", g_root);
@@ -1421,11 +1421,16 @@ SD_TEST(svc_profile_file_with_an_open_acl_is_not_loaded)
   SD_REQUIRE(GetSecurityDescriptorDacl(open_sd, &present, &open_dacl, &defaulted) && present);
   SD_REQUIRE(GetSecurityDescriptorDacl(closed_sd, &present, &closed_dacl, &defaulted) && present);
 
+  /* the count with every fixture profile readable; the open ACL must cost exactly this one profile */
+  res = call(c, "config.reload", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_REQUIRE(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &base) && base > 0);
+  sd_json_free(res);
   SD_REQUIRE(SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                                    NULL, NULL, open_dacl, NULL) == ERROR_SUCCESS);
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
-  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == 8);
+  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == base - 1);
   sd_json_free(res);
 
   SD_CHECK(SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
@@ -1433,7 +1438,7 @@ SD_TEST(svc_profile_file_with_an_open_acl_is_not_loaded)
   n = -1;
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
-  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == 9);
+  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == base);
   sd_json_free(res);
   LocalFree(open_sd);
   LocalFree(closed_sd);

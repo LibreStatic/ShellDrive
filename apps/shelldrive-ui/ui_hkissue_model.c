@@ -72,11 +72,25 @@ ui_hki_kind ui_hki_parse(const sd_json *data, const char *fallback_host, ui_hki 
   return out->kind;
 }
 
+/* 1 when needle occurs in s. Not the CRT wcsstr: its x86 version dispatches to SSE4.2 code that the x86-ia32 ISA
+   audit has not reviewed (tools/sd-isacheck/crt-allow.txt), and these strings are short. */
+static int has_substr(const wchar_t *s, const wchar_t *needle)
+{
+  size_t i, j;
+  for (i = 0; s[i] != 0; i++) {
+    for (j = 0; needle[j] != 0 && s[i + j] == needle[j]; j++)
+      ;
+    if (needle[j] == 0)
+      return 1;
+  }
+  return 0;
+}
+
 ui_hki_source ui_hki_classify(const wchar_t *path, const wchar_t *user_store)
 {
   if (path == NULL || path[0] == 0)
     return UI_HKI_SRC_PUTTY;
-  if (wcsstr(path, L"SimonTatham") != NULL && wcsstr(path, L"PuTTY") != NULL && wcschr(path, L':') == NULL)
+  if (has_substr(path, L"SimonTatham") && has_substr(path, L"PuTTY") && wcschr(path, L':') == NULL)
     return UI_HKI_SRC_PUTTY;
   if (user_store != NULL && _wcsicmp(path, user_store) == 0)
     return UI_HKI_SRC_USER;
