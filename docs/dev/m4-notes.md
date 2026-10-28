@@ -490,7 +490,10 @@ manifest with 15 days, and a file name with a separator are all refused. Passing
 4. `sd-release resign` (stable re-signing with a new serial and `expires`, TM-R36) is not written.
 5. Stage 2 checks of 04 section 12.3 step 7 (`signtool remove /s`, removal of `PAYLOAD_SIG`, comparison with the rebuilt
    EXE) are not in the tool.
-6. `release-gates.txt`: the record format is not defined in 04 section 12.3, so it is not implemented.
+6. `release-gates.txt` (r21, done): the format is defined in 04 section 12.3. `sd-release gates check` validates it, `sign`
+   refuses without a passing record, `release.yml` job `check-gates` runs the check, and `tests/release/gates_flow.cmake`
+   covers it (`release.gates`). The record file itself, `installer/keys/release-gates.txt`, is not written: it is the
+   maintainer's record for a release, so the release job fails until it exists.
 7. CODEOWNERS: the owner handle is the maintainer's decision; the lint reports it as a warning.
 8. `release.yml`: the finalize gate still stops; update it when the steps above exist.
 

@@ -471,7 +471,8 @@ reconnect, meta/bulk channels, caches and read-ahead, write-behind opt-in, `sd_w
   `sd_mount` change was needed (`m1-notes`, r14).
 - [done, r14] sd_vfs offline waits: `SD_SFTP_REQ_WAIT_READY` request instead of 50 ms polling; quiesce and
   unmount cancel the waiters (tests `vfs_offline_wait_completes_on_reconnect`, `vfs_offline_wait_cancel_returns_promptly`).
-  Open: lookups still fail at once while offline, not after `offline_wait` (`m1-notes`, r14).
+  Decided (r21): unknown names fail at once while offline, not after `offline_wait`; 02 §5.2, test
+  `vfs_offline_unknown_lookup_fails_at_once` (`m1-notes`, r14/r21).
 - TM-R17 watchers for long-running clients (crash filter and stop cleanup already done).
 
 ### M2 — all of it (in progress, uncommitted state committed on this branch)

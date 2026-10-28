@@ -778,6 +778,29 @@ SD_TEST(vfs_offline_negative_lookup_is_disconnected)
   fx_done(&f);
 }
 
+/* 02 §5.2: a name the vfs has no entry for fails at once while offline (no offline_wait, so Explorer probes do not
+   stall); entries already known keep being served. */
+SD_TEST(vfs_offline_unknown_lookup_fails_at_once)
+{
+  fixture f;
+  sd_vfs_options o;
+  sd_vfs_info info;
+  uint64_t t0;
+  opts(&o);
+  o.offline_wait_ms = 5000;             /* a lookup that waited would take this long; the bound below is far under it */
+  SD_REQUIRE(fx_start(&f, NULL, &o));
+  fake_put(f.s, "/home/user/known.txt", "x", 1, 0644);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\known.txt", &info), SD_VFS_OK);
+  fake_disconnect(f.s);
+  t0 = sd_tick_ms();
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\never-cached.txt", &info), SD_VFS_E_DISCONNECTED);
+  SD_CHECK(sd_tick_ms() - t0 < 1000);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\known.txt", &info), SD_VFS_OK);      /* known entry: served */
+  fake_reconnect(f.s);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\never-cached.txt", &info), SD_VFS_E_NOT_FOUND);
+  fx_done(&f);
+}
+
 /* ---- identity without exec (D10, 02 §3.4) ---- */
 
 SD_TEST(vfs_identity_home_owner_then_first_create)

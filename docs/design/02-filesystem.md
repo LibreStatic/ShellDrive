@@ -764,7 +764,7 @@ events and shrinks the pool (5.6); the session state is the primary's.
 
 | Operation | Behavior |
 |---|---|
-| stat / lookup / listing | Positive entries served from cache ignoring TTL. Negative entries and names absent from a cached listing → `SD_VFS_E_DISCONNECTED` (never `NOT_FOUND`: apps must not conclude a file was deleted; WebDAV 503, 7.6). Unknown → `SD_VFS_E_DISCONNECTED` now; the design wait (`SD_SFTP_REQ_WAIT_READY`, `timeout_ms = offline_wait`, default 3 s, before `DISCONNECTED`) is not implemented for lookups yet (`m1-notes`, r14). |
+| stat / lookup / listing | Positive entries served from cache ignoring TTL. Negative entries and names absent from a cached listing → `SD_VFS_E_DISCONNECTED` (never `NOT_FOUND`: apps must not conclude a file was deleted; WebDAV 503, 7.6). A name the vfs has no entry for (not cached, not in a cached listing) → `SD_VFS_E_DISCONNECTED` at once, without waiting `offline_wait` (rule below). |
 | read | Served from cache if blocks are present and the validator was valid at disconnect. Otherwise `WAIT_READY` up to `offline_wait`, then `SD_VFS_E_DISCONNECTED`. |
 | write / create / delete / rename / setattr / mkdir | Fail immediately with `SD_VFS_E_DISCONNECTED`; writes are never submitted with `WAIT_READY` (01 §10.5). Mutations other than writes wait at most `offline_wait` if a reconnect attempt is already in progress. No offline queue. |
 | `GetDiskFreeSpace` | last known values |
@@ -774,6 +774,14 @@ Error mapping for `SD_VFS_E_DISCONNECTED`:
 - Dokany: `STATUS_CONNECTION_DISCONNECTED` (Win32 `ERROR_NETNAME_DELETED`, "The specified network name
   is no longer available"). Users and apps know this from SMB.
 - WebDAV: HTTP `503 Service Unavailable` with `Retry-After: 5`.
+
+**Lookups of unknown names while offline (decided, r21).** A lookup of a name the vfs has no entry for fails at once
+with `SD_VFS_E_DISCONNECTED`; it does not wait `offline_wait`. The reason: Explorer, Office and the WebDAV
+redirector probe many names that do not exist (`desktop.ini`, thumbnails, Office lock and temp files), and a
+multi-second wait per probe would stall the shell for the whole outage. Requests on names the vfs already knows
+(positive, negative or in a cached listing) keep the behaviour of the table above. Reads and mutations still wait
+up to `offline_wait` as the table says. This is pinned by the unit test `vfs_offline_unknown_lookup_fails_at_once`
+(`tests/unit/sd_vfs`, with a 5 s `offline_wait` and a 1 s bound).
 
 The tray shows "Offline (reconnecting)". Dokany volume label suffix while offline: a localized string the
 host passes in `sd_vfs_options.offline_label_suffix` (C45; the service uses the machine default language),
@@ -1574,6 +1582,8 @@ other 500. This table and the NTSTATUS table in 8 are normative; 01 §10.9's hin
     `PROPPATCH`, `LOCK`, `PUT`) and the save sequence (temp file, `MOVE`) create the names they then look up.
   - A negative entry the vfs serves while the link is down reports `DISCONNECTED` (4.1, 5.2), so it is `503` too;
     the vfs decides it, the HTTP layer needs no link state. Test `webdav_server_cached_miss_is_503_while_link_down`.
+  - A name with no vfs entry while the link is down is `DISCONNECTED` at once (5.2), so the probe gets its `503`
+    without an `offline_wait` delay.
   - Remaining, not fixable in the server: (b) a `404` the redirector caches for a name that the user creates right after: that stays
     stale for up to 60 s. The user-facing wait and the CLI/agent avoidance are in `docs/dev/m1-notes.md`.
 - Typical create sequence (Vista+): `PUT` (0 bytes) → `PROPPATCH` (Win32 times/attrs) → `LOCK` → ... →
