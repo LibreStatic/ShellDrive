@@ -79,7 +79,7 @@ Priority 1: the user can not do it at all, and the backend exists.
    files" (`[log] privacy = strict`, 10.1), WebClient status, Windows 11 menu status (8.6), linked connections
    (8.7), start tray and agent separately. Backend ok for all that are `settings.ini` keys (direct `sd_config` writes,
    3.6); WebClient/linked-connections status need system queries (backend missing for a shared helper).
-4. **Changed key and wrong key type notifications do not lead to the host key manager.** Spec 5.2 and 5.4: the
+4. **Changed key and wrong key type notifications. DONE in round 16** (branch `wip/r16-uihk`, see "Round 16" below). Original text: **Changed key and wrong key type notifications do not lead to the host key manager.** Spec 5.2 and 5.4: the
    `host_key_mismatch` details dialog (old and new fingerprint, store and line of the old key, **Manage host
    keys...**, **Open file location**, "Stop using keys from this source") and the `host_key_type_unavailable`
    notification with **Manage host keys...** (stored vs offered types). The prompt dialog for `hostkey_changed` has
@@ -88,7 +88,7 @@ Priority 1: the user can not do it at all, and the backend exists.
 
 Priority 2: spec features with a backend, larger.
 
-5. **Main window layout of 7.5**: toolbar with text labels (New, Edit, Delete, Mount, Unmount, Open, Host keys, Logs);
+5. **Main window layout of 7.5. MOSTLY DONE in round 16** (toolbar, groups, Security column, details dialog; the rest is under "Backend missing" below). Original text: **Main window layout of 7.5**: toolbar with text labels (New, Edit, Delete, Mount, Unmount, Open, Host keys, Logs);
    ListView groups (My connections / Provided by your organization / Global drives); columns Server, Drive/Folder,
    Backend, Status, **Security** (icon and text: legacy encryption, Terrapin); status bar with "Agent not running -
    Start". Today: plain push buttons, columns Name/Drive/State/Backend/Server, no Security column. Backend ok:
@@ -160,3 +160,72 @@ new dialogs in the lab, XP behaviour of anything (no lab).
   needs the `mount.state` error path through the tray, which is a larger change than one pass should do blind.
 - Real-agent end to end of the new dialog: not run (no real agent, and the real connect is not built yet; the fake
   backend of `tests/apps` answers `hostkey.add` for the CLI smoke tests, not for the UI).
+
+## Round 16 (branch `wip/r16-uihk`): changed key, wrong key type and the main window
+
+### Changed host key and wrong key type (03 5.4, TM-R04)
+
+- `ui_app_on_event` passes every `mount.state` event that carries an `error` to `ui_hkissue_on_mount_state`
+  (`ui_hkissue.c`, pure model `ui_hkissue_model.c`). `host_key_mismatch` raises the balloon "The identity of {host} has
+  changed. ShellDrive stopped the connection." and `host_key_type_unavailable` the balloon of 5.2. Both are always
+  shown (7.7: they ignore the notifications switch) and rate limited like the others (60 s per host and kind).
+- A click on the changed-key balloon opens the details dialog: old and new key (type and SHA-256 fingerprint in a
+  read-only, selectable edit control), where the old key lives (store and line, or the file, or the PuTTY registry),
+  and what to do about it. **There is no accept or "connect anyway" button** (5.4). Buttons: **Manage host keys...**
+  (opens the manager with the first key of the host selected, `ui_hostkeys_open_for`), **Open file location** (OpenSSH
+  and other files only; the path must be an absolute drive or UNC path without quotes or control characters), **Stop
+  using keys from this source** (OpenSSH and PuTTY only: asks, then writes `[hostkeys] openssh_source|putty_source = no`
+  and sends `config.reload`) and **Close** (the default button). To accept the new key the user removes the old one in
+  the manager; its removal confirmation now also says that an unexpected change can mean interception (5.4).
+- The store of the old key is inferred from `store_path` (`ui_hki_classify`): empty or the PuTTY subkey is PuTTY, the
+  user's own `known_hosts` is ShellDrive's list, `...\LibreStatic\ShellDrive\known_hosts` otherwise is the machine list,
+  `known_hosts`, `known_hosts2` and `ssh_known_hosts` are OpenSSH, anything else is a plain file.
+- A click on the wrong-key-type balloon opens the host key manager (with the host selected), where **Add key from
+  server...** (round 14) adds a key of another type. A details dialog with stored and offered types is not built:
+  the agent does not report them (see below).
+- Tests: `tests/ui/test_hkissue.c` (7 tests), smoke `ui_hkissue_smoke` in `--test-windows` (the dialog template for
+  every source of the old key, with and without Open and Stop).
+
+### Main window (03 7.5, 7.6)
+
+- A real toolbar with text labels (New, Edit, Delete, Mount, Unmount, Open, Host keys, Logs) replaces the push buttons;
+  it wraps when the window is narrow. Duplicate, Quick mount, Import, Refresh and **Security details...** moved to a new
+  Connection menu.
+- The list has the columns Name, Server, Drive, Backend, Status, Security. Status and Security show a small icon (drawn in
+  code, `ui_icon.c`) and text; "Reconnecting ({attempt})" is shown while `connection.session` is `reconnect_wait` with
+  an attempt number (`list` and `mount.state` carry the `connection` object).
+- Rows are in ListView groups: My connections, Provided by your organization, Global drives (`LVM_ENABLEGROUPVIEW`,
+  comctl32 v6, XP and later; the group structure is spelled in its XP layout, and if the message fails the list stays
+  flat). The group comes from the profile scope.
+- Security column: from `list.warnings` (code and `mount_id`) and from `warning` events (`legacy_algorithms`,
+  `terrapin_exposed`); text "Legacy encryption", "Open to the Terrapin attack" or both.
+- Details dialog (`ui_secdlg.c`, Connection menu and a click on a legacy or Terrapin balloon): the Terrapin text of 7.6,
+  the outdated algorithms with category, name and a one-line reason, **Don't warn again for this server** (stores
+  `legacy_accepted = sha256:<sorted list>` in the profile and reloads the agent; a different set warns again; Terrapin is
+  never silenced), **Refuse outdated algorithms for this server** (sets `legacy_algorithms = refuse`, offers to
+  reconnect: unmounts, and mounts the profile again on the `unmounted` event) and **Close**.
+- Model: `ui_mainview_model.c`; tests `tests/ui/test_mainview.c` (7 tests); `--test-window` checks the toolbar commands,
+  six columns, the image list and the menu items; `--test-windows` runs `ui_secdlg_smoke`.
+- Strings: 52 new entries in all six locales (`ui.main.*`, `ui.menu.connection|security`, `ui.hki.*`, `ui.secdlg.*`);
+  mnemonics unique inside `ui.hki` and `ui.secdlg` in every locale.
+
+### Backend missing (not invented in the UI)
+
+- `host_key_type_unavailable`: the `mount.state` error has only `code`, `detail` and `exit_code`. It has no `host`, no stored
+  or offered key types and no fingerprints (agent.c writes them only for `SD_E_HOSTKEY_MISMATCH`). The UI uses the host of
+  the mount and names the stored type only if the agent sends `stored_type`; the 5.2 details dialog that lists stored
+  types next to the offered ones cannot be built until it does.
+- `host_key_mismatch`: the error has `store_path` and `store_line` but no store kind. For PuTTY `store_path` is the registry
+  subkey (`known_hosts.c` default_path), while the `sd_hk_result` comment says it is empty; the UI accepts both.
+- Legacy and Terrapin: `list` mounts have no security flags and no algorithm names. The `warnings` ring holds the last 32
+  warnings of all mounts and nothing removes a mount's entries. The algorithm names come only from the `legacy_algorithms`
+  warning event, so a UI that starts after the warning shows the Security column but cannot list the algorithms (the dialog
+  says so, and "Don't warn again" is off then). The categories and reasons of the algorithms are derived from their names in
+  the UI. A `list` field with the negotiated algorithms and the `legacy` flag (as `profile.test` already returns) would fix it.
+- Groups: `list` mounts have no `scope`, and `sd_profile_enum` reads the per-user store only, so no machine template
+  (`scope = users`) or service profile reaches the list. "Provided by your organization" and "Global drives" are ready
+  (`ui_mv_group_of_scope`) but stay empty until the profile enumeration and the service mounts exist.
+- Status bar "Agent not running - Start": no component has a helper that starts the agent (03 1.4 says the UI does). The status
+  bar shows the text only.
+- Still open: the event list of 7.7 (item 6), the other host key manager details (item 7), Logs viewer extras (item 8).
+

@@ -543,3 +543,11 @@ gdi32.dll!CreateFontW
 advapi32.dll!IsWellKnownSid
 advapi32.dll!QueryServiceConfigW
 kernel32.dll!lstrcmpW
+
+# Round 16 (main window toolbar, groups, Security column; documented from Windows 2000 / XP, comctl32 v6 for the groups).
+comctl32.dll!ImageList_Create
+comctl32.dll!ImageList_Destroy
+comctl32.dll!ImageList_ReplaceIcon   # ImageList_AddIcon is this call with index -1
+user32.dll!GetMenu
+user32.dll!GetMenuState
+user32.dll!EnableMenuItem

@@ -1158,8 +1158,8 @@ msgstr "Adicionar e remover"
 
 #. Confirmation before a key is removed. {host} is the host name, {type} the key type.
 msgctxt "ui.hostkeys.confirm_remove"
-msgid "Remove the {type} key of {host} from your known hosts? ShellDrive asks again the next time it connects to {host}."
-msgstr "Remover a chave {type} de {host} dos seus hosts conhecidos? O ShellDrive vai perguntar de novo na próxima conexão com {host}."
+msgid "Remove the {type} key of {host} from your known hosts? ShellDrive asks again the next time it connects to {host}. If you did not expect the key to change, someone may be intercepting your connection."
+msgstr "Remover a chave {type} de {host} dos seus hosts conhecidos? O ShellDrive vai perguntar de novo na próxima conexão com {host}. Se você não esperava que a chave mudasse, alguém pode estar interceptando sua conexão."
 
 #. Confirmation before an announcement that also removes keys is applied.
 msgctxt "ui.hostkeys.confirm_accept_removals"
@@ -2256,3 +2256,266 @@ msgstr "O serviço em execução é uma versão mais antiga e não consegue faze
 msgctxt "ui.service.repair_failed"
 msgid "The machine data folder could not be repaired (error {code})."
 msgstr "Não foi possível reparar a pasta de dados da máquina (erro {code})."
+
+#. Menu bar: the Connection menu of the main window.
+msgctxt "ui.menu.connection"
+msgid "Connection"
+msgstr "Conexão"
+
+#. Connection menu item: opens the legacy and Terrapin details of the selected drive. The ellipsis marks a dialog.
+msgctxt "ui.menu.security"
+msgid "Security details…"
+msgstr "Detalhes de segurança…"
+
+#. Main window list column: security warnings of the connection (legacy encryption, Terrapin).
+msgctxt "ui.main.col_security"
+msgid "Security"
+msgstr "Segurança"
+
+#. Main window list group: the user's own connections.
+msgctxt "ui.main.group_mine"
+msgid "My connections"
+msgstr "Minhas conexões"
+
+#. Main window list group: connections that an administrator provides for all users.
+msgctxt "ui.main.group_org"
+msgid "Provided by your organization"
+msgstr "Fornecidas pela sua organização"
+
+#. Main window list group: drives that the service mounts for all users.
+msgctxt "ui.main.group_global"
+msgid "Global drives"
+msgstr "Unidades globais"
+
+#. Main window status cell while the connection retries. {attempt} is the number of the attempt.
+msgctxt "ui.main.status_reconnecting"
+msgid "Reconnecting ({attempt})"
+msgstr "Reconectando ({attempt})"
+
+#. Main window security cell: the connection uses outdated encryption algorithms.
+msgctxt "ui.main.sec_legacy"
+msgid "Legacy encryption"
+msgstr "Criptografia obsoleta"
+
+#. Main window security cell: the connection is open to the Terrapin attack.
+msgctxt "ui.main.sec_terrapin"
+msgid "Open to the Terrapin attack"
+msgstr "Exposta ao ataque Terrapin"
+
+#. Main window security cell: outdated encryption and open to the Terrapin attack.
+msgctxt "ui.main.sec_both"
+msgid "Legacy encryption, Terrapin"
+msgstr "Criptografia obsoleta, Terrapin"
+
+#. Balloon: the host key of a server changed and ShellDrive stopped the connection. {host} is the server. A click opens the details.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_changed"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection. Click for details."
+msgstr "A identidade de {host} mudou. O ShellDrive interrompeu a conexão. Clique para ver os detalhes."
+
+#. Balloon: the server offered none of the host key types ShellDrive has stored for it. {host} is the server. A click opens the host key manager.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_type"
+msgid "{host} did not offer the type of key ShellDrive knows for it. ShellDrive stopped the connection. Click to manage host keys."
+msgstr "{host} não ofereceu o tipo de chave que o ShellDrive conhece para ele. O ShellDrive interrompeu a conexão. Clique para gerenciar as chaves de host."
+
+#. Balloon: like the previous one, with the key type ShellDrive has stored. {host} is the server, {stored} the stored key type.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_type_stored"
+msgid "{host} did not offer the type of key ShellDrive knows for it (stored: {stored}). ShellDrive stopped the connection. Click to manage host keys."
+msgstr "{host} não ofereceu o tipo de chave que o ShellDrive conhece para ele (salva: {stored}). O ShellDrive interrompeu a conexão. Clique para gerenciar as chaves de host."
+
+#. Title of the dialog that explains a changed host key.
+msgctxt "ui.hki.title"
+msgid "Host key changed"
+msgstr "A chave de host mudou"
+
+#. Changed host key dialog: what happened. {host} is the server. There is no connect-anyway option.
+msgctxt "ui.hki.intro"
+msgid "ShellDrive stopped the connection to {host} because the server presented a different host key than the one stored for it. The server may have been reinstalled, or someone may be intercepting your connection. ShellDrive does not offer to connect anyway."
+msgstr "O ShellDrive interrompeu a conexão com {host} porque o servidor apresentou uma chave de host diferente da que está salva. O servidor pode ter sido reinstalado, ou alguém pode estar interceptando sua conexão. O ShellDrive não oferece a opção de conectar mesmo assim."
+
+#. Label of the read-only field with the stored and the offered key. The mnemonic letter moves focus to the field.
+msgctxt "ui.hki.keys_label"
+msgid "&Fingerprints:"
+msgstr "&Impressões digitais:"
+
+#. Changed host key dialog: the stored key. {type} is the key type, {fp} the SHA-256 fingerprint.
+msgctxt "ui.hki.line_stored"
+msgid "Stored key: {type}  {fp}"
+msgstr "Chave salva: {type}  {fp}"
+
+#. Changed host key dialog: the key the server presented now. {type} is the key type, {fp} the SHA-256 fingerprint.
+msgctxt "ui.hki.line_offered"
+msgid "Offered now: {type}  {fp}"
+msgstr "Oferecida agora: {type}  {fp}"
+
+#. Changed host key dialog: the old key is in the user's own list. {line} is the line number.
+msgctxt "ui.hki.where_user"
+msgid "The stored key is in your ShellDrive list, line {line}."
+msgstr "A chave salva está na sua lista do ShellDrive, linha {line}."
+
+#. Changed host key dialog: the old key is in the list for all users of the computer. {line} is the line number.
+msgctxt "ui.hki.where_machine"
+msgid "The stored key is in the ShellDrive list for all users of this computer, line {line}."
+msgstr "A chave salva está na lista do ShellDrive para todos os usuários deste computador, linha {line}."
+
+#. Changed host key dialog: the old key is in a file another program owns. {path} is the file, {line} the line number.
+msgctxt "ui.hki.where_file"
+msgid "The stored key is in {path}, line {line}."
+msgstr "A chave salva está em {path}, linha {line}."
+
+#. Changed host key dialog: the old key is in the host keys PuTTY saved in the Windows registry.
+msgctxt "ui.hki.where_putty"
+msgid "The stored key is in the host keys PuTTY saved (Windows registry)."
+msgstr "A chave salva está nas chaves de host salvas pelo PuTTY (registro do Windows)."
+
+#. Changed host key dialog: what to do when the old key is in the user's own list.
+msgctxt "ui.hki.todo_user"
+msgid "If you expected this change, remove the old key in the host key manager, connect again and check the new fingerprint with the server's administrator before you trust it. If you did not expect it, do not connect."
+msgstr "Se você esperava essa mudança, remova a chave antiga no gerenciador de chaves de host, conecte novamente e confira a nova impressão digital com o administrador do servidor antes de confiar nela. Se não esperava, não conecte."
+
+#. Changed host key dialog: what to do when the old key is in the list for all users of the computer.
+msgctxt "ui.hki.todo_machine"
+msgid "This list is shared by all users of this computer, so only an administrator can change it. Ask your administrator to check the key."
+msgstr "Esta lista é compartilhada por todos os usuários deste computador, então só um administrador pode alterá-la. Peça ao seu administrador para verificar a chave."
+
+#. Changed host key dialog: what to do when the old key is in a source ShellDrive only reads (OpenSSH file, PuTTY registry).
+msgctxt "ui.hki.todo_source"
+msgid "ShellDrive only reads this source and cannot remove the key. Correct the entry in the program that owns it, or stop using keys from this source. A mismatch in any source blocks the connection."
+msgstr "O ShellDrive apenas lê esta origem e não pode remover a chave. Corrija a entrada no programa responsável por ela ou pare de usar as chaves desta origem. Uma divergência em qualquer origem bloqueia a conexão."
+
+#. Changed host key dialog button: opens the host key manager. The ellipsis marks a window.
+msgctxt "ui.hki.btn_manage"
+msgid "&Manage host keys…"
+msgstr "&Gerenciar chaves de host…"
+
+#. Changed host key dialog button: shows the file with the old key in Explorer.
+msgctxt "ui.hki.btn_open"
+msgid "&Open file location"
+msgstr "A&brir local do arquivo"
+
+#. Changed host key dialog button: turns off reading host keys from the source (OpenSSH or PuTTY) of the old key.
+msgctxt "ui.hki.btn_stop"
+msgid "&Stop using keys from this source"
+msgstr "&Parar de usar chaves desta origem"
+
+#. Changed host key dialog button: closes the dialog. It is the default button.
+msgctxt "ui.hki.btn_close"
+msgid "&Close"
+msgstr "&Fechar"
+
+#. Question before host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
+msgctxt "ui.hki.stop_confirm"
+msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again. Stop using this source?"
+msgstr "O ShellDrive deixará de ler as chaves de host salvas pelo {source}. Os servidores conhecidos apenas ali pedirão que você confirme a chave novamente. Parar de usar esta origem?"
+
+#. Message after host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
+msgctxt "ui.hki.stop_done"
+msgid "ShellDrive stopped using the host keys saved by {source}. Connect again to continue."
+msgstr "O ShellDrive parou de usar as chaves de host salvas pelo {source}. Conecte novamente para continuar."
+
+#. Title of the dialog with the legacy algorithm and Terrapin details of a connection.
+msgctxt "ui.secdlg.title"
+msgid "Security details"
+msgstr "Detalhes de segurança"
+
+#. Security details: the connection uses outdated algorithms. {host} is the server.
+msgctxt "ui.secdlg.legacy"
+msgid "{host} uses outdated security algorithms. The connection works, but it is easier to attack."
+msgstr "{host} usa algoritmos de segurança obsoletos. A conexão funciona, mas é mais fácil de atacar."
+
+#. Security details: the server is open to the Terrapin attack. {host} is the server.
+msgctxt "ui.secdlg.terrapin"
+msgid "The connection to {host} is open to a known attack (Terrapin) because the server is out of date. Ask the server's administrator to update OpenSSH."
+msgstr "A conexão com {host} está exposta a um ataque conhecido (Terrapin) porque o servidor está desatualizado. Peça ao administrador do servidor para atualizar o OpenSSH."
+
+#. Security details: label of the read-only list of outdated algorithms. The mnemonic letter moves focus to the list.
+msgctxt "ui.secdlg.list_label"
+msgid "&Algorithms:"
+msgstr "&Algoritmos:"
+
+#. Security details: the algorithm names were not reported for this connection.
+msgctxt "ui.secdlg.list_unknown"
+msgid "The names of the outdated algorithms are not available for this connection. Unmount the drive and mount it again to see them."
+msgstr "Os nomes dos algoritmos obsoletos não estão disponíveis para esta conexão. Desmonte a unidade e monte-a novamente para vê-los."
+
+#. Security details: one outdated algorithm. {category} is its kind, {algorithm} its name, {reason} a short reason.
+msgctxt "ui.secdlg.algo_line"
+msgid "{category}: {algorithm} ({reason})"
+msgstr "{category}: {algorithm} ({reason})"
+
+#. Security details: kind of algorithm, key exchange.
+msgctxt "ui.secdlg.cat_kex"
+msgid "Key exchange"
+msgstr "Troca de chaves"
+
+#. Security details: kind of algorithm, host key.
+msgctxt "ui.secdlg.cat_hostkey"
+msgid "Host key"
+msgstr "Chave de host"
+
+#. Security details: kind of algorithm, encryption cipher.
+msgctxt "ui.secdlg.cat_cipher"
+msgid "Cipher"
+msgstr "Cifra"
+
+#. Security details: kind of algorithm, message authentication code.
+msgctxt "ui.secdlg.cat_mac"
+msgid "Message check (MAC)"
+msgstr "Verificação de mensagens (MAC)"
+
+#. Security details: kind of algorithm, not recognized.
+msgctxt "ui.secdlg.cat_other"
+msgid "Algorithm"
+msgstr "Algoritmo"
+
+#. Security details: reason, shown in parentheses after a key exchange name.
+msgctxt "ui.secdlg.why_kex"
+msgid "built on SHA-1 or a small fixed group"
+msgstr "baseado em SHA-1 ou em um grupo fixo pequeno"
+
+#. Security details: reason, shown in parentheses after a CBC cipher name.
+msgctxt "ui.secdlg.why_cbc"
+msgid "CBC mode is open to padding attacks"
+msgstr "o modo CBC é vulnerável a ataques de preenchimento"
+
+#. Security details: reason, shown in parentheses after a message check name.
+msgctxt "ui.secdlg.why_mac"
+msgid "built on SHA-1"
+msgstr "baseada em SHA-1"
+
+#. Security details: reason, shown in parentheses after a host key name.
+msgctxt "ui.secdlg.why_hostkey"
+msgid "its signatures use SHA-1"
+msgstr "suas assinaturas usam SHA-1"
+
+#. Security details: reason, shown in parentheses after an algorithm of an unknown kind.
+msgctxt "ui.secdlg.why_other"
+msgid "considered outdated"
+msgstr "considerado obsoleto"
+
+#. Security details button: stops warning about this set of algorithms for this server.
+msgctxt "ui.secdlg.btn_keep"
+msgid "&Don't warn again for this server"
+msgstr "&Não avisar mais sobre este servidor"
+
+#. Security details button: refuses outdated algorithms for this server from now on.
+msgctxt "ui.secdlg.btn_refuse"
+msgid "&Refuse outdated algorithms for this server"
+msgstr "&Recusar algoritmos obsoletos neste servidor"
+
+#. Security details button: closes the dialog. It is the default button.
+msgctxt "ui.secdlg.btn_close"
+msgid "&Close"
+msgstr "&Fechar"
+
+#. Security details: confirmation after Don't warn again.
+msgctxt "ui.secdlg.keep_done"
+msgid "ShellDrive will not warn about these algorithms for this server again. A different set of outdated algorithms warns again."
+msgstr "O ShellDrive não avisará mais sobre estes algoritmos neste servidor. Outro conjunto de algoritmos obsoletos avisará novamente."
+
+#. Security details: question after the setting was saved. {drive} is the drive letter.
+msgctxt "ui.secdlg.refuse_ask"
+msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
+msgstr "A partir de agora, os algoritmos obsoletos são recusados neste servidor. Reconectar {drive} agora?"

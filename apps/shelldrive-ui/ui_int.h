@@ -48,6 +48,8 @@
 #define UI_CMD_QUICK_MOUNT   3009
 #define UI_CMD_IMPORT        3010
 #define UI_CMD_ADMIN         1003       /* tray: relaunch elevated to answer the service prompts (ui_svc.c) */
+#define UI_CMD_SECURITY      3011       /* Connection menu: the legacy and Terrapin details of the selected drive (ui_secdlg.c) */
+#define UI_CTL_TOOLBAR       4003
 #define UI_CTL_LIST          4001
 #define UI_CTL_STATUS        4002
 
@@ -81,6 +83,11 @@ typedef struct ui_mount {
   wchar_t profile[128];
   wchar_t backend[16];
   wchar_t server[280];          /* host, with ":port" when not 22 */
+  char host[128];               /* host as the agent reports it, printable ASCII (dialogs of the main window) */
+  char session[24];             /* connection.session ("" when the agent sent none), for the Reconnecting status */
+  int attempt;                  /* connection.attempt */
+  unsigned sec;                 /* UI_MV_SEC_* bits: legacy_algorithms and terrapin_exposed warnings (7.6) */
+  char algos[256];              /* comma-joined algorithm names of the last legacy_algorithms warning, "" if unseen */
 } ui_mount;
 
 typedef struct ui_model {
@@ -92,8 +99,7 @@ typedef struct ui_app {
   HINSTANCE inst;
   HWND ctrl;                    /* message-only window: IPC, tray callbacks, WM_COPYDATA */
   HWND main;                    /* main window, created hidden or shown */
-  HWND list, status, btn_mount, btn_unmount, btn_refresh;
-  HWND btn_new, btn_edit, btn_delete, btn_duplicate, btn_quick, btn_import, btn_open;
+  HWND list, status, toolbar;   /* toolbar: text buttons New, Edit, Delete, Mount, Unmount, Open, Host keys, Logs (7.5) */
   HFONT font;
   unsigned dpi;                 /* DPI of the main window (ui_dpi_window) */
   UINT wm_taskbar;              /* "TaskbarCreated": the tray icon is added again */
@@ -134,6 +140,8 @@ void        ui_model_set_list(ui_model *m, const sd_json *result);
 ui_mount   *ui_model_find_id(ui_model *m, const char *id);
 ui_mount   *ui_model_find_drive(ui_model *m, const wchar_t *drive);
 void        ui_model_remove(ui_model *m, ui_mount *item);
+/* connection.session and connection.attempt of a list item or a mount.state event. */
+void        ui_model_set_connection(ui_mount *it, const sd_json *data);
 const wchar_t *ui_model_state_text(const ui_mount *item);
 /* Formats a catalog message with one string argument and one optional integer (count). */
 wchar_t    *ui_format1(sd_msg_id msg_id, const char *name, const wchar_t *value);
@@ -181,6 +189,8 @@ void   ui_tray_callback(LPARAM mouse_message);
 void   ui_tray_balloon(const char *code, const wchar_t *drive);
 /* Balloon with one catalog message; arg fills the placeholder called name ("drive" or "profile"). */
 void   ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg);
+/* Balloon with a text the caller formatted; msg names the kind (the balloon click and the rate limit use it). */
+void   ui_tray_notify_text(sd_msg_id msg, const wchar_t *subject, const wchar_t *text);
 /* hostkeys.announced: the balloon "example.org offered new host keys. Review" when notifications are on. */
 void   ui_tray_on_hostkeys_announced(const sd_json *data);
 /* Shows the next queued balloon that the rate limit allows (UI_TIMER_NOTIFY, once a second). */
@@ -229,6 +239,22 @@ ui_mount         *ui_main_selected_mount(void);
 void   ui_main_reload_profiles(void);
 /* Shows a drive in Explorer (ShellExecuteW "explore"); drive is "X:". */
 void   ui_open_drive(const wchar_t *drive);
+
+/* ---- ui_hkissue.c: changed host key and wrong key type (03 §5.2, §5.4, TM-R04) ---- */
+/* A mount.state event with an error: when it is host_key_mismatch or host_key_type_unavailable the balloon is raised (it
+   cannot be disabled, 7.7) and the details are kept for the click. The drive is the mount's drive letter ("" if none). */
+void   ui_hkissue_on_mount_state(const sd_json *data, const char *host, const wchar_t *drive);
+/* The click on the balloon of the last issue: the details dialog of a changed key, the host key manager for a key type. */
+void   ui_hkissue_open_last(void);
+/* --test-windows: the dialog template builds and parses for every source. */
+int    ui_hkissue_smoke(void);
+
+/* ---- ui_secdlg.c: the legacy and Terrapin details dialog (03 §7.6) ---- */
+/* Shows the details of the mount on drive ("X:"); modal over owner. A drive without a security warning shows nothing. */
+void   ui_secdlg_open(HWND owner, const wchar_t *drive);
+/* The mount of a pending "Refuse ... and reconnect" has been unmounted: mounts the profile again. */
+void   ui_secdlg_on_unmounted(const char *profile_id);
+int    ui_secdlg_smoke(void);
 
 /* ---- ui_icon.c: programmatically drawn icons (no third-party art) ---- */
 typedef enum ui_icon_kind { UI_ICON_IDLE = 0, UI_ICON_CONNECTED, UI_ICON_WARNING, UI_ICON_COUNT } ui_icon_kind;

@@ -36,6 +36,7 @@
 #include "sd_config/sd_config.h"
 #include "ui_admin_model.h"
 #include "ui_int.h"
+#include "ui_mainview_model.h"
 #include "ui_sdmount.h"
 #include "ui_win.h"
 
@@ -264,15 +265,30 @@ void ui_app_on_event(sd_json *ev)
       if (st != NULL && strcmp(st, "unmounted") != 0)
         ui_ipc_list();
     } else if (st != NULL && strcmp(st, "unmounted") == 0) {
+      char profile_id[sizeof(m->profile_id)];
+      strcpy_s(profile_id, sizeof(profile_id), m->profile_id);
       ui_model_remove(&g_app.model, m);
+      ui_secdlg_on_unmounted(profile_id);
     } else if (st != NULL && strlen(st) < sizeof(m->state)) {
       strcpy_s(m->state, sizeof(m->state), st);
       ui_text_utf8(m->state, m->state_w, SD_COUNTOF(m->state_w));
+      ui_model_set_connection(m, data);
     }
+    /* a failed mount with a changed key or the wrong key type: the balloon and its details (5.4, TM-R04) */
+    if (sd_json_get(data, "error") != NULL)
+      ui_hkissue_on_mount_state(data, m != NULL ? m->host : NULL, m != NULL ? m->drive : L"");
     ui_main_refresh();
   } else if (name != NULL && strcmp(name, "warning") == 0) {
     const char *code = sd_json_get_str(data, "code");
     ui_mount *m = ui_model_find_id(&g_app.model, sd_json_get_str(data, "mount_id"));
+    unsigned flag = ui_mv_sec_flag(code);
+    if (m != NULL && flag != 0) {
+      /* the Security column and the details dialog (7.6); a legacy warning names the algorithms */
+      m->sec |= flag;
+      if (flag == UI_MV_SEC_LEGACY)
+        (void)ui_mv_algos_join(sd_json_get(data, "data"), m->algos, sizeof(m->algos));
+      ui_main_refresh();
+    }
     ui_tray_balloon(code, m ? m->drive : L"");
   } else if (name != NULL && strcmp(name, "prompt.request") == 0) {
     ui_prompt_on_request(data);

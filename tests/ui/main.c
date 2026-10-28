@@ -30,6 +30,21 @@ SD_TEST_DECL(answer_wipes_the_secrets_it_was_given);
 SD_TEST_DECL(answer_wipes_inputs_even_on_error);
 SD_TEST_DECL(answer_rejects_bad_arguments);
 
+SD_TEST_DECL(hkissue_mismatch_event_is_read);
+SD_TEST_DECL(hkissue_other_errors_and_missing_fields);
+SD_TEST_DECL(hkissue_type_unavailable_has_no_types_yet);
+SD_TEST_DECL(hkissue_text_is_reduced_to_printable_ascii);
+SD_TEST_DECL(hkissue_store_is_told_from_the_path);
+SD_TEST_DECL(hkissue_what_each_store_offers);
+SD_TEST_DECL(hkissue_explorer_arguments_are_safe);
+SD_TEST_DECL(mainview_security_flags_come_from_the_warning_codes);
+SD_TEST_DECL(mainview_both_warnings_of_one_mount_are_kept);
+SD_TEST_DECL(mainview_algorithm_names_are_filtered_and_joined);
+SD_TEST_DECL(mainview_dont_warn_again_hash_ignores_order);
+SD_TEST_DECL(mainview_status_kinds_and_icons);
+SD_TEST_DECL(mainview_groups_follow_the_scope);
+SD_TEST_DECL(mainview_algorithm_categories_and_reasons);
+
 SD_TEST_DECL(wire_roundtrip_and_empty);
 SD_TEST_DECL(wire_rejects_bad_header);
 SD_TEST_DECL(wire_rejects_truncated_and_trailing);
@@ -233,6 +248,20 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(admin_relaunch_verb_is_runas_on_vista_and_open_on_xp),
   SD_TEST_ENTRY(admin_elevated_verb_is_exact),
   SD_TEST_ENTRY(admin_prompt_list_entry_becomes_a_prompt),
+  SD_TEST_ENTRY(hkissue_mismatch_event_is_read),
+  SD_TEST_ENTRY(hkissue_other_errors_and_missing_fields),
+  SD_TEST_ENTRY(hkissue_type_unavailable_has_no_types_yet),
+  SD_TEST_ENTRY(hkissue_text_is_reduced_to_printable_ascii),
+  SD_TEST_ENTRY(hkissue_store_is_told_from_the_path),
+  SD_TEST_ENTRY(hkissue_what_each_store_offers),
+  SD_TEST_ENTRY(hkissue_explorer_arguments_are_safe),
+  SD_TEST_ENTRY(mainview_security_flags_come_from_the_warning_codes),
+  SD_TEST_ENTRY(mainview_both_warnings_of_one_mount_are_kept),
+  SD_TEST_ENTRY(mainview_algorithm_names_are_filtered_and_joined),
+  SD_TEST_ENTRY(mainview_dont_warn_again_hash_ignores_order),
+  SD_TEST_ENTRY(mainview_status_kinds_and_icons),
+  SD_TEST_ENTRY(mainview_groups_follow_the_scope),
+  SD_TEST_ENTRY(mainview_algorithm_categories_and_reasons),
 };
 
 int main(int argc, char **argv)

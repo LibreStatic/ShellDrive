@@ -91,6 +91,7 @@ static int g_nid_v4;                    /* Vista and later: NOTIFYICON_VERSION_4
 static int g_timer_on;
 static sd_msg_id g_last_balloon = SD_MSG_UI_WARN_GENERIC;
 static ui_notify_limiter g_limiter;
+static wchar_t g_last_drive[4];         /* the drive of the last legacy or Terrapin balloon queued (7.6) */
 static tray_pending g_queue[UI_TRAY_QUEUE_MAX];
 
 static void copy_text(wchar_t *dst, size_t cch, const wchar_t *src)
@@ -283,6 +284,12 @@ void ui_tray_flush(void)
     stop_timer();
 }
 
+/* A balloon whose text the caller formatted (more than one placeholder); msg identifies the kind for the click. */
+void ui_tray_notify_text(sd_msg_id msg, const wchar_t *subject, const wchar_t *text)
+{
+  post_balloon(msg, subject != NULL ? subject : L"", text);
+}
+
 void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
 {
   wchar_t *text = ui_format1(msg, name, arg ? arg : L"");
@@ -304,6 +311,8 @@ void ui_tray_balloon(const char *code, const wchar_t *drive)
     msg = SD_MSG_UI_WARN_TERRAPIN;
   else if (code && strcmp(code, "write_failed") == 0)
     msg = SD_MSG_UI_WARN_WRITE_FAILED;
+  if (msg == SD_MSG_UI_WARN_LEGACY || msg == SD_MSG_UI_WARN_TERRAPIN)
+    wcsncpy_s(g_last_drive, SD_COUNTOF(g_last_drive), drive ? drive : L"", _TRUNCATE);
   ui_tray_notify_msg(msg, "drive", drive);
 }
 
@@ -416,10 +425,18 @@ static void show_menu(void)
 /* A click on a balloon opens the window the balloon is about (7.7). */
 static void balloon_clicked(void)
 {
-  if (g_last_balloon == SD_MSG_UI_NOTIFY_HOSTKEYS)
+  if (g_last_balloon == SD_MSG_UI_NOTIFY_HOSTKEYS) {
     ui_windows_command(UI_CMD_HOSTKEYS);
-  else
+  } else if (g_last_balloon == SD_MSG_UI_HKI_NOTIFY_CHANGED || g_last_balloon == SD_MSG_UI_HKI_NOTIFY_TYPE ||
+             g_last_balloon == SD_MSG_UI_HKI_NOTIFY_TYPE_STORED) {
+    ui_hkissue_open_last();            /* the details of a changed key, or the host key manager (5.4, TM-R04) */
+  } else if ((g_last_balloon == SD_MSG_UI_WARN_LEGACY || g_last_balloon == SD_MSG_UI_WARN_TERRAPIN) &&
+             g_last_drive[0] != 0) {
     ui_main_show();
+    ui_secdlg_open(g_app.main, g_last_drive);   /* the legacy and Terrapin details (7.6) */
+  } else {
+    ui_main_show();
+  }
 }
 
 void ui_tray_callback(LPARAM mouse_message)
