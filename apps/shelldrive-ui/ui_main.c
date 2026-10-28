@@ -483,6 +483,7 @@ static void on_command(WORD id)
   case UI_CMD_HOSTKEYS:
   case UI_CMD_LOGS:
   case UI_CMD_SETTINGS:
+  case UI_CMD_SERVICE:
   case UI_CMD_ABOUT:
     ui_windows_command(id);
     break;
@@ -527,6 +528,7 @@ static HMENU build_menu(void)
   }
   AppendMenuW(tools, MF_STRING, UI_CMD_HOSTKEYS, sd_l10n_get(SD_MSG_UI_MENU_HOSTKEYS));
   AppendMenuW(tools, MF_STRING, UI_CMD_LOGS, sd_l10n_get(SD_MSG_UI_MENU_LOGS));
+  AppendMenuW(tools, MF_STRING, UI_CMD_SERVICE, sd_l10n_get(SD_MSG_UI_MENU_SERVICE));
   AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
   AppendMenuW(tools, MF_STRING, UI_CMD_SETTINGS, sd_l10n_get(SD_MSG_UI_MENU_SETTINGS));
   AppendMenuW(help, MF_STRING, UI_CMD_ABOUT, sd_l10n_get(SD_MSG_UI_MENU_ABOUT));

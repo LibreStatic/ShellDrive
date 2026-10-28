@@ -19,7 +19,9 @@
 #include "service.h"
 #include "svc_access.h"
 #include "svc_events.h"
+#include "svc_repair.h"
 #include "svc_scm.h"
+#include "svc_status.h"
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
@@ -113,6 +115,13 @@ static struct svc_state {
   svc_owner_fn owner_trusted;       /* NULL = the shipping owner rule (3.2); tests replace it */
   const wchar_t *dacl_extra;        /* SD_SVC_TEST_HOOKS only: an ACE appended to every machine DACL (svc_opts) */
   int idle;                        /* layout refused (owner, reparse point, no rights): nothing is loaded */
+  svc_folder_reason refused_why;    /* why the layout was refused (idle), SVC_FOLDER_OK otherwise */
+  wchar_t refused_path[MAX_PATH];   /* the first refused folder (idle), empty otherwise */
+  int open_log;                     /* svc_opts.open_log: the repair closes and reopens the log around the move */
+  int repairing;                    /* a service.repair_data runs: a second one is busy */
+  const svc_scm_ops *scm_ops;       /* svc_opts seams of service.status and service.repair_data */
+  const svc_repair_ops *repair_ops;
+  const wchar_t *repair_base;
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
   svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
@@ -1799,6 +1808,144 @@ static sd_err handle_config_reload(sd_ipc_client *c, sd_json_writer *res, sd_ipc
   return SD_OK;
 }
 
+/* ---- service.status and service.repair_data (03 §2.4, §6.1) ---- */
+
+/* The SCM seam of service.status: svc_opts.scm_ops, else the real calls. A test build with no seam never reaches the
+   SCM (NULL: the report says "not installed"). */
+static const svc_scm_ops *svc_scm_seam(svc_scm_ops *real)
+{
+  if (g.scm_ops != NULL)
+    return g.scm_ops;
+#ifdef SD_SVC_TEST_HOOKS
+  (void)real;
+  return NULL;
+#else
+  svc_scm_real_ops(real);
+  return real;
+#endif
+}
+
+/* service.status: open to every client. The facts of `shelldrive service status --json` (svc_status.c) as this
+   service sees them, plus the machine data folder as found at start. The refused folder's path goes to elevated
+   administrators only. */
+static sd_err handle_service_status(sd_ipc_client *c, sd_json_writer *res, sd_ipc_error *err)
+{
+  svc_scm_ops real;
+  const svc_scm_ops *ops = svc_scm_seam(&real);
+  svc_install_spec spec;
+  svc_status_report r;
+  svc_pipe_report p;
+  svc_machine_report m;
+  uint32_t i, drives = 0;
+  memset(&spec, 0, sizeof(spec));
+  memset(&r, 0, sizeof(r));
+  memset(&p, 0, sizeof(p));
+  memset(&m, 0, sizeof(m));
+  if (ops != NULL) {
+    int have_spec = svc_scm_host_spec(&spec, L"") == 0;
+    if (svc_scm_status(ops, have_spec ? &spec : NULL, &r) != 0)
+      return fail(err, SD_E_FAILURE, "io_error", "the service manager query failed");
+  }
+  p.reachable = 1;
+  p.prompts = (int64_t)svc_open_prompts();
+  sd_mutex_lock(&g.lock);
+  for (i = 0; i < SVC_MAX_MOUNTS; i++)
+    if (g.mounts[i] != NULL)
+      drives++;
+  m.profiles = (int64_t)g.nprofs;
+  m.ok = g.idle ? 0 : 1;
+  m.why = g.refused_why;
+  if (!m.ok && caller_is_admin(c))
+    _snwprintf_s(m.path, MAX_PATH, _TRUNCATE, L"%s", g.refused_path);
+  sd_mutex_unlock(&g.lock);
+  p.healthy = m.ok;
+  p.drives = (int64_t)drives;
+  svc_status_write_members(res, &r, &p, &m);
+  return SD_OK;
+}
+
+/* service.repair_data: elevated administrators only. Runs svc_repair_data (the code of `shelldrive service
+   repair-data`) on %ProgramData%, then checks the layout again exactly like the start does and, when it is trusted,
+   leaves the idle state and loads the machine profiles. Refused (busy) while a global drive exists: the repair can
+   move the folder that holds its secrets. The log is closed around the move (an open file would block the rename). */
+static sd_err handle_service_repair(sd_ipc_client *c, sd_json_writer *res, sd_ipc_error *err)
+{
+  svc_repair_ops real_ops;
+  const svc_repair_ops *ops;
+  svc_repair_result r;
+  svc_refusal refusal;
+  wchar_t base[MAX_PATH];
+  DWORD we;
+  uint32_t i;
+  int busy = 0, healthy;
+  sd_err e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  if (g.repair_base != NULL) {
+    _snwprintf_s(base, MAX_PATH, _TRUNCATE, L"%s", g.repair_base);
+  } else {
+#ifdef SD_SVC_TEST_HOOKS
+    return fail(err, SD_E_FAILURE, "io_error", "no base folder for the repair (test build)");
+#else
+    if (SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, base) != S_OK)
+      return fail(err, SD_E_FAILURE, "io_error", "the common application data folder is not known");
+#endif
+  }
+  if (g.repair_ops != NULL) {
+    ops = g.repair_ops;
+  } else {
+    svc_repair_real_ops(&real_ops);
+    ops = &real_ops;
+  }
+  sd_mutex_lock(&g.lock);
+  if (g.repairing)
+    busy = 1;
+  for (i = 0; i < SVC_MAX_MOUNTS && !busy; i++)
+    if (g.mounts[i] != NULL)
+      busy = 1;
+  if (!busy) {
+    /* nothing is mounted: stop serving profiles while the tree is rebuilt */
+    g.repairing = 1;
+    g.idle = 1;
+    svc_free_profiles_locked();
+  }
+  sd_mutex_unlock(&g.lock);
+  if (busy)
+    return fail(err, SD_E_BUSY, "busy", "unmount the global drives before repairing the machine data folder");
+
+  if (g.open_log)
+    sd_log_close();
+  memset(&r, 0, sizeof(r));
+  we = svc_repair_data(ops, base, &r);
+  memset(&refusal, 0, sizeof(refusal));
+  e = svc_ensure_layout(&refusal);
+  if (g.open_log)
+    (void)sd_log_open_file(g.logfile);
+  sd_mutex_lock(&g.lock);
+  g.idle = e == SD_OK ? 0 : 1;
+  g.refused_why = e == SD_OK ? SVC_FOLDER_OK : refusal.why;
+  if (e == SD_OK)
+    g.refused_path[0] = 0;
+  else
+    _snwprintf_s(g.refused_path, MAX_PATH, _TRUNCATE, L"%s", refusal.path);
+  healthy = g.idle ? 0 : 1;
+  g.repairing = 0;
+  sd_mutex_unlock(&g.lock);
+  if (healthy)
+    (void)svc_load_profiles();
+  svc_log_info("machine data folder repair: error %u, %u folders, %s, %s", (unsigned)we, (unsigned)r.folders,
+               r.moved ? "moved aside" : "kept", healthy ? "trusted" : "still refused");
+
+  if (r.refused)
+    return fail(err, SD_E_ACCESS_DENIED, "repair_refused", "a link or a junction is in the machine data folder");
+  if (we != 0)
+    return fail(err, SD_E_FAILURE, "io_error", "the machine data folder could not be repaired");
+  svc_status_write_repair(res, &r);
+  sd_jw_key(res, "healthy");
+  sd_jw_bool(res, healthy);
+  return SD_OK;
+}
+
 static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                               sd_json_writer *res, sd_ipc_error *err)
 {
@@ -1808,6 +1955,8 @@ static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *meth
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(client, params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
+  if (strcmp(method, "service.status") == 0) return handle_service_status(client, res, err);
+  if (strcmp(method, "service.repair_data") == 0) return handle_service_repair(client, res, err);
   if (strcmp(method, "secret.set") == 0) return handle_secret(client, params, res, err, 1);
   if (strcmp(method, "secret.delete") == 0) return handle_secret(client, params, res, err, 0);
   if (strcmp(method, "prompt.list") == 0) return handle_prompt_list(client, res, err);
@@ -1867,7 +2016,7 @@ static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 
 static const char *const k_service_features[] = {
   "list", "status", "mount", "unmount", "selftest", "secret.set", "secret.delete", "prompt.list",
-  "prompt.answer", "config.reload", "prompt.routing", NULL
+  "prompt.answer", "config.reload", "prompt.routing", "service.status", "service.repair_data", NULL
 };
 
 /* ---- the core ---- */
@@ -1904,6 +2053,10 @@ int svc_run(const svc_opts *o)
   g.event = o ? o->event : NULL;
   g.event_ctx = o ? o->event_ctx : NULL;
   g.owner_trusted = o ? o->owner_trusted : NULL;
+  g.open_log = o && o->open_log ? 1 : 0;
+  g.scm_ops = o ? o->scm_ops : NULL;
+  g.repair_ops = o ? o->repair_ops : NULL;
+  g.repair_base = o ? o->repair_base : NULL;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
   g.dacl_extra = o ? o->dacl_extra_ace : NULL;
@@ -1918,6 +2071,8 @@ int svc_run(const svc_opts *o)
   e = svc_ensure_layout(&refusal);
   if (e != SD_OK) {
     g.idle = 1;
+    g.refused_why = refusal.why;
+    _snwprintf_s(g.refused_path, MAX_PATH, _TRUNCATE, L"%s", refusal.path);
     SD_LOGE("svc", "the machine folder is refused (%s): the service stays idle (3.2)", sd_err_name(e));
     svc_event_untrusted(&refusal);
   }

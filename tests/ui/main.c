@@ -101,6 +101,16 @@ SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
 SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
 
 /* test_admin.c: the service prompts of the administrator (attention count, answer route, relaunch verb). */
+SD_TEST_DECL(service_view_reads_the_status_reply);
+SD_TEST_DECL(service_view_maps_every_refusal_reason);
+SD_TEST_DECL(service_view_rejects_a_bad_reply);
+SD_TEST_DECL(service_view_from_the_scm_alone);
+SD_TEST_DECL(service_lines_follow_the_state);
+SD_TEST_DECL(service_repair_is_for_administrators_only);
+SD_TEST_DECL(service_repair_shield_only_on_vista_and_later);
+SD_TEST_DECL(service_repair_route_follows_the_pipe);
+SD_TEST_DECL(service_repair_results_are_classified);
+SD_TEST_DECL(service_elevated_verb_is_exact);
 SD_TEST_DECL(admin_attention_count_parses_from_the_event);
 SD_TEST_DECL(admin_pending_count_drives_the_attention_state);
 SD_TEST_DECL(admin_answers_go_to_the_service_only_from_the_admin_mode);
@@ -199,6 +209,16 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(dark_stays_light_on_older_systems),
   SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
   SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),
+  SD_TEST_ENTRY(service_view_reads_the_status_reply),
+  SD_TEST_ENTRY(service_view_maps_every_refusal_reason),
+  SD_TEST_ENTRY(service_view_rejects_a_bad_reply),
+  SD_TEST_ENTRY(service_view_from_the_scm_alone),
+  SD_TEST_ENTRY(service_lines_follow_the_state),
+  SD_TEST_ENTRY(service_repair_is_for_administrators_only),
+  SD_TEST_ENTRY(service_repair_shield_only_on_vista_and_later),
+  SD_TEST_ENTRY(service_repair_route_follows_the_pipe),
+  SD_TEST_ENTRY(service_repair_results_are_classified),
+  SD_TEST_ENTRY(service_elevated_verb_is_exact),
   SD_TEST_ENTRY(admin_attention_count_parses_from_the_event),
   SD_TEST_ENTRY(admin_pending_count_drives_the_attention_state),
   SD_TEST_ENTRY(admin_answers_go_to_the_service_only_from_the_admin_mode),

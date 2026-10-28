@@ -198,7 +198,9 @@ Why these four and not one:
   default (open main window), `--prompt-host` (started by the agent when a prompt needs a UI and none is
   connected; shows only the prompt then stays as a tray if the user's setting says so), `--action <verb> <target>`
   (used by the shell extension: unmount, reconnect, mount, show), `--elevated-admin` (re-launched with `runas` to
-  answer service prompts or edit machine profiles; exits when done).
+  answer service prompts or edit machine profiles; exits when done), `--elevated-service` (re-launched with
+  `runas` by the Service page's **Repair data...** button; shows only the Service page, no tray, no agent, exits when the
+  page is closed).
 - **A prompt host never starts an agent (M3, 2.5 step 3).** `--prompt-host` connects to the agent of its session
   without starting one. It exits when the agent cannot be reached (after the connect timeout) and when its connection
   to the agent ends, because the agent that launched it is then gone. Without this rule a stray prompt host would start
@@ -531,6 +533,8 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `hostkey.announced.accept {id, add_only}` | x | x (admin, elevated, M5) | applies an announcement (5.6). The argument shape is `{id, add_only}` (`add_only: true` skips the removals) |
 | `hostkey.add {host, port, lookup, type?, expect?}` | x | — (M5 part 6: service path not built) | per-user `hostkey add --from-server` (6.1, part 6 of docs/dev/m5-notes.md): connects offering only the stored key types, collects the other keys inside that connection, and either stores the `expect` key or keeps them as an announcement (`id`) for `hostkey.announced.accept {id, add_only: true}`. Reply `{host, lookup_name, verified, keys[{type, fingerprint}], id?, added?, removed?}`. `host_key_mismatch` (exit 6) for a stored key that does not match, `host_key_rejected` (exit 5) for an `expect` that matches nothing on first contact; `not_implemented` only when the backend has no hostkey connection (the real connect: docs/dev/m5-notes.md part 8) |
 | `update.check`, `update.apply` | x | — | M4 (the updater engine, 04 §9). Settings shows the update group disabled while `update.check` is missing from `features` |
+| `service.status` | — | x | the facts of `shelldrive service status --json` as the service sees them (`svc_status.c`, one writer for both): `installed`, `state` (`running`, `stopped`, `starting`, `stopping`, `paused`, `unknown`), `start_type`, `program {path, check: ok\|unquoted\|other\|unknown}`, `event_source {state: registered\|missing\|other\|unknown, message_file}`, `pipe {reachable: true, healthy, global_drives, prompts}`, and `machine {state: ok\|refused, reason?: owner\|reparse_point\|not_directory\|acl\|not_file, path?, profiles}` (the machine data folder as found at start, 3.2; `path`, the first refused folder, only for an elevated administrator). Open to every client; no secrets |
+| `service.repair_data` | — | x (admin, elevated) | runs `svc_repair_data` (the code of `shelldrive service repair-data`, 3.2, TM-R34) on `%ProgramData%`, then checks the layout again as the start does and, when it is trusted, leaves the idle state and loads the machine profiles. Reply `{moved, moved_to, folders, healthy}` (the CLI's `--json` members plus `healthy`). Errors: `access_denied`, `busy` (a global drive exists: the repair can move the folder that holds its secrets), `repair_refused` (a link or junction at the base; nothing changed), `io_error`. The service closes its log around the move |
 | `secret.set`, `secret.delete` | — | x (admin, elevated) | M5 (4.5): in M3 machine passwords are CLI-only |
 
 Not on the pipe, by design: profile create/edit/delete, settings and overrides (direct `sd_config` writes under
@@ -1705,6 +1709,15 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   updates from servers" group for `hostkeys.announced` items (5.6). Live-source keys not yet copied are not listed
   (they are read on demand); a note says which sources are active. Machine entries are read-only unless elevated
   ("Edit machine keys…" relaunches elevated).
+- Service page (Tools menu and tray menu): the install state, start type, registered program with its path check, the Event
+  Log source and, when the service runs and answers, the machine data folder (trusted, or refused with the reason; the
+  refused folder's path for an elevated administrator), the global drives, the open administrator prompts and the
+  loaded machine profiles. The status is `service.status`, or the Service Control Manager read-only when the service is
+  not installed, not running or too old. **Repair data...** (`service.repair_data`, or the same code in process when
+  the service is not running) is enabled for administrators only, with the UAC shield on Vista+ while the process is not
+  elevated: a click offers to reopen the page elevated (`--elevated-service`); an elevated administrator gets a
+  confirmation (default button: Cancel) that says a folder with an untrusted owner or a link is moved aside and nothing
+  from it is imported.
 - Logs viewer: read-only multiline edit with the last 2000 lines from `log.tail`, filter by level, "Open log
   folder", "Create diagnostic bundle…".
 - Settings: language (with "System default"), start at sign-in (agent / tray separately), notifications per type,

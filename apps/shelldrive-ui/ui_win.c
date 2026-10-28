@@ -163,6 +163,9 @@ void ui_windows_command(UINT cmd)
   case UI_CMD_SETTINGS:
     ui_settings_open();
     break;
+  case UI_CMD_SERVICE:
+    ui_service_open();
+    break;
   case UI_CMD_ABOUT:
     ui_about_open();
     break;
@@ -214,6 +217,7 @@ void ui_windows_close_all(void)
   ui_hostkeys_close();
   ui_logs_close();
   ui_settings_close();
+  ui_service_close();
   ui_about_close();
 }
 
@@ -238,6 +242,13 @@ int ui_windows_smoke_test(void)
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
   /* the update group of Settings: channel list, status, Check now, Install update, Release notes */
   ok = ok && ui_settings_update_controls_ok();
+  if (w)
+    DestroyWindow(w);
+
+  w = ui_service_create_hidden();
+  ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
+  /* no status yet and no administrator: Repair data stays off, Refresh is on */
+  ok = ok && ui_service_controls_ok();
   if (w)
     DestroyWindow(w);
 

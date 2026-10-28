@@ -107,6 +107,7 @@ typedef struct ui_app {
   int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
   unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
   int elevated_admin;           /* --elevated-admin: service prompts only (ui_svc.c), no agent, no tray, prompt_host set too */
+  int elevated_service;         /* --elevated-service: only the Service page (ui_service.c), no agent, no tray, no main window */
   int user_admin;               /* the logged-on user is an administrator (linked token on Vista+), see ui_svc_user_is_admin */
   int attention;                /* prompts waiting for an administrator on the service (0 unless user_admin) */
   ui_model model;
@@ -166,6 +167,10 @@ int    ui_svc_user_is_admin(void);
 /* Relaunches this executable with --elevated-admin (UAC on Vista and later). Returns 1 when one is running or
    was started; the window owner gets a message only when the launch itself fails. */
 int    ui_svc_launch_admin(HWND owner);
+/* 1 when this process has the full administrator token (TokenElevation on Vista and later; the administrator check on XP). */
+int    ui_svc_process_elevated(void);
+/* Relaunches this executable with --elevated-service: the Service page alone, in an elevated process. Same return rules. */
+int    ui_svc_launch_service_page(HWND owner);
 
 /* ---- ui_tray.c: notification area icon ---- */
 sd_err ui_tray_add(void);

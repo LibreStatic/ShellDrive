@@ -16,9 +16,14 @@ SD_TEST_DECL(svc_attention_counts_the_open_prompts);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
 SD_TEST_DECL(svc_pipe_caps_and_reserved_admin_instances);
+SD_TEST_DECL(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder);
+SD_TEST_DECL(svc_status_is_open_to_a_non_admin_and_repair_is_not);
+SD_TEST_DECL(svc_repair_is_busy_while_a_global_drive_exists);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
 SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
 SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
+SD_TEST_DECL(svc_status_names_a_refused_machine_folder_for_admins_only);
+SD_TEST_DECL(svc_repair_moves_the_folder_aside_and_the_service_recovers);
 SD_TEST_DECL(scm_install_registers_the_service_in_order);
 SD_TEST_DECL(scm_install_skips_the_sid_type_before_vista);
 SD_TEST_DECL(scm_install_refuses_without_elevation);
@@ -85,9 +90,14 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
   SD_TEST_ENTRY(svc_pipe_caps_and_reserved_admin_instances),
+  SD_TEST_ENTRY(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder),
+  SD_TEST_ENTRY(svc_status_is_open_to_a_non_admin_and_repair_is_not),
+  SD_TEST_ENTRY(svc_repair_is_busy_while_a_global_drive_exists),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
   SD_TEST_ENTRY(refuse_log_is_once_per_sid_per_window),
   SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),
+  SD_TEST_ENTRY(svc_status_names_a_refused_machine_folder_for_admins_only),
+  SD_TEST_ENTRY(svc_repair_moves_the_folder_aside_and_the_service_recovers),
   SD_TEST_ENTRY(scm_install_registers_the_service_in_order),
   SD_TEST_ENTRY(scm_install_skips_the_sid_type_before_vista),
   SD_TEST_ENTRY(scm_install_refuses_without_elevation),

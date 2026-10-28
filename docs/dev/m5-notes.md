@@ -726,3 +726,61 @@ different TokenId: miss), `dokan_cache_changed_modified_id_misses` (adjusted Mod
 `tests/unit/sd_svc/test_service.c` (`svc_admin_mounts_reports_and_unmounts`): a fake vfs audit reaches the Event
 Log seam as SVC_MSG_AUDIT. The Dokany requestor path itself (`requestor_identity`) is not unit-tested: it needs a
 live requestor token.
+
+## Service page: service.status and service.repair_data (`wip/r15-uisvc`)
+
+The frontend hand-off (item 2) asked for a service page and left a decision: run the CLI elevated, or share the code.
+Decision: share the code and add two service-pipe methods; the UI never shells out to `shelldrive.exe`.
+
+**Shared code.** `apps/shelldrive-host/svc_status.c` (new, pure) holds the words and the JSON members of the status
+report (`svc_status_write_members`: installed, state, start_type, program, event_source, pipe, and for the pipe method
+also machine) and of a repair result (`svc_status_write_repair`). `shelldrive service status --json` and
+`service repair-data --json` write through it, so their output is unchanged (same keys, same order); the CLI keeps its
+own localized text. `svc_scm.c`, `svc_repair.c` and `svc_status.c` are now also compiled into `shelldrive-host.exe`
+(and the test hosts); `svc_scm.c`, `svc_repair.c` and `svc_folder.c` into `shelldrive-ui.exe` (read-only SCM status and
+the in-process repair). The import floor is unchanged: the CLI already linked the same functions.
+
+**`service.status`** (any client, no secrets): the CLI members, `pipe {reachable: true, healthy, global_drives,
+prompts}` and `machine {state: ok|refused, reason?, path?, profiles}`. The SCM part is the service's own query
+(`svc_opts.scm_ops`; `NULL` is the real SCM, except in `SD_SVC_TEST_HOOKS` builds, where `NULL` reports "not
+installed" and never reaches the SCM). The machine part comes from the start check of Part 4: the service keeps the
+reason and the first refused folder (`g.refused_why`, `g.refused_path`) next to `g.idle`. The refused folder's path is
+written only for an elevated administrator; the reason and the profile count are open.
+
+**`service.repair_data`** (elevated administrator, `access_denied` otherwise): runs `svc_repair_data` on
+`%ProgramData%` (`svc_opts.repair_base` and `repair_ops` are the test seams; a test build with no base refuses the call,
+so a test never touches the real machine folder). Rules the CLI does not need:
+- Refused with `busy` while any global mount exists, or while another repair runs: the repair can move the folder that
+  holds the secrets of a mounted drive.
+- While it runs the service stops serving profiles (idle, profiles freed under the lock) and closes its log, because an
+  open file in `logs\` blocks the rename of the folder. Afterwards it runs `svc_ensure_layout` exactly like the start, sets
+  idle and the refusal from the result, reopens the log and, when the layout is trusted, loads the machine profiles. So a
+  service that stayed idle after a foreign-owner refusal recovers without a restart.
+- Reply: `{moved, moved_to, folders, healthy}`; errors `busy`, `repair_refused` (a link at the base, nothing changed),
+  `io_error`. The call is logged in `service.log`; no new Event Log id was added.
+
+**UI.** `ui_service.c` (window) and `ui_service_model.c` (pure model): the Service page under Tools and in the tray menu.
+Status and repair run in a short worker thread that connects to the service pipe for one call (no start of the
+service); an older service that answers hello but not `service.status` (`usage`) shows "older version". The 5 s timer
+refreshes while the page is visible. **Repair data...** modes (`ui_svc_repair_mode_of`): off for a user who is not an
+administrator, run for an elevated administrator, and "elevate" (UAC shield on Vista+, BCM_SETSHIELD) for an
+administrator whose token is filtered. Elevate relaunches `shelldrive-ui.exe --elevated-service` with `runas` (plain
+launch on XP, where there is no filtering): a process that shows only the Service page, no tray, no agent, no service
+thread, and exits when the page is closed. `--elevated-view` is a CLI flag of the WebDAV elevated mapping (03 1.7.2) and
+has nothing to do with this page. The repair goes through `service.repair_data` when the service answers, and runs
+`svc_repair_data` in the UI process otherwise (stopped or not installed service). The confirmation puts the default on
+Cancel. Closing the page is ignored while a repair runs.
+
+**Tests.** `tests/unit/sd_svc/test_service.c` (shared core, fake SCM seam): `svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder`,
+`svc_status_is_open_to_a_non_admin_and_repair_is_not` (restricted token), `svc_repair_is_busy_while_a_global_drive_exists`.
+`tests/unit/sd_svc/test_svcrepair.c` (a core of its own per test, owner rule flipped by the test, repair base under
+%TEMP%): `svc_status_names_a_refused_machine_folder_for_admins_only`, `svc_repair_moves_the_folder_aside_and_the_service_recovers`.
+`tests/ui/test_service.c`: the view from the reply and from the SCM, the lines per state, repair enablement and shield,
+route and result classification, the `--elevated-service` verb. `--test-windows` creates the page hidden and checks that
+Repair data is off for a non-administrator.
+
+**Not done.** Install, uninstall, start and stop stay CLI verbs. The page was not exercised against a real service, SCM
+or UAC prompt (no real service in the test runs); the elevated relaunch is covered by the model rules only. A repair
+that moves the folder needs the log and secret handles of the service closed: the service closes its own log, but a
+second process holding a file under the folder (an antivirus scan, a CLI) makes the rename fail with `io_error`; the page
+shows the generic failure with the Win32 or IPC code.

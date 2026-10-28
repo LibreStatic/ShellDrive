@@ -1892,3 +1892,302 @@ msgstr "Connexion moins protégée"
 msgctxt "ui.prompt.btn.token_continue"
 msgid "Contin&ue"
 msgstr "Con&tinuer"
+
+#. Menu item: opens the Service page (status of the ShellDrive service and the machine data folder repair).
+msgctxt "ui.menu.service"
+msgid "Service…"
+msgstr "Service…"
+
+#. Service page window title.
+msgctxt "ui.service.title"
+msgid "ShellDrive service"
+msgstr "Service ShellDrive"
+
+#. Service page: the service is not installed.
+msgctxt "ui.service.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "Le service ShellDrive n'est pas installé."
+
+#. Service page. {state} is one of the state words below.
+msgctxt "ui.service.state_line"
+msgid "Service state: {state}."
+msgstr "État du service : {state}."
+
+#. Service page: service state word, shown after "Service state:".
+msgctxt "ui.service.state.running"
+msgid "running"
+msgstr "en cours d'exécution"
+
+msgctxt "ui.service.state.stopped"
+msgid "stopped"
+msgstr "arrêté"
+
+msgctxt "ui.service.state.starting"
+msgid "starting"
+msgstr "en démarrage"
+
+msgctxt "ui.service.state.stopping"
+msgid "stopping"
+msgstr "en arrêt"
+
+msgctxt "ui.service.state.paused"
+msgid "paused"
+msgstr "en pause"
+
+msgctxt "ui.service.state.unknown"
+msgid "unknown"
+msgstr "inconnu"
+
+#. Service page. {type} is one of the start type words below.
+msgctxt "ui.service.start_line"
+msgid "Start type: {type}."
+msgstr "Type de démarrage : {type}."
+
+#. Service page: start type word, shown after "Start type:".
+msgctxt "ui.service.start_type.automatic"
+msgid "automatic"
+msgstr "automatique"
+
+msgctxt "ui.service.start_type.manual"
+msgid "manual"
+msgstr "manuel"
+
+msgctxt "ui.service.start_type.disabled"
+msgid "disabled"
+msgstr "désactivé"
+
+msgctxt "ui.service.start_type.unknown"
+msgid "unknown"
+msgstr "inconnu"
+
+#. Service page. {path} is the program path registered with the Service Control Manager.
+msgctxt "ui.service.program_line"
+msgid "Program: {path}"
+msgstr "Programme : {path}"
+
+#. Service page: check of the registered program path (quoted, this install).
+msgctxt "ui.service.program.ok"
+msgid "The program path is quoted and points at this install."
+msgstr "Le chemin du programme est entre guillemets et pointe vers cette installation."
+
+#. Service page: the program path is not quoted.
+msgctxt "ui.service.program.unquoted"
+msgid "The program path is not quoted. Remove the service and install it again."
+msgstr "Le chemin du programme n'est pas entre guillemets. Supprimez le service, puis installez-le de nouveau."
+
+#. Service page: the program path is quoted but names another program or install.
+msgctxt "ui.service.program.other"
+msgid "The program path points at another install. Remove the service and install it again from this one."
+msgstr "Le chemin du programme pointe vers une autre installation. Supprimez le service, puis réinstallez-le depuis celle-ci."
+
+#. Service page: the program path cannot be checked.
+msgctxt "ui.service.program.unknown"
+msgid "The program path cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "Le chemin du programme ne peut pas être vérifié : shelldrive-host.exe n'est pas à côté de ce programme."
+
+#. Service page: Event Log source check, registered for this install.
+msgctxt "ui.service.source.ok"
+msgid "The Event Log source is registered for this install."
+msgstr "La source du journal des événements est enregistrée pour cette installation."
+
+#. Service page: no Event Log source is registered.
+msgctxt "ui.service.source.missing"
+msgid "The Event Log source is not registered."
+msgstr "La source du journal des événements n'est pas enregistrée."
+
+#. Service page: the Event Log source names another program.
+msgctxt "ui.service.source.other"
+msgid "The Event Log source is registered for another program."
+msgstr "La source du journal des événements est enregistrée pour un autre programme."
+
+#. Service page: the Event Log source cannot be checked.
+msgctxt "ui.service.source.unknown"
+msgid "The Event Log source cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "La source du journal ne peut pas être vérifiée : shelldrive-host.exe n'est pas à côté de ce programme."
+
+#. Service page: the service runs but does not answer on its pipe.
+msgctxt "ui.service.pipe_down"
+msgid "The service is running but does not answer on its pipe."
+msgstr "Le service est en cours d'exécution, mais ne répond pas sur son canal."
+
+#. Service page: the service answers but is too old to report its machine data folder.
+msgctxt "ui.service.old_service"
+msgid "The running service is an older version and does not report its machine data folder."
+msgstr "Le service en cours d'exécution est une version plus ancienne et ne signale pas l'état de son dossier de données de la machine."
+
+#. Service page: the machine data folder is trusted.
+msgctxt "ui.service.machine_ok"
+msgid "The machine data folder is in order."
+msgstr "Le dossier de données de la machine est en ordre."
+
+#. Service page: the machine data folder is refused because of its owner (the service stays idle).
+msgctxt "ui.service.machine_owner"
+msgid "The machine data folder belongs to an account that is not trusted, so the service stays idle."
+msgstr "Le dossier de données de la machine appartient à un compte non fiable : le service reste inactif."
+
+#. Service page: the machine data folder is refused because of a link or junction.
+msgctxt "ui.service.machine_link"
+msgid "The machine data folder is or holds a link or junction, so the service stays idle."
+msgstr "Le dossier de données de la machine est ou contient un lien ou une jonction : le service reste inactif."
+
+#. Service page: the machine data folder is refused because other accounts can change it.
+msgctxt "ui.service.machine_acl"
+msgid "Other accounts can change the machine data folder, so the service stays idle."
+msgstr "D'autres comptes peuvent modifier le dossier de données de la machine : le service reste inactif."
+
+#. Service page: the machine data folder is refused for another reason.
+msgctxt "ui.service.machine_other"
+msgid "The machine data folder is refused, so the service stays idle."
+msgstr "Le dossier de données de la machine est refusé : le service reste inactif."
+
+#. Service page, administrators only. {path} is the folder the service refused.
+msgctxt "ui.service.machine_path"
+msgid "Refused folder: {path}"
+msgstr "Dossier refusé : {path}"
+
+#. Service page: global drives of the service. {count} is the number of mounts.
+#, plural-arg=count
+msgctxt "ui.service.drives"
+msgid "{count} global drive mounted."
+msgid_plural "{count} global drives mounted."
+msgstr[0] "{count} lecteur global monté."
+msgstr[1] "{count} lecteurs globaux montés."
+msgstr[2] "{count} lecteurs globaux montés."
+
+#. Service page: open administrator prompts of the service. {count} is their number.
+#, plural-arg=count
+msgctxt "ui.service.prompts"
+msgid "{count} administrator prompt waiting."
+msgid_plural "{count} administrator prompts waiting."
+msgstr[0] "{count} demande d'administrateur en attente."
+msgstr[1] "{count} de demandes d'administrateur en attente."
+msgstr[2] "{count} demandes d'administrateur en attente."
+
+#. Service page: machine profiles the service loaded. {count} is their number.
+#, plural-arg=count
+msgctxt "ui.service.profiles"
+msgid "{count} machine profile loaded."
+msgid_plural "{count} machine profiles loaded."
+msgstr[0] "{count} profil de la machine chargé."
+msgstr[1] "{count} profils de la machine chargés."
+msgstr[2] "{count} profils de la machine chargés."
+
+#. Service page: shown while the first status is being read.
+msgctxt "ui.service.loading"
+msgid "Reading the service status…"
+msgstr "Lecture de l'état du service…"
+
+#. Service page: the Service Control Manager query failed. {code} is the Windows error number.
+msgctxt "ui.service.read_failed"
+msgid "The service status could not be read (error {code})."
+msgstr "L'état du service n'a pas pu être lu (erreur {code})."
+
+#. Service page button: reads the status again.
+msgctxt "ui.service.btn_refresh"
+msgid "Refresh"
+msgstr "Actualiser"
+
+#. Service page button: repairs the machine data folder (carries the UAC shield for an administrator that is not elevated).
+msgctxt "ui.service.btn_repair"
+msgid "Repair data…"
+msgstr "Réparer les données…"
+
+#. Service page button: closes the page.
+msgctxt "ui.service.btn_close"
+msgid "Close"
+msgstr "Fermer"
+
+#. Service page note under the status: the repair button is off because the user is not an administrator.
+msgctxt "ui.service.note_admin_only"
+msgid "Repairing the machine data folder is for administrators."
+msgstr "La réparation du dossier de données de la machine est réservée aux administrateurs."
+
+#. Service page note under the status: the repair button asks for administrator rights.
+msgctxt "ui.service.note_elevate"
+msgid "Repair data asks for administrator rights."
+msgstr "Réparer les données demande des droits d'administrateur."
+
+#. Service page note under the status: a repair is running.
+msgctxt "ui.service.note_repairing"
+msgid "Repairing the machine data folder…"
+msgstr "Réparation du dossier de données de la machine…"
+
+#. Repair confirmation dialog title.
+msgctxt "ui.service.repair_title"
+msgid "Repair the machine data folder"
+msgstr "Réparer le dossier de données de la machine"
+
+#. Repair confirmation dialog: what the repair does.
+msgctxt "ui.service.repair_text"
+msgid "ShellDrive checks the machine data folder and sets its permissions again. A folder that belongs to an account that is not trusted, or that holds a link, is moved aside and replaced by an empty one. Nothing from the moved folder is imported, so stored service passwords and keys must be entered again."
+msgstr "ShellDrive vérifie le dossier de données de la machine et en réapplique les autorisations. Un dossier appartenant à un compte non fiable, ou contenant un lien, est déplacé et remplacé par un dossier vide. Rien du dossier déplacé n'est importé : les mots de passe et les clés du service enregistrés doivent être saisis de nouveau."
+
+#. Repair confirmation dialog: the button that starts the repair.
+msgctxt "ui.service.repair_yes"
+msgid "Repair data"
+msgstr "Réparer les données"
+
+#. Repair confirmation dialog: the button that leaves the folder alone. It is the default button.
+msgctxt "ui.service.repair_no"
+msgid "Cancel"
+msgstr "Annuler"
+
+#. Dialog title: the repair needs administrator rights.
+msgctxt "ui.service.elevate_title"
+msgid "Administrator rights needed"
+msgstr "Droits d'administrateur requis"
+
+#. Dialog text: the repair needs administrator rights; the Service page can be opened again elevated (UAC).
+msgctxt "ui.service.elevate_text"
+msgid "Repairing the machine data folder needs administrator rights. ShellDrive can open this page again as an administrator."
+msgstr "La réparation du dossier de données de la machine exige des droits d'administrateur. ShellDrive peut rouvrir cette page en tant qu'administrateur."
+
+#. Dialog button: reopens the Service page as an administrator.
+msgctxt "ui.service.elevate_yes"
+msgid "Open as administrator"
+msgstr "Ouvrir en tant qu'administrateur"
+
+#. Dialog button: does nothing.
+msgctxt "ui.service.elevate_no"
+msgid "Cancel"
+msgstr "Annuler"
+
+#. Repair result: the folder was in order and its permissions were set again.
+msgctxt "ui.service.repair_done"
+msgid "The machine data folder is in order. Its permissions were set again."
+msgstr "Le dossier de données de la machine est en ordre. Ses autorisations ont été réappliquées."
+
+#. Repair result: an untrusted folder was moved aside and replaced.
+msgctxt "ui.service.repair_moved"
+msgid "An untrusted machine data folder was moved aside and a new one was created. Nothing from the old folder is imported, so stored service passwords and keys must be entered again."
+msgstr "Un dossier de données de la machine non fiable a été déplacé et un nouveau a été créé. Rien de l'ancien dossier n'est importé : les mots de passe et les clés du service enregistrés doivent être saisis de nouveau."
+
+#. Repair result: the repair worked but the service still refuses the folder.
+msgctxt "ui.service.repair_still_refused"
+msgid "The machine data folder was repaired, but the service still refuses it. The status shows the reason."
+msgstr "Le dossier de données de la machine a été réparé, mais le service le refuse encore. L'état indique la raison."
+
+#. Repair result: refused because global drives are mounted.
+msgctxt "ui.service.repair_busy"
+msgid "Unmount the global drives first, then try again."
+msgstr "Démontez d'abord les lecteurs globaux, puis réessayez."
+
+#. Repair result: refused because the caller is not an elevated administrator.
+msgctxt "ui.service.repair_denied"
+msgid "Only an administrator with elevated rights can repair the machine data folder."
+msgstr "Seul un administrateur disposant de droits élevés peut réparer le dossier de données de la machine."
+
+#. Repair result: a link or junction blocked the repair; nothing was changed.
+msgctxt "ui.service.repair_link"
+msgid "A link or junction is in the machine data folder, so nothing was changed. Remove it yourself, then try again."
+msgstr "Un lien ou une jonction se trouve dans le dossier de données de la machine : rien n'a été modifié. Supprimez-le vous-même, puis réessayez."
+
+#. Repair result: the running service does not know the repair method.
+msgctxt "ui.service.repair_unsupported"
+msgid "The running service is an older version and cannot do this repair. Update ShellDrive, then try again."
+msgstr "Le service en cours d'exécution est une version plus ancienne et ne peut pas faire cette réparation. Mettez ShellDrive à jour, puis réessayez."
+
+#. Repair result: the repair failed. {code} is the error.
+msgctxt "ui.service.repair_failed"
+msgid "The machine data folder could not be repaired (error {code})."
+msgstr "Le dossier de données de la machine n'a pas pu être réparé (erreur {code})."

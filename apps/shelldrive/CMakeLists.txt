@@ -18,6 +18,9 @@ set(SD_CLI_SOURCES
   # service repair-data (M5, 3.2, TM-R34): the machine data folder repair; the tests call it on a temp folder.
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.c
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.h
+  # the status report members (service status --json and the service.status method).
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_status.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_status.h
   # the machine folder checks (3.2, TM-R34), shared by the service start and the repair.
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.c
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.h)

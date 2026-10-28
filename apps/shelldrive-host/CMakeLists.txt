@@ -61,6 +61,9 @@ sd_add_app(shelldrive-host
           ${CMAKE_CURRENT_SOURCE_DIR}/service.c ${CMAKE_CURRENT_SOURCE_DIR}/service.h
           ${CMAKE_CURRENT_SOURCE_DIR}/svc_access.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_access.h
           ${CMAKE_CURRENT_SOURCE_DIR}/svc_folder.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_folder.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.h
           "${SD_SVC_EVENTS_DIR}/svc_events.rc"
   DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_config sd_update sd_policy sd_platform sd_base
        sd_l10n sd_l10n_catalog_svc ole32 shell32 user32 advapi32)

@@ -31,13 +31,18 @@ Priority 1: the user can not do it at all, and the backend exists.
    `hostkey.announced.accept {id, add_only: true}`. Backend ok for the IPC and the user store; the real connect is
    still `SD_E_UNSUPPORTED` ("not_implemented", m5-notes Part 6, blocked on the authentication question), so the
    dialog ends with a message saying so until that lands. Nothing in the UI changes when it does.
-2. **Service status and repair page for admins.** Spec 7.5 Settings ("linked connections status", "WebClient
-   status", service state) and 1.3. There is no UI for the service at all except the attention prompts. Backend: the
-   CLI verbs `shelldrive service status [--json]` and `service repair-data [--json]` (m5-notes Part 3, exit 9 without
-   elevation). There is no IPC method for either: `status` queries the SCM and `repair-data` works on the machine
-   folder from an elevated process. The UI should run the CLI elevated (the `--elevated-admin` relaunch path, `runas`
-   on Vista+) and read its JSON, or link the same SCM code. Needs a decision: shell out to `shelldrive.exe` or share
-   the code in a library. Install, uninstall, start and stop are CLI verbs too (`service install` etc.).
+2. **Service status and repair page for admins. Done in round 15** (branch `wip/r15-uisvc`). Decision: the UI does not
+   shell out to `shelldrive.exe`. The service pipe has two new methods, `service.status` (any client) and
+   `service.repair_data` (elevated administrators only), both on the code of the CLI verbs (`svc_status.c`,
+   `svc_scm.c`, `svc_repair.c`; the CLI output is unchanged). The Service page (`ui_service.c`, model
+   `ui_service_model.c`) is under Tools and the tray menu: it reads the SCM read-only for the install state and, when
+   the service runs, `service.status` for the machine data folder, global drives, open prompts and loaded profiles.
+   **Repair data...** is enabled for administrators only, carries the UAC shield on Vista+ when this process is not
+   elevated (a click offers `--elevated-service`, which reopens the page alone in an elevated process), asks for
+   confirmation with the safe button as the default, and runs through `service.repair_data` (or in process when the
+   service is not running). Details: the last section of m5-notes ("Service page: service.status and service.repair_data"). Still open on this item: install, uninstall, start and stop are
+   CLI verbs only (the page shows the state, it does not change it), and the WebClient and linked-connections status
+   of 7.5 (item 3).
 3. **Settings is missing most of the 7.5 list.** Present: language, backend, cache budget, notify, start at sign-in,
    updates. Missing: default write mode, credential roaming, "Trust host keys accepted in PuTTY / OpenSSH" with the
    "Ignored: other users can change this file" state (5.1, TM-R06), "Keep host names and file paths out of log

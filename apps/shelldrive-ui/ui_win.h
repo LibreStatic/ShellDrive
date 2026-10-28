@@ -30,6 +30,7 @@
 #define UI_CMD_LOGS       3102
 #define UI_CMD_SETTINGS   3103
 #define UI_CMD_ABOUT      3104
+#define UI_CMD_SERVICE    3105
 
 /* ---- ui_win.c: shared helpers ---- */
 /* Message font of the system at dpi; the caller deletes it. */
@@ -82,6 +83,13 @@ void   ui_settings_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_settings_update_refresh(void);     /* the update group: status, enabled controls (ui_update.c) */
 int    ui_settings_update_controls_ok(void); /* --test-windows: the update group controls exist */
 HWND   ui_settings_create_hidden(void);
+
+/* ---- ui_service.c: the Service page (03 §1.3, §2.4 service.status / service.repair_data) ---- */
+void   ui_service_open(void);
+void   ui_service_close(void);
+HWND   ui_service_create_hidden(void);
+int    ui_service_is_open(void);
+int    ui_service_controls_ok(void);       /* --test-windows: the controls exist, Repair data is off for a non-admin */
 
 /* ---- ui_about.c: the About window ---- */
 void   ui_about_open(void);

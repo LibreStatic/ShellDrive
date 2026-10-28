@@ -464,6 +464,9 @@ user32.dll!InvalidateRect
 user32.dll!IsIconic
 user32.dll!IsWindow
 user32.dll!IsWindowVisible
+# Service page (ui_service.c): IsWindowEnabled and MessageBeep exist since Windows 2000 / NT 3.1.
+user32.dll!IsWindowEnabled
+user32.dll!MessageBeep
 user32.dll!LoadCursorW
 user32.dll!MonitorFromWindow
 user32.dll!MoveWindow

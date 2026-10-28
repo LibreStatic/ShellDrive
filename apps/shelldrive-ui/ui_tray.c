@@ -384,6 +384,7 @@ static void show_menu(void)
   AppendMenuW(menu, MF_STRING, UI_CMD_OPEN, sd_l10n_get(SD_MSG_UI_TRAY_OPEN));
   AppendMenuW(menu, MF_STRING, UI_CMD_HOSTKEYS, sd_l10n_get(SD_MSG_UI_MENU_HOSTKEYS));
   AppendMenuW(menu, MF_STRING, UI_CMD_LOGS, sd_l10n_get(SD_MSG_UI_MENU_LOGS));
+  AppendMenuW(menu, MF_STRING, UI_CMD_SERVICE, sd_l10n_get(SD_MSG_UI_MENU_SERVICE));
   AppendMenuW(menu, MF_STRING, UI_CMD_SETTINGS, sd_l10n_get(SD_MSG_UI_MENU_SETTINGS));
   AppendMenuW(menu, MF_STRING, UI_CMD_ABOUT, sd_l10n_get(SD_MSG_UI_MENU_ABOUT));
   AppendMenuW(menu, MF_STRING, UI_CMD_EXIT, sd_l10n_get(SD_MSG_UI_TRAY_EXIT));
@@ -399,7 +400,8 @@ static void show_menu(void)
 
   if (cmd == UI_CMD_OPEN) {
     ui_main_show();
-  } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_ABOUT) {
+  } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_SERVICE ||
+             cmd == UI_CMD_ABOUT) {
     ui_windows_command(cmd);
   } else if (cmd == UI_CMD_ADMIN) {
     (void)ui_svc_launch_admin(g_app.main);

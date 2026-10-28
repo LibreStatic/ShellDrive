@@ -52,6 +52,7 @@ static struct {
 } g_svc;
 
 static HANDLE g_child;          /* the last elevated relaunch: a second one is not started while it runs */
+static HANDLE g_child_page;     /* the same for the Service page (--elevated-service) */
 
 static void post_state(int up)
 {
@@ -303,6 +304,10 @@ void ui_svc_stop(void)
     CloseHandle(g_child);
     g_child = NULL;
   }
+  if (g_child_page != NULL) {
+    CloseHandle(g_child_page);
+    g_child_page = NULL;
+  }
 }
 
 sd_err ui_svc_answer(const char *json, size_t len)
@@ -367,16 +372,35 @@ int ui_svc_user_is_admin(void)
   return ok;
 }
 
-int ui_svc_launch_admin(HWND owner)
+int ui_svc_process_elevated(void)
+{
+  HANDLE tok = NULL;
+  TOKEN_ELEVATION te;
+  DWORD need = 0;
+  int ok = 0;
+  if (!sd_os_at_least(6, 0, 0))
+    return ui_svc_user_is_admin();      /* no split token on XP: an administrator always runs with the full token */
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+    return 0;
+  memset(&te, 0, sizeof(te));
+  if (GetTokenInformation(tok, TokenElevation, &te, sizeof(te), &need))
+    ok = te.TokenIsElevated ? 1 : 0;
+  CloseHandle(tok);
+  return ok;
+}
+
+/* ShellExecute of this executable with args (verb runas on Vista and later); *child keeps the process so that a
+   second launch is not started while the first one runs. */
+static int launch_elevated(HWND owner, HANDLE *child, const wchar_t *args)
 {
   SHELLEXECUTEINFOW sei;
   wchar_t path[MAX_PATH];
 
-  if (g_child != NULL) {
-    if (WaitForSingleObject(g_child, 0) == WAIT_TIMEOUT)
+  if (*child != NULL) {
+    if (WaitForSingleObject(*child, 0) == WAIT_TIMEOUT)
       return 1;                       /* already running: do not open a second window */
-    CloseHandle(g_child);
-    g_child = NULL;
+    CloseHandle(*child);
+    *child = NULL;
   }
   if (GetModuleFileNameW(NULL, path, SD_COUNTOF(path)) == 0)
     return 0;
@@ -386,7 +410,7 @@ int ui_svc_launch_admin(HWND owner)
   sei.hwnd = owner;
   sei.lpVerb = ui_admin_launch_verb(sd_os_at_least(6, 0, 0));
   sei.lpFile = path;
-  sei.lpParameters = L"--elevated-admin";
+  sei.lpParameters = args;
   sei.nShow = SW_SHOWNORMAL;
   if (!ShellExecuteExW(&sei)) {
     /* the user declining the UAC prompt is not an error to report */
@@ -394,6 +418,16 @@ int ui_svc_launch_admin(HWND owner)
       MessageBoxW(owner, sd_l10n_get(SD_MSG_UI_ADMIN_LAUNCH_FAILED), L"ShellDrive", MB_OK | MB_ICONERROR);
     return 0;
   }
-  g_child = sei.hProcess;
+  *child = sei.hProcess;
   return 1;
+}
+
+int ui_svc_launch_admin(HWND owner)
+{
+  return launch_elevated(owner, &g_child, L"--elevated-admin");
+}
+
+int ui_svc_launch_service_page(HWND owner)
+{
+  return launch_elevated(owner, &g_child_page, L"--elevated-service");
 }
