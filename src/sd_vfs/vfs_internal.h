@@ -224,6 +224,10 @@ struct sd_vfs {
   int  revalidate;
   WCHAR *label, *fs_name, *offline_suffix;
   PSID owner_sid;
+  /* M5 per-request access (02 §6.7, 7.7): copied lists and the well-known SIDs the check needs */
+  BOOL global;
+  PSID *acc_sids, *wrt_sids; uint32_t n_acc, n_wrt;
+  PSID sid_system, sid_admins;
   uint32_t serial;
   /* remote */
   char *root_path;  size_t root_len;    /* realpath of the mount root, no trailing '/' unless "/" */
@@ -336,6 +340,11 @@ void     vfs_event(sd_vfs *v, const sd_vfs_event *ev);
 void     vfs_notice(sd_vfs *v, const char *code, const WCHAR *path);
 void     vfs_attr_from_sftp(vfs_attr *a, const sd_sftp_attrs *s);
 sd_vfs_status vfs_map_err(sd_err e);
+/* Per-request access (M5, 02 §6.7, 7.7): vfs_access.c. init and free run at mount and unmount; check runs before
+   every open or lookup (write: the request needs the write right). */
+sd_vfs_status vfs_access_init(sd_vfs *v, const sd_vfs_options *o);
+void          vfs_access_free(sd_vfs *v);
+sd_vfs_status vfs_access_check(const sd_vfs *v, const sd_vfs_caller *c, BOOL write);
 /* Remote path builder with the wire invariant (TM-R11). Allocates *out. */
 sd_vfs_status vfs_join(sd_vfs *v, const char *parent, const char *raw, uint32_t raw_len, char **out);
 

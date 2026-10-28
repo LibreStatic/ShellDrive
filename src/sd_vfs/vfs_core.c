@@ -1397,6 +1397,7 @@ static void vfs_free_all(sd_vfs *v)
   sd_free(v->fs_name);
   sd_free(v->offline_suffix);
   sd_free(v->owner_sid);
+  vfs_access_free(v);
   vfs_disk_close(v);
   sd_mutex_destroy(&v->lock);
   sd_free(v);
@@ -1433,12 +1434,13 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   char *rp = NULL;
   sd_sftp_attrs ra;
   sd_err e;
+  sd_vfs_status e_st;
   uint64_t dl;
   if (out) *out = NULL;
   if (!s || !o || !out || o->struct_size < sizeof(sd_vfs_options))
     return SD_VFS_E_UNSUPPORTED;
-  /* Later-milestone features (M1 scope). */
-  if ((o->write_mode != SD_VFS_WRITE_THROUGH && o->write_mode != SD_VFS_WRITE_BEHIND) || o->global_mount ||
+  /* Later-milestone features (M1 scope). global_mount is M5 (per-request access, vfs_access.c). */
+  if ((o->write_mode != SD_VFS_WRITE_THROUGH && o->write_mode != SD_VFS_WRITE_BEHIND) ||
       o->mark_of_the_web || o->remote_codepage || o->symlinks < SD_SYMLINK_FOLLOW_INSIDE ||
       o->symlinks > SD_SYMLINK_HIDE || o->remote_case < SD_VFS_CASE_AUTO || o->remote_case > SD_VFS_CASE_INSENSITIVE)
     return SD_VFS_E_UNSUPPORTED;
@@ -1487,6 +1489,11 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (!v->label || !v->fs_name || !v->offline_suffix) {
     vfs_free_all(v);
     return SD_VFS_E_NO_MEMORY;
+  }
+  e_st = vfs_access_init(v, o);         /* M5: global lists copied; scope = service needs service_access */
+  if (e_st != SD_VFS_OK) {
+    vfs_free_all(v);
+    return e_st;
   }
 
   memset(&info, 0, sizeof(info));

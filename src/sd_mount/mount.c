@@ -79,6 +79,8 @@ struct sd_mount {
   int global_mount;
   uint8_t *volume_sd;
   uint32_t volume_sd_len;
+  PSID *acc_sids; uint32_t n_acc;       /* M5: service_access and service_access_write, copied (02 6.7) */
+  PSID *wrt_sids; uint32_t n_wrt;
   /* M1 parameters */
   UINT64 cache_mem;
   uint32_t disk_mb, offline_wait, grace, channels;
@@ -257,6 +259,47 @@ static void free_hop(owned_hop *h)
   memset(h, 0, sizeof(*h));
 }
 
+/* M5: deep copies of a SID list for a global mount (02 6.7). *nout is set before the copies so that a
+   partial copy is released by free_sid_list. */
+static void free_sid_list(PSID **list, uint32_t *n)
+{
+  uint32_t i;
+  if (*list) {
+    for (i = 0; i < *n; i++)
+      sd_free((*list)[i]);
+    sd_free(*list);
+  }
+  *list = NULL;
+  *n = 0;
+}
+
+static sd_err copy_sid_list(void *const *in, uint32_t n, PSID **list, uint32_t *nout)
+{
+  uint32_t i;
+  *list = NULL;
+  *nout = 0;
+  if (n == 0)
+    return SD_OK;
+  if (in == NULL)
+    return SD_E_INVALID_PARAM;
+  *list = (PSID *)sd_calloc(n, sizeof(PSID));
+  if (*list == NULL)
+    return SD_E_NO_MEMORY;
+  *nout = n;
+  for (i = 0; i < n; i++) {
+    DWORD len;
+    if (in[i] == NULL || !IsValidSid(in[i]))
+      return SD_E_INVALID_PARAM;
+    len = GetLengthSid(in[i]);
+    (*list)[i] = sd_alloc(len);
+    if ((*list)[i] == NULL)
+      return SD_E_NO_MEMORY;
+    if (!CopySid(len, (*list)[i], in[i]))
+      return SD_E_INVALID_PARAM;
+  }
+  return SD_OK;
+}
+
 static void free_mount(sd_mount *m)
 {
   uint32_t i;
@@ -273,6 +316,8 @@ static void free_mount(sd_mount *m)
   sd_free(m->remote);
   sd_free(m->owner_sid);
   sd_free(m->volume_sd);
+  free_sid_list(&m->acc_sids, &m->n_acc);
+  free_sid_list(&m->wrt_sids, &m->n_wrt);
   sd_free(m->disk_dir);
   sd_mutex_destroy(&m->lock);
   sd_free(m);
@@ -721,6 +766,8 @@ static void on_ready(sd_mount *m)
   vo.volume_label = m->label ? m->label : m->host;
   vo.owner_sid = m->owner_sid;
   vo.global_mount = m->global_mount ? TRUE : FALSE;
+  vo.access_sids = m->acc_sids;  vo.n_access = m->n_acc;     /* M5: checked per request in sd_vfs */
+  vo.write_sids = m->wrt_sids;   vo.n_write = m->n_wrt;
   vo.offline_wait_ms = m->offline_wait;
   vo.reconnect_grace_ms = m->grace;
   vo.attr_ttl_ms = m->tune.attr_ttl_ms;
@@ -1566,6 +1613,9 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   /* M5: a global mount needs its volume security descriptor (service_access, D35) */
   if (p->global_mount && (p->volume_sd == NULL || p->volume_sd_len == 0))
     return SD_E_INVALID_PARAM;
+  /* M5: and its service_access list (no default audience, D35); service_access_write may be empty */
+  if (p->global_mount && (p->access_sids == NULL || p->n_access == 0))
+    return SD_E_INVALID_PARAM;
   /* TM-R19: token-only WebDAV is never used by a global (service) mount */
   if (p->global_mount && p->token_only)
     return SD_E_INVALID_PARAM;
@@ -1597,6 +1647,15 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
     }
     memcpy(m->volume_sd, p->volume_sd, p->volume_sd_len);
     m->volume_sd_len = p->volume_sd_len;
+  }
+  if (p->global_mount) {                /* M5: the per-request lists (02 6.7, 7.7); the vfs copies them again at mount */
+    sd_err ce = copy_sid_list(p->access_sids, p->n_access, &m->acc_sids, &m->n_acc);
+    if (ce == SD_OK)
+      ce = copy_sid_list(p->write_sids, p->n_write, &m->wrt_sids, &m->n_wrt);
+    if (ce != SD_OK) {
+      sd_mount_destroy(m);
+      return ce;
+    }
   }
   m->read_only = p->read_only;
   m->tune = p->tuning;

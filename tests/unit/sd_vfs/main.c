@@ -46,6 +46,15 @@ SD_TEST_DECL(vfs_striping_sequential_write_threshold);
 SD_TEST_DECL(vfs_striping_write_behind_kick);
 SD_TEST_DECL(vfs_striping_needs_more_than_the_primary);
 SD_TEST_DECL(vfs_striping_append_and_directory_excluded);
+SD_TEST_DECL(vfs_access_global_mount_needs_service_access);
+SD_TEST_DECL(vfs_access_per_user_owner_only);
+SD_TEST_DECL(vfs_access_read_needs_access_list);
+SD_TEST_DECL(vfs_access_member_without_write_is_read_only);
+SD_TEST_DECL(vfs_access_write_list_grants_write);
+SD_TEST_DECL(vfs_access_groups_match_and_admins_write);
+SD_TEST_DECL(vfs_access_group_in_write_list);
+SD_TEST_DECL(vfs_access_system_needs_allow_system);
+SD_TEST_DECL(vfs_access_frontend_write_flag_restricts_members);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_err_table_covers_every_value),
@@ -94,6 +103,15 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_striping_write_behind_kick),
   SD_TEST_ENTRY(vfs_striping_needs_more_than_the_primary),
   SD_TEST_ENTRY(vfs_striping_append_and_directory_excluded),
+  SD_TEST_ENTRY(vfs_access_global_mount_needs_service_access),
+  SD_TEST_ENTRY(vfs_access_per_user_owner_only),
+  SD_TEST_ENTRY(vfs_access_read_needs_access_list),
+  SD_TEST_ENTRY(vfs_access_member_without_write_is_read_only),
+  SD_TEST_ENTRY(vfs_access_write_list_grants_write),
+  SD_TEST_ENTRY(vfs_access_groups_match_and_admins_write),
+  SD_TEST_ENTRY(vfs_access_group_in_write_list),
+  SD_TEST_ENTRY(vfs_access_system_needs_allow_system),
+  SD_TEST_ENTRY(vfs_access_frontend_write_flag_restricts_members),
 };
 
 int main(int argc, char **argv)

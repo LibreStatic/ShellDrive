@@ -996,6 +996,8 @@ static void job_start(void *arg)
   DWORD keylen = 0;
   sd_mount_hop hop;
   char keylabel[MAX_PATH * 3];
+  PSID acc_sids[SVC_ACL_MAX], wr_sids[SVC_ACL_MAX];   /* M5: per-request lists (LocalFree after sd_mount_create) */
+  uint32_t n_acc_s = 0, n_wr_s = 0, k;
   sd_kh_store store;
   sd_err e;
   const char *why = NULL;
@@ -1108,8 +1110,31 @@ static void job_start(void *arg)
       pr.volume_sd = sd_bytes;
       pr.volume_sd_len = sd_len;
     }
+    /* the same lists as SIDs for the per-request check in sd_vfs (M5, 02 6.7, 7.7); sd_mount copies them */
+    for (k = 0; why == NULL && k < r->prof->acl.n_access; k++) {
+      acc_sids[n_acc_s] = sid_of(r->prof->acl.access[k]);
+      if (acc_sids[n_acc_s] == NULL)
+        why = "service_access does not resolve";
+      else
+        n_acc_s++;
+    }
+    for (k = 0; why == NULL && k < r->prof->acl.n_write; k++) {
+      wr_sids[n_wr_s] = sid_of(r->prof->acl.write[k]);
+      if (wr_sids[n_wr_s] == NULL)
+        why = "service_access_write does not resolve";
+      else
+        n_wr_s++;
+    }
+    pr.access_sids = acc_sids;
+    pr.n_access = n_acc_s;
+    pr.write_sids = wr_sids;
+    pr.n_write = n_wr_s;
   }
   if (why != NULL) {
+    for (k = 0; k < n_acc_s; k++)
+      LocalFree(acc_sids[k]);
+    for (k = 0; k < n_wr_s; k++)
+      LocalFree(wr_sids[k]);
     sd_mutex_lock(&g.lock);
     r->final = 1;
     r->st = SD_MOUNT_FAILED;
@@ -1135,6 +1160,10 @@ static void job_start(void *arg)
   e = sd_mount_create(g.be, &pr, &cb, &m);
   sd_secure_free(keybuf, keylen);   /* sd_mount_create copied the key bytes */
   if (sd_bytes) LocalFree(sd_bytes);
+  for (k = 0; k < n_acc_s; k++)
+    LocalFree(acc_sids[k]);
+  for (k = 0; k < n_wr_s; k++)
+    LocalFree(wr_sids[k]);
   if (e != SD_OK) {
     sd_mutex_lock(&g.lock);
     r->final = 1;
