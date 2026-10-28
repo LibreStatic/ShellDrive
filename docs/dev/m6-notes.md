@@ -401,8 +401,28 @@ type; WebDAV limits (`FileSizeLimitInBytes`, `FileAttributesLimitInBytes`, `Basi
 free drive letters D: to Z:; settings.ini readable; log privacy (policy `LogPrivacy` or `[log] privacy`); clock (local
 time, UTC offset, Windows Time service state).
 
+Round 19 adds (all read only, through `diag_env`; the rules are pure and live in `cli_diag_rules.c`):
+
+- Dokany version: the file version resource of `System32\dokan2.dll` (`version.dll`, resolved at link time; the three
+  functions are on the XP list as documented from Windows 2000). Shown as `installed, version x.y.z`.
+- Dokany deny list (02 §6.3, 04 §9.2): the `dokany-deny <min>-<max> <reason>` lines of the cached manifests
+  `state\manifest.stable` and `state\manifest.beta`, per user (`%LOCALAPPDATA%\LibreStatic\ShellDrive`) and per machine
+  (`%ProgramData%\LibreStatic\ShellDrive`). A listed version is a warning (`dokany_denied`) with the reason; nothing is
+  uninstalled. The manifest file names follow the update state names in `src/sd_update` (`manifest.<channel>`).
+- Windows 11 menu package (8.6): a registry enumeration of `HKCU\Software\Classes\Local Settings\Software\Microsoft\
+  Windows\CurrentVersion\AppModel\Repository\Packages` for a key that starts with `com.librestatic.shelldrive.shellext_`.
+  Informational (`ok` either way); before build 22000 the row says so. **[lab-verify]** that the per-user repository key
+  is the one Windows 11 writes for sparse packages; the WinRT `PackageManager` query is not used (it needs runtime
+  resolution and is not a read-only registry fact).
+- Network locations (8.7): our NetHood entries (the `[ShellDrive] profile=` marker of each folder's `desktop.ini`,
+  from `CSIDL_NETHOOD`) compared with the user-scope profiles that have `mount.network_location = yes`. Missing or stale
+  entries are a warning (`out of sync`). Unknown NetHood folder: informational.
+- Logs (04 §13): the count of `ShellDrive-setup-*.log` in the setup folder (`%TEMP%`) and of `*.log` in the machine
+  logs folder (`%ProgramData%\LibreStatic\ShellDrive\logs`, where the Dokany install log goes). Informational.
+
 Warnings: WebClient running on a domain-joined computer (10.5 text); WebDAV limits not at the webclient-tune values;
-a split-token administrator without EnableLinkedConnections; no free drive letter; Windows Time not running.
+a split-token administrator without EnableLinkedConnections; no free drive letter; Windows Time not running; a
+deny-listed Dokany version; Network location entries out of sync.
 
 ### Bundle contents and the anonymizer
 
@@ -420,18 +440,21 @@ only with `--include-dumps`).
 - A line the anonymizer cannot process (more than 64 fields) is replaced by a marker, never copied raw.
 - `agent.json` holds the agent's version, pid, mount count and warning codes only; it has no names or paths.
 - The agent method `diag.collect` (`apps/shelldrive-host/agent.c`) is listed in the hello features.
+- Round 19: `logs/` of the user logs folder as before; `service-logs/` (every `*.log` of the machine logs folder, read
+  only, anonymized line by line like `logs/`) and `setup-logs/` (the newest `ShellDrive-setup-*.log`, the name carries a
+  local timestamp so the largest name is the newest) are added. The update events are in the agent log (`logs/`).
 
 ### Open items (not in this change)
 
-- Ports (03 §10.5 mentions them): not checked; the agent's WebDAV port is per run and is not published.
-- Dokany: presence only. The version and the `dokany-deny` list (02 §6.3) are not read here.
-- Network location entries in sync (8.7), the Windows 11 menu package (8.6), the `diag --check` "free drive letters" from
-  the agent's mounts, and the update and setup logs of 04 §13 are not checked; the logs of 04 §13 are included only when
-  they are in the user logs folder.
-- Service-side logs (`%ProgramData%`) and the machine data folder are not in the bundle (the CLI runs as the user).
-- Clock skew is not measured (no time source is contacted); only the Windows Time service state is reported.
-- `ChangeServiceConfigW` is resolved at run time (it is not on the XP import floor list `tests/os-imports/xp-sp3-x86.txt`);
-  the rest of the new imports are on that list.
+- Ports: 03 §10.5 does not list a port check (the text names no port, listening socket or reachability test), so none
+  is made. The agent's WebDAV port is per run and is not published (03 §1.x), so a check would need the agent's IPC.
+- The `diag --check` "free drive letters" from the agent's mounts is not checked (the drive mask covers it).
+- Clock skew: 03 §10.5 asks for a "clock skew hint" only; no time source is contacted. The row keeps the local time, the
+  UTC offset and the Windows Time service state.
+- The machine data folder of the service runs as SYSTEM; the CLI reads its logs only when the user can read them.
+- The Network locations sync counts the user-scope profiles of the user store; the machine templates are not counted.
+- `RegEnumKeyExW`, `GetPrivateProfileStringW`, `SHGetFolderPathW` and the three `version.dll` functions are on the XP
+  list; `version.lib` is linked by the CLI (`apps/shelldrive/CMakeLists.txt`).
 - The bundle's text is English (logs and JSON); README and the human output are localized (cli catalog, six locales).
 
 ## Nightly workflow status (wip/r16-release)

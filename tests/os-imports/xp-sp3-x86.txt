@@ -569,3 +569,8 @@ comctl32.dll!ImageList_ReplaceIcon   # ImageList_AddIcon is this call with index
 user32.dll!GetMenu
 user32.dll!GetMenuState
 user32.dll!EnableMenuItem
+
+# Round 19 (diag --check: Dokany file version; the version resource is documented from Windows 2000, so present on XP SP3).
+version.dll!GetFileVersionInfoSizeW
+version.dll!GetFileVersionInfoW
+version.dll!VerQueryValueW

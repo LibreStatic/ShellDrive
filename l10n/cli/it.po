@@ -1583,3 +1583,71 @@ msgctxt "cli.secret.deleted"
 msgid "The proxy password is removed from the service."
 msgstr "La password del proxy è stata rimossa dal servizio."
 
+
+msgctxt "cli.diag.label_menu"
+msgid "Windows 11 menu"
+msgstr "Menu di Windows 11"
+
+msgctxt "cli.diag.label_netloc"
+msgid "Network locations"
+msgstr "Percorsi di rete"
+
+msgctxt "cli.diag.label_logs"
+msgid "Logs"
+msgstr "Log"
+
+msgctxt "cli.diag.v_dokany_version"
+msgid "installed, version {version}"
+msgstr "installato, versione {version}"
+
+msgctxt "cli.diag.v_dokany_denied"
+msgid "installed, version {version} is on the deny list ({reason}); the Dokany backend is disabled"
+msgstr "installato, la versione {version} è nella lista di blocco ({reason}); il backend Dokany è disattivato"
+
+msgctxt "cli.diag.v_menu_na"
+msgid "not available on this Windows version"
+msgstr "non disponibile in questa versione di Windows"
+
+msgctxt "cli.diag.v_menu_on"
+msgid "registered for this user"
+msgstr "registrato per questo utente"
+
+msgctxt "cli.diag.v_menu_off"
+msgid "not registered for this user"
+msgstr "non registrato per questo utente"
+
+msgctxt "cli.diag.v_netloc_na"
+msgid "not available"
+msgstr "non disponibile"
+
+msgctxt "cli.diag.v_netloc_none"
+msgid "no profile uses a network location"
+msgstr "nessun profilo usa un percorso di rete"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_netloc_sync"
+msgid "{count} network location in sync."
+msgid_plural "{count} network locations in sync."
+msgstr[0] "{count} percorso di rete sincronizzato."
+msgstr[1] "{count} percorsi di rete sincronizzati."
+msgstr[2] "{count} percorsi di rete sincronizzati."
+
+msgctxt "cli.diag.v_netloc_out"
+msgid "out of sync: {missing} missing, {stale} stale"
+msgstr "non sincronizzati: {missing} mancanti, {stale} in più"
+
+msgctxt "cli.diag.v_logs_found"
+msgid "found"
+msgstr "trovato"
+
+msgctxt "cli.diag.v_logs_not_found"
+msgid "not found"
+msgstr "non trovato"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_logs"
+msgid "setup log {setup}; {count} service log file."
+msgid_plural "setup log {setup}; {count} service log files."
+msgstr[0] "log di installazione {setup}; {count} file di log del servizio."
+msgstr[1] "log di installazione {setup}; {count} file di log del servizio."
+msgstr[2] "log di installazione {setup}; {count} file di log del servizio."

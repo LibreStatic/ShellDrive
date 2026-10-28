@@ -3,7 +3,9 @@
  * Contents: README.txt (what is in the file and what is not), check.json (the checks of --check), versions.txt,
  * agent.json (the agent's own data, from its diag.collect method, when the agent runs), config/ (settings.ini
  * and the profile files), logs/ (every .log of the logs folder), crash/list.txt (the crash dumps that exist) and,
- * with --include-dumps, the dumps themselves.
+ * with --include-dumps, the dumps themselves. Round 19 adds the service-side logs of the machine data folder
+ * (service-logs/, read only, anonymized like logs/; this holds the Dokany install log, 04 §13) and the newest setup
+ * log of the setup folder (setup-logs/, 04 §13).
  *
  * Anonymized by default: host names, user names and remote paths are replaced by tokens (anon_*), in the logs and
  * in the configuration. Secrets are never included, whatever the options: key files, the secrets and keys folders,
@@ -251,6 +253,39 @@ static sd_err log_copy(bundle_ctx *b, const wchar_t *path, const wchar_t *name, 
   return add_text_file(b, path, entry, 0);
 }
 
+static sd_err service_log_copy(bundle_ctx *b, const wchar_t *path, const wchar_t *name, void *ctx)
+{
+  char entry[MAX_PATH * 2];
+  SD_UNUSED(ctx);
+  if (entry_name("service-logs/", name, entry, sizeof(entry)) != SD_OK)
+    return SD_OK;
+  return add_text_file(b, path, entry, 0);
+}
+
+/* The newest setup log: the file names carry a local timestamp (yyyymmdd-hhmmss), so the largest name is the newest. */
+typedef struct newest_ctx { wchar_t name[MAX_PATH]; } newest_ctx;
+
+static sd_err newest_one(bundle_ctx *b, const wchar_t *path, const wchar_t *name, void *ctx)
+{
+  newest_ctx *n = (newest_ctx *)ctx;
+  SD_UNUSED(b);
+  SD_UNUSED(path);
+  if (wcscmp(name, n->name) > 0)
+    wcscpy_s(n->name, SD_COUNTOF(n->name), name);
+  return SD_OK;
+}
+
+static sd_err setup_log_copy(bundle_ctx *b, const wchar_t *path, const wchar_t *name, void *ctx)
+{
+  newest_ctx *n = (newest_ctx *)ctx;
+  char entry[MAX_PATH * 2];
+  if (wcscmp(name, n->name) != 0)
+    return SD_OK;
+  if (entry_name("setup-logs/", name, entry, sizeof(entry)) != SD_OK)
+    return SD_OK;
+  return add_text_file(b, path, entry, 0);
+}
+
 /* crash/list.txt: one line per dump (name and size); with include_dumps the file is copied in chunks. */
 typedef struct crash_ctx { int include; int listed; sd_wr *list; } crash_ctx;
 
@@ -492,6 +527,26 @@ int cli_run_diag_bundle(const cli_args *a)
   write_agent_json(&b);
   for_each_file(&b, profiles, L"*.ini", profile_copy, NULL);
   for_each_file(&b, logs, L"*.log", log_copy, NULL);
+
+  /* service-side logs of the machine data folder, and the newest setup log (04 §13); read only */
+  {
+    const diag_env *env = diag_env_current();
+    wchar_t mroot[MAX_PATH], mlogs[MAX_PATH], setup_dir[MAX_PATH];
+    newest_ctx nc;
+    if (sd_config_machine_root(mroot, SD_COUNTOF(mroot)) == SD_OK) {
+      _snwprintf_s(mlogs, SD_COUNTOF(mlogs), _TRUNCATE, L"%s\\logs", mroot);
+      for_each_file(&b, mlogs, L"*.log", service_log_copy, NULL);
+    }
+    if (env->setup_log_dir(env->ctx, setup_dir, SD_COUNTOF(setup_dir))) {
+      size_t n = wcslen(setup_dir);
+      if (n > 0 && setup_dir[n - 1] == L'\\')
+        setup_dir[n - 1] = 0;
+      memset(&nc, 0, sizeof(nc));
+      for_each_file(&b, setup_dir, L"ShellDrive-setup-*.log", newest_one, &nc);
+      if (nc.name[0] != 0)
+        for_each_file(&b, setup_dir, L"ShellDrive-setup-*.log", setup_log_copy, &nc);
+    }
+  }
 
   sd_wr_init(&list, 1024);
   memset(&cc, 0, sizeof(cc));

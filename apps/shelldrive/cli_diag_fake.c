@@ -3,9 +3,13 @@
  * test (SHELLDRIVE_TEST_DIAG_FAKE), one key=value per line; every change rewrites that file, so the test can
  * read what "diag --fix" did. Keys: webclient (running, stopped, disabled, missing, unknown), webclient_start
  * (number or none), size, attr, auth (numbers or none), linked (number or none), dokany, split, w32, domain
- * (0 or 1) and drives (decimal drive mask). A missing key reads as not set. */
+ * (0 or 1) and drives (decimal drive mask). A missing key reads as not set.
+ * Round 19: dokany_version (x.y.z, absent = not installed), dokany_deny ("x.y.z-a.b.c reason-id", absent = none),
+ * menu (0 or 1), netloc (comma or blank separated ids of our Network location entries; absent or none = the
+ * NetHood folder is unknown), netloc_wanted (ids that want one), setup_dir (folder of the setup logs; absent = none). */
 #include <windows.h>
 #include <stdio.h>
+#include "cli_diag_rules.h"
 #include <string.h>
 
 #include "cli_diag.h"
@@ -228,10 +232,72 @@ static DWORD f_linked_set(void *ctx, DWORD value)
   return fake_set("linked", v);
 }
 
+static DWORD f_dokany_version(void *ctx)
+{
+  char tmp[32];
+  const char *v = NULL;
+  (void)ctx;
+  if (!fake_get("dokany_version", tmp, sizeof(tmp), &v) || v == NULL || v[0] == 0 || strcmp(v, "none") == 0)
+    return 0;
+  return diag_version_parse(v, strlen(v));
+}
+
+static int f_menu(void *ctx) { (void)ctx; return fake_flag("menu"); }
+
+/* A token list of the fake: -1 when the key is absent or none, else the value copied into out. */
+static int fake_list(const char *key, char *out, size_t cap)
+{
+  char tmp[1024];
+  const char *v = NULL;
+  out[0] = 0;
+  if (!fake_get(key, tmp, sizeof(tmp), &v) || v == NULL || strcmp(v, "none") == 0)
+    return -1;
+  strncpy_s(out, cap, v, _TRUNCATE);
+  return 0;
+}
+
+static int f_netloc_entries(void *ctx, char *out, size_t cap)
+{
+  (void)ctx;
+  return fake_list("netloc", out, cap);
+}
+
+static int f_netloc_wanted(void *ctx, char *out, size_t cap)
+{
+  (void)ctx;
+  if (fake_list("netloc_wanted", out, cap) != 0)
+    out[0] = 0;
+  return 0;
+}
+
+static int f_setup_dir(void *ctx, wchar_t *out, size_t cch)
+{
+  char tmp[MAX_PATH];
+  const char *v = NULL;
+  (void)ctx;
+  if (!fake_get("setup_dir", tmp, sizeof(tmp), &v) || v == NULL || v[0] == 0 || strcmp(v, "none") == 0)
+    return 0;
+  _snwprintf_s(out, cch, _TRUNCATE, L"%S", v);
+  return 1;
+}
+
+static int f_deny(void *ctx, diag_deny_list *out)
+{
+  char tmp[160], line[200];
+  const char *v = NULL;
+  (void)ctx;
+  if (fake_get("dokany_deny", tmp, sizeof(tmp), &v) && v != NULL && v[0] != 0 && strcmp(v, "none") != 0) {
+    sprintf_s(line, sizeof(line), "dokany-deny %s\n", v);
+    diag_deny_parse(out, line, strlen(line));
+  }
+  return 0;
+}
+
 static const diag_env k_fake_env = {
   NULL,
   f_webclient_state, f_webdav_value, f_linked, f_dokany, f_split, f_elevated, f_w32, f_domain, f_drives,
-  f_set_start, f_start, f_linked_set
+  f_set_start, f_start, f_linked_set,
+  f_dokany_version, f_menu, f_netloc_entries, f_netloc_wanted, f_setup_dir, f_deny
 };
 
 const diag_env *diag_env_fake(void)

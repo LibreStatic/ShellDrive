@@ -31,3 +31,8 @@ uxtheme.dll!*
 winhttp.dll!*
 wintrust.dll!*
 ws2_32.dll!*
+
+# Round 19 (diag --check: Dokany file version; version resource, documented from Windows 2000).
+version.dll!GetFileVersionInfoSizeW
+version.dll!GetFileVersionInfoW
+version.dll!VerQueryValueW

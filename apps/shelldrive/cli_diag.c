@@ -2,11 +2,14 @@
  * The support bundle is in cli_bundle.c. User-facing text comes from the cli catalog; JSON keys stay English. */
 #include <windows.h>
 #include <winsvc.h>
+#include <shlobj.h>
+#include <winver.h>
 #include <string.h>
 #include <stdio.h>
 
 #include "cli_int.h"
 #include "cli_diag.h"
+#include "cli_diag_rules.h"
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
@@ -257,11 +260,192 @@ static int real_elevated(void *ctx)
   return cli_is_elevated();
 }
 
+/* ---- round 19: read-only queries (03 §10.5, 8.6, 8.7, 02 §6.3, 04 §9.2, 04 §13) ---- */
+
+/* The file version of System32\dokan2.dll, packed (diag_version_pack). Only the version resource is read. */
+static DWORD real_dokany_version(void *ctx)
+{
+  wchar_t path[MAX_PATH];
+  DWORD size, handle = 0, packed = 0;
+  void *block;
+  VS_FIXEDFILEINFO *fi = NULL;
+  UINT len = 0;
+  (void)ctx;
+  if (GetSystemDirectoryW(path, MAX_PATH) == 0 || wcslen(path) + 16 >= MAX_PATH)
+    return 0;
+  wcscat_s(path, MAX_PATH, L"\\dokan2.dll");
+  size = GetFileVersionInfoSizeW(path, &handle);
+  if (size == 0 || size > 1024 * 1024)
+    return 0;
+  block = sd_alloc(size);
+  if (block == NULL)
+    return 0;
+  if (GetFileVersionInfoW(path, 0, size, block) && VerQueryValueW(block, L"\\", (void **)&fi, &len) &&
+      len >= sizeof(VS_FIXEDFILEINFO) && fi != NULL && fi->dwSignature == VS_FFI_SIGNATURE)
+    packed = diag_version_pack((unsigned)HIWORD(fi->dwFileVersionMS), (unsigned)LOWORD(fi->dwFileVersionMS),
+                               (unsigned)HIWORD(fi->dwFileVersionLS));
+  sd_free(block);
+  return packed;
+}
+
+/* Windows 11 sparse package of the shell extension (8.6): the per-user package list of the AppModel repository.
+   Read only; the package itself is registered by the agent, never by the check. */
+#define DIAG_MENU_KEY    L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages"
+#define DIAG_MENU_PREFIX L"com.librestatic.shelldrive.shellext_"
+
+static int real_menu_package(void *ctx)
+{
+  HKEY k = NULL;
+  DWORD i;
+  int found = 0;
+  (void)ctx;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, DIAG_MENU_KEY, 0, KEY_ENUMERATE_SUB_KEYS, &k) != ERROR_SUCCESS)
+    return 0;
+  for (i = 0; !found; i++) {
+    wchar_t name[260];
+    DWORD cch = SD_COUNTOF(name);
+    if (RegEnumKeyExW(k, i, name, &cch, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+      break;
+    if (_wcsnicmp(name, DIAG_MENU_PREFIX, wcslen(DIAG_MENU_PREFIX)) == 0)
+      found = 1;
+  }
+  RegCloseKey(k);
+  return found;
+}
+
+/* Appends one id and a newline to a token list; 0 when it does not fit. */
+static int list_add(char *out, size_t cap, size_t *used, const char *id)
+{
+  size_t n = strlen(id);
+  if (*used + n + 2 > cap)
+    return 0;
+  memcpy(out + *used, id, n);
+  out[*used + n] = '\n';
+  *used += n + 1;
+  out[*used] = 0;
+  return 1;
+}
+
+/* An id of a profile is 32 hex digits (sd_profile_new_id); anything else in desktop.ini is not ours. */
+static int id_ok(const wchar_t *w, char *id)
+{
+  size_t i, n = wcslen(w);
+  if (n != 32)
+    return 0;
+  for (i = 0; i < n; i++) {
+    wchar_t c = w[i];
+    if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F')))
+      return 0;
+    id[i] = (char)(c >= L'A' && c <= L'F' ? c - L'A' + L'a' : c);
+  }
+  id[n] = 0;
+  return 1;
+}
+
+/* Ids of our NetHood entries (03 §8.7): the [ShellDrive] profile= marker of each folder's desktop.ini. */
+static int real_netloc_entries(void *ctx, char *out, size_t cap)
+{
+  wchar_t nethood[MAX_PATH], pattern[MAX_PATH + 4];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  size_t used = 0;
+  (void)ctx;
+  if (cap == 0)
+    return -1;
+  out[0] = 0;
+  if (SHGetFolderPathW(NULL, CSIDL_NETHOOD, NULL, SHGFP_TYPE_CURRENT, nethood) != S_OK)
+    return -1;
+  _snwprintf_s(pattern, SD_COUNTOF(pattern), _TRUNCATE, L"%s\\*", nethood);
+  h = FindFirstFileW(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  do {
+    wchar_t ini[MAX_PATH], wid[64];
+    char id[33];
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcscmp(fd.cFileName, L".") == 0 ||
+        wcscmp(fd.cFileName, L"..") == 0)
+      continue;
+    _snwprintf_s(ini, SD_COUNTOF(ini), _TRUNCATE, L"%s\\%s\\desktop.ini", nethood, fd.cFileName);
+    if (GetPrivateProfileStringW(L"ShellDrive", L"profile", L"", wid, SD_COUNTOF(wid), ini) == 0)
+      continue;
+    if (id_ok(wid, id))
+      list_add(out, cap, &used, id);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  return 0;
+}
+
+typedef struct wanted_ctx { char *out; size_t cap, used; } wanted_ctx;
+
+static int wanted_cb(void *ctx, const sd_profile *p, const wchar_t *path)
+{
+  wanted_ctx *w = (wanted_ctx *)ctx;
+  SD_UNUSED(path);
+  /* user and users scope (8.7: never service profiles) */
+  if (p->network_location && p->id[0] && (p->scope == SD_PROFILE_SCOPE_USER || p->scope == SD_PROFILE_SCOPE_USERS))
+    list_add(w->out, w->cap, &w->used, p->id);
+  return 1;
+}
+
+static int real_netloc_wanted(void *ctx, char *out, size_t cap)
+{
+  wanted_ctx w;
+  (void)ctx;
+  if (cap == 0)
+    return -1;
+  out[0] = 0;
+  w.out = out;
+  w.cap = cap;
+  w.used = 0;
+  (void)sd_profile_enum(wanted_cb, &w);   /* no profile folder is an empty list */
+  return 0;
+}
+
+static int real_setup_log_dir(void *ctx, wchar_t *out, size_t cch)
+{
+  DWORD n;
+  (void)ctx;
+  n = GetTempPathW((DWORD)cch, out);
+  return n > 0 && n < cch;
+}
+
+/* The dokany-deny lines of the cached manifests of both channels: per user (%LOCALAPPDATA%, written by the agent)
+   and per machine (%ProgramData%, written by the elevated setup). Reading only. */
+static int real_dokany_deny(void *ctx, diag_deny_list *out)
+{
+  static const wchar_t *const names[2] = { L"manifest.stable", L"manifest.beta" };
+  wchar_t base[MAX_PATH], path[MAX_PATH * 2];
+  int root, i;
+  (void)ctx;
+  out->count = 0;
+  for (root = 0; root < 2; root++) {
+    if (root == 0) {
+      if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, base) != S_OK)
+        continue;
+      wcscat_s(base, SD_COUNTOF(base), L"\\LibreStatic\\ShellDrive");
+    } else if (sd_config_machine_root(base, SD_COUNTOF(base)) != SD_OK) {
+      continue;
+    }
+    for (i = 0; i < 2; i++) {
+      char *buf = NULL;
+      size_t len = 0;
+      _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\state\\%s", base, names[i]);
+      if (diag_read_file(path, &buf, &len)) {
+        diag_deny_parse(out, buf, len);
+        sd_free(buf);
+      }
+    }
+  }
+  return 0;
+}
+
 static const diag_env k_real_env = {
   NULL,
   real_webclient_state, real_webdav_value, real_linked_connections, real_dokany_present,
   real_split_token, real_elevated, real_time_service_running, real_domain_joined, real_drive_mask,
-  real_webclient_set_start, real_webclient_start, real_linked_set
+  real_webclient_set_start, real_webclient_start, real_linked_set,
+  real_dokany_version, real_menu_package, real_netloc_entries, real_netloc_wanted, real_setup_log_dir,
+  real_dokany_deny
 };
 
 const diag_env *diag_env_real(void)
@@ -351,6 +535,28 @@ static int agent_running(void)
 
 /* ---- collection ---- */
 
+/* Files (not folders) of dir that match pattern; 0 when the folder cannot be read. Read only. */
+static int count_files(const wchar_t *dir, const wchar_t *pattern)
+{
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  wchar_t spec[MAX_PATH * 2];
+  size_t n = wcslen(dir);
+  int count = 0;
+  if (n == 0 || _snwprintf_s(spec, SD_COUNTOF(spec), _TRUNCATE, L"%s%s%s", dir, dir[n - 1] == L'\\' ? L"" : L"\\",
+                             pattern) < 0)
+    return 0;
+  h = FindFirstFileW(spec, &fd);
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  do {
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+      count++;
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  return count;
+}
+
 static void set_row(diag_report *r, int row, int status, sd_msg_id id, const sd_arg *args, size_t n)
 {
   r->status[row] = status;
@@ -435,6 +641,36 @@ void diag_collect(const diag_env *env, diag_report *r)
     r->privacy_strict = (sd_policy_get_dword(SD_POLICY_LOGPRIVACY, &pol) && pol == 1) || settings_strict();
   }
 
+  /* Dokany version and the deny list (02 §6.3, 04 §9.2) */
+  r->dokany_version = env->dokany_version(env->ctx);
+  {
+    diag_deny_list deny;
+    const char *reason;
+    memset(&deny, 0, sizeof(deny));
+    if (env->dokany_deny(env->ctx, &deny) == 0 && (reason = diag_deny_match(&deny, r->dokany_version)) != NULL)
+      strncpy_s(r->dokany_deny, sizeof(r->dokany_deny), reason, _TRUNCATE);
+  }
+
+  /* Windows 11 menu package (8.6), Network locations (8.7), logs (04 §13) */
+  r->menu_registered = env->menu_package(env->ctx) == 1;
+  {
+    static char present[4096], wanted[4096];
+    if (env->netloc_entries(env->ctx, present, sizeof(present)) == 0 &&
+        env->netloc_wanted(env->ctx, wanted, sizeof(wanted)) == 0) {
+      r->netloc_known = 1;
+      diag_netloc_compare(present, wanted, &r->netloc_missing, &r->netloc_stale, &r->netloc_wanted);
+    }
+  }
+  {
+    wchar_t setup_dir[MAX_PATH], mroot[MAX_PATH], mlogs[MAX_PATH];
+    if (env->setup_log_dir(env->ctx, setup_dir, SD_COUNTOF(setup_dir)))
+      r->setup_logs = count_files(setup_dir, L"ShellDrive-setup-*.log");
+    if (sd_config_machine_root(mroot, SD_COUNTOF(mroot)) == SD_OK) {
+      _snwprintf_s(mlogs, SD_COUNTOF(mlogs), _TRUNCATE, L"%s\\logs", mroot);
+      r->service_logs = count_files(mlogs, L"*.log");
+    }
+  }
+
   /* ---- rows ---- */
   /* agent */
   set_row(r, DIAG_ROW_AGENT, DIAG_OK, r->agent_running ? SD_MSG_CLI_DIAG_V_AGENT_RUNNING : SD_MSG_CLI_DIAG_V_AGENT_STOPPED,
@@ -474,7 +710,28 @@ void diag_collect(const diag_env *env, diag_report *r)
       set_row(r, DIAG_ROW_WEBDAV, DIAG_WARN, SD_MSG_CLI_DIAG_V_WEBDAV_DEFAULT, args, 2);
   }
   /* Dokany */
-  set_row(r, DIAG_ROW_DOKANY, DIAG_OK, r->dokany ? SD_MSG_CLI_DIAG_V_PRESENT : SD_MSG_CLI_DIAG_V_ABSENT, NULL, 0);
+  if (!r->dokany) {
+    set_row(r, DIAG_ROW_DOKANY, DIAG_OK, SD_MSG_CLI_DIAG_V_ABSENT, NULL, 0);
+  } else if (r->dokany_deny[0]) {
+    /* on the deny list: a warning; the backend is disabled and nothing is uninstalled (02 §6.3) */
+    wchar_t ver[16], reason[DIAG_DENY_REASON];
+    char vt[16];
+    diag_version_text(r->dokany_version, vt, sizeof(vt));
+    _snwprintf_s(ver, SD_COUNTOF(ver), _TRUNCATE, L"%S", vt);
+    _snwprintf_s(reason, SD_COUNTOF(reason), _TRUNCATE, L"%S", r->dokany_deny);
+    ARG_S(0, "version", ver);
+    ARG_S(1, "reason", reason);
+    set_row(r, DIAG_ROW_DOKANY, DIAG_WARN, SD_MSG_CLI_DIAG_V_DOKANY_DENIED, args, 2);
+  } else if (r->dokany_version) {
+    wchar_t ver[16];
+    char vt[16];
+    diag_version_text(r->dokany_version, vt, sizeof(vt));
+    _snwprintf_s(ver, SD_COUNTOF(ver), _TRUNCATE, L"%S", vt);
+    ARG_S(0, "version", ver);
+    set_row(r, DIAG_ROW_DOKANY, DIAG_OK, SD_MSG_CLI_DIAG_V_DOKANY_VERSION, args, 1);
+  } else {
+    set_row(r, DIAG_ROW_DOKANY, DIAG_OK, SD_MSG_CLI_DIAG_V_PRESENT, NULL, 0);
+  }
   /* linked connections (1.7.2) */
   if (r->linked_on)
     set_row(r, DIAG_ROW_LINKED, DIAG_OK, SD_MSG_CLI_DIAG_V_LINKED_ON, NULL, 0);
@@ -501,7 +758,34 @@ void diag_collect(const diag_env *env, diag_report *r)
   /* log privacy (03 §10.1) */
   set_row(r, DIAG_ROW_PRIVACY, DIAG_OK,
           r->privacy_strict ? SD_MSG_CLI_DIAG_V_PRIVACY_STRICT : SD_MSG_CLI_DIAG_V_PRIVACY_STANDARD, NULL, 0);
-  /* clock: a stopped Windows Time service is the hint */
+  /* Windows 11 menu package (8.6): informational; the classic menu stays when it is not registered */
+  if (r->os_build < 22000)
+    set_row(r, DIAG_ROW_MENU, DIAG_OK, SD_MSG_CLI_DIAG_V_MENU_NA, NULL, 0);
+  else if (r->menu_registered)
+    set_row(r, DIAG_ROW_MENU, DIAG_OK, SD_MSG_CLI_DIAG_V_MENU_ON, NULL, 0);
+  else
+    set_row(r, DIAG_ROW_MENU, DIAG_OK, SD_MSG_CLI_DIAG_V_MENU_OFF, NULL, 0);
+  /* Network locations (8.7): our entries against the profiles that want one */
+  if (!r->netloc_known) {
+    set_row(r, DIAG_ROW_NETLOC, DIAG_OK, SD_MSG_CLI_DIAG_V_NETLOC_NA, NULL, 0);
+  } else if (r->netloc_missing == 0 && r->netloc_stale == 0) {
+    if (r->netloc_wanted == 0) {
+      set_row(r, DIAG_ROW_NETLOC, DIAG_OK, SD_MSG_CLI_DIAG_V_NETLOC_NONE, NULL, 0);
+    } else {
+      ARG_I(0, "count", r->netloc_wanted);
+      set_row(r, DIAG_ROW_NETLOC, DIAG_OK, SD_MSG_CLI_DIAG_V_NETLOC_SYNC, args, 1);
+    }
+  } else {
+    ARG_I(0, "missing", r->netloc_missing);
+    ARG_I(1, "stale", r->netloc_stale);
+    set_row(r, DIAG_ROW_NETLOC, DIAG_WARN, SD_MSG_CLI_DIAG_V_NETLOC_OUT, args, 2);
+  }
+  /* logs (04 §13): where the setup logs and the service logs are; informational */
+  ARG_I(0, "count", r->service_logs);
+  ARG_S(1, "setup", tr(r->setup_logs > 0 ? SD_MSG_CLI_DIAG_V_LOGS_FOUND : SD_MSG_CLI_DIAG_V_LOGS_NOT_FOUND));
+  set_row(r, DIAG_ROW_LOGS, DIAG_OK, SD_MSG_CLI_DIAG_V_LOGS, args, 2);
+
+  /* clock: a stopped Windows Time service is the hint (10.5; no skew is measured, no time source is contacted) */
   {
     wchar_t off[12];
     _snwprintf_s(off, SD_COUNTOF(off), _TRUNCATE, L"%S", r->utc_offset);
@@ -590,6 +874,15 @@ void diag_json_result(const diag_report *r, sd_json_writer *jw)
   sd_jw_key(jw, "dokany"); sd_jw_obj_begin(jw);
   sd_jw_key(jw, "status"); sd_jw_cstr(jw, status_word(r->status[DIAG_ROW_DOKANY]));
   sd_jw_key(jw, "present"); sd_jw_bool(jw, r->dokany);
+  sd_jw_key(jw, "version");
+  if (r->dokany_version) {
+    char vt[16];
+    diag_version_text(r->dokany_version, vt, sizeof(vt));
+    sd_jw_cstr(jw, vt);
+  } else {
+    sd_jw_null(jw);
+  }
+  sd_jw_key(jw, "deny"); if (r->dokany_deny[0]) sd_jw_cstr(jw, r->dokany_deny); else sd_jw_null(jw);
   sd_jw_obj_end(jw);
 
   sd_jw_key(jw, "linked_connections"); sd_jw_obj_begin(jw);
@@ -624,6 +917,25 @@ void diag_json_result(const diag_report *r, sd_json_writer *jw)
   sd_jw_key(jw, "mode"); sd_jw_cstr(jw, r->privacy_strict ? "strict" : "standard");
   sd_jw_obj_end(jw);
 
+  sd_jw_key(jw, "windows11_menu"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "status"); sd_jw_cstr(jw, status_word(r->status[DIAG_ROW_MENU]));
+  sd_jw_key(jw, "registered"); sd_jw_bool(jw, r->menu_registered);
+  sd_jw_obj_end(jw);
+
+  sd_jw_key(jw, "network_locations"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "status"); sd_jw_cstr(jw, status_word(r->status[DIAG_ROW_NETLOC]));
+  sd_jw_key(jw, "known"); sd_jw_bool(jw, r->netloc_known);
+  sd_jw_key(jw, "wanted"); sd_jw_int(jw, r->netloc_wanted);
+  sd_jw_key(jw, "missing"); sd_jw_int(jw, r->netloc_missing);
+  sd_jw_key(jw, "stale"); sd_jw_int(jw, r->netloc_stale);
+  sd_jw_obj_end(jw);
+
+  sd_jw_key(jw, "logs"); sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "status"); sd_jw_cstr(jw, status_word(r->status[DIAG_ROW_LOGS]));
+  sd_jw_key(jw, "setup_logs"); sd_jw_int(jw, r->setup_logs);
+  sd_jw_key(jw, "service_logs"); sd_jw_int(jw, r->service_logs);
+  sd_jw_obj_end(jw);
+
   sd_jw_key(jw, "clock"); sd_jw_obj_begin(jw);
   sd_jw_key(jw, "status"); sd_jw_cstr(jw, status_word(r->status[DIAG_ROW_CLOCK]));
   sd_jw_key(jw, "utc_offset"); sd_jw_cstr(jw, r->utc_offset);
@@ -647,6 +959,7 @@ void diag_print_text(const diag_report *r)
       SD_MSG_CLI_DIAG_LABEL_WEBCLIENT, SD_MSG_CLI_DIAG_LABEL_WEBDAV, SD_MSG_CLI_DIAG_LABEL_DOKANY,
       SD_MSG_CLI_DIAG_LABEL_LINKED, SD_MSG_CLI_DIAG_LABEL_ELEVATION, SD_MSG_CLI_DIAG_LABEL_DOMAIN,
       SD_MSG_CLI_DIAG_LABEL_DRIVES, SD_MSG_CLI_DIAG_LABEL_SETTINGS, SD_MSG_CLI_DIAG_LABEL_PRIVACY,
+      SD_MSG_CLI_DIAG_LABEL_MENU, SD_MSG_CLI_DIAG_LABEL_NETLOC, SD_MSG_CLI_DIAG_LABEL_LOGS,
       SD_MSG_CLI_DIAG_LABEL_CLOCK
     };
     static const sd_msg_id statuses[3] = { SD_MSG_CLI_DIAG_STATUS_OK, SD_MSG_CLI_DIAG_STATUS_WARN,
