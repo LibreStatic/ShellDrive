@@ -442,6 +442,7 @@ int cli_run_bench(const cli_args *a)
   DWORD err = 0, rm_err = 0;
   int i, is_test_root = 0;
   wchar_t folder[MAX_PATH];
+  LARGE_INTEGER stamp;
   memset(&c, 0, sizeof(c));
   memset(&ec, 0, sizeof(ec));
   ec.name = a->positional;
@@ -485,8 +486,9 @@ int cli_run_bench(const cli_args *a)
     c.buf[i] = (unsigned char)(i * 31u + 1u);
 
   /* the run's own folder: a new name, so CreateDirectory cannot replace anything */
+  QueryPerformanceCounter(&stamp);
   _snwprintf_s(folder, SD_COUNTOF(folder), _TRUNCATE, L"%s.shelldrive-bench-%lu-%lu", root,
-               (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
+               (unsigned long)GetCurrentProcessId(), (unsigned long)stamp.LowPart);
   wcscpy_s(c.dir, SD_COUNTOF(c.dir), folder);
   if (!CreateDirectoryW(c.dir, NULL)) {
     err = GetLastError();

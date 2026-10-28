@@ -1118,12 +1118,12 @@ msgstr "Schreibmodus {mode}, wie mit --write-mode angegeben. Der Agent meldet di
 #. Sequential write result. {block} is the block size (1 MiB or 64 KiB); {mbps} and {seconds} are numbers.
 msgctxt "cli.bench.seq_write"
 msgid "Sequential write, {block} blocks: {mbps} MB/s in {seconds} s."
-msgstr "Sequenzielles Schreiben, Blöcke zu {block}: {mbps} MB/s in {seconds} s."
+msgstr "Sequenzielles Schreiben, Blöcke von {block}: {mbps} MB/s in {seconds} s."
 
 #. Sequential read result. {block} is the block size; {mbps} and {seconds} are numbers.
 msgctxt "cli.bench.seq_read"
 msgid "Sequential read, {block} blocks: {mbps} MB/s in {seconds} s."
-msgstr "Sequenzielles Lesen, Blöcke zu {block}: {mbps} MB/s in {seconds} s."
+msgstr "Sequenzielles Lesen, Blöcke von {block}: {mbps} MB/s in {seconds} s."
 
 #. Small-file result. {count} is the number of 4 KiB files; {seconds} is the total time and {ms} the time per file.
 #, plural-arg=count
