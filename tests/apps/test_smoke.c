@@ -42,17 +42,20 @@ static int setup(void)
   for (i = 0; g_dir[i]; i++)
     if (g_dir[i] == L'\\') slash = i;
   g_dir[slash] = 0;
-  wcscpy_s(g_suffix, 64, L"smoke");
-  wcat_u(g_suffix, 64, (unsigned)GetCurrentProcessId());
-  if (GetTempPathW(MAX_PATH, g_root) == 0)
-    return 0;
-  wcscat_s(g_root, MAX_PATH, L"sd-smoke-");
-  wcat_u(g_root, MAX_PATH, (unsigned)GetCurrentProcessId());
   if (stamp == 0) {
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
     stamp = qpc.LowPart | 1u;
   }
+  /* the IPC names (Global\ shutdown event, pipes) carry the suffix: PID and stamp, as the root does */
+  wcscpy_s(g_suffix, 64, L"smoke");
+  wcat_u(g_suffix, 64, (unsigned)GetCurrentProcessId());
+  wcscat_s(g_suffix, 64, L"x");
+  wcat_u(g_suffix, 64, stamp);
+  if (GetTempPathW(MAX_PATH, g_root) == 0)
+    return 0;
+  wcscat_s(g_root, MAX_PATH, L"sd-smoke-");
+  wcat_u(g_root, MAX_PATH, (unsigned)GetCurrentProcessId());
   wcscat_s(g_root, MAX_PATH, L"-");
   wcat_u(g_root, MAX_PATH, stamp);
   CreateDirectoryW(g_root, NULL);

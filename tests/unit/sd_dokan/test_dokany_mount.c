@@ -263,7 +263,8 @@ SD_TEST(dokany_directory_ops_move_delete)
 
 SD_TEST(dokany_copy_256mib_with_checksum)
 {
-  WCHAR tmp[MAX_PATH], src[MAX_PATH], back[MAX_PATH], dst[MAX_PATH];
+  WCHAR tmp[MAX_PATH], src[MAX_PATH], back[MAX_PATH], dst[MAX_PATH], stem[64];
+  LARGE_INTEGER qpc;
   HANDLE f;
   uint8_t *block = (uint8_t *)sd_alloc(1 << 20);
   uint32_t i, x = 0x9E3779B9u;
@@ -271,9 +272,13 @@ SD_TEST(dokany_copy_256mib_with_checksum)
   DWORD n;
   long long rsz;
   SD_REQUIRE(block);
+  /* the 256 MiB scratch files carry the PID and a stamp: a fixed name is shared by concurrent test runs */
+  QueryPerformanceCounter(&qpc);
+  _snwprintf_s(stem, SD_COUNTOF(stem), _TRUNCATE, L"%lu-%08lx", (unsigned long)GetCurrentProcessId(),
+               (unsigned long)qpc.LowPart);
   GetTempPathW(MAX_PATH, tmp);
-  _snwprintf_s(src, MAX_PATH, _TRUNCATE, L"%ssd-dokany-src.bin", tmp);
-  _snwprintf_s(back, MAX_PATH, _TRUNCATE, L"%ssd-dokany-back.bin", tmp);
+  _snwprintf_s(src, MAX_PATH, _TRUNCATE, L"%ssd-dokany-src-%s.bin", tmp, stem);
+  _snwprintf_s(back, MAX_PATH, _TRUNCATE, L"%ssd-dokany-back-%s.bin", tmp, stem);
   P(dst, MAX_PATH, L"big.bin");
   f = CreateFileW(src, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
   SD_REQUIRE(f != INVALID_HANDLE_VALUE);

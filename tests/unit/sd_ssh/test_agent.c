@@ -239,9 +239,9 @@ static unsigned __stdcall pageant_main(void *arg)
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = pageant_proc;
   wc.hInstance = GetModuleHandleW(NULL);
-  wc.lpszClassName = L"Pageant";
+  wc.lpszClassName = pg->name;
   RegisterClassExW(&wc);
-  pg->hwnd = CreateWindowExW(0, L"Pageant", L"Pageant", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
+  pg->hwnd = CreateWindowExW(0, pg->name, pg->name, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
   SetEvent(pg->ready);
   if (!pg->hwnd) return 0;
   while (GetMessageW(&m, NULL, 0, 0) > 0) {
@@ -249,17 +249,27 @@ static unsigned __stdcall pageant_main(void *arg)
     DispatchMessageW(&m);
   }
   DestroyWindow(pg->hwnd);
-  UnregisterClassW(L"Pageant", wc.hInstance);
+  UnregisterClassW(pg->name, wc.hInstance);
   return 0;
 }
 
 sd_err ta_pageant_start(ta_pageant *pg)
 {
-  if (FindWindowW(L"Pageant", L"Pageant")) return SD_E_EXISTS;   /* a real Pageant runs: leave it alone */
+  LARGE_INTEGER qpc;
+  /* The client finds the window by this name (a test seam in the product, agent_internal.h). The name is
+     unique per process, so a real Pageant or another test run's fake is never picked up. */
+  QueryPerformanceCounter(&qpc);
+  _snwprintf_s(pg->name, SD_COUNTOF(pg->name), _TRUNCATE, L"sd-test-pageant-%lu-%08lx",
+               (unsigned long)GetCurrentProcessId(), (unsigned long)qpc.LowPart);
+  ssh_pageant_test_set_window_name(pg->name);
   g_pageant = pg;
   pg->ready = CreateEventW(NULL, FALSE, FALSE, NULL);
-  if (!pg->ready) return SD_E_INTERNAL;
-  if (sd_thread_create(&pg->thread, pageant_main, pg, 256u * 1024u, L"fake pageant") != SD_OK) return SD_E_INTERNAL;
+  if (!pg->ready) { ssh_pageant_test_set_window_name(NULL); return SD_E_INTERNAL; }
+  if (sd_thread_create(&pg->thread, pageant_main, pg, 256u * 1024u, L"fake pageant") != SD_OK) {
+    CloseHandle(pg->ready);
+    ssh_pageant_test_set_window_name(NULL);
+    return SD_E_INTERNAL;
+  }
   WaitForSingleObject(pg->ready, 5000);
   pg->tid = pg->thread.id;
   return pg->hwnd ? SD_OK : SD_E_INTERNAL;
@@ -272,6 +282,7 @@ void ta_pageant_stop(ta_pageant *pg)
   sd_thread_join(&pg->thread, SD_WAIT_INFINITE, NULL);
   CloseHandle(pg->ready);
   g_pageant = NULL;
+  ssh_pageant_test_set_window_name(NULL);
 }
 
 /* ---- tests ---- */
@@ -341,11 +352,6 @@ SD_TEST(ssh_agent_pageant_fake)
   memset(&pg, 0, sizeof(pg));
   SD_REQUIRE(ta_agent_init(&pg.agent, keys, 2) == SD_OK);
   e = ta_pageant_start(&pg);
-  if (e == SD_E_EXISTS) {
-    printf("  [skip] ssh_agent_pageant_fake: a real Pageant is running\n");
-    ta_agent_free(&pg.agent);
-    return;
-  }
   SD_REQUIRE(e == SD_OK);
   check_agent(sd_t_, SD_AGENT_PAGEANT, &pg.agent);
   ta_pageant_stop(&pg);

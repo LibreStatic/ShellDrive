@@ -2,6 +2,7 @@
  * export, PuTTY sessions under a test registry key, ssh_config). The real PuTTY registry of the user
  * is never read. */
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_test.h"
@@ -462,13 +463,33 @@ static sd_err fake_enum(sd_profile_enum_cb cb, void *ctx)
   return SD_OK;
 }
 
+/* Removes a directory tree of files and folders (the import writes profiles below its root). */
+static void remove_tree(const wchar_t *dir)
+{
+  wchar_t pat[MAX_PATH], path[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  _snwprintf_s(pat, MAX_PATH, _TRUNCATE, L"%s\\*", dir);
+  h = FindFirstFileW(pat, &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+      _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\%s", dir, fd.cFileName);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) remove_tree(path);
+      else DeleteFileW(path);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  RemoveDirectoryW(dir);
+}
+
 SD_TEST(import_duplicates_and_write)
 {
   sd_import_result r;
   sd_import_env env;
   size_t len = 0;
   char *data = (char *)read_fixture("ssh_config", &len);
-  wchar_t root[MAX_PATH];
+  wchar_t root[MAX_PATH], tmp[MAX_PATH];
   uint32_t written = 0, i;
   sd_profile *p = (sd_profile *)sd_alloc(sizeof(*p));
   SD_REQUIRE(data != NULL && p != NULL);
@@ -480,9 +501,15 @@ SD_TEST(import_duplicates_and_write)
   SD_CHECK((find_cand(&r, "web")->flags & SD_IMPORT_F_DUPLICATE) != 0 && !find_cand(&r, "web")->selected);
   SD_CHECK((find_cand(&r, "bastion")->flags & SD_IMPORT_F_NAME_CHANGED) != 0);
   SD_CHECK_STR(find_cand(&r, "bastion")->p.name, "bastion (2)");
-  /* write into a temporary configuration root */
-  GetTempPathW(MAX_PATH, root);
-  wcscat_s(root, MAX_PATH, L"sd-import-test");
+  /* write into a temporary configuration root: unique per process and removed below (a fixed name would be
+     shared by every checkout's test run) */
+  {
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    GetTempPathW(MAX_PATH, tmp);
+    _snwprintf_s(root, MAX_PATH, _TRUNCATE, L"%ssd-import-test-%lu-%08lx", tmp, (unsigned long)GetCurrentProcessId(),
+                 (unsigned long)qpc.LowPart);
+  }
   CreateDirectoryW(root, NULL);
   sd_config_set_root_override(root);
   SD_CHECK(sd_import_write(&r, &written) == SD_OK);
@@ -493,6 +520,7 @@ SD_TEST(import_duplicates_and_write)
   for (i = 0; i < r.count; i++)
     if (r.items[i].selected) sd_profile_delete(r.items[i].p.name);
   sd_config_set_root_override(NULL);
+  remove_tree(root);
   sd_import_result_free(&r);
   sd_free(data);
   sd_free(p);

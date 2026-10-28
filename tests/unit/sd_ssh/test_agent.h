@@ -40,9 +40,9 @@ typedef struct ta_pageant {
   HANDLE ready;
   HWND hwnd;
   DWORD tid;
+  wchar_t name[64];   /* window class and title: unique per process (FindWindow is machine-global) */
 } ta_pageant;
 
-/* SD_E_EXISTS when a real Pageant window exists (then nothing is started). */
 sd_err ta_pageant_start(ta_pageant *pg);
 void   ta_pageant_stop(ta_pageant *pg);
 

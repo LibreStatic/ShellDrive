@@ -418,6 +418,28 @@ static int register_ctrl_class(HINSTANCE inst)
   return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
+/* Config root of the --test-* smoke modes (a temporary folder unique to this process; removed at exit). */
+static wchar_t g_smoke_root[MAX_PATH + 32];
+
+static void remove_smoke_tree(const wchar_t *dir)
+{
+  wchar_t pat[MAX_PATH + 32], path[MAX_PATH + 32];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  _snwprintf_s(pat, SD_COUNTOF(pat), _TRUNCATE, L"%s\\*", dir);
+  h = FindFirstFileW(pat, &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+      _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\%s", dir, fd.cFileName);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) remove_smoke_tree(path);
+      else DeleteFileW(path);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  RemoveDirectoryW(dir);
+}
+
 static void build_class_names(void)
 {
   wcscpy_s(g_app.class_ctrl, SD_COUNTOF(g_app.class_ctrl), L"com.librestatic.shelldrive.ui.");
@@ -527,13 +549,15 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
                    wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
                    wcscmp(argv[1], L"--test-wizard") == 0)) {
-    /* the smoke tests never read or write the user's profiles: the store is a temporary folder */
+    /* the smoke tests never read or write the user's profiles: the store is a temporary folder that only
+       this process uses (PID and stamp in the name, removed at exit), so concurrent runs never share it */
     wchar_t tmp[MAX_PATH];
-    if (GetTempPathW(SD_COUNTOF(tmp), tmp) > 0 && wcslen(tmp) < SD_COUNTOF(tmp) - 32) {
-      wchar_t dir[MAX_PATH + 32];
-      wcscpy_s(dir, SD_COUNTOF(dir), tmp);
-      wcscat_s(dir, SD_COUNTOF(dir), L"shelldrive-ui-test");
-      sd_config_set_root_override(dir);
+    if (GetTempPathW(SD_COUNTOF(tmp), tmp) > 0 && wcslen(tmp) < SD_COUNTOF(tmp) - 64) {
+      LARGE_INTEGER qpc;
+      QueryPerformanceCounter(&qpc);
+      _snwprintf_s(g_smoke_root, SD_COUNTOF(g_smoke_root), _TRUNCATE, L"%sshelldrive-ui-test-%lu-%08lx", tmp,
+                   (unsigned long)GetCurrentProcessId(), (unsigned long)qpc.LowPart);
+      sd_config_set_root_override(g_smoke_root);
     }
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-window") == 0) {
@@ -629,6 +653,10 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   ui_icon_free_all();
 
 done:
+  if (g_smoke_root[0] != 0) {
+    sd_config_set_root_override(NULL);
+    remove_smoke_tree(g_smoke_root);
+  }
   if (mutex != NULL)
     CloseHandle(mutex);
   if (argv != NULL)

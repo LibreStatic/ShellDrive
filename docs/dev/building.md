@@ -120,6 +120,17 @@ Debug) and the `x64-analysis` preset on `windows-2022`. The v141_xp jobs install
 `.github/actions/setup-xp-toolset`. `tools/ci-local.ps1` runs the same presets locally (default: all five); on
 the x86 presets the `dokany.*` tests always skip under WOW64 and are reported, not failed.
 
+### Test-owned global names
+
+Several checkouts (git worktrees) can run their tests at the same time on one machine. `RESOURCE_LOCK` only
+serializes tests inside one `ctest` run, so it does not protect against another checkout. The rule: every
+machine-global name a test creates or looks up (window class or title, named pipe, mutex, event, file mapping,
+`Global\`/`Local\` object, temporary folder or file, HKCU key, credential target) must be unique per process
+(PID plus a `QueryPerformanceCounter` stamp), and a fixed temporary root must be removed at teardown. When a
+protocol fixes the name (for example the Pageant window class), give the product code a unit-test seam instead
+of changing the constant, and keep the `RESOURCE_LOCK` for that name. The shared WSL sshd fixture on port 2222
+is the one deliberate exception and keeps its lock.
+
 ## Lab (XP / 7 / no-SSE2 runtime checks)
 
 `tests/lab/` holds the self-hosted lab harness of 04 §11.4 (Hyper-V VMs for XP SP3 x86 and Windows 7 SP1

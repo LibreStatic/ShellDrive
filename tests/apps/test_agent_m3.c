@@ -21,6 +21,20 @@
 
 static wchar_t g_dir[MAX_PATH];
 static unsigned g_tag;
+static wchar_t g_icon_key[160];
+
+/* HKCU key for the drive icons of this process: the parent is shared with other test runs (the lock in
+   tests/apps/CMakeLists.txt), so the key under it carries the PID and a QPC stamp. */
+static const wchar_t *m3_icon_key(void)
+{
+  if (g_icon_key[0] == 0) {
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    _snwprintf_s(g_icon_key, SD_COUNTOF(g_icon_key), _TRUNCATE, L"Software\\LibreStatic\\ShellDriveTest\\m3icons-%lu-%08lx",
+                 (unsigned long)GetCurrentProcessId(), (unsigned long)qpc.LowPart);
+  }
+  return g_icon_key;
+}
 
 typedef struct evlog {
   sd_json *ev[M3_EVENTS];
@@ -77,7 +91,7 @@ static int setup_agent(const wchar_t *tag, const wchar_t *prompt_ms, const wchar
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_PROMPT_NO_ROUTE", no_route);
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_UI_LAUNCH", L"0");   /* never start the real prompt UI */
   /* M3 Explorer data: a test key and a test NetHood folder only (never the user's own) */
-  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_EXPLORER_KEY", L"Software\\LibreStatic\\ShellDriveTest\\m3icons");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_EXPLORER_KEY", m3_icon_key());
   wcscpy_s(nethood, SD_COUNTOF(nethood), root);
   wcscat_s(nethood, SD_COUNTOF(nethood), L"\\nethood");
   CreateDirectoryW(nethood, NULL);
@@ -250,7 +264,7 @@ static int test_icon_exists(const wchar_t *letter)
   wchar_t sub[160];
   HKEY k;
   int found;
-  _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"Software\\LibreStatic\\ShellDriveTest\\m3icons\\%s\\DefaultIcon", letter);
+  _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s\\%s\\DefaultIcon", m3_icon_key(), letter);
   found = RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS;
   if (found)
     RegCloseKey(k);
@@ -259,8 +273,8 @@ static int test_icon_exists(const wchar_t *letter)
 
 static void test_icon_cleanup(void)
 {
-  RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\LibreStatic\\ShellDriveTest\\m3icons");
-  RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\LibreStatic\\ShellDriveTest");
+  RegDeleteKeyW(HKEY_CURRENT_USER, m3_icon_key());
+  RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\LibreStatic\\ShellDriveTest");   /* only if no other run left a key */
 }
 
 /* ---- tests ---- */
