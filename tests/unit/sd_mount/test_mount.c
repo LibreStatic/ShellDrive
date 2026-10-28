@@ -752,6 +752,10 @@ SD_TEST(mount_token_only_refused_for_global)
   sd_mount_callbacks cb;
   sd_mount *m = NULL;
   static const unsigned char sd_bytes[4] = { 1, 0, 4, 0 };
+  /* S-1-5-32-545 (BUILTIN\Users): the service_access list a global mount needs (M5) */
+  static const unsigned char users_sid[] = { 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 33, 2, 0, 0 };
+  void *access_sids[1];
+  access_sids[0] = (void *)users_sid;
   h_init(&h);
   fake_backend_reset();
   fake_backend_set_webclient(SD_WD_CLIENT_STOPPED, 1);
@@ -766,6 +770,8 @@ SD_TEST(mount_token_only_refused_for_global)
   p.global_mount = 1;
   p.volume_sd = sd_bytes;
   p.volume_sd_len = sizeof(sd_bytes);
+  p.access_sids = access_sids;
+  p.n_access = 1;
   p.token_only = 1;
   p.token_only_confirmed = 1;
   memset(&cb, 0, sizeof(cb));

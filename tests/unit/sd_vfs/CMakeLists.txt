@@ -14,7 +14,7 @@ target_link_libraries(sd_vfs_fake PUBLIC sd_headers sd_crypto sd_base sd_platfor
 set_target_properties(sd_vfs_fake PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(vfs
-  SOURCES main.c test_vfs_name.c test_vfs_ops.c test_vfs_m1.c test_vfs_stripe.c
+  SOURCES main.c test_vfs_name.c test_vfs_ops.c test_vfs_m1.c test_vfs_stripe.c test_vfs_access.c
   DEPS sd_vfs_fake)
 
 # Striping bench (02 §5.6): 1 GiB written and read through sd_vfs against the wsl-sshd fixture with

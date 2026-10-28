@@ -515,6 +515,8 @@ static void handle(wd_rq *q)
     q->caller.sid = c->user;
   }
   q->caller.can_write = q->ex ? !q->ex->read_only : FALSE;
+  q->caller.groups = NULL;              /* M5: no token groups on the per-user SSPI path (matched by SID) */
+  q->caller.n_groups = 0;
   q->vpath = wd_path_to_vfs(&q->path, 1);
   if (q->vpath == NULL) {
     respond_simple(q, 400, 0);

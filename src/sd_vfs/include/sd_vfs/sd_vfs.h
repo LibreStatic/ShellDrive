@@ -65,8 +65,9 @@ enum {
    literally (the host sets hide_dotfiles, map_readonly, allow_system, fsync_on_flush, which default
    to on in the profile). disk_cache_mb > 0 with disk_cache_dir enables the disk tier after the
    TM-R29 checks (02 §4.2); a refused directory leaves the memory tier alone and raises the notice
-   "disk_cache_refused". Rejected with SD_VFS_E_UNSUPPORTED: global_mount, mark_of_the_web,
-   remote_codepage (later milestones). */
+   "disk_cache_refused". global_mount (M5) needs access_sids (service_access: n_access >= 1, no default
+   audience, D35; otherwise SD_VFS_E_ACCESS_DENIED); write_sids (service_access_write) may be empty.
+   Rejected with SD_VFS_E_UNSUPPORTED: mark_of_the_web, remote_codepage (later milestones). */
 typedef struct sd_vfs_options {
   UINT32 struct_size;                 /* sizeof(sd_vfs_options) */
   const char *remote_root;            /* bytes; NULL = home */
@@ -92,16 +93,24 @@ typedef struct sd_vfs_options {
   const WCHAR *volume_label, *offline_label_suffix;  /* localized by the host (C45) */
   PSID  owner_sid;                    /* mount owner */
   BOOL  global_mount;                 /* scope = service (D35) */
-  const PSID *access_sids;  UINT n_access;
-  const PSID *write_sids;   UINT n_write;
+  const PSID *access_sids;  UINT n_access;   /* global mounts: service_access, checked per request (6.7, 7.7) */
+  const PSID *write_sids;   UINT n_write;    /* global mounts: service_access_write (may be empty) */
   /* M1 additions */
   const struct sd_vfs_identity *known_identity;   /* definitive identity the host cached for this
                                                      server identity (02 §3.4 step 2); NULL = learn */
 } sd_vfs_options;
 
+/* Per-request caller (M5). The frontend fills it for every request that reaches the vfs, from the requestor's
+   token (Dokany) or the SSPI context (WebDAV). Per-user mounts: sid must be the mount owner; a NULL caller is
+   accepted for host-internal use only. Global mounts: a NULL caller or sid is refused; the vfs matches sid and
+   groups against access_sids (read) and write_sids or Administrators (write) with EqualSid, and SYSTEM only
+   with allow_system. The arrays are borrowed for the duration of the call. */
 typedef struct sd_vfs_caller {
   PSID sid;                           /* requestor / SSPI token user */
-  BOOL can_write;                     /* FALSE: enforced like a read-only mount for this caller */
+  BOOL can_write;                     /* FALSE: enforced like a read-only mount for this caller; on a global
+                                         mount a write needs it too (the frontend may restrict further) */
+  const PSID *groups; UINT n_groups;  /* enabled, non-deny-only token groups; NULL/0 when the frontend has no
+                                         token (then only sid is matched) */
 } sd_vfs_caller;
 
 /* POSIX attributes as cached from the server (02 §3.1). */
@@ -169,7 +178,7 @@ typedef struct sd_vfs_info {
   FILETIME ctime, atime, mtime;  sd_vfs_attr posix;
 } sd_vfs_info;
 sd_vfs_status sd_vfs_getattr(sd_vfs_handle *h, sd_vfs_info *out);
-sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const WCHAR *path, sd_vfs_info *out);
+sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const sd_vfs_caller *caller, const WCHAR *path, sd_vfs_info *out);
 sd_vfs_status sd_vfs_set_winattrs(sd_vfs_handle *h, UINT32 attrs);
 sd_vfs_status sd_vfs_set_times(sd_vfs_handle *h, const FILETIME *c, const FILETIME *a, const FILETIME *w);
 

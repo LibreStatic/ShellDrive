@@ -342,8 +342,6 @@ The elevated path is not exercised by any test.
   `service repair-data` (part 3) is still the one that fixes folders.
 - Non-admin 64 KiB cap separate from the admin cap, and the two reserved administrator slots of the service pipe
   (2.2, TM-R25). One 64 KiB cap applies to every client; the 4-per-SID and 10-per-second limits are in place.
-- Per-request access check in `sd_vfs` (`access_sids` / `write_sids` are passed in the options but not enforced); the
-  Dokany volume descriptor is the only enforcement on the drive.
 - Power events and session changes are logged only; the admin session list for the attention flow (2.6) is not kept.
 - Admin UI, not done: a list window of pending service prompts (the admin mode shows one prompt dialog per open prompt
   instead); host-key announcements of the service machine store in the admin UI (`hostkey.announced` on the service is
@@ -356,3 +354,50 @@ The elevated path is not exercised by any test.
 - Secret types other than `password`; `secret.set` for passphrases needs the key fingerprint target.
 - Lab items: a real Dokany global mount (visible to a second session, before logon), LocalSystem decryption of the
   service secrets, and the SYSTEM-owned service pipe as a non-test client.
+
+## Part 6: per-request access in `sd_vfs`
+
+**Spec.** 02 §6.7 (requestor check, write right), §7.7 (SSPI caller, `service_access_write`), §8 (`sd_vfs_caller`,
+`access_sids` / `write_sids`), TM-R24 and D35 (no default audience). The spec puts the caller in `sd_vfs_caller` and the
+lists in the options; the vfs now enforces them.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `src/sd_vfs/vfs_access.c` | new: mount-time copy of the lists and the well-known SIDs; `vfs_access_check` (per request) |
+| `src/sd_vfs/vfs_ops.c` | `sd_vfs_create` checks before any work (write request = write-class access or a create/truncate disposition; `MAXIMUM_ALLOWED` is a read); `sd_vfs_stat_path` takes the caller |
+| `src/sd_vfs/vfs_core.c` | `global_mount` accepted; lists copied at mount |
+| `src/sd_mount/mount.c`, `sd_mount.h` | `sd_mount_params.access_sids` / `write_sids` (copied at create; a global mount needs `n_access >= 1`) |
+| `src/sd_dokan/dokan_mount.c` | global mounts: requestor token user and enabled, non-deny-only groups go to the vfs; a request without a token is refused |
+| `src/sd_webdav/wd_methods.c`, `wd_server.c` | `sd_vfs_stat_path` gets the caller; groups NULL |
+| `apps/shelldrive-host/service.c` | the resolved `service_access` / `service_access_write` strings become SIDs for the mount |
+
+**Decisions**
+
+- Per-user mounts: the caller's SID must equal the mount owner (a NULL caller stays allowed for host-internal use).
+- Global mounts: no caller or no SID is refused. LocalSystem is allowed in full only with `allow_system`. Any access
+  needs the caller (SID or an enabled group) in `service_access`. A write also needs `caller->can_write`, a SID or group
+  in `service_access_write`, or an enabled BUILTIN\Administrators group. A UAC-filtered admin token does not count.
+- Empty `service_access` on a global mount: refused at mount with `SD_VFS_E_ACCESS_DENIED` (D35). Empty
+  `service_access_write`: members are read-only.
+- A write by a member without the write right fails with `SD_VFS_E_ACCESS_DENIED` (403 / `STATUS_ACCESS_DENIED`),
+  not `SD_VFS_E_READ_ONLY`, as 6.7 says.
+- Read-class checks: lookups (`stat_path`) are reads, so a non-member gets nothing.
+
+**Limitations and open items**
+
+- Dokany reads the requestor token on every create (no 60 s per-(LUID, SID) cache from 6.7 yet).
+- WebDAV has no token groups on the per-user SSPI path, so group entries in `service_access` only match by user SID there.
+  Global WebDAV is still the attach fallback (D11), so this does not reach a global mount yet.
+- `SD_VFS_EV_AUDIT` (Event 1200, TM-R24) is not raised yet.
+- The Dokany requestor check is not unit-tested (the callbacks are static); the vfs rules are.
+
+**Tests.** `tests/unit/sd_vfs/test_vfs_access.c` (8 tests): global mount needs `service_access`; per-user owner only and
+NULL caller; read needs the access list (and `stat_path`); a member without the write right is read-only, with
+create/truncate/delete/rename denied and nothing changed; the write list grants write; group matching and admins
+writing; a group in the write list; SYSTEM with and without `allow_system`; the frontend `can_write` flag restricts.
+`test_mount.c` gives its global-mount case a `service_access` SID.
+
+**Build.** `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -NoFixture -AllowSkip -TestRegex 'vfs|webdav|dokany'`:
+pass, 4 of 4 tests (`unit.vfs`, `unit.webdav`, `webdav.redirector`, `dokany.mount`).

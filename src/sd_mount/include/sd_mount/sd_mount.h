@@ -232,6 +232,10 @@ typedef struct sd_mount_params {
      otherwise sd_mount asks SD_MP_WEBDAV_TOKEN_ONLY when SSPI is unavailable. */
   int token_only;
   int token_only_confirmed;             /* 1 = the user confirmed this enable (03 §7.5) */
+  /* M5: global mounts only. service_access (n_access >= 1, required) and service_access_write (may be empty) as
+     SID pointers, deep-copied at create; the vfs checks every request against them (02 §6.7, 7.7). */
+  void *const *access_sids; uint32_t n_access;
+  void *const *write_sids;  uint32_t n_write;
 } sd_mount_params;
 
 

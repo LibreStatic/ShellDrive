@@ -116,8 +116,8 @@ SD_TEST(vfs_mount_rejects_later_milestones)
   o.write_mode = (sd_vfs_write_mode)7;
   SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
   default_opts(&o);
-  o.global_mount = TRUE;
-  SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
+  o.global_mount = TRUE;                    /* M5: refused without service_access (02 6.4, D35); see test_vfs_access.c */
+  SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_ACCESS_DENIED);
   default_opts(&o);
   o.remote_root = "/does/not/exist";
   SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_NOT_FOUND);
@@ -534,23 +534,23 @@ SD_TEST(vfs_metadata_cache_and_negative_entries)
   SD_REQUIRE(fx_mount(&f, NULL, NULL));
   fake_put(f.s, "/home/user/f", "x", 1, 0644);
   fake_reset_counts(f.s);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\F", &info), SD_VFS_OK);   /* folded key hit */
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\F", &info), SD_VFS_OK);   /* folded key hit */
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
   SD_CHECK_EQ_INT(fake_count(f.s, FOP_LSTAT), 1);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
   {
     uint32_t before = fake_count(f.s, FOP_LSTAT) + fake_count(f.s, FOP_OPENDIR);
-    SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
+    SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
     SD_CHECK_EQ_INT(fake_count(f.s, FOP_LSTAT) + fake_count(f.s, FOP_OPENDIR), before);
   }
   /* Offline: cached entries are served ignoring TTL; unknown names are DISCONNECTED, not NOT_FOUND. */
   fake_mkdir(f.s, "/home/user/d", 0755);
   sd_vfs_refresh(f.v, NULL);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\d", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\d", &info), SD_VFS_OK);
   fake_set_state(f.s, SD_SFTP_ST_DISCONNECTED);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\d\\other", &info), SD_VFS_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\d\\other", &info), SD_VFS_E_DISCONNECTED);
   {
     sd_vfs_handle *h = NULL;
     SD_CHECK_EQ_INT(vopen(&f, L"\\new", GENERIC_WRITE, SHARE_ALL, SD_VFS_FILE_CREATE, 0, &h), SD_VFS_E_DISCONNECTED);

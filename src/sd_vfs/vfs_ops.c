@@ -32,6 +32,14 @@ static BOOL disp_truncates(uint32_t d)
   return d == SD_VFS_FILE_OVERWRITE || d == SD_VFS_FILE_OVERWRITE_IF || d == SD_VFS_FILE_SUPERSEDE;
 }
 
+/* M5: an open is a write request when it asks for a write-class right or a disposition that may create or
+   truncate. MAXIMUM_ALLOWED is not a write request (a read-only caller gets the read rights, as before). */
+static BOOL request_writes(uint32_t access, uint32_t d)
+{
+  return (map_generic(access, TRUE) & ACC_WRITE_CLASS) != 0 || d == SD_VFS_FILE_CREATE ||
+         d == SD_VFS_FILE_OPEN_IF || disp_truncates(d);
+}
+
 /* ---- share modes (02 §2.3: IoCheckShareAccess among local opens) ---- */
 
 static sd_vfs_status share_check(vfs_node *n, uint32_t access, uint32_t share, BOOL update)
@@ -320,6 +328,10 @@ sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *c
     return SD_VFS_E_UNSUPPORTED;
   if (InterlockedCompareExchange(&v->quiescing, 0, 0))
     return SD_VFS_E_DISCONNECTED;
+  /* M5 per-request access (02 6.7, 7.7). Rename and delete need DELETE here, so they are write requests too. */
+  st = vfs_access_check(v, caller, request_writes(access, disposition));
+  if (st != SD_VFS_OK)
+    return st;
   enter(v);
   ro = v->read_only || (caller && !caller->can_write);
   access = map_generic(access, ro);
@@ -536,12 +548,15 @@ sd_vfs_status sd_vfs_getattr(sd_vfs_handle *h, sd_vfs_info *out)
   return SD_VFS_OK;
 }
 
-sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const WCHAR *path, sd_vfs_info *out)
+sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const sd_vfs_caller *caller, const WCHAR *path, sd_vfs_info *out)
 {
   vfs_node *n = NULL;
   sd_vfs_status st;
   if (!v || !path || !out)
     return SD_VFS_E_INVALID_NAME;
+  st = vfs_access_check(v, caller, FALSE);   /* M5: a lookup reveals names and sizes, so it is a read (02 7.7) */
+  if (st != SD_VFS_OK)
+    return st;
   enter(v);
   st = vfs_resolve(v, path, vfs_deadline(v), (int64_t)v->attr_ttl, &n, NULL, NULL);
   if (st == SD_VFS_OK) {

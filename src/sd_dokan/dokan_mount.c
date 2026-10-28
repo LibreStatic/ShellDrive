@@ -29,6 +29,7 @@ struct sd_dokan_mount {
   sd_dokan_unmounted_cb cb; void *cb_ctx;
   volatile LONG unmounted;
   sd_vfs_volume vol;
+  BOOL global;                          /* M5: service mount; the vfs checks the requestor per create */
 };
 
 static sd_dokan_mount *M(SD_DOKAN_FILE_INFO *fi)
@@ -73,6 +74,66 @@ static BOOL requestor_allowed(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi)
   return ok;
 }
 
+/* Requestor identity of a global mount (02 6.7, 7.7): the token user and its enabled, non-deny-only groups.
+   The buffers back the caller's pointers until sd_vfs_create returns (requestor_free). A request without a
+   token (kernel-originated) gets no identity and is refused: global mounts have no implicit audience. */
+typedef struct requestor_ident {
+  BYTE *user, *groups;
+  PSID *gsids;
+  sd_vfs_caller caller;
+} requestor_ident;
+
+static void requestor_free(requestor_ident *r)
+{
+  sd_free(r->user);
+  sd_free(r->groups);
+  sd_free(r->gsids);
+  memset(r, 0, sizeof(*r));
+}
+
+static BOOL requestor_identity(SD_DOKAN_FILE_INFO *fi, requestor_ident *r)
+{
+  const sd_dokan_api *api = sd_dokan_api_get();
+  HANDLE tok;
+  DWORD n = 0, i, ng = 0;
+  TOKEN_GROUPS *tg;
+  BOOL ok = FALSE;
+  memset(r, 0, sizeof(*r));
+  tok = api->OpenRequestorToken(fi);
+  if (tok == INVALID_HANDLE_VALUE || tok == NULL)
+    return FALSE;
+  if (!GetTokenInformation(tok, TokenUser, NULL, 0, &n) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    goto out;
+  r->user = (BYTE *)sd_alloc(n);
+  if (r->user == NULL || !GetTokenInformation(tok, TokenUser, r->user, n, &n))
+    goto out;
+  n = 0;
+  if (!GetTokenInformation(tok, TokenGroups, NULL, 0, &n) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    goto out;
+  r->groups = (BYTE *)sd_alloc(n);
+  if (r->groups == NULL || !GetTokenInformation(tok, TokenGroups, r->groups, n, &n))
+    goto out;
+  tg = (TOKEN_GROUPS *)r->groups;
+  r->gsids = (PSID *)sd_calloc(tg->GroupCount ? tg->GroupCount : 1, sizeof(PSID));
+  if (r->gsids == NULL)
+    goto out;
+  for (i = 0; i < tg->GroupCount; i++) {
+    DWORD a = tg->Groups[i].Attributes;
+    if ((a & SE_GROUP_ENABLED) && !(a & SE_GROUP_USE_FOR_DENY_ONLY))
+      r->gsids[ng++] = tg->Groups[i].Sid;
+  }
+  r->caller.sid = ((TOKEN_USER *)r->user)->User.Sid;
+  r->caller.can_write = TRUE;           /* the vfs applies the write rule (TM-R24) */
+  r->caller.groups = r->gsids;
+  r->caller.n_groups = ng;
+  ok = TRUE;
+out:
+  CloseHandle(tok);
+  if (!ok)
+    requestor_free(r);
+  return ok;
+}
+
 /* ---- callbacks ---- */
 
 static SD_DOKAN_NTSTATUS WINAPI cb_create(LPCWSTR name, SD_DOKAN_IO_SECURITY_CONTEXT *sc, ACCESS_MASK access,
@@ -80,17 +141,28 @@ static SD_DOKAN_NTSTATUS WINAPI cb_create(LPCWSTR name, SD_DOKAN_IO_SECURITY_CON
 {
   sd_dokan_mount *m = M(fi);
   sd_vfs_caller caller;
+  requestor_ident ident;
   sd_vfs_handle *h = NULL;
   BOOL existed = FALSE, is_dir = FALSE;
   sd_vfs_status st;
   SD_UNUSED(sc);
-  if (!requestor_allowed(m, fi))
-    return SD_STATUS_ACCESS_DENIED;
-  caller.sid = m->vol.owner_sid;
-  caller.can_write = TRUE;                   /* per-user mount: the owner may write (global: M5) */
+  memset(&ident, 0, sizeof(ident));
+  if (m->global) {
+    /* M5 (02 6.7, 7.7): the vfs decides from the requestor's SID and groups; no token, no access */
+    if (!requestor_identity(fi, &ident))
+      return SD_STATUS_ACCESS_DENIED;
+    caller = ident.caller;
+  } else {
+    if (!requestor_allowed(m, fi))
+      return SD_STATUS_ACCESS_DENIED;
+    memset(&caller, 0, sizeof(caller));
+    caller.sid = m->vol.owner_sid;
+    caller.can_write = TRUE;                 /* per-user mount: the owner may write */
+  }
   if (fi->IsDirectory)
     opts |= SD_VFS_FILE_DIRECTORY_FILE;
   st = sd_vfs_create(m->vfs, name, &caller, access, share, disp, opts, attrs, &h, &existed, &is_dir);
+  requestor_free(&ident);
   if (st != SD_VFS_OK)
     return sd_vfs_to_ntstatus(st);
   fi->Context = (ULONG64)(ULONG_PTR)h;
@@ -373,6 +445,7 @@ sd_err sd_dokan_mount_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
   m->cb = cb;
   m->cb_ctx = ctx;
   sd_vfs_get_volume(vfs, &m->vol);
+  m->global = cfg->global_mount ? TRUE : FALSE;
   wcsncpy_s(m->mount_point, SD_COUNTOF(m->mount_point), cfg->mount_point, _TRUNCATE);
 
   m->opt.Version = (USHORT)SD_MIN(SD_DOKAN_VERSION, api->lib_version);
