@@ -910,7 +910,7 @@ All are accepted (D39); "adjusted" names the decision that changed the recommend
 | TM-R01 | 01 §4.2, §4.3; 03 §3.4.1, §7.6 | D34 |
 | TM-R02 | 01 §2.4 rule 3, §2.7.5; 04 §11.2 (`sd-ctcheck`) | M0 gate, TST-03 |
 | TM-R03 | 03 §5.2, §5.3; 01 §7.1 (`via_host`) | |
-| TM-R04 | 01 §4.3, §7.1, §9; 03 §5.2, §6.1, §6.2 | `host_key_type_unavailable` (exit 6); "add key" via `sd_ssh_conn_fetch_hostkeys` |
+| TM-R04 | 01 §4.3, §7.1, §9; 03 §5.2, §6.1, §6.2 | `host_key_type_unavailable` (exit 6); "add key" via `sd_ssh_conn_fetch_hostkeys`. M5 part 8 (`hostkey add --from-server`): fetched only inside a verified connection; a first contact is never fetched (its one presented key goes to the user's confirmation) |
 | TM-R05 | 01 §6.4, §6.7; 03 §2.5, §4.6 | flag `hostkey_just_accepted` |
 | TM-R06 | 01 §7.2; 03 §5.1 | `warning hostkey_source_insecure` |
 | TM-R07 | 03 §3.2; 01 §7.2 | |

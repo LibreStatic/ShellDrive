@@ -557,3 +557,72 @@ writing; a group in the write list; SYSTEM with and without `allow_system`; the 
 
 **Build.** `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -NoFixture -AllowSkip -TestRegex 'vfs|webdav|dokany'`:
 pass, 4 of 4 tests (`unit.vfs`, `unit.webdav`, `webdav.redirector`, `dokany.mount`).
+
+## Part 8: the per-user hostkey connect (`wip/r14-hkconn`)
+
+Part 6 left `real_hostkeys_fetch` answering `SD_E_UNSUPPORTED`: `sd_ssh` reaches `SSH_ST_CONNECTED` only after user
+authentication, and the fetch needs that state. This part makes `hostkey add --from-server` (per user, without
+`--machine`) connect for real. The machine store is unchanged.
+
+**Decision (01 §4.3, 03 §6.1).** The connect is a normal connection with the matching profile's authentication and
+prompts, offering only the stored host-key types; `sd_ssh_conn_fetch_hostkeys()` runs inside that verified
+connection. A host with no stored key is a first contact (TOFU, 5.2): the presented key is taken with
+`SD_HK_ACCEPT_ONCE`, nothing is stored, and the CLI's question is the trust decision.
+
+**Shape.** The `hostkeys_fetch` backend member (a blocking call with no prompt context) is replaced by a *hostkey
+mount*: `sd_mount_params.hostkey_fetch` (with `hostkey_type`) makes `sd_mount` connect through sd_ssh without an sftp
+session and without a vfs. The prompts, the broker and the deferred IPC reply are the ones of `profile.test`, so the
+work runs on the agent's control thread and the sd_ssh I/O thread; the IPC thread only queues the request. The
+connection's own callbacks stay in `mount.c`, which is what answers the broker's prompts by id.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `src/sd_mount/include/sd_mount/sd_mount.h` | `sd_mount_params.hostkey_fetch`, `.hostkey_type`; backend members `hk_conn_create`, `hk_conn_connect`, `hk_conn_fetch`, `hk_conn_destroy` (replace `hostkeys_fetch`); `sd_mount_get_hostkeys()` (replaces `sd_mount_hostkeys_fetch()`) |
+| `src/sd_mount/mount.c` | `build_ssh_config()` (the hop configuration, shared with the sftp start); `hk_start`, `hk_on_connected`, `hk_on_fetched`, `hk_finish`; `EV_HK_DONE`; first-contact TOFU prompt in `ssh_on_prompt` (ACCEPT_ONCE, the presented key kept); `update_host_keys = no` on the hops (announcements are not stored by this path) |
+| `src/sd_mount/mount_real.c` | the four members as thin wrappers over sd_ssh |
+| `src/sd_ssh/include/sd_ssh/sd_prompt.h`, `kex.c`, `prompt.c`, `conn_internal.h` | `sd_hostkey_prompt_info.blob`/`blob_len`: the presented key, owned by the prompt (needed to store a first-contact key after the CLI's yes) |
+| `apps/shelldrive-host/agent.c` | `handle_hostkey_add` (profile matched by host and port as `mount` finds one, else the `--host` defaults; `handle_mount_body(..., test = 2)` makes the connect-only record), `reply_hostkey_add` (the deferred reply, from `on_state`), `hk_complete` (expect rule, announcement list, the reply members), `hk_error_text` |
+| `tests/apps/host_fake_backend.c` | the fake sd_ssh connection (`hk_fake_*`): a stored host (`*.known.test`), a mismatch (`*.changed.test`), first contact (anything else); the TOFU prompt goes through the mount's own `ssh_on_prompt` |
+| `tests/unit/sd_ssh/test_interop.c` | `interop_hostkeys_fetch_none_offered`, `interop_hostkeys_fetch_first_contact_refused` (WSL fixture, label `interop`, `wsl_sshd_fixture`) |
+| `docs/design/01-ssh-sftp-crypto.md` §4.3, §9; `docs/design/05-threat-model.md` TM-R04 | status notes |
+
+**Behaviour**
+
+- Stored key of the host: the connection is MATCH (or a mismatch, which fails like a mount). The keys returned are
+  the server's other host keys: announced keys are proven with `hostkeys-prove-00`; each requested type that was not
+  announced is obtained by a re-key restricted to that type. The default list is ed25519, ECDSA P-256/384/521 and
+  ssh-rsa (the legacy type only where the legacy policy allows it); `--type T` asks for T alone.
+- The server offers none of the stored types: `host_key_type_unavailable` (exit 6) as for a mount.
+- First contact: no fetch (01 §4.3: a fetch needs a key trusted before the connection). The reply has the one presented
+  key with `verified: false`, and nothing is stored until the CLI's yes (`hostkey.announced.accept`). `--expect`
+  stores the key with that fingerprint without a question, as before.
+- The fingerprints are recomputed from the blobs in the agent, as before; only `--type` keys are kept.
+
+**Test seam and results**
+
+- The smoke tests (`sd-test-apps.exe --filter hostkey`, 5 of 5) run the agent path on the fake connection:
+  `smoke_hostkey_add_offers` and `smoke_hostkey_add_machine` pass unchanged.
+- `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -AllowSkip -Jobs 4 -TestRegex 'unit\.ssh|unit\.apps|unit\.mount|interop\.ssh'`:
+  build passes; unit.ssh, unit.ssh_transport, unit.ssh_auth, unit.mount, unit.apps pass; interop.ssh is skipped.
+- **Interop not run.** The WSL sshd fixture on port 2222 is running but belongs to another worktree; this worktree has
+  no `tests/fixtures/wsl-sshd/state/env`, so `sd-test-ssh-interop.exe` exits 77 ("fixture not started"). The two new
+  tests are compiled and linked but have never run against a server. To run them: start the fixture for this
+  worktree (`tests/fixtures/wsl-sshd/start.ps1` once port 2222 is free, or `SD_SSH_WSL_FIXTURE_DIR`), then
+  `sd-test-ssh-interop.exe --filter hostkeys_fetch`.
+- No unit test in `tests/unit/sd_mount` covers the hostkey mount: the fake backend there has no hk members, so the
+  hostkey path is covered by the apps smoke tests only.
+
+**Not done (open)**
+
+- Interop run of `interop_hostkeys_fetch_*` (see above) and an interop case with several server host keys (the
+  `matrix` fixture in `run-matrix.ps1` has them; `rotate ab`). Until then the re-key path for a type the server does
+  offer is unverified against a real server (01 §15 item 9).
+- Announcements race: OpenSSH may send `hostkeys-00` after `USERAUTH_SUCCESS`; the fetch starts when the connect is
+  done, so an announced key may not be proven by `hostkeys-prove-00` and is re-keyed instead. Correct, but it costs
+  one re-key per type. Measure on the interop run.
+- A first contact is not fetched, so `hostkey add` on a new host gives only the one key the server presents (5.2); the
+  other types need a second `hostkey add` after the first key is stored.
+- The service pipe (`hostkey.add` on the service, the machine store with `--machine`) is still not built.
+- Refused offers stay in the announcement list until the agent restarts (unchanged from Part 6).

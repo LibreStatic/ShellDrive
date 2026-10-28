@@ -6,7 +6,8 @@
  * MISMATCH hard block, TM-R04 type restriction, Ed25519 key files (plain and encrypted), exec and
  * sftp subsystem channels, volume rekeying with flow control; M1: reconnect on the same
  * sd_ssh_conn (pinned host key, is_reconnect prompts, reconnect secret cache with the TM-R05 rule,
- * host key mismatch on reconnect), run-time keepalive tuning. */
+ * host key mismatch on reconnect), run-time keepalive tuning; M5: sd_ssh_conn_fetch_hostkeys inside a verified
+ * connection (type not offered), first contact never fetched. */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -782,6 +783,105 @@ SD_TEST(interop_keepalive_tuning)
   sd_known_hosts_close(kh);
 }
 
+/* ---- sd_ssh_conn_fetch_hostkeys (M5, 01 §4.3, TM-R04) ----
+   The fixture offers one host key (ed25519). A verified connection can ask for other types: the server offers none
+   of them, so the fetch ends with SD_E_HOSTKEY_TYPE_UNAVAILABLE and nothing is returned or stored. A first
+   contact (ACCEPT_ONCE, no stored key) is never fetched: SD_E_HOSTKEY_REJECTED, and nothing is stored. */
+typedef struct fetch_run {
+  sd_event ev;
+  sd_err err;
+  uint32_t count;
+} fetch_run;
+
+static void on_fetch(void *ctx, sd_err e, const sd_hk_key *keys, uint32_t count)
+{
+  fetch_run *f = (fetch_run *)ctx;
+  SD_UNUSED(keys);
+  f->err = e;
+  f->count = count;
+  sd_event_set(&f->ev);
+}
+
+static int kh_file_has(const char *needle)
+{
+  char buf[4096];
+  HANDLE h = CreateFileW(g_kh_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  DWORD n = 0;
+  int found = 0;
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  if (ReadFile(h, buf, sizeof(buf) - 1, &n, NULL)) {
+    buf[n] = 0;
+    found = strstr(buf, needle) != NULL;
+  }
+  CloseHandle(h);
+  return found;
+}
+
+static int fetch_wait(sd_ssh_conn *c, const char *const *types, uint32_t ntypes, fetch_run *f)
+{
+  memset(f, 0, sizeof(*f));
+  if (sd_event_init(&f->ev, 0, 0) != SD_OK) return 0;
+  if (sd_ssh_conn_fetch_hostkeys(c, 0, types, ntypes, on_fetch, f) != SD_OK) return 0;
+  if (sd_event_wait(&f->ev, 60000) != SD_OK) f->err = SD_E_TIMEOUT;
+  return 1;
+}
+
+SD_TEST(interop_hostkeys_fetch_none_offered)
+{
+  sd_known_hosts *kh;
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  fetch_run f;
+  const char *types[2] = { "ecdsa-sha2-nistp256", "ssh-rsa" };
+  /* the first contact stores the ed25519 key; the second connection is then verified (MATCH, no prompt) */
+  kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_AND_STORE;
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);   /* first contact: stored */
+  finish(&r, c);
+  c = NULL;
+  memset(&r, 0, sizeof(r));
+  o.decision = SD_HK_REJECT;
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 0);
+  SD_REQUIRE(c != NULL);
+  SD_CHECK(fetch_wait(c, types, 2, &f));
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_TYPE_UNAVAILABLE);
+  SD_CHECK_EQ_INT(f.count, 0);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+  sd_event_destroy(&f.ev);
+}
+
+SD_TEST(interop_hostkeys_fetch_first_contact_refused)
+{
+  sd_known_hosts *kh;
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  fetch_run f;
+  const char *types[1] = { "ssh-rsa" };
+  kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_ONCE;            /* the key is trusted for this connection only */
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_REQUIRE(c != NULL);
+  SD_CHECK(fetch_wait(c, types, 1, &f));
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_REJECTED);   /* not verified against a stored key: never fetched */
+  SD_CHECK(!kh_file_has("ssh-"));                  /* ACCEPT_ONCE stores nothing */
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+  sd_event_destroy(&f.ev);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_reconnect_pinned_host_key),
   SD_TEST_ENTRY(interop_reconnect_secret_cache),
@@ -795,6 +895,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_stored_type_restriction),
   SD_TEST_ENTRY(interop_reject_and_auth_failure),
   SD_TEST_ENTRY(interop_rekey_bulk),
+  SD_TEST_ENTRY(interop_hostkeys_fetch_none_offered),
+  SD_TEST_ENTRY(interop_hostkeys_fetch_first_contact_refused),
 };
 
 int main(int argc, char **argv)

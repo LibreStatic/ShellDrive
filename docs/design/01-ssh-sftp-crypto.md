@@ -766,6 +766,13 @@ sends from them, after the server's KEXINIT (section 4.2), with the host-key and
   key of any type is stored (`SD_HK_NEW`, plain TOFU). The host never calls it for reconnects, pool members or
   the service; the re-key variant is a lab item for servers that refuse a host-key algorithm change on re-key
   (section 15).
+  **Status (M5 part 8, 2026-10-28).** Built. The host-key mount (`sd_mount`, `hostkey_fetch`, 03 §6.1) connects with
+  the profile's own authentication and prompts, offers the stored types only, and calls `sd_ssh_conn_fetch_hostkeys()`
+  inside that verified connection with the default type list (or `--type`). A first contact (no stored key) is not
+  fetched: the presented key is taken with `ACCEPT_ONCE`, nothing is stored, and the result is that one key with
+  `verified = 0`. Interop: `interop_hostkeys_fetch_none_offered` and `interop_hostkeys_fetch_first_contact_refused`
+  (`test_interop.c`; they skip without a fixture state directory in the worktree, see m5-notes part 8). The re-key
+  variant against a server that offers the type is still a lab item (section 15).
 - Profiles can remove algorithms (for example "disable legacy") but cannot reorder legacy above modern. If the profile
   disables legacy and negotiation fails, the error says which category had no overlap, so the UI can offer to
   re-enable legacy for this profile.
@@ -1670,6 +1677,9 @@ void   sd_ssh_conn_rtt(const sd_ssh_conn *c, uint32_t *srtt_ms, uint32_t *rttvar
 typedef void (*sd_ssh_hostkeys_cb)(void *ctx, sd_err e, const sd_hk_key *keys, uint32_t count);
 sd_err sd_ssh_conn_fetch_hostkeys(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
                                   sd_ssh_hostkeys_cb done, void *ctx);
+
+/* Status (M5 part 8, 2026-10-28): built and used by the per-user `hostkey add --from-server` (sd_mount hostkey
+   mount, docs/dev/m5-notes.md part 7); tested by interop_hostkeys_fetch_* against the WSL fixture. */
 
 /* Channels (used by sd_sftp; consumer callbacks run on the I/O thread). */
 typedef struct sd_ssh_channel_sink {

@@ -79,15 +79,27 @@ static void real_vfs_stats(sd_vfs *v, sd_mount_stats *out)
   out->reconnects = vs.reconnects;
 }
 
-/* hostkey add (03 §6.1): not built. sd_ssh reports SSH_ST_CONNECTED only after user authentication, and the
-   hostkey add command has no credentials yet (docs/dev/m5-notes.md, Part 6, open items). Until that exists the
-   connect answers SD_E_UNSUPPORTED and nothing is read or stored. */
-static sd_err real_hostkeys_fetch(const char *host, uint16_t port, const char *type, sd_mount_hk_fetch *out)
+/* hostkey add (M5, 03 §6.1): the sd_ssh connection of a hostkey mount. The connect runs the profile's
+   authentication; the fetch (sd_ssh_conn_fetch_hostkeys) runs inside that connection. */
+static sd_err real_hk_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
 {
-  SD_UNUSED(host); SD_UNUSED(port); SD_UNUSED(type);
-  out->verified = 0;
-  out->count = 0;
-  return SD_E_UNSUPPORTED;
+  return sd_ssh_conn_create(cfg, cb, out);
+}
+
+static sd_err real_hk_conn_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
+{
+  return sd_ssh_conn_connect(c, done, ctx);
+}
+
+static sd_err real_hk_conn_fetch(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
+                                 sd_ssh_hostkeys_cb done, void *ctx)
+{
+  return sd_ssh_conn_fetch_hostkeys(c, hop_index, types, ntypes, done, ctx);
+}
+
+static void real_hk_conn_destroy(sd_ssh_conn *c)
+{
+  sd_ssh_conn_destroy(c);
 }
 
 static const sd_mount_backend k_real = {
@@ -127,7 +139,10 @@ static const sd_mount_backend k_real = {
   sd_vfs_cache_clear,
   sd_vfs_write_behind_bytes,
   sd_webdav_mount_port,
-  real_hostkeys_fetch,
+  real_hk_conn_create,
+  real_hk_conn_connect,
+  real_hk_conn_fetch,
+  real_hk_conn_destroy,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

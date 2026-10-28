@@ -128,6 +128,11 @@ typedef struct host_mount {
   int64_t defer_rid;            /* its request id */
   uint32_t nlegs;               /* proxy legs of the chain, for status proxy_legs */
   host_leg legs[SD_MOUNT_MAX_HOPS];
+  /* M5 hostkey add (test = 2): the request fields the reply needs (hk = 1) */
+  int hk;
+  char hk_lookup[300];
+  char hk_type[64];
+  char hk_expect[96];
 } host_mount;
 
 /* ---- M3 constants (03 §2.5, §3.3, 1.7.4) ---- */
@@ -700,6 +705,8 @@ static void work_open(void *arg)
     shell_explore(root);
 }
 
+static void reply_hostkey_add(host_mount *h, sd_mount *m, sd_err why);
+
 static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
 {
   host_mount *h;
@@ -714,8 +721,12 @@ static void on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
     }
     send_state_event(h, st, why);
     mount_changed_locked(h);
-    if (h->test_only && sd_mount_is_final(m))
-      reply_profile_test(h, m, why);
+    if (h->test_only && sd_mount_is_final(m)) {
+      if (h->hk)
+        reply_hostkey_add(h, m, why);
+      else
+        reply_profile_test(h, m, why);
+    }
     if (sd_mount_is_final(m))
       post(NULL, work_reap, h);
   }
@@ -1740,7 +1751,12 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   wchar_t root[MAX_PATH];
   int ro = 0;
   sd_err e;
+  /* test = 2: hostkey add (M5). The caller resolved the profile; the request is a connect-only test */
+  int hk = test == 2;
+  if (hk)
+    test = 1;
 
+  if (!hk) {
   sd_profile_defaults(prof);
   if (adhoc) {
     const char *v;
@@ -1774,6 +1790,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
       return fail(err, e, NULL, "cannot read profiles");
   } else {
     return fail(err, SD_E_INVALID_PARAM, "usage", "profile or adhoc required");
+  }
   }
   if (sd_json_get_bool(params, "read_only", &ro) && ro)
     prof->read_only = 1;
@@ -1930,6 +1947,15 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->params.remote_path = h->remote[0] ? h->remote : NULL;
   h->params.letter = letter;
   h->params.test_only = test;
+  if (hk) {
+    const char *v;
+    h->hk = 1;
+    scopy(h->hk_lookup, sizeof(h->hk_lookup), (v = sd_json_get_str(params, "lookup")) != NULL ? v : "");
+    scopy(h->hk_type, sizeof(h->hk_type), (v = sd_json_get_str(params, "type")) != NULL ? v : "");
+    scopy(h->hk_expect, sizeof(h->hk_expect), (v = sd_json_get_str(params, "expect")) != NULL ? v : "");
+    h->params.hostkey_fetch = 1;
+    h->params.hostkey_type = h->hk_type[0] ? h->hk_type : NULL;
+  }
   h->params.read_only = prof->read_only;
   h->params.symlinks = prof->symlinks;
   h->params.write_mode = prof->write_mode;
@@ -2858,12 +2884,16 @@ static sd_err handle_announced_accept(const sd_json *params, sd_json_writer *res
 }
 
 /* ---- hostkey add (03 §6.1, 5.2, TM-R04) ----
-   hostkey.add {host, port, lookup, type?, expect?}: the backend connects offering only the stored key types of the
-   host and collects the other host keys inside that connection (sd_mount_hostkeys_fetch). expect: only the key with
-   that SHA-256 fingerprint is stored, with no prompt (scripts); no match fails. Without expect the keys are kept as
-   an announcement for review: the CLI asks, then calls hostkey.announced.accept {id, add_only: true}. A first
-   contact (no stored key) offers the one key the server presented (5.2); accepting it is the trust decision.
-   Reply: {host, lookup_name, verified, keys[{type, fingerprint}], id? (pending), added?, removed? (expect)}. */
+   hostkey.add {host, port, lookup, type?, expect?}: the profile whose host and port match is used (its
+   authentication, jump hosts and proxies), else the host-only defaults of `mount --host`. The connection is a
+   hostkey mount (hostkey_fetch, sd_mount): it authenticates, offers only the stored key types of the host and
+   collects the other host keys inside that verified connection. The request is deferred: the reply is sent when the
+   mount ends (reply_hostkey_add), so the IPC thread never waits for the network.
+   expect: only the key with that SHA-256 fingerprint is stored, with no prompt (scripts); no match fails. Without
+   expect the keys are kept as an announcement for review: the CLI asks, then calls hostkey.announced.accept
+   {id, add_only: true}. A first contact (no stored key) offers the one key the server presented (5.2); accepting
+   it is the trust decision. Reply: {host, lookup_name, verified, keys[{type, fingerprint}], id? (pending),
+   added?, removed? (expect)}. */
 static int hk_type_ok(const char *t)
 {
   size_t i, n = strlen(t);
@@ -2874,46 +2904,45 @@ static int hk_type_ok(const char *t)
   return 1;
 }
 
-static sd_err hk_fetch_error(sd_err e, sd_ipc_error *err)
+/* The IPC code and the English detail of a failed mount for hostkey add (the CLI maps the code to its text). */
+static void hk_error_text(sd_err e, const char *mount_code, const char **code, char *detail, size_t cap)
 {
-  if (e == SD_E_UNSUPPORTED)
-    return fail(err, e, "not_implemented", "hostkey add is not part of this build yet");
-  if (e == SD_E_HOSTKEY_MISMATCH)
-    return fail(err, e, "host_key_mismatch", "the server's host key does not match the stored one");
-  if (e == SD_E_INVALID_PARAM)
-    return fail(err, e, "usage", "invalid host");
-  return fail(err, e, "connect_failed", "cannot get the host keys of the server");
+  *code = "connect_failed";
+  scopy(detail, cap, "cannot get the host keys of the server");
+  if (e == SD_E_UNSUPPORTED) {
+    *code = "not_implemented";
+    scopy(detail, cap, "hostkey add is not available on this backend");
+  } else if (e == SD_E_HOSTKEY_MISMATCH) {
+    *code = "host_key_mismatch";
+    scopy(detail, cap, "the server's host key does not match the stored one");
+  } else if (e == SD_E_HOSTKEY_TYPE_UNAVAILABLE) {
+    *code = "host_key_type_unavailable";
+    scopy(detail, cap, "the server offers none of the key types stored for it");
+  } else if (e == SD_E_HOSTKEY_REJECTED) {
+    *code = "host_key_rejected";
+    scopy(detail, cap, "the host key was not accepted");
+  } else if (e == SD_E_INVALID_PARAM) {
+    *code = "usage";
+    scopy(detail, cap, "invalid host");
+  } else if (e == SD_E_NO_MEMORY) {
+    *code = NULL;
+    scopy(detail, cap, "out of memory");
+  } else if (mount_code != NULL) {
+    *code = mount_code;
+  }
 }
 
-static sd_err handle_hostkey_add(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+/* The keys of a finished hostkey mount: the requested type only, fingerprints recomputed from the blobs. Writes the
+   reply members into jw (the caller opened and closes the object). On failure sets *code and detail (IPC) and
+   returns the error. */
+static sd_err hk_complete(sd_json_writer *jw, host_mount *h, sd_mount_hk_fetch *f, const char **code, char *detail,
+                          size_t cap)
 {
-  const char *host = sd_json_get_str(params, "host");
-  const char *lookup = sd_json_get_str(params, "lookup");
-  const char *type = sd_json_get_str(params, "type");
-  const char *expect = sd_json_get_str(params, "expect");
-  int64_t port = 22;
-  sd_mount_hk_fetch *f;
-  host_announce *x;
-  sd_kh_store st;
-  sd_err e;
   uint32_t i, n = 0;
-  int verified, found = -1;
-
-  sd_json_get_int64(params, "port", &port);
-  if (host == NULL || host[0] == 0 || lookup == NULL || lookup[0] == 0 || port < 1 || port > 65535)
-    return fail(err, SD_E_INVALID_PARAM, "usage", "host, port and lookup required");
-  if (type != NULL && !hk_type_ok(type))
-    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid key type");
-  f = (sd_mount_hk_fetch *)sd_calloc(1, sizeof(*f));
-  if (f == NULL)
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
-  e = sd_mount_hostkeys_fetch(host_backend(), host, (uint16_t)port, lookup, type, f);
-  if (e != SD_OK) {
-    sd_free(f);
-    return hk_fetch_error(e, err);
-  }
-  verified = f->verified != 0;
-  /* the fingerprints are computed here from the blobs, and only the requested type is kept */
+  int found = -1;
+  const char *type = h->hk_type[0] ? h->hk_type : NULL;
+  const char *expect = h->hk_expect[0] ? h->hk_expect : NULL;
+  int verified = f->verified != 0;
   for (i = 0; i < f->count; i++) {
     if (type != NULL && strcmp(f->keys[i].type, type) != 0)
       continue;
@@ -2924,24 +2953,31 @@ static sd_err handle_hostkey_add(const sd_json *params, sd_json_writer *res, sd_
     n++;
   }
   f->count = n;
-  if (expect != NULL && expect[0] != 0) {
+  sd_jw_key(jw, "host"); sd_jw_cstr(jw, h->host);
+  sd_jw_key(jw, "lookup_name"); sd_jw_cstr(jw, h->hk_lookup);
+  sd_jw_key(jw, "verified"); sd_jw_bool(jw, verified);
+  if (expect != NULL) {
+    /* stored with no question: the user store only, as hostkey.announced.accept */
+    sd_kh_store st;
+    host_announce *x;
+    sd_err e;
     for (i = 0; i < n; i++)
       if (strcmp(f->keys[i].fp_sha256, expect) == 0) { found = (int)i; break; }
     if (found < 0) {
-      sd_free(f);
-      if (verified)
-        return fail(err, SD_E_HOSTKEY_MISMATCH, "host_key_mismatch", "no key of the server has that fingerprint");
-      return fail(err, SD_E_HOSTKEY_REJECTED, "host_key_rejected", "no key of the server has that fingerprint");
+      *code = verified ? "host_key_mismatch" : "host_key_rejected";
+      scopy(detail, cap, "no key of the server has that fingerprint");
+      return verified ? SD_E_HOSTKEY_MISMATCH : SD_E_HOSTKEY_REJECTED;
     }
     x = (host_announce *)sd_calloc(1, sizeof(*x));
     if (x == NULL) {
-      sd_free(f);
-      return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+      *code = NULL;
+      scopy(detail, cap, "out of memory");
+      return SD_E_NO_MEMORY;
     }
     x->a.add[0] = f->keys[found];
     x->a.add_count = 1;
-    scopy(x->a.host, sizeof(x->a.host), host);
-    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), f->lookup_name);
+    scopy(x->a.host, sizeof(x->a.host), h->host);
+    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), h->hk_lookup);
     memset(&st, 0, sizeof(st));
     st.kind = SD_KH_STORE_USER;                  /* the user store only, as hostkey.announced.accept */
     st.path = g.user_kh[0] ? g.user_kh : NULL;
@@ -2949,45 +2985,157 @@ static sd_err handle_hostkey_add(const sd_json *params, sd_json_writer *res, sd_
     e = sd_mount_apply_hostkeys(host_backend(), &st, 1, &x->a, 1);
     sd_free(x);
     if (e != SD_OK) {
-      sd_free(f);
-      return fail(err, e, NULL, "cannot update known_hosts");
+      *code = NULL;
+      scopy(detail, cap, "cannot update known_hosts");
+      return e;
     }
-    SD_LOGI("agent", "hostkey add: stored one key of %s (%s)", f->lookup_name, verified ? "verified" : "first contact");
-    sd_jw_key(res, "host"); sd_jw_cstr(res, host);
-    sd_jw_key(res, "lookup_name"); sd_jw_cstr(res, f->lookup_name);
-    sd_jw_key(res, "verified"); sd_jw_bool(res, verified);
-    sd_jw_key(res, "added"); sd_jw_int(res, 1);
-    sd_jw_key(res, "removed"); sd_jw_int(res, 0);
-    write_keys_json(res, "keys", f->keys, n);
-    sd_free(f);
+    SD_LOGI("agent", "hostkey add: stored one key of %s (%s)", h->hk_lookup, verified ? "verified" : "first contact");
+    sd_jw_key(jw, "added"); sd_jw_int(jw, 1);
+    sd_jw_key(jw, "removed"); sd_jw_int(jw, 0);
+    write_keys_json(jw, "keys", f->keys, n);
     return SD_OK;
   }
-  sd_jw_key(res, "host"); sd_jw_cstr(res, host);
-  sd_jw_key(res, "lookup_name"); sd_jw_cstr(res, f->lookup_name);
-  sd_jw_key(res, "verified"); sd_jw_bool(res, verified);
-  write_keys_json(res, "keys", f->keys, n);
+  write_keys_json(jw, "keys", f->keys, n);
   if (n > 0) {
+    host_announce *x = (host_announce *)sd_calloc(1, sizeof(*x));
     unsigned long v;
-    x = (host_announce *)sd_calloc(1, sizeof(*x));
     if (x == NULL) {
-      sd_free(f);
-      return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+      *code = NULL;
+      scopy(detail, cap, "out of memory");
+      return SD_E_NO_MEMORY;
     }
     memcpy(x->a.add, f->keys, n * sizeof(f->keys[0]));
     x->a.add_count = n;
-    scopy(x->a.host, sizeof(x->a.host), host);
-    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), f->lookup_name);
+    scopy(x->a.host, sizeof(x->a.host), h->host);
+    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), h->hk_lookup);
     sd_mutex_lock(&g.lock);
     v = ++g.next_announce;
     _snprintf_s(x->id, sizeof(x->id), _TRUNCATE, "a-%lu", v);
     x->next = g.announces;
     g.announces = x;
     sd_mutex_unlock(&g.lock);
-    sd_jw_key(res, "id"); sd_jw_cstr(res, x->id);
-    SD_LOGI("agent", "hostkey add: %s offers %u key(s), kept for review (%s)", f->lookup_name, (unsigned)n, x->id);
+    sd_jw_key(jw, "id"); sd_jw_cstr(jw, x->id);
+    SD_LOGI("agent", "hostkey add: %s offers %u key(s), kept for review (%s)", h->hk_lookup, (unsigned)n, x->id);
+  }
+  return SD_OK;
+}
+
+/* control thread: the hostkey mount ended; the deferred hostkey.add request is answered. */
+static void reply_hostkey_add(host_mount *h, sd_mount *m, sd_err why)
+{
+  sd_mount_hk_fetch *f = NULL;
+  sd_mount_failure fl;
+  sd_wr d;
+  sd_json_writer jw;
+  const char *code = NULL;
+  char detail[256];
+  sd_err e = why;
+  int ok = 0;
+  if (h->defer_cid == 0 || g.srv == NULL)
+    return;
+  detail[0] = 0;
+  if (why == SD_OK) {
+    f = (sd_mount_hk_fetch *)sd_calloc(1, sizeof(*f));
+    e = f == NULL ? SD_E_NO_MEMORY : sd_mount_get_hostkeys(m, f);
+  }
+  if (e == SD_OK) {
+    sd_wr_init(&d, 16 * 1024);
+    sd_jw_init(&jw, &d);
+    sd_jw_obj_begin(&jw);
+    e = hk_complete(&jw, h, f, &code, detail, sizeof(detail));
+    if (e == SD_OK) {
+      sd_jw_obj_end(&jw);
+      if (sd_jw_finish(&jw) == SD_OK) {
+        ok = 1;
+      } else {
+        e = SD_E_INTERNAL;
+        code = NULL;
+        scopy(detail, sizeof(detail), "reply too large");
+      }
+    }
+    if (ok) {
+      sd_err se = sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, SD_OK, NULL, NULL, (const char *)d.p, d.len);
+      if (se != SD_OK && se != SD_E_NOT_FOUND)
+        SD_LOGW("agent", "%s: hostkey.add reply not sent (%s)", h->id, sd_err_name(se));
+    }
+    sd_wr_free(&d);
+  }
+  if (!ok) {
+    if (why != SD_OK) {
+      /* the mount itself failed: its error decides the code */
+      memset(&fl, 0, sizeof(fl));
+      sd_mount_get_failure(m, &fl);
+      if (fl.err != SD_OK)
+        e = fl.err;
+      hk_error_text(e, fl.code, &code, detail, sizeof(detail));
+      if (fl.detail[0] != 0 && code != NULL && strcmp(code, "connect_failed") == 0)
+        scopy(detail, sizeof(detail), fl.detail);
+    }
+    (void)sd_ipc_reply_deferred(g.srv, h->defer_cid, h->defer_rid, e, code, detail, NULL, 0);
   }
   sd_free(f);
-  return SD_OK;
+  h->defer_cid = 0;
+}
+
+/* The profile of a hostkey add: the first profile with the host and port (as mount finds it), else the host-only
+   defaults of `mount --host`. The profile store is only read. */
+typedef struct hk_match { const char *host; uint16_t port; sd_profile *out; int found; } hk_match;
+
+static int hk_match_cb(void *ctx, const sd_profile *p, const wchar_t *path)
+{
+  hk_match *k = (hk_match *)ctx;
+  uint16_t pp = p->port ? p->port : 22;
+  SD_UNUSED(path);
+  if (p->host[0] != 0 && _stricmp(p->host, k->host) == 0 && pp == k->port) {
+    *k->out = *p;
+    k->found = 1;
+    return 0;
+  }
+  return 1;
+}
+
+static sd_err handle_hostkey_add(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *host = sd_json_get_str(params, "host");
+  const char *lookup = sd_json_get_str(params, "lookup");
+  const char *type = sd_json_get_str(params, "type");
+  const char *expect = sd_json_get_str(params, "expect");
+  const char *bad = NULL;
+  int64_t port = 22;
+  sd_profile *prof;
+  hk_match k;
+  sd_err e;
+
+  sd_json_get_int64(params, "port", &port);
+  if (host == NULL || host[0] == 0 || lookup == NULL || lookup[0] == 0 || port < 1 || port > 65535)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "host, port and lookup required");
+  if (strlen(host) >= 256 || strlen(lookup) >= 300)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "host or lookup too long");
+  if (type != NULL && !hk_type_ok(type))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid key type");
+  if (expect != NULL && strlen(expect) >= 96)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid fingerprint");
+  prof = (sd_profile *)sd_calloc(1, sizeof(sd_profile));
+  if (prof == NULL)
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  memset(&k, 0, sizeof(k));
+  k.host = host;
+  k.port = (uint16_t)port;
+  k.out = prof;
+  (void)sd_profile_enum(hk_match_cb, &k);
+  if (!k.found) {
+    sd_profile_defaults(prof);
+    scopy(prof->host, sizeof(prof->host), host);
+    scopy(prof->name, sizeof(prof->name), host);
+    prof->port = (uint16_t)port;
+    if (sd_profile_validate(prof, &bad) != SD_OK) {
+      sd_free(prof);
+      return fail(err, SD_E_INVALID_PARAM, "usage", bad ? bad : "invalid host");
+    }
+  }
+  e = handle_mount_body(client, params, res, err, prof, 2);
+  sd_free(prof);
+  return e;
 }
 
 static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
@@ -2996,7 +3144,7 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   SD_UNUSED(ctx);
   if (strcmp(method, "hostkey.announced.list") == 0) return handle_announced_list(res);
   if (strcmp(method, "hostkey.announced.accept") == 0) return handle_announced_accept(params, res, err);
-  if (strcmp(method, "hostkey.add") == 0) return handle_hostkey_add(params, res, err);
+  if (strcmp(method, "hostkey.add") == 0) return handle_hostkey_add(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(params, res, err);
   if (strcmp(method, "list") == 0) return handle_list(res);
