@@ -409,6 +409,11 @@ typedef struct sd_mount_callbacks {
   /* UpdateHostKeys (5.6): update_host_keys = yes was applied already (applied = 1, result in err);
      ask: the host keeps it for review (hostkeys.announced); no: not called. */
   void (*on_hostkeys_announced)(void *ctx, sd_mount *m, const sd_mount_announcement *a, int applied, sd_err err);
+  /* M5, optional, control thread. A successful change through a global mount (03 10.3, Event 1200): sid is the
+     requestor's SID (valid during the callback only), op the vfs operation ("create", "write_open", "delete",
+     "rename", "setattr", "set_security"), path the mount-relative path. Coalesced per (SID, op, path) by the vfs.
+     NULL = not reported (per-user mounts never raise it). */
+  void (*on_audit)(void *ctx, sd_mount *m, PSID sid, const char *op, const wchar_t *path);
 } sd_mount_callbacks;
 
 sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *params, const sd_mount_callbacks *cb,

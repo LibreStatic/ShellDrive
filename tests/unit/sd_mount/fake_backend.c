@@ -150,7 +150,7 @@ uint32_t fake_backend_last_disk_mb(void) { return g_last_disk_mb; }
 const wchar_t *fake_backend_last_disk_dir(void) { return g_last_disk_dir; }
 int fake_backend_last_known_uid(uint32_t *uid) { *uid = g_last_known_uid; return g_last_known; }
 
-typedef struct fake_vev { int kind; wchar_t path[260]; UINT64 bytes; } fake_vev;
+typedef struct fake_vev { int kind; wchar_t path[260]; UINT64 bytes; PSID sid; char op[16]; } fake_vev;
 
 static unsigned __stdcall vfs_event_thread(void *arg)
 {
@@ -162,6 +162,8 @@ static unsigned __stdcall vfs_event_thread(void *arg)
   ev.bytes = e->bytes;
   ev.status = SD_VFS_E_DISCONNECTED;
   ev.code = "write_failed";
+  ev.caller_sid = e->sid;               /* AUDIT only */
+  ev.op = e->op;
   if (g_vfs_cb)
     g_vfs_cb(g_vfs_ctx, &ev);
   sd_free(e);
@@ -185,6 +187,22 @@ static void raise_vfs_event(int kind, const wchar_t *path, UINT64 bytes)
 void fake_backend_vfs_write_failed(const wchar_t *path, UINT64 bytes)
 {
   raise_vfs_event(SD_VFS_EV_WRITE_FAILED, path, bytes);
+}
+
+/* M5 audit: a successful change by sid (valid for the call) on the last mounted vfs. */
+void fake_backend_vfs_audit(const wchar_t *path, const char *op, PSID sid)
+{
+  sd_thread t;
+  fake_vev *e = (fake_vev *)sd_calloc(1, sizeof(*e));
+  if (e == NULL)
+    return;
+  e->kind = SD_VFS_EV_AUDIT;
+  if (path && wcslen(path) < SD_COUNTOF(e->path))
+    memcpy(e->path, path, (wcslen(path) + 1) * sizeof(wchar_t));
+  e->sid = sid;
+  strcpy_s(e->op, sizeof(e->op), op);
+  if (sd_thread_create(&t, vfs_event_thread, e, 0, L"fake-vfs") == SD_OK)
+    sd_thread_join(&t, SD_WAIT_INFINITE, NULL);
 }
 
 void fake_backend_vfs_identity(uint32_t uid, uint32_t gid)

@@ -963,6 +963,49 @@ static void svc_on_write_failed(void *ctx, sd_mount *m, const wchar_t *path, UIN
   SD_LOGW("svc", "write-behind data lost (%llu bytes, %s)", (unsigned long long)bytes, status ? status : "");
 }
 
+/* Event 1200 (03 10.3, TM-R24): a successful change through a global drive, at info. %1 profile, %2 requestor SID,
+   %3 account name (DOMAIN\name, or the SID alone when it does not resolve), %4 operation, %5 remote path. The vfs has
+   already coalesced repeats per 60 s. The lookup runs on the control thread; the SID is valid during the callback. */
+static void svc_on_audit(void *ctx, sd_mount *m, PSID sid, const char *op, const wchar_t *path)
+{
+  char prof_id[256] = "";
+  wchar_t sidw[128] = L"", acct[300] = L"", name[128] = L"", dom[128] = L"", wprof[256] = L"", wop[48] = L"";
+  LPWSTR sidstr = NULL;
+  DWORD name_len = (DWORD)SD_COUNTOF(name), dom_len = (DWORD)SD_COUNTOF(dom);
+  SID_NAME_USE use;
+  svc_mount *r;
+  const wchar_t *args[5];
+  (void)ctx;
+  if (sid == NULL)
+    return;
+  sd_mutex_lock(&g.lock);
+  r = find_by_m_locked(m);
+  if (r != NULL && r->prof != NULL)
+    strcpy_s(prof_id, sizeof(prof_id), r->prof->p.id);
+  sd_mutex_unlock(&g.lock);
+  if (ConvertSidToStringSidW(sid, &sidstr)) {
+    wcsncpy_s(sidw, SD_COUNTOF(sidw), sidstr, _TRUNCATE);
+    LocalFree(sidstr);
+  }
+  if (LookupAccountSidW(NULL, sid, name, &name_len, dom, &dom_len, &use)) {
+    if (dom[0] != 0) {
+      wcsncpy_s(acct, SD_COUNTOF(acct), dom, _TRUNCATE);
+      wcsncat_s(acct, SD_COUNTOF(acct), L"\\", _TRUNCATE);
+    }
+    wcsncat_s(acct, SD_COUNTOF(acct), name, _TRUNCATE);
+  } else {
+    wcsncpy_s(acct, SD_COUNTOF(acct), sidw, _TRUNCATE);
+  }
+  wide_from_utf8(prof_id, wprof, SD_COUNTOF(wprof));
+  wide_from_utf8(op ? op : "", wop, SD_COUNTOF(wop));
+  args[0] = wprof;
+  args[1] = sidw;
+  args[2] = acct;
+  args[3] = wop;
+  args[4] = path ? path : L"";
+  svc_event(SVC_MSG_AUDIT, args, 5);
+}
+
 static void svc_on_notice(void *ctx, sd_mount *m, const char *code, const char *detail)
 {
   (void)ctx;
@@ -1156,6 +1199,7 @@ static void job_start(void *arg)
   cb.on_prompt_closed = svc_on_prompt_closed;
   cb.on_write_failed = svc_on_write_failed;
   cb.on_notice = svc_on_notice;
+  cb.on_audit = svc_on_audit;
   cb.secret_get = svc_secret_get;
   cb.on_warning = svc_on_warning;
   cb.on_hostkeys_announced = svc_on_hostkeys;

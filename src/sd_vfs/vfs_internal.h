@@ -196,11 +196,24 @@ struct sd_vfs_handle {
   uint64_t  ra_next, ra_end;            /* next sequential offset; end of what was issued */
   uint32_t  ra_window;                  /* 0: read-ahead off (RANDOM_ACCESS) */
   BOOL      write_through;              /* FILE_FLAG_WRITE_THROUGH on a write-behind mount */
+  PSID      audit_sid;                  /* M5: owned copy of the requestor that opened for write on a global mount */
 };
 
 typedef struct vfs_hash { vfs_node **b; uint32_t nb, count; } vfs_hash;
 
 struct vfs_disk;
+
+/* M5 audit coalescing (03 10.3, Event 1200): one slot per (requestor SID, operation, path) raised in the last
+   VFS_AUDIT_WINDOW_MS; a bounded table, so a flood of distinct paths cannot grow it. */
+#define VFS_AUDIT_SLOTS      32u
+#define VFS_AUDIT_WINDOW_MS  60000u
+typedef struct vfs_audit_slot {
+  BOOL      used;
+  PSID      sid;                        /* owned copy */
+  WCHAR    *path;                       /* owned copy */
+  const char *op;                       /* static string */
+  uint64_t  last;                       /* clock value of the last raised event */
+} vfs_audit_slot;
 
 struct sd_vfs {
   sd_sftp_session *s;
@@ -230,6 +243,11 @@ struct sd_vfs {
   BOOL global;
   PSID *acc_sids, *wrt_sids; uint32_t n_acc, n_wrt;
   PSID sid_system, sid_admins;
+  /* M5 audit (02 6.7, 03 10.3): the clock is sd_tick_ms unless a test replaces it; audit_lock guards the 60 s
+     coalescing table (initialized and destroyed with v->lock, so it exists on every failure path too) */
+  uint64_t (*audit_now)(void);
+  sd_mutex audit_lock;
+  vfs_audit_slot audit[VFS_AUDIT_SLOTS];
   uint32_t serial;
   /* remote */
   char *root_path;  size_t root_len;    /* realpath of the mount root, no trailing '/' unless "/" */
@@ -347,6 +365,14 @@ sd_vfs_status vfs_map_err(sd_err e);
 sd_vfs_status vfs_access_init(sd_vfs *v, const sd_vfs_options *o);
 void          vfs_access_free(sd_vfs *v);
 sd_vfs_status vfs_access_check(const sd_vfs *v, const sd_vfs_caller *c, BOOL write);
+/* M5 audit (03 10.3, Event 1200): called after a mutating operation succeeded on a global mount. Raises
+   SD_VFS_EV_AUDIT with the requestor SID, the operation and the path, unless the same (SID, operation, path) was
+   raised within VFS_AUDIT_WINDOW_MS. who == NULL (per-user mounts, host-internal calls) raises nothing. */
+void vfs_audit(sd_vfs *v, PSID who, const char *op, const WCHAR *path);
+/* Copies the requestor SID for a handle that opened for write on a global mount (NULL when not needed). */
+PSID vfs_audit_copy_sid(PSID sid);
+void vfs_audit_init(sd_vfs *v);                 /* after v->lock: the clock and the table */
+void vfs_audit_destroy(sd_vfs *v);
 /* Remote path builder with the wire invariant (TM-R11). Allocates *out. */
 sd_vfs_status vfs_join(sd_vfs *v, const char *parent, const char *raw, uint32_t raw_len, char **out);
 

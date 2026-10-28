@@ -30,7 +30,8 @@ enum { EV_READY, EV_FAILED, EV_DISCONNECTED, EV_CLOSED, EV_PROMPT, EV_PROMPT_CLO
        EV_WARNING, EV_ANNOUNCED,
        EV_TOKEN_ASK,            /* TM-R19: raise SD_MP_WEBDAV_TOKEN_ONLY (it->prompt) */
        EV_TOKEN_ONLY,           /* TM-R19: the answer (err SD_OK = accept, otherwise refused) */
-       EV_HK_DONE };            /* M5 hostkey mount: the connect and the fetch ended (err = the failure) */
+       EV_HK_DONE,              /* M5 hostkey mount: the connect and the fetch ended (err = the failure) */
+       EV_AUDIT };              /* M5: it->detail = requestor SID text, it->code = operation, it->path */
 
 /* M2: owned copy of one hop (sd_mount_hop) */
 typedef struct owned_hop {
@@ -57,6 +58,7 @@ typedef struct mount_item {
   const char *status;            /* static string */
   wchar_t path[260];
   char code[48], detail[256];
+  BYTE sid[SECURITY_MAX_SID_SIZE];      /* M5 audit: a copy of the requestor SID (EV_AUDIT) */
   /* M2 */
   int pool_member;               /* EV_PROMPT of a pool member: store or cancel, never shown */
   uint32_t hop;                  /* EV_WARNING */
@@ -408,10 +410,44 @@ static const char *vfs_status_code(sd_vfs_status st)
 }
 
 /* vfs threads, no vfs lock held: post only (the control thread reports). */
+/* M5 audit (vfs threads): the SID is copied into the item, since the vfs pointer is valid only during the callback.
+   The copy is built from the SID layout (Revision, SubAuthorityCount, IdentifierAuthority, sub-authorities), so this
+   file needs no advapi32; the host converts it to text. */
+static void vfs_audit_post(sd_mount *m, const sd_vfs_event *ev)
+{
+  mount_item *it;
+  DWORD len;
+  size_t n;
+  if (ev->caller_sid == NULL || ev->path == NULL)
+    return;
+  len = 8u + 4u * (DWORD)((const BYTE *)ev->caller_sid)[1];
+  if (len > SECURITY_MAX_SID_SIZE)
+    return;
+  it = (mount_item *)sd_calloc(1, sizeof(*it));
+  if (it == NULL) {
+    SD_LOGE("mount", "out of memory posting an audit event");
+    return;
+  }
+  it->m = m;
+  it->kind = EV_AUDIT;
+  memcpy(it->sid, ev->caller_sid, len);
+  scopy(it->code, sizeof(it->code), ev->op ? ev->op : "");
+  n = wcslen(ev->path);
+  if (n >= SD_COUNTOF(it->path)) n = SD_COUNTOF(it->path) - 1;
+  memcpy(it->path, ev->path, n * sizeof(wchar_t));
+  it->path[n] = 0;
+  addref(m);
+  m->cb.post(m->cb.ctx, run_item, it);
+}
+
 static void vfs_on_event(void *ctx, const sd_vfs_event *ev)
 {
   sd_mount *m = (sd_mount *)ctx;
   mount_item *it;
+  if (ev->kind == SD_VFS_EV_AUDIT) {
+    vfs_audit_post(m, ev);
+    return;
+  }
   if (ev->kind == SD_VFS_EV_DELETE_FAILED)
     SD_LOGW("mount", "%c: delete failed (%s)", (int)m->letter, vfs_status_code(ev->status));
   if (ev->kind != SD_VFS_EV_WRITE_FAILED && ev->kind != SD_VFS_EV_NOTICE && ev->kind != SD_VFS_EV_IDENTITY)
@@ -906,6 +942,10 @@ static void run_item(void *arg)
     case EV_NOTICE:
       if (m->cb.on_notice)
         m->cb.on_notice(m->cb.ctx, m, it->code, it->detail);
+      break;
+    case EV_AUDIT:
+      if (m->cb.on_audit)
+        m->cb.on_audit(m->cb.ctx, m, (PSID)it->sid, it->code, it->path);
       break;
     case EV_IDENTITY:
       if (m->vfs && m->be->vfs_get_identity && m->cb.store_identity) {

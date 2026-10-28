@@ -58,6 +58,9 @@ SD_TEST_DECL(vfs_access_groups_match_and_admins_write);
 SD_TEST_DECL(vfs_access_group_in_write_list);
 SD_TEST_DECL(vfs_access_system_needs_allow_system);
 SD_TEST_DECL(vfs_access_frontend_write_flag_restricts_members);
+SD_TEST_DECL(vfs_audit_raised_for_global_changes);
+SD_TEST_DECL(vfs_audit_coalesces_per_window);
+SD_TEST_DECL(vfs_audit_never_raised_on_per_user_mount);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_err_table_covers_every_value),
@@ -118,6 +121,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_access_group_in_write_list),
   SD_TEST_ENTRY(vfs_access_system_needs_allow_system),
   SD_TEST_ENTRY(vfs_access_frontend_write_flag_restricts_members),
+  SD_TEST_ENTRY(vfs_audit_raised_for_global_changes),
+  SD_TEST_ENTRY(vfs_audit_coalesces_per_window),
+  SD_TEST_ENTRY(vfs_audit_never_raised_on_per_user_mount),
 };
 
 int main(int argc, char **argv)

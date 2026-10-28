@@ -47,3 +47,8 @@ MessageId=3102 Severity=Warning SymbolicName=SVC_MSG_UNTRUSTED_FOLDER
 Language=English
 ShellDrive refused the untrusted machine folder or service file %1 (%2). A refused folder keeps the service idle until an elevated shelldrive service repair-data renames it aside; a refused file fails the mount that uses it.
 .
+
+MessageId=1200 Severity=Informational SymbolicName=SVC_MSG_AUDIT
+Language=English
+Change through the global drive for profile %1 by %3 (SID %2): %4 %5.
+.

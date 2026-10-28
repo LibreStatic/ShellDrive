@@ -3,10 +3,12 @@
    EqualSid need nothing else); the frontends build the same caller shape from the requestor token. */
 #include <windows.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "fake_sftp.h"
 #include "sd_test.h"
 #include "sd_vfs/sd_vfs.h"
+#include "vfs_internal.h"
 
 #define SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 #define PSID_OF(a) ((PSID)(void *)(a))
@@ -306,5 +308,153 @@ SD_TEST(vfs_access_frontend_write_flag_restricts_members)
   SD_CHECK_EQ_INT(open_as(&f, &alice_flag_off, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_E_ACCESS_DENIED);
   SD_CHECK_EQ_INT(open_as(&f, &alice_flag_off, L"\\f", GENERIC_READ, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
   close_h(h);
+  afx_done(&f);
+}
+
+/* ---- audit (M5, 03 10.3 Event 1200): raised after successful changes on a global mount, coalesced per 60 s ---- */
+
+static uint64_t g_now;                  /* the fake clock the vfs reads through v->audit_now */
+static int g_audits;                    /* SD_VFS_EV_AUDIT events seen by audit_cb */
+static char g_last_op[16];
+static WCHAR g_last_path[64];
+static BOOL g_last_alice;
+
+static uint64_t fake_now(void)
+{
+  return g_now;
+}
+
+static void audit_cb(void *ctx, const sd_vfs_event *ev)
+{
+  (void)ctx;
+  if (ev->kind != SD_VFS_EV_AUDIT)
+    return;
+  g_audits++;
+  strcpy_s(g_last_op, sizeof(g_last_op), ev->op ? ev->op : "");
+  wcscpy_s(g_last_path, SD_COUNTOF(g_last_path), ev->path ? ev->path : L"");
+  g_last_alice = ev->caller_sid && EqualSid(ev->caller_sid, PSID_OF(k_alice));
+}
+
+static void audit_reset(void)
+{
+  g_audits = 0;
+  g_last_op[0] = 0;
+  g_last_path[0] = 0;
+  g_last_alice = FALSE;
+}
+
+/* Mounts with the audit callback and the fake clock. */
+static sd_vfs_status afx_mount_audit(afx *f)
+{
+  sd_vfs_status st = sd_vfs_mount(f->s, &f->o, audit_cb, NULL, &f->v);
+  if (st == SD_VFS_OK)
+    f->v->audit_now = fake_now;
+  return st;
+}
+
+SD_TEST(vfs_audit_raised_for_global_changes)
+{
+  afx f;
+  sd_vfs_options o;
+  PSID acc[1], wr[1];
+  sd_vfs_caller alice, carol;
+  sd_vfs_handle *h = NULL;
+  acc[0] = PSID_OF(k_alice);
+  wr[0] = PSID_OF(k_alice);
+  global_opts(&o, acc, 1, wr, 1);
+  afx_init(&f, &o);
+  SD_REQUIRE(afx_mount_audit(&f) == SD_VFS_OK);
+  g_now = 0;
+  audit_reset();
+  alice = caller_of(PSID_OF(k_alice), TRUE, NULL, 0);
+  carol = caller_of(PSID_OF(k_carol), TRUE, NULL, 0);
+  /* reads and denied opens raise nothing */
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_READ, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(open_as(&f, &carol, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_E_ACCESS_DENIED);
+  SD_CHECK_EQ_INT(g_audits, 0);
+  /* a create, then a write open of an existing file: one event per open */
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\new", GENERIC_WRITE, SD_VFS_FILE_CREATE, &h), SD_VFS_OK);
+  SD_CHECK_EQ_INT(g_audits, 1);
+  SD_CHECK(strcmp(g_last_op, "create") == 0 && g_last_alice && _wcsicmp(g_last_path, L"\\new") == 0);
+  close_h(h);                           /* cleanup without a delete raises nothing more */
+  SD_CHECK_EQ_INT(g_audits, 1);
+  g_now += VFS_AUDIT_WINDOW_MS;         /* a new window, so the next event is not coalesced away */
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  SD_CHECK_EQ_INT(g_audits, 2);
+  SD_CHECK(strcmp(g_last_op, "write_open") == 0);
+  close_h(h);
+  /* attribute change through a write handle, then a rename and a delete */
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_set_winattrs(h, FILE_ATTRIBUTE_NORMAL), SD_VFS_OK);
+  SD_CHECK(strcmp(g_last_op, "setattr") == 0);
+  close_h(h);
+  SD_CHECK_EQ_INT(sd_vfs_rename_path(f.v, &alice, L"\\new", L"\\new2", FALSE), SD_VFS_OK);
+  SD_CHECK(strcmp(g_last_op, "rename") == 0);
+  g_now += VFS_AUDIT_WINDOW_MS;
+  SD_CHECK_EQ_INT(sd_vfs_delete_path(f.v, &alice, L"\\new2", FALSE), SD_VFS_OK);
+  SD_CHECK(strcmp(g_last_op, "delete") == 0 && _wcsicmp(g_last_path, L"\\new2") == 0);
+  SD_CHECK(fake_exists(f.s, "new2") == 0);
+  SD_CHECK_EQ_INT(g_audits, 5);
+  afx_done(&f);
+}
+
+SD_TEST(vfs_audit_coalesces_per_window)
+{
+  afx f;
+  sd_vfs_options o;
+  PSID acc[2], wr[2];
+  sd_vfs_caller alice, bob;
+  sd_vfs_handle *h = NULL;
+  acc[0] = PSID_OF(k_alice);
+  acc[1] = PSID_OF(k_bob);
+  wr[0] = PSID_OF(k_alice);
+  wr[1] = PSID_OF(k_bob);
+  global_opts(&o, acc, 2, wr, 2);
+  afx_init(&f, &o);
+  SD_REQUIRE(afx_mount_audit(&f) == SD_VFS_OK);
+  alice = caller_of(PSID_OF(k_alice), TRUE, NULL, 0);
+  bob = caller_of(PSID_OF(k_bob), TRUE, NULL, 0);
+  audit_reset();
+  g_now = 1000;
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(g_audits, 1);
+  /* the same requestor, operation and path inside the window: coalesced */
+  g_now = 1000 + VFS_AUDIT_WINDOW_MS - 1;
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(g_audits, 1);
+  /* another requestor, another path, or another operation is not a repeat */
+  SD_CHECK_EQ_INT(open_as(&f, &bob, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(g_audits, 2);
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\d\\x", GENERIC_WRITE, SD_VFS_FILE_CREATE, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(g_audits, 3);
+  /* the window is measured from the last raised event: at 60 s it is raised again */
+  g_now = 1000 + VFS_AUDIT_WINDOW_MS;
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\f", GENERIC_WRITE, SD_VFS_FILE_OPEN, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(g_audits, 4);
+  afx_done(&f);
+}
+
+SD_TEST(vfs_audit_never_raised_on_per_user_mount)
+{
+  afx f;
+  sd_vfs_options o;
+  sd_vfs_caller alice;
+  sd_vfs_handle *h = NULL;
+  user_opts(&o);
+  o.owner_sid = PSID_OF(k_alice);
+  afx_init(&f, &o);
+  SD_REQUIRE(sd_vfs_mount(f.s, &f.o, audit_cb, NULL, &f.v) == SD_VFS_OK);
+  audit_reset();
+  alice = caller_of(PSID_OF(k_alice), TRUE, NULL, 0);
+  SD_CHECK_EQ_INT(open_as(&f, &alice, L"\\new", GENERIC_WRITE, SD_VFS_FILE_CREATE, &h), SD_VFS_OK);
+  close_h(h);
+  SD_CHECK_EQ_INT(sd_vfs_delete_path(f.v, &alice, L"\\new", FALSE), SD_VFS_OK);
+  SD_CHECK_EQ_INT(g_audits, 0);       /* per-user mounts are the owner's own drive: no audit (02 6.7) */
   afx_done(&f);
 }
