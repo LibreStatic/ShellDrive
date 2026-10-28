@@ -24,6 +24,7 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_admin_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_service_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_hkissue_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_events_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_mainview_model.c)
 set(SD_UI_PURE_SOURCES ${SD_UI_PURE_SOURCES} PARENT_SCOPE)
 
@@ -44,6 +45,7 @@ sd_add_app(shelldrive-ui
     ui_about.c
     ui_editor.c
     ui_hostkeys.c
+    ui_events.c
     ui_hkissue.c
     ui_icon.c
     ui_import.c
@@ -87,6 +89,7 @@ sd_add_app(shelldrive-ui
     ui_service_model.h
     ui_hkissue_model.h
     ui_mainview_model.h
+    ui_events_model.h
     ${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc
     # the Service page (03 §1.3): the SCM status and the data folder repair are the code of the CLI verbs
     # `service status` and `service repair-data` (shared with shelldrive.exe and the service host)

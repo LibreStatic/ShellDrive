@@ -44,6 +44,9 @@
 #define HK_ID_ADDALL       4209
 #define HK_ID_STATUS       4210
 #define HK_ID_SERVER       4211
+#define HK_ID_COPYFP       4212
+#define HK_ID_REJECT       4213
+#define HK_ID_DETAILS      4214
 #define HK_DLG_HOST        4301       /* ids inside the two dialogs */
 #define HK_DLG_LIST        4302
 #define HK_DLG_WIDTH       280
@@ -53,8 +56,9 @@
 #define HK_MAX_KEYS        65536u
 #define HK_MAX_ANN         1024u
 #define HK_ANN_ID_MAX      64
-#define HK_CLIENT_W        900
-#define HK_CLIENT_H        460
+#define HK_CLIENT_W        1000
+#define HK_CLIENT_H        520
+#define HK_DETAILS_LINES   7           /* host, port, type, fingerprint, store, line and the read-only note */
 
 typedef struct hk_entry {
   ui_hk_row row;
@@ -72,7 +76,8 @@ typedef struct hk_ann {
 
 static struct {
   HWND wnd, tab, list_known, list_ann, status;
-  HWND btn_remove, btn_putty, btn_openssh, btn_refresh, btn_add, btn_addall, btn_server;
+  HWND btn_remove, btn_putty, btn_openssh, btn_refresh, btn_add, btn_addall, btn_server, btn_copyfp, btn_reject;
+  HWND details;                      /* read-only text under the Known keys list: the selected key */
   HFONT font;
   unsigned dpi;
   hk_entry *keys;
@@ -82,9 +87,13 @@ static struct {
   int ann_wait;                      /* hostkey.announced.list in flight */
   int accept_wait;                   /* hostkey.announced.accept in flight */
   int add_wait;                      /* hostkey.add in flight */
+  int reject_wait;                   /* hostkey.announced.reject in flight */
+  wchar_t reject_host[UI_HK_HOST_MAX];
   wchar_t add_host[UI_HK_HOST_MAX];  /* the server asked for, for the messages */
   wchar_t accept_host[UI_HK_HOST_MAX];
 } g_hk;
+
+static void update_details(void);
 
 static int dpx(int v)
 {
@@ -270,6 +279,7 @@ static void populate_known(void)
   }
   SendMessageW(g_hk.list_known, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(g_hk.list_known, NULL, TRUE);
+  update_details();
 }
 
 static void populate_ann(void)
@@ -321,6 +331,73 @@ static int ann_has_removals(const char *id)
   return 0;
 }
 
+/* The key selected in the Known keys list, or NULL. */
+static const hk_entry *selected_key(void)
+{
+  int sel = sel_index(g_hk.list_known);
+  LPARAM p;
+  if (sel < 0)
+    return NULL;
+  p = item_param(g_hk.list_known, sel);
+  if (p < 0 || (size_t)p >= g_hk.nkeys)
+    return NULL;
+  return &g_hk.keys[p];
+}
+
+/* The details under the list: one line per fact of the selected key (03 5.1, 7.5). */
+static void update_details(void)
+{
+  static const sd_msg_id lines[UI_HK_DETAILS] = {
+    SD_MSG_UI_HOSTKEYS_DET_HOST, SD_MSG_UI_HOSTKEYS_DET_PORT, SD_MSG_UI_HOSTKEYS_DET_TYPE,
+    SD_MSG_UI_HOSTKEYS_DET_FP, SD_MSG_UI_HOSTKEYS_DET_STORE, SD_MSG_UI_HOSTKEYS_DET_LINE
+  };
+  const hk_entry *k = selected_key();
+  wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX];
+  wchar_t text[HK_DETAILS_LINES * (UI_HK_CELL_MAX + 64)];
+  size_t i, used = 0;
+  if (g_hk.details == NULL)
+    return;
+  if (k == NULL) {
+    SetWindowTextW(g_hk.details, sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_NONE));
+    return;
+  }
+  ui_hk_row_details(&k->row, sd_l10n_get(SD_MSG_UI_HOSTKEYS_HASHED), sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_MACHINE),
+                    sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_USER), values);
+  text[0] = 0;
+  for (i = 0; i < UI_HK_DETAILS; i++) {
+    wchar_t *line;
+    size_t n;
+    if (i == UI_HK_DET_PORT && k->row.hashed)
+      continue;                                   /* a hashed entry names no port */
+    line = ui_format1(lines[i], "value", values[i]);
+    if (line == NULL)
+      continue;
+    n = wcslen(line);
+    if (used + n + 3 < SD_COUNTOF(text)) {
+      wcscpy_s(text + used, SD_COUNTOF(text) - used, line);
+      used += n;
+      text[used++] = L'\r';
+      text[used++] = L'\n';
+      text[used] = 0;
+    }
+    sd_free(line);
+  }
+  if (k->row.store == UI_HK_STORE_MACHINE)
+    wcsncat_s(text, SD_COUNTOF(text), sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_READONLY), _TRUNCATE);
+  SetWindowTextW(g_hk.details, text);
+}
+
+static void copy_fingerprint(void)
+{
+  const hk_entry *k = selected_key();
+  wchar_t fp[UI_HK_FP_MAX];
+  if (k == NULL)
+    return;
+  ui_text_utf8(k->row.fp, fp, SD_COUNTOF(fp));
+  if (ui_win_copy_text(g_hk.wnd, fp, wcslen(fp)))
+    status_msg(SD_MSG_UI_HOSTKEYS_FP_COPIED);
+}
+
 static void update_buttons(void)
 {
   int tab = g_hk.tab ? (int)SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) : HK_TAB_KNOWN;
@@ -337,7 +414,7 @@ static void update_buttons(void)
   if (ann_sel >= 0) {
     LPARAM p = item_param(g_hk.list_ann, ann_sel);
     if (p >= 0 && (size_t)p < g_hk.nanns) {
-      ann_ok = !g_hk.ann_wait && !g_hk.accept_wait && !g_hk.add_wait && g_app.agent_up;
+      ann_ok = !g_hk.ann_wait && !g_hk.accept_wait && !g_hk.add_wait && !g_hk.reject_wait && g_app.agent_up;
       has_removals = ann_has_removals(g_hk.anns[p].id);
     }
   }
@@ -349,6 +426,10 @@ static void update_buttons(void)
     EnableWindow(g_hk.btn_openssh, tab == HK_TAB_KNOWN);
   if (g_hk.btn_server)
     EnableWindow(g_hk.btn_server, tab == HK_TAB_KNOWN && g_app.agent_up && !g_hk.add_wait && !g_hk.accept_wait);
+  if (g_hk.btn_copyfp)
+    EnableWindow(g_hk.btn_copyfp, tab == HK_TAB_KNOWN && selected_key() != NULL);
+  if (g_hk.btn_reject)
+    EnableWindow(g_hk.btn_reject, tab == HK_TAB_ANNOUNCED && ann_ok);
   if (g_hk.btn_add)
     EnableWindow(g_hk.btn_add, tab == HK_TAB_ANNOUNCED && ann_ok);
   if (g_hk.btn_addall)
@@ -367,6 +448,9 @@ static void show_tab(void)
   ShowWindow(g_hk.btn_putty, known ? SW_SHOW : SW_HIDE);
   ShowWindow(g_hk.btn_openssh, known ? SW_SHOW : SW_HIDE);
   ShowWindow(g_hk.btn_server, known ? SW_SHOW : SW_HIDE);
+  ShowWindow(g_hk.btn_copyfp, known ? SW_SHOW : SW_HIDE);
+  ShowWindow(g_hk.details, known ? SW_SHOW : SW_HIDE);
+  ShowWindow(g_hk.btn_reject, known ? SW_HIDE : SW_SHOW);
   ShowWindow(g_hk.btn_add, known ? SW_HIDE : SW_SHOW);
   ShowWindow(g_hk.btn_addall, known ? SW_HIDE : SW_SHOW);
 }
@@ -386,7 +470,7 @@ static void layout(HWND hwnd)
 {
   RECT rc, tabrc;
   int m, bh, sh, W, H, by, x, i;
-  HWND btns[7];
+  HWND btns[9];
   if (!g_hk.tab || !g_hk.status)
     return;
   GetClientRect(hwnd, &rc);
@@ -398,19 +482,21 @@ static void layout(HWND hwnd)
   MoveWindow(g_hk.status, m, H - m - sh, W - 2 * m > 0 ? W - 2 * m : 0, sh, TRUE);
   by = H - m - sh - m - bh;
   btns[0] = g_hk.btn_remove;
-  btns[1] = g_hk.btn_putty;
-  btns[2] = g_hk.btn_openssh;
-  btns[3] = g_hk.btn_server;
-  btns[4] = g_hk.btn_add;
-  btns[5] = g_hk.btn_addall;
-  btns[6] = g_hk.btn_refresh;
+  btns[1] = g_hk.btn_copyfp;
+  btns[2] = g_hk.btn_putty;
+  btns[3] = g_hk.btn_openssh;
+  btns[4] = g_hk.btn_server;
+  btns[5] = g_hk.btn_add;
+  btns[6] = g_hk.btn_addall;
+  btns[7] = g_hk.btn_reject;
+  btns[8] = g_hk.btn_refresh;
   x = m;
-  for (i = 0; i < 7; i++) {
+  for (i = 0; i < 9; i++) {
     int visible;
     if (!btns[i])
       continue;
-    visible = (int)SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) == HK_TAB_KNOWN ? (i < 4 || i == 6)
-                                                                              : (i >= 4);
+    visible = (int)SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) == HK_TAB_KNOWN ? (i < 5 || i == 8)
+                                                                              : (i >= 5);
     if (!visible)
       continue;
     MoveWindow(btns[i], x, by, button_width(btns[i]), bh, TRUE);
@@ -419,7 +505,14 @@ static void layout(HWND hwnd)
   MoveWindow(g_hk.tab, m, m, W - 2 * m > 0 ? W - 2 * m : 0, by - 2 * m > 0 ? by - 2 * m : 0, TRUE);
   GetClientRect(g_hk.tab, &tabrc);
   TabCtrl_AdjustRect(g_hk.tab, FALSE, &tabrc);
-  MoveWindow(g_hk.list_known, tabrc.left, tabrc.top, tabrc.right - tabrc.left, tabrc.bottom - tabrc.top, TRUE);
+  {
+    int dh = dpx(HK_DETAILS_LINES * 16 + 8);
+    int lh = tabrc.bottom - tabrc.top - dh - m;
+    if (lh < dpx(60))
+      lh = dpx(60);
+    MoveWindow(g_hk.list_known, tabrc.left, tabrc.top, tabrc.right - tabrc.left, lh, TRUE);
+    MoveWindow(g_hk.details, tabrc.left, tabrc.top + lh + m, tabrc.right - tabrc.left, dh, TRUE);
+  }
   MoveWindow(g_hk.list_ann, tabrc.left, tabrc.top, tabrc.right - tabrc.left, tabrc.bottom - tabrc.top, TRUE);
 }
 
@@ -656,6 +749,36 @@ static void accept_selected(int add_only)
       return;
   }
   send_accept(a->id, add_only, a->host);
+}
+
+/* hostkey.announced.reject: a declined offer leaves the agent's announcements (03 2.4). host (UTF-8) is named in the
+   status line. Returns 1 when the request is on its way. */
+static int send_reject(const char *id, const char *host)
+{
+  char params[HK_ANN_ID_MAX + 16];
+  if (ui_hk_reject_params(id, params, sizeof(params)) != SD_OK)
+    return 0;
+  ui_text_utf8(host != NULL ? host : "", g_hk.reject_host, SD_COUNTOF(g_hk.reject_host));
+  if (ui_ipc_call(UI_IPC_HK_REJECT, "hostkey.announced.reject", params) != SD_OK)
+    return 0;
+  g_hk.reject_wait = 1;
+  update_buttons();
+  return 1;
+}
+
+static void reject_selected(void)
+{
+  int sel = sel_index(g_hk.list_ann);
+  LPARAM p;
+  const hk_ann *a;
+  if (sel < 0)
+    return;
+  p = item_param(g_hk.list_ann, sel);
+  if (p < 0 || (size_t)p >= g_hk.nanns)
+    return;
+  a = &g_hk.anns[p];
+  if (!send_reject(a->id, a->host))
+    status_msg(SD_MSG_UI_HOSTKEYS_ACCEPT_FAILED_QUEUE);
 }
 
 /* ---- Add key from server (hostkey.add) ---- */
@@ -940,7 +1063,9 @@ static void on_add_reply(sd_err err, const sd_json *result)
     send_accept(o.id, 1, o.host[0] != '\0' ? o.host : "");
   } else {
     status_msg(SD_MSG_UI_HOSTKEYS_ADD_DECLINED);
-    request_announced();                 /* the refused offer stays in the announcements */
+    /* the refused offer leaves the announcements; the reply refreshes the list (an agent without the method keeps it) */
+    if (!send_reject(o.id, o.host))
+      request_announced();
   }
 }
 
@@ -963,6 +1088,21 @@ void ui_hostkeys_on_reply(int kind, sd_err err, const sd_json *result)
     populate_ann();
     if (err == SD_OK)
       status_count(SD_MSG_UI_HOSTKEYS_STATUS_ANNOUNCED, g_hk.nanns);
+  } else if (kind == UI_IPC_HK_REJECT) {
+    wchar_t *t;
+    g_hk.reject_wait = 0;
+    if (err != SD_OK) {
+      wchar_t code[64];
+      ui_text_utf8(sd_err_name(err), code, SD_COUNTOF(code));
+      t = ui_format1(SD_MSG_UI_HOSTKEYS_REJECT_FAILED, "code", code);
+    } else {
+      t = ui_format1(SD_MSG_UI_HOSTKEYS_REJECTED, "host", g_hk.reject_host);
+    }
+    if (t != NULL) {
+      status_text(t);
+      sd_free(t);
+    }
+    request_announced();
   } else if (kind == UI_IPC_ACCEPT) {
     g_hk.accept_wait = 0;
     if (err != SD_OK) {
@@ -1000,6 +1140,7 @@ void ui_hostkeys_on_agent_state(int up)
     g_hk.ann_wait = 0;
     g_hk.accept_wait = 0;
     g_hk.add_wait = 0;
+    g_hk.reject_wait = 0;
     populate_ann();
   }
   if (up)
@@ -1044,6 +1185,16 @@ static void create_children(HWND hwnd)
   g_hk.btn_server = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_ADD_SERVER),
                                     WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
                                     (HMENU)(UINT_PTR)HK_ID_SERVER, inst, NULL);
+  g_hk.btn_copyfp = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_COPY_FP),
+                                    WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
+                                    (HMENU)(UINT_PTR)HK_ID_COPYFP, inst, NULL);
+  g_hk.btn_reject = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_REJECT),
+                                    WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
+                                    (HMENU)(UINT_PTR)HK_ID_REJECT, inst, NULL);
+  g_hk.details = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
+                                     ES_AUTOVSCROLL | ES_NOHIDESEL,
+                                 0, 0, 10, 10, hwnd, (HMENU)(UINT_PTR)HK_ID_DETAILS, inst, NULL);
   g_hk.btn_add = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_ADD),
                                  WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
                                  (HMENU)(UINT_PTR)HK_ID_ADD, inst, NULL);
@@ -1087,6 +1238,7 @@ static void create_children(HWND hwnd)
   ui_win_apply_font(hwnd, g_hk.font);
   set_columns();
   show_tab();
+  update_details();
 }
 
 static void on_dpi(HWND hwnd, unsigned dpi, const RECT *suggested)
@@ -1122,6 +1274,12 @@ static void on_command(WORD id, WORD code)
     break;
   case HK_ID_SERVER:
     add_from_server();
+    break;
+  case HK_ID_COPYFP:
+    copy_fingerprint();
+    break;
+  case HK_ID_REJECT:
+    reject_selected();
     break;
   case HK_ID_REFRESH:
     refresh_known();
@@ -1162,6 +1320,8 @@ static LRESULT CALLBACK hk_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       show_tab();
       update_buttons();
     } else if ((h->idFrom == HK_ID_LIST_KNOWN || h->idFrom == HK_ID_LIST_ANN) && h->code == LVN_ITEMCHANGED) {
+      if (h->idFrom == HK_ID_LIST_KNOWN)
+        update_details();
       update_buttons();
     }
     return 0;

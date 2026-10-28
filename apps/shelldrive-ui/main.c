@@ -251,6 +251,46 @@ void ui_app_on_list(sd_json *result)
   ui_main_refresh();
 }
 
+/* The event list (7.7) gets every change of state of a drive, and a failed mount with the error code. m is the mount
+   before the event is applied (NULL for one this UI has not listed). */
+static void record_mount_event(const ui_mount *m, const sd_json *data, const char *state)
+{
+  const sd_json *err = sd_json_get(data, "error");
+  wchar_t text[160];
+  wchar_t subject[UI_EV_SUBJECT_MAX];
+  wchar_t state_w[24];
+  const wchar_t *state_text;
+  if (state == NULL || strlen(state) >= sizeof(m->state))
+    return;
+  if (err == NULL && m != NULL && strcmp(m->state, state) == 0)
+    return;                                       /* the same state again (connection details only) */
+  ui_text_utf8(state, state_w, SD_COUNTOF(state_w));
+  if (m != NULL) {
+    ui_mount copy = *m;
+    strcpy_s(copy.state, sizeof(copy.state), state);
+    wcscpy_s(copy.state_w, SD_COUNTOF(copy.state_w), state_w);
+    state_text = ui_model_state_text(&copy);
+    wcsncpy_s(text, SD_COUNTOF(text), state_text, _TRUNCATE);
+    wcsncpy_s(subject, SD_COUNTOF(subject), m->drive[0] != 0 ? m->drive : m->server, _TRUNCATE);
+  } else {
+    wcsncpy_s(text, SD_COUNTOF(text), state_w, _TRUNCATE);
+    subject[0] = 0;
+  }
+  if (err != NULL) {
+    const char *code = sd_json_get_str(err, "code");
+    wchar_t wcode[64];
+    wchar_t *t;
+    ui_text_utf8(code != NULL ? code : "error", wcode, SD_COUNTOF(wcode));
+    t = ui_format1(SD_MSG_UI_EVENTS_TEXT_FAILED, "code", wcode);
+    if (t != NULL) {
+      ui_events_record(UI_EV_ERROR, subject, t);
+      sd_free(t);
+    }
+    return;
+  }
+  ui_events_record(UI_EV_DRIVE, subject, text);
+}
+
 void ui_app_on_event(sd_json *ev)
 {
   const char *name = sd_json_get_str(ev, "event");
@@ -260,6 +300,7 @@ void ui_app_on_event(sd_json *ev)
     const char *id = sd_json_get_str(data, "mount_id");
     const char *st = sd_json_get_str(data, "state");
     ui_mount *m = ui_model_find_id(&g_app.model, id);
+    record_mount_event(m, data, st);
     if (m == NULL) {
       /* A mount this UI has not listed yet: ask for the list again. */
       if (st != NULL && strcmp(st, "unmounted") != 0)

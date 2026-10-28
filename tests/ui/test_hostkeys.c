@@ -391,3 +391,36 @@ SD_TEST(hk_add_fail_classes)
   SD_CHECK(!ui_hk_id_ok("a b"));
   SD_CHECK(!ui_hk_id_ok(NULL));
 }
+
+SD_TEST(hk_reject_params_json)
+{
+  char out[64];
+  SD_CHECK(ui_hk_reject_params("a-1.b_2", out, sizeof(out)) == SD_OK);
+  SD_CHECK_STR(out, "{\"id\":\"a-1.b_2\"}");
+  SD_CHECK(ui_hk_reject_params("", out, sizeof(out)) == SD_E_INVALID_PARAM);
+  SD_CHECK(ui_hk_reject_params("a\"b", out, sizeof(out)) == SD_E_INVALID_PARAM);
+  SD_CHECK(ui_hk_reject_params(NULL, out, sizeof(out)) == SD_E_INVALID_PARAM);
+  SD_CHECK(ui_hk_reject_params("abc", out, 5) == SD_E_INVALID_PARAM);       /* too small: nothing half written */
+  SD_CHECK_STR(out, "");
+}
+
+SD_TEST(hk_row_details_follow_the_row)
+{
+  ui_hk_row r;
+  wchar_t v[UI_HK_DETAILS][UI_HK_CELL_MAX];
+  SD_CHECK(ui_hk_row_init(&r, UI_HK_STORE_USER, "[h.example]:2222", 0, "ssh-ed25519", "SHA256:abc", 7) == SD_OK);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", v);
+  SD_CHECK(wcscmp(v[UI_HK_DET_HOST], L"h.example") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_PORT], L"2222") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_TYPE], L"ssh-ed25519") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_FP], L"SHA256:abc") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_STORE], L"User") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_LINE], L"7") == 0);
+
+  SD_CHECK(ui_hk_row_init(&r, UI_HK_STORE_MACHINE, "|1|c2FsdA==|aGFzaA==", 1, "ssh-rsa", "SHA256:x", 12) == SD_OK);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", v);
+  SD_CHECK(wcscmp(v[UI_HK_DET_HOST], L"(hashed)") == 0);
+  SD_CHECK(v[UI_HK_DET_PORT][0] == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_STORE], L"Machine") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_LINE], L"12") == 0);
+}

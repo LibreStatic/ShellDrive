@@ -31,6 +31,7 @@
 #define UI_CMD_SETTINGS   3103
 #define UI_CMD_ABOUT      3104
 #define UI_CMD_SERVICE    3105
+#define UI_CMD_EVENTS     3106
 
 /* ---- ui_win.c: shared helpers ---- */
 /* Message font of the system at dpi; the caller deletes it. */
@@ -97,5 +98,11 @@ int    ui_service_controls_ok(void);       /* --test-windows: the controls exist
 void   ui_about_open(void);
 void   ui_about_close(void);
 HWND   ui_about_create_hidden(void);
+
+/* ---- ui_events.c: the event list window (03 §7.7) ---- */
+void   ui_events_open(void);
+void   ui_events_close(void);
+HWND   ui_events_create_hidden(void);
+int    ui_events_controls_ok(void);        /* --test-windows: rows follow the record, the search and Clear */
 
 #endif /* SD_UI_WIN_H */

@@ -31,6 +31,13 @@ SD_TEST_DECL(answer_wipes_inputs_even_on_error);
 SD_TEST_DECL(answer_rejects_bad_arguments);
 
 SD_TEST_DECL(hkissue_mismatch_event_is_read);
+SD_TEST_DECL(hk_reject_params_json);
+SD_TEST_DECL(hk_row_details_follow_the_row);
+SD_TEST_DECL(events_ring_keeps_the_newest_entries);
+SD_TEST_DECL(events_text_is_cut_and_flattened);
+SD_TEST_DECL(events_time_format);
+SD_TEST_DECL(events_filters_by_kind_and_text);
+SD_TEST_DECL(events_copy_text_lists_the_matching_rows);
 SD_TEST_DECL(hkissue_other_errors_and_missing_fields);
 SD_TEST_DECL(hkissue_type_unavailable_has_no_types_yet);
 SD_TEST_DECL(hkissue_text_is_reduced_to_printable_ascii);
@@ -213,6 +220,13 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(hk_offer_parse_first_contact_and_verified),
   SD_TEST_ENTRY(hk_offer_parse_degenerate_replies),
   SD_TEST_ENTRY(hk_add_fail_classes),
+  SD_TEST_ENTRY(hk_reject_params_json),
+  SD_TEST_ENTRY(hk_row_details_follow_the_row),
+  SD_TEST_ENTRY(events_ring_keeps_the_newest_entries),
+  SD_TEST_ENTRY(events_text_is_cut_and_flattened),
+  SD_TEST_ENTRY(events_time_format),
+  SD_TEST_ENTRY(events_filters_by_kind_and_text),
+  SD_TEST_ENTRY(events_copy_text_lists_the_matching_rows),
   SD_TEST_ENTRY(settings_model_defaults_and_mapping),
   SD_TEST_ENTRY(settings_model_round_trip_keeps_other_fields),
   SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),
