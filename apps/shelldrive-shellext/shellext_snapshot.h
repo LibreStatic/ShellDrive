@@ -48,6 +48,7 @@ typedef struct shx_entry {
   uint32_t backend;
   uint32_t mount_num;
   WCHAR    letter;      /* 'A'..'Z', or 0 for an entry without a drive letter */
+  WCHAR    remote_url[321];  /* sftp://user@host:port/path, NUL-terminated; empty without HAS_REMOTE_URL */
 } shx_entry;
 
 /* Copies up to max valid entries into out and returns how many were written (0 = no usable data).

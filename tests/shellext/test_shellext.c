@@ -23,6 +23,21 @@
 #include "shellext_int.h"
 #include "shellext_snapshot.h"
 
+/* Pure helper tests: test_shellext_model.c. */
+SD_TEST_DECL(model_plan_drive_root_by_state);
+SD_TEST_DECL(model_plan_drive_global_is_open_only);
+SD_TEST_DECL(model_plan_drive_copy_path);
+SD_TEST_DECL(model_remote_url_ok);
+SD_TEST_DECL(model_copy_text_root_is_the_url);
+SD_TEST_DECL(model_copy_text_joins_the_relative_path);
+SD_TEST_DECL(model_copy_text_percent_encodes_components);
+SD_TEST_DECL(model_copy_text_refuses_bad_input);
+SD_TEST_DECL(model_menucache_parses_profiles);
+SD_TEST_DECL(model_menucache_rejects_bad_header);
+SD_TEST_DECL(model_menucache_drops_bad_lines_only);
+SD_TEST_DECL(model_menucache_is_bounded);
+SD_TEST_DECL(model_menu_label_is_safe_for_a_menu);
+
 #define T_SEC_BYTES   262144u
 #define T_HDR         64u
 #define T_ENTRY       1792u
@@ -208,7 +223,7 @@ static void t_close_section(void)
 
 static size_t t_read_count(void)
 {
-  shx_entry out[SHX_SNAP_MAX_ENTRIES];
+  static shx_entry out[SHX_SNAP_MAX_ENTRIES];
   return shx_snapshot_read(out, SHX_SNAP_MAX_ENTRIES);
 }
 
@@ -366,7 +381,7 @@ SD_TEST(snapshot_random_corruption_is_bounded)
     }
     t_publish();
     {
-      shx_entry out[SHX_SNAP_MAX_ENTRIES];
+      static shx_entry out[SHX_SNAP_MAX_ENTRIES];
       size_t n = shx_snapshot_read(out, SHX_SNAP_MAX_ENTRIES);
       SD_CHECK(n <= SHX_SNAP_MAX_ENTRIES);
     }
@@ -777,6 +792,331 @@ SD_TEST(invoke_builds_the_ui_command_line)
   t_close_section();
 }
 
+/* ---- Copy remote path (files and folders inside a drive) and the This PC menu ---- */
+
+#define T_TEST_CLIP  L"SHELLDRIVE_TEST_SHELLEXT_CLIP_FILE"
+#define T_TEST_CACHE L"SHELLDRIVE_TEST_MENU_CACHE"
+#define T_PID_A      L"0123456789abcdef0123456789abcdef"
+#define T_PID_B      L"fedcba9876543210fedcba9876543210"
+
+static void t_temp_file(const wchar_t *tag, wchar_t *file)
+{
+  wchar_t tmpdir[MAX_PATH];
+  GetTempPathW(MAX_PATH, tmpdir);
+  _snwprintf_s(file, MAX_PATH, _TRUNCATE, L"%sshx-%s-%lu.txt", tmpdir, tag, (unsigned long)GetCurrentProcessId());
+  file[MAX_PATH - 1] = 0;
+  DeleteFileW(file);
+}
+
+static void t_write_bytes(const wchar_t *file, const char *data)
+{
+  HANDLE h = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD got;
+  if (h == INVALID_HANDLE_VALUE)
+    return;
+  WriteFile(h, data, (DWORD)strlen(data), &got, NULL);
+  CloseHandle(h);
+}
+
+/* A menu object for a path, queried at ids 100..199. */
+static IContextMenu *t_path_menu(const wchar_t *path, int *items)
+{
+  t_fdo d;
+  IContextMenu *menu = NULL;
+  HMENU hm;
+  HRESULT hr, q;
+  t_fdo_init(&d, path, NULL);
+  hr = t_make_menu(&d.iface, &menu);
+  *items = -1;
+  if (FAILED(hr) || menu == NULL)
+    return NULL;
+  hm = CreatePopupMenu();
+  q = menu->lpVtbl->QueryContextMenu(menu, hm, 0, 100, 199, 0);
+  *items = SUCCEEDED(q) ? (int)SCODE_CODE(q) : -1;
+  DestroyMenu(hm);
+  return menu;
+}
+
+static int t_invoke_offset(IContextMenu *menu, int offset)
+{
+  CMINVOKECOMMANDINFO ci;
+  memset(&ci, 0, sizeof(ci));
+  ci.cbSize = sizeof(ci);
+  ci.nShow = SW_SHOWNORMAL;
+  ci.lpVerb = MAKEINTRESOURCEA(offset);
+  return menu->lpVtbl->InvokeCommand(menu, &ci) == S_OK;
+}
+
+SD_TEST(menu_copy_remote_path_on_the_drive_root)
+{
+  IContextMenu *menu;
+  int n;
+  wchar_t file[MAX_PATH], text[1024];
+  wchar_t help[128];
+  if (!t_open_fresh(L"")) { SD_CHECK(0); return; }
+  t_one_drive(L'E', SHX_F_HAS_REMOTE_URL, SHX_STATE_MOUNTED);
+  t_temp_file(L"clip", file);
+  SetEnvironmentVariableW(T_TEST_CLIP, file);
+
+  menu = t_path_menu(L"E:\\", &n);
+  SD_CHECK_EQ_INT(n, 3);                         /* Open, Unmount, Copy remote path */
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK(menu->lpVtbl->GetCommandString(menu, 2, GCS_VERBW, NULL, (LPSTR)help, 128) == S_OK);
+  SD_CHECK(wcscmp(help, L"shelldrive.copyremotepath") == 0);
+  SD_CHECK(menu->lpVtbl->GetCommandString(menu, 2, GCS_HELPTEXTW, NULL, (LPSTR)help, 128) == S_OK);
+  SD_CHECK(help[0] != 0);
+  SD_CHECK(t_invoke_offset(menu, 2));
+  SD_CHECK(t_read_cmdline(file, text, 1024) == 1);
+  SD_CHECK(wcscmp(text, L"sftp://u@h:22/p") == 0);
+  menu->lpVtbl->Release(menu);
+
+  SetEnvironmentVariableW(T_TEST_CLIP, NULL);
+  DeleteFileW(file);
+  t_close_section();
+}
+
+SD_TEST(menu_copy_remote_path_inside_the_drive)
+{
+  IContextMenu *menu;
+  int n;
+  wchar_t file[MAX_PATH], text[1024];
+  if (!t_open_fresh(L"")) { SD_CHECK(0); return; }
+  t_one_drive(L'E', SHX_F_HAS_REMOTE_URL, SHX_STATE_MOUNTED);
+  t_temp_file(L"clip2", file);
+  SetEnvironmentVariableW(T_TEST_CLIP, file);
+
+  /* A folder or a file: Copy remote path is the only item. */
+  menu = t_path_menu(L"E:\\docs\\my file #1.txt", &n);
+  SD_CHECK_EQ_INT(n, 1);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK(t_invoke_offset(menu, 0));
+  SD_CHECK(t_read_cmdline(file, text, 1024) == 1);
+  SD_CHECK(wcscmp(text, L"sftp://u@h:22/p/docs/my%20file%20%231.txt") == 0);
+  SD_CHECK(!t_invoke_offset(menu, 1));           /* nothing else is offered */
+  menu->lpVtbl->Release(menu);
+
+  menu = t_path_menu(L"e:\\Dir", &n);            /* drive letter case does not matter */
+  SD_CHECK_EQ_INT(n, 1);
+  if (menu != NULL)
+    menu->lpVtbl->Release(menu);
+
+  /* Not on a ShellDrive drive, not a drive path, or a path that is refused: no items. */
+  SD_CHECK_EQ_INT(t_query(L"Z:\\docs", NULL, 0), 0);
+  SD_CHECK_EQ_INT(t_query(L"\\\\server\\share\\x", NULL, 0), 0);
+  SD_CHECK_EQ_INT(t_query(L"E:\\a\\..\\b", NULL, 0), 0);
+  SD_CHECK_EQ_INT(t_query(L"E:\\docs", NULL, CMF_DEFAULTONLY), 0);
+
+  /* Two selected items: nothing. */
+  {
+    t_fdo d;
+    IContextMenu *m2 = NULL;
+    HMENU hm = CreatePopupMenu();
+    t_fdo_init(&d, L"E:\\a", L"E:\\b");
+    SD_CHECK(SUCCEEDED(t_make_menu(&d.iface, &m2)) && m2 != NULL);
+    if (m2 != NULL) {
+      SD_CHECK_EQ_INT(SCODE_CODE(m2->lpVtbl->QueryContextMenu(m2, hm, 0, 100, 199, 0)), 0);
+      m2->lpVtbl->Release(m2);
+    }
+    DestroyMenu(hm);
+  }
+
+  SetEnvironmentVariableW(T_TEST_CLIP, NULL);
+  DeleteFileW(file);
+  t_close_section();
+}
+
+SD_TEST(menu_no_copy_without_a_remote_url)
+{
+  if (!t_open_fresh(L"")) { SD_CHECK(0); return; }
+  t_one_drive(L'E', 0, SHX_STATE_MOUNTED);        /* no HAS_REMOTE_URL */
+  SD_CHECK_EQ_INT(t_query(L"E:\\", NULL, 0), 2);
+  SD_CHECK_EQ_INT(t_query(L"E:\\docs", NULL, 0), 0);
+  t_one_drive(L'G', SHX_F_GLOBAL, SHX_STATE_MOUNTED);   /* a global drive the caller may not see into */
+  SD_CHECK_EQ_INT(t_query(L"G:\\docs", NULL, 0), 0);
+  t_close_section();
+}
+
+/* The This PC class: Initialize ignores the data object, QueryContextMenu reads menu.cache only. */
+static IContextMenu *t_computer_menu(UINT first, UINT last, HMENU hm, int *ids)
+{
+  IClassFactory *fac = NULL;
+  IShellExtInit *init = NULL;
+  IContextMenu *menu = NULL;
+  HRESULT hr, q;
+  *ids = -1;
+  hr = t_get_class(&SHX_CLSID_COMPUTER_MENU, &IID_IClassFactory, (void **)&fac);
+  if (FAILED(hr))
+    return NULL;
+  hr = fac->lpVtbl->CreateInstance(fac, NULL, &IID_IShellExtInit, (void **)&init);
+  fac->lpVtbl->Release(fac);
+  if (FAILED(hr))
+    return NULL;
+  hr = init->lpVtbl->Initialize(init, NULL, NULL, NULL);
+  if (SUCCEEDED(hr))
+    hr = init->lpVtbl->QueryInterface(init, &IID_IContextMenu, (void **)&menu);
+  init->lpVtbl->Release(init);
+  if (FAILED(hr) || menu == NULL)
+    return NULL;
+  q = menu->lpVtbl->QueryContextMenu(menu, hm, 0, first, last, 0);
+  *ids = SUCCEEDED(q) ? (int)SCODE_CODE(q) : -1;
+  return menu;
+}
+
+SD_TEST(computer_menu_lists_profiles_and_opens_the_app)
+{
+  wchar_t cache[MAX_PATH], file[MAX_PATH], text[1024], expect[1300], s[128];
+  HMENU hm = CreatePopupMenu(), sub;
+  IContextMenu *menu;
+  MENUITEMINFOW mii;
+  int ids;
+
+  t_temp_file(L"cache", cache);
+  t_temp_file(L"cmd3", file);
+  t_write_bytes(cache, "SDMENU 1\n0123456789abcdef0123456789abcdef\tR&D server\nfedcba9876543210fedcba9876543210\tBackups\n");
+  SetEnvironmentVariableW(T_TEST_CACHE, cache);
+  SetEnvironmentVariableW(T_TEST_CMD, file);
+
+  menu = t_computer_menu(100, 199, hm, &ids);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK_EQ_INT(ids, 3);                              /* two profiles and Open ShellDrive */
+  SD_CHECK_EQ_INT(GetMenuItemCount(hm), 2);             /* the submenu and Open ShellDrive */
+  sub = GetSubMenu(hm, 0);
+  SD_REQUIRE(sub != NULL);
+  SD_CHECK_EQ_INT(GetMenuItemCount(sub), 2);
+  SD_CHECK_EQ_INT(GetMenuItemID(sub, 0), 100);
+  SD_CHECK_EQ_INT(GetMenuItemID(sub, 1), 101);
+  SD_CHECK_EQ_INT(GetMenuItemID(hm, 1), 102);
+  SD_CHECK(GetMenuStringW(hm, 0, s, 128, MF_BYPOSITION) > 0);
+  memset(&mii, 0, sizeof(mii));
+  SD_CHECK(GetMenuStringW(sub, 0, s, 128, MF_BYPOSITION) > 0);
+  SD_CHECK(wcscmp(s, L"R&&D server") == 0);             /* '&' doubled: no mnemonic from a profile name */
+  SD_CHECK(GetMenuStringW(sub, 1, s, 128, MF_BYPOSITION) > 0);
+  SD_CHECK(wcscmp(s, L"Backups") == 0);
+
+  /* Verbs and help text of the profile item and of Open ShellDrive. */
+  SD_CHECK(menu->lpVtbl->GetCommandString(menu, 1, GCS_VERBW, NULL, (LPSTR)s, 128) == S_OK);
+  SD_CHECK(wcscmp(s, L"shelldrive.mount." T_PID_B) == 0);
+  SD_CHECK(menu->lpVtbl->GetCommandString(menu, 0, GCS_HELPTEXTW, NULL, (LPSTR)s, 128) == S_OK && s[0] != 0);
+  SD_CHECK(menu->lpVtbl->GetCommandString(menu, 2, GCS_VERBW, NULL, (LPSTR)s, 128) == S_OK);
+  SD_CHECK(wcscmp(s, L"shelldrive.show") == 0);
+
+  /* Invoke: a profile starts the mount, Open ShellDrive shows the window; the arguments are fixed. */
+  SD_CHECK(t_invoke_offset(menu, 0));
+  SD_CHECK(t_read_cmdline(file, text, 1024) == 1);
+  _snwprintf_s(expect, 1300, _TRUNCATE, L"\"%sshelldrive-ui.exe\" --action mount %s", t_dll_dir, T_PID_A);
+  SD_CHECK(wcscmp(text, expect) == 0);
+  DeleteFileW(file);
+  SD_CHECK(t_invoke_offset(menu, 2));
+  SD_CHECK(t_read_cmdline(file, text, 1024) == 1);
+  _snwprintf_s(expect, 1300, _TRUNCATE, L"\"%sshelldrive-ui.exe\" --action show", t_dll_dir);
+  SD_CHECK(wcscmp(text, expect) == 0);
+  DeleteFileW(file);
+  SD_CHECK(!t_invoke_offset(menu, 3));
+  {
+    CMINVOKECOMMANDINFO ci;
+    memset(&ci, 0, sizeof(ci));
+    ci.cbSize = sizeof(ci);
+    ci.lpVerb = "ShellDrive.Mount.FEDCBA9876543210FEDCBA9876543210";
+    SD_CHECK(menu->lpVtbl->InvokeCommand(menu, &ci) == S_OK);
+    SD_CHECK(t_read_cmdline(file, text, 1024) == 1);
+    _snwprintf_s(expect, 1300, _TRUNCATE, L"\"%sshelldrive-ui.exe\" --action mount %s", t_dll_dir, T_PID_B);
+    SD_CHECK(wcscmp(text, expect) == 0);
+    ci.lpVerb = "shelldrive.mount.00000000000000000000000000000000";   /* not in the menu */
+    SD_CHECK(menu->lpVtbl->InvokeCommand(menu, &ci) == E_FAIL);
+  }
+  menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  SetEnvironmentVariableW(T_TEST_CMD, NULL);
+  SetEnvironmentVariableW(T_TEST_CACHE, NULL);
+  DeleteFileW(file);
+  DeleteFileW(cache);
+}
+
+SD_TEST(computer_menu_without_a_cache_shows_a_disabled_item)
+{
+  wchar_t cache[MAX_PATH];
+  HMENU hm = CreatePopupMenu(), sub;
+  IContextMenu *menu;
+  int ids;
+
+  t_temp_file(L"nocache", cache);                       /* never created */
+  SetEnvironmentVariableW(T_TEST_CACHE, cache);
+  menu = t_computer_menu(100, 199, hm, &ids);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK_EQ_INT(ids, 2);                              /* the placeholder and Open ShellDrive */
+  sub = GetSubMenu(hm, 0);
+  SD_REQUIRE(sub != NULL);
+  SD_CHECK_EQ_INT(GetMenuItemCount(sub), 1);
+  SD_CHECK((GetMenuState(sub, 0, MF_BYPOSITION) & MF_DISABLED) != 0);
+  SD_CHECK(!t_invoke_offset(menu, 0));                  /* the placeholder does nothing */
+  menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  /* A cache with a wrong header is no data either. */
+  t_write_bytes(cache, "SDMENU 9\n0123456789abcdef0123456789abcdef\tx\n");
+  hm = CreatePopupMenu();
+  menu = t_computer_menu(100, 199, hm, &ids);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK_EQ_INT(ids, 2);
+  menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  SetEnvironmentVariableW(T_TEST_CACHE, NULL);
+  DeleteFileW(cache);
+}
+
+SD_TEST(computer_menu_caps_the_submenu_and_respects_the_id_range)
+{
+  wchar_t cache[MAX_PATH];
+  char *data;
+  size_t pos = 0, i;
+  HMENU hm, sub;
+  IContextMenu *menu;
+  int ids;
+
+  data = (char *)malloc(SHX_CACHE_MAX_BYTES);
+  SD_REQUIRE(data != NULL);
+  memcpy(data, "SDMENU 1\n", 9);
+  pos = 9;
+  for (i = 0; i < 40; i++)
+    pos += (size_t)_snprintf_s(data + pos, SHX_CACHE_MAX_BYTES - pos, _TRUNCATE, "%032x\tProfile %u\n", (unsigned)i + 1u,
+                               (unsigned)i);
+  t_temp_file(L"cache40", cache);
+  t_write_bytes(cache, data);
+  free(data);
+  SetEnvironmentVariableW(T_TEST_CACHE, cache);
+
+  hm = CreatePopupMenu();
+  menu = t_computer_menu(100, 299, hm, &ids);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK_EQ_INT(ids, (int)SHX_SUBMENU_MAX + 2);       /* 32 profiles, "More connections...", Open ShellDrive */
+  sub = GetSubMenu(hm, 0);
+  SD_REQUIRE(sub != NULL);
+  SD_CHECK_EQ_INT(GetMenuItemCount(sub), (int)SHX_SUBMENU_MAX + 1);
+  menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  /* A narrow id range cuts the profiles, never the ids. */
+  hm = CreatePopupMenu();
+  menu = t_computer_menu(100, 104, hm, &ids);
+  SD_REQUIRE(menu != NULL);
+  SD_CHECK(ids >= 2 && ids <= 5);
+  menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  hm = CreatePopupMenu();
+  menu = t_computer_menu(100, 100, hm, &ids);           /* room for one id only: nothing is added */
+  SD_CHECK_EQ_INT(ids, 0);
+  SD_CHECK_EQ_INT(GetMenuItemCount(hm), 0);
+  if (menu != NULL)
+    menu->lpVtbl->Release(menu);
+  DestroyMenu(hm);
+
+  SetEnvironmentVariableW(T_TEST_CACHE, NULL);
+  DeleteFileW(cache);
+}
+
 /* Deletes a key tree under HKCU (the test's own temporary keys only). */
 static void t_delete_tree(HKEY parent, const wchar_t *name)
 {
@@ -864,6 +1204,36 @@ SD_TEST(register_redirected_hkcu_leaves_real_registry)
     RegCloseKey(probe);
     probe = NULL;
   }
+  {
+    /* Directory, all files and This PC (03 §8.2): each handler key names its class. */
+    static const wchar_t *const hooks[] = {
+      L"Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\ShellDrive",
+      L"Software\\Classes\\*\\shellex\\ContextMenuHandlers\\ShellDrive",
+      L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\ContextMenuHandlers\\ShellDrive"
+    };
+    unsigned h;
+    for (h = 0; h < 3; h++) {
+      rc = RegOpenKeyExW(HKEY_CURRENT_USER, hooks[h], 0, KEY_READ, &probe);
+      SD_CHECK(rc == ERROR_SUCCESS);
+      if (rc == ERROR_SUCCESS) {
+        cb = sizeof(data);
+        rc = RegQueryValueExW(probe, NULL, NULL, &type, (LPBYTE)data, &cb);
+        SD_CHECK(rc == ERROR_SUCCESS && wcscmp(data, h < 2 ? SHX_CLSID_TEXT : SHX_CLSID_COMPUTER_TEXT) == 0);
+        RegCloseKey(probe);
+        probe = NULL;
+      }
+    }
+    _snwprintf_s(inproc, 300, _TRUNCATE, L"Software\\Classes\\CLSID\\%s\\InprocServer32", SHX_CLSID_COMPUTER_TEXT);
+    rc = RegOpenKeyExW(HKEY_CURRENT_USER, inproc, 0, KEY_READ, &probe);
+    SD_CHECK(rc == ERROR_SUCCESS);
+    if (rc == ERROR_SUCCESS) {
+      cb = sizeof(data);
+      rc = RegQueryValueExW(probe, NULL, NULL, &type, (LPBYTE)data, &cb);
+      SD_CHECK(rc == ERROR_SUCCESS && wcscmp(data, path) == 0);
+      RegCloseKey(probe);
+      probe = NULL;
+    }
+  }
   rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
                      0, KEY_READ, &probe);
   SD_CHECK(rc == ERROR_SUCCESS);
@@ -884,6 +1254,17 @@ SD_TEST(register_redirected_hkcu_leaves_real_registry)
   probe = NULL;
   rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Drive\\shellex\\ContextMenuHandlers\\ShellDrive", 0,
                      KEY_READ, &probe);
+  SD_CHECK(rc == ERROR_FILE_NOT_FOUND);
+  if (rc == ERROR_SUCCESS)
+    RegCloseKey(probe);
+  probe = NULL;
+  rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\ShellDrive", 0,
+                     KEY_READ, &probe);
+  SD_CHECK(rc == ERROR_FILE_NOT_FOUND);
+  if (rc == ERROR_SUCCESS)
+    RegCloseKey(probe);
+  probe = NULL;
+  rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\" SHX_CLSID_COMPUTER_TEXT, 0, KEY_READ, &probe);
   SD_CHECK(rc == ERROR_FILE_NOT_FOUND);
   if (rc == ERROR_SUCCESS)
     RegCloseKey(probe);
@@ -976,6 +1357,19 @@ SD_TEST(dll_loads_with_the_four_exports)
 }
 
 static const sd_test_case k_tests[] = {
+  SD_TEST_ENTRY(model_plan_drive_root_by_state),
+  SD_TEST_ENTRY(model_plan_drive_global_is_open_only),
+  SD_TEST_ENTRY(model_plan_drive_copy_path),
+  SD_TEST_ENTRY(model_remote_url_ok),
+  SD_TEST_ENTRY(model_copy_text_root_is_the_url),
+  SD_TEST_ENTRY(model_copy_text_joins_the_relative_path),
+  SD_TEST_ENTRY(model_copy_text_percent_encodes_components),
+  SD_TEST_ENTRY(model_copy_text_refuses_bad_input),
+  SD_TEST_ENTRY(model_menucache_parses_profiles),
+  SD_TEST_ENTRY(model_menucache_rejects_bad_header),
+  SD_TEST_ENTRY(model_menucache_drops_bad_lines_only),
+  SD_TEST_ENTRY(model_menucache_is_bounded),
+  SD_TEST_ENTRY(model_menu_label_is_safe_for_a_menu),
   SD_TEST_ENTRY(dll_loads_with_the_four_exports),
   SD_TEST_ENTRY(snapshot_valid_entries),
   SD_TEST_ENTRY(snapshot_drops_bad_entries_only),
@@ -991,6 +1385,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(menu_no_items_for_other_selections),
   SD_TEST_ENTRY(menu_corrupt_snapshot_has_no_items),
   SD_TEST_ENTRY(invoke_builds_the_ui_command_line),
+  SD_TEST_ENTRY(menu_copy_remote_path_on_the_drive_root),
+  SD_TEST_ENTRY(menu_copy_remote_path_inside_the_drive),
+  SD_TEST_ENTRY(menu_no_copy_without_a_remote_url),
+  SD_TEST_ENTRY(computer_menu_lists_profiles_and_opens_the_app),
+  SD_TEST_ENTRY(computer_menu_without_a_cache_shows_a_disabled_item),
+  SD_TEST_ENTRY(computer_menu_caps_the_submenu_and_respects_the_id_range),
   SD_TEST_ENTRY(register_redirected_hkcu_leaves_real_registry),
   SD_TEST_ENTRY(unload_and_locks_follow_references),
 };

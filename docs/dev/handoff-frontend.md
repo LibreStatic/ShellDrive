@@ -115,12 +115,21 @@ Priority 2: spec features with a backend, larger.
 
 Priority 3: Explorer integration (8).
 
-11. **Shell extension covers drives only.** `shellext_com.c` has `Open`, `Unmount`, `Reconnect` (8.2 first bullet).
-    Missing: **Copy remote path** (drives, directories and files inside a ShellDrive drive; needs the snapshot's remote
-    URL), the This PC handler (**Mount with ShellDrive** submenu from `menu.cache`, **Open ShellDrive**), the
-    Directory and `*` registrations, drive labels and icons (8.3), Windows 11 modern menu (8.6, needs the certificate),
-    network locations (8.7). Backend ok for the snapshot section; the writer of `menu.cache` was not looked for in
-    this audit.
+11. **Shell extension.** PARTLY DONE (round 16, branch `wip/r16-shellext`). Done: **Copy remote path** on drive roots
+    and on files and folders inside a ShellDrive drive (state entry `remote_url`, percent-encoded relative path, copied
+    to the clipboard in process), the This PC class (`SHX_CLSID_COMPUTER_MENU`: **Mount with ShellDrive** submenu from
+    `menu.cache` and **Open ShellDrive**), and the Directory, `*` and This PC registrations (per-user path in
+    `DllRegisterServer`). Pure helpers and tests: `shellext_model.c`, `tests/shellext/test_shellext_model.c`. The format of
+    `menu.cache` is specified in 03 8.2.2. **Backend missing:**
+    - The writer of `menu.cache` (agent or UI): nothing creates the file yet, so the submenu shows the disabled "No
+      connections set up" item. Write it atomically, in the 8.2.2 format, on every profile add, rename and delete.
+    - `state_producer.c` already copies `remote_url` and the codec sets `HAS_REMOTE_URL`; Copy remote path appears only
+      for entries that carry it (global drives of callers outside `service_access` do not).
+    - The installer must register the new class (`{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}`) under the This PC CLSID
+      key and the Approved list, and the path class under Directory and `*` (HKLM), like the per-user code does.
+    Still missing: drive labels and icons (8.3), Windows 11 modern menu (8.6, needs the certificate), network
+    locations (8.7). The UI verbs used are `--action mount <profile id>`, `show`, `open|unmount|reconnect X:`, all
+    existing in `ui_wire.c`; no new IPC method was needed (the DLL never opens the pipe, 8.2).
 12. **`.sdmount` MOTW check and error text** are in `main.c` (`--action mount-file`); the shell association
     registration belongs to the installer (not audited).
 

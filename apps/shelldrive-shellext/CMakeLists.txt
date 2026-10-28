@@ -5,9 +5,12 @@
 
 set(SD_SHELLEXT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/shellext_com.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/shellext_cache.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/shellext_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/shellext_register.c
   ${CMAKE_CURRENT_SOURCE_DIR}/shellext_snapshot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/shellext_int.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/shellext_model.h
   ${CMAKE_CURRENT_SOURCE_DIR}/shellext_snapshot.h)
 set(SD_SHELLEXT_SOURCES ${SD_SHELLEXT_SOURCES} PARENT_SCOPE)
 
