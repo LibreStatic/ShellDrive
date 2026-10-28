@@ -8,6 +8,19 @@ set(_check "${CMAKE_CURRENT_SOURCE_DIR}/check_diagnostics.cmake")
 set(_qps "${CMAKE_CURRENT_SOURCE_DIR}/check_qps.cmake")
 
 add_test(NAME l10n.real_catalogs_complete COMMAND sdl10n --check --domain "${CMAKE_SOURCE_DIR}/l10n/cli")
+# The service catalog, including the Event Log messages (03 §10.3): every locale complete, placeholders and register.
+add_test(NAME l10n.svc_catalogs_complete COMMAND sdl10n --check --domain "${CMAKE_SOURCE_DIR}/l10n/svc")
+# Event Log messages stay complete with --allow-incomplete, and keep the %N placeholders of en in the same order.
+add_test(NAME l10n.event_placeholder_order_fails
+         COMMAND sdl10n --check --allow-incomplete --domain "${_fx}/event_order")
+set_tests_properties(l10n.event_placeholder_order_fails PROPERTIES
+  PASS_REGULAR_EXPRESSION "error: 'evt.order' must use the %N placeholders of en in the same order")
+add_test(NAME l10n.event_missing_locale_fails_when_allowed
+         COMMAND sdl10n --check --allow-incomplete --domain "${_fx}/event_missing")
+set_tests_properties(l10n.event_missing_locale_fails_when_allowed PROPERTIES
+  PASS_REGULAR_EXPRESSION "error: missing translation for 'evt.missing'")
+add_test(NAME l10n.svc_event_mc_written
+         COMMAND sdl10n --out-mc "${CMAKE_CURRENT_BINARY_DIR}/svc_events_check.mc" --domain "${CMAKE_SOURCE_DIR}/l10n/svc")
 add_test(NAME l10n.empty_catalogs_check
          COMMAND sdl10n --check --domain "${CMAKE_SOURCE_DIR}/l10n/common"
                  --domain "${CMAKE_SOURCE_DIR}/l10n/ui" --domain "${CMAKE_SOURCE_DIR}/l10n/shell")
@@ -82,4 +95,6 @@ set_tests_properties(l10n.real_catalogs_complete l10n.empty_catalogs_check
                      l10n.mnemonic_dropped_fails l10n.mnemonic_duplicates_warn l10n.mnemonic_distinct_passes
                      l10n.maxlen_exceeded_fails l10n.maxlen_within_passes
                      l10n.qps_table_generated l10n.qps_keeps_mnemonics
+                     l10n.svc_catalogs_complete l10n.event_placeholder_order_fails
+                     l10n.event_missing_locale_fails_when_allowed l10n.svc_event_mc_written
                      PROPERTIES LABELS l10n)

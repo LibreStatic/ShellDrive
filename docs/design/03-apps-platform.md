@@ -2261,8 +2261,10 @@ Exception — strings Windows itself loads from our files: the service display n
 product name "ShellDrive", which is not translated; its menu texts come from our catalog at run time through
 `IExplorerCommand::GetTitle`.) For these the tool also emits small per-language `STRINGTABLE` blocks
 (`LANG_*`/`SUBLANG_*`) into `shelldrive-host.exe`/`shelldrive-ui.exe` resources, from the same PO files; on XP the
-English plain string is used. The **Event Log message file is English only** (Event Log messages are logs under
-AGENTS.md, C44; 10.3). The installer (MSI) consumes `.wxl` files generated from the `installer` domain (04).
+English plain string is used. The Event Log message table is localized too: the owner decided that Event Log messages
+are user-visible (they were English only under the earlier reading of AGENTS.md, C44). The `svc` domain carries them
+in all six languages, and `sdl10n --out-mc` compiles them into the message table (10.3). The installer (MSI) consumes
+`.wxl` files generated from the `installer` domain (04).
 
 ### 9.2 Build-time checks (fail the build)
 
@@ -2290,6 +2292,8 @@ these checks (fixtures in `tests/l10n/fixtures`):
 - **Length.** `#. sdl10n:maxlen=N` on the en entry limits each translation (and the English text) to N-1 UTF-16 units,
   because N is the buffer size including the terminating NUL, as in the `NOTIFYICONDATAW` field sizes (tray tooltip
   127, balloon title 63, balloon text 255). A longer translation is an error.
+- **Event Log messages (10.3).** An entry with `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` must exist in every locale, even
+  with `--allow-incomplete`, and each translation must use the `%N` placeholders of the English text in the same order.
 
 ### 9.3 Language selection
 
@@ -2451,7 +2455,23 @@ v1.0 (can ship in v1.x without format changes).
   name stays the readable product name, D45; the publisher `LibreStatic` appears through the message file's version
   resource `CompanyName`),
   `EventMessageFile = <path>\shelldrive-host.exe`, `TypesSupported = 7`. Registered by the installer/`service install`.
-- One message table (`.mc` compiled by `mc.exe`), **English only**, few event IDs, each with `%1`… inserts:
+- One message table (`.mc` compiled by `mc.exe -u`), **localized into all six languages** (en, es, fr, pt-BR, it, de;
+  owner decision, supersedes the earlier English-only rule). The source of truth is the `svc` catalog
+  (`l10n/svc/<lang>.po`, 9.1): each event is a PO entry whose `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` comment gives its
+  MessageId, severity and symbolic name. `sdl10n --out-mc` writes `svc_events.mc` at build time with one `Language=` block
+  per LANGID for every id. FormatMessage and the Event Viewer match the exact LANGID, so each language's one text is
+  emitted under every sublanguage LANGID that Windows defines for that primary language (SUBLANG_* in winnt.h), plus the
+  primary-neutral LANGID as a fallback: English 17 LANGIDs (0x0009 neutral, 0x0409, 0x0809, ...), Spanish 22 (0x000A,
+  0x040A, 0x080A, 0x0C0A, 0x2C0A, ... 0x540A), French 7 (0x000C, 0x040C, 0x080C, 0x0C0C, ...), Portuguese 3 (0x0016,
+  0x0416 pt-BR, 0x0816 pt-PT), Italian 3 (0x0010, 0x0410, 0x0810), German 6 (0x0007, 0x0407, 0x0807, 0x0C07, 0x1007,
+  0x1407): 58 `LanguageNames` entries. This mirrors the UI (`lang_from_langid` in sd_l10n: the primary language selects
+  the text, so es-ES and es-MX get the voseo text, pt-PT gets Brazilian Portuguese, as already documented in 9.3).
+  The build fails if any locale lacks an event, even with `--allow-incomplete`; every translation keeps the `%N`
+  placeholders of en in the same order. Event Log insert strings (the `%N` values: paths, SIDs, reason codes such as
+  `owner`, `reparse_point`, `acl`, `not_directory`, the profile and host names) are data and are not translated. The
+  unit test `unit.svc` (`evtmsg_module_resolves_every_id_in_every_langid`) resolves every id in every LANGID of the
+  table through FormatMessage on the built shelldrive-host.exe.
+  Event IDs, each with `%1`… inserts:
   1000 service started, 1001 stopped, 1100 global drive mounted (`%1` profile, `%2` target, `%3` host),
   1101 unmounted, 2100 mount failed (`%1` profile, `%2` code, `%3` detail), 2101 reconnecting, 2200 legacy algorithms
   negotiated, 3000 host key mismatch (`%1` host, `%2` expected fingerprint, `%3` received fingerprint), 3001 prompt
