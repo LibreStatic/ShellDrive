@@ -1380,6 +1380,7 @@ static void vfs_free_all(sd_vfs *v)
     sd_vfs_handle *h = v->handles;
     v->handles = h->next;
     vfs_node_unref(v, h->node);
+    sd_free(h->audit_sid);
     sd_free(h);
   }
   for (i = 0; i < v->nodes.nb; i++) {
@@ -1399,6 +1400,7 @@ static void vfs_free_all(sd_vfs *v)
   sd_free(v->owner_sid);
   vfs_access_free(v);
   vfs_disk_close(v);
+  vfs_audit_destroy(v);
   sd_mutex_destroy(&v->lock);
   sd_free(v);
 }
@@ -1450,6 +1452,7 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (!v)
     return SD_VFS_E_NO_MEMORY;
   sd_mutex_init(&v->lock);
+  vfs_audit_init(v);
   v->s = s;
   v->cb = cb;
   v->cb_ctx = cb_ctx;

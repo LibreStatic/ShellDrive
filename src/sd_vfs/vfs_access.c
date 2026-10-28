@@ -16,8 +16,10 @@
  * Group matching uses the groups the frontend passed. WebDAV has no token groups on the service path yet (only
  * per-user mounts exist there), so it matches by user SID only; see docs/dev/m5-notes.md. */
 #include <string.h>
+#include <wchar.h>
 
 #include "sd_base/sd_mem.h"
+#include "sd_platform/sd_time.h"
 #include "vfs_internal.h"
 
 static BOOL sid_eq(PSID a, PSID b)
@@ -162,4 +164,110 @@ sd_vfs_status vfs_access_check(const sd_vfs *v, const sd_vfs_caller *c, BOOL wri
   if (caller_in(c, v->wrt_sids, v->n_wrt) || caller_has_group(c, v->sid_admins))
     return SD_VFS_OK;
   return SD_VFS_E_ACCESS_DENIED;        /* a member without the write right (TM-R24) */
+}
+
+/* ---- audit (M5, 03 10.3 Event 1200, 02 6.7) ----
+ * A successful mutating operation on a global mount raises SD_VFS_EV_AUDIT with the requestor SID, the operation
+ * name and the mount-relative path. The same (SID, operation, path) is raised at most once per VFS_AUDIT_WINDOW_MS:
+ * a later one inside the window is dropped, so one copy of a copy loop does not flood the Event Log. The table is
+ * bounded; when it is full the oldest slot is reused, which can only raise an event sooner, never suppress one that
+ * is not a repeat of a slot still inside its window. Allocation failure raises without coalescing: an audit is
+ * never dropped for lack of memory. */
+
+void vfs_audit_init(sd_vfs *v)
+{
+  sd_mutex_init(&v->audit_lock);
+  v->audit_now = sd_tick_ms;
+}
+
+void vfs_audit_destroy(sd_vfs *v)
+{
+  uint32_t i;
+  for (i = 0; i < VFS_AUDIT_SLOTS; i++) {
+    if (v->audit[i].used) {
+      sd_free(v->audit[i].sid);
+      sd_free(v->audit[i].path);
+    }
+    memset(&v->audit[i], 0, sizeof(v->audit[i]));
+  }
+  sd_mutex_destroy(&v->audit_lock);
+}
+
+PSID vfs_audit_copy_sid(PSID sid)
+{
+  PSID copy;
+  DWORD len;
+  if (sid == NULL || !IsValidSid(sid))
+    return NULL;
+  len = GetLengthSid(sid);
+  copy = sd_alloc(len);
+  if (copy == NULL || !CopySid(len, copy, sid)) {
+    sd_free(copy);
+    return NULL;
+  }
+  return copy;
+}
+
+static BOOL audit_slot_match(const vfs_audit_slot *s, PSID who, const char *op, const WCHAR *path)
+{
+  return s->used && strcmp(s->op, op) == 0 && wcscmp(s->path, path) == 0 && EqualSid(s->sid, who);
+}
+
+void vfs_audit(sd_vfs *v, PSID who, const char *op, const WCHAR *path)
+{
+  vfs_audit_slot *slot = NULL, *oldest = NULL;
+  uint64_t now;
+  uint32_t i;
+  BOOL raise = TRUE;
+  sd_vfs_event ev;
+  if (!v->global || who == NULL || !IsValidSid(who) || path == NULL || op == NULL)
+    return;
+  now = v->audit_now();
+  sd_mutex_lock(&v->audit_lock);
+  for (i = 0; i < VFS_AUDIT_SLOTS; i++) {
+    vfs_audit_slot *s = &v->audit[i];
+    if (audit_slot_match(s, who, op, path)) {
+      slot = s;
+      break;
+    }
+    if (!s->used) {
+      if (oldest == NULL || oldest->used)
+        oldest = s;             /* an empty slot is the best reuse target */
+    } else if (oldest == NULL || (oldest->used && s->last < oldest->last)) {
+      oldest = s;               /* otherwise the least recently raised slot is reused */
+    }
+  }
+  if (slot != NULL) {
+    if (now - slot->last < VFS_AUDIT_WINDOW_MS)
+      raise = FALSE;            /* a repeat inside the window: coalesced */
+    else
+      slot->last = now;
+  } else if (oldest != NULL) {
+    PSID sc = vfs_audit_copy_sid(who);
+    WCHAR *pc = vfs_wcsdup(path);
+    if (sc != NULL && pc != NULL) {
+      if (oldest->used) {
+        sd_free(oldest->sid);
+        sd_free(oldest->path);
+      }
+      oldest->used = TRUE;
+      oldest->sid = sc;
+      oldest->path = pc;
+      oldest->op = op;
+      oldest->last = now;
+    } else {
+      sd_free(sc);
+      sd_free(pc);
+    }
+  }
+  sd_mutex_unlock(&v->audit_lock);
+  if (!raise)
+    return;
+  memset(&ev, 0, sizeof(ev));
+  ev.kind = SD_VFS_EV_AUDIT;
+  ev.path = path;
+  ev.caller_sid = who;
+  ev.op = op;
+  ev.status = SD_VFS_OK;
+  vfs_event(v, &ev);
 }

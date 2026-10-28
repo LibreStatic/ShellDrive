@@ -59,6 +59,7 @@ int      fake_backend_last_known_uid(uint32_t *uid);      /* 1 when known_identi
 /* raises a vfs event on the last mounted vfs, from a foreign thread like the real vfs */
 void     fake_backend_vfs_write_failed(const wchar_t *path, UINT64 bytes);
 void     fake_backend_vfs_identity(uint32_t uid, uint32_t gid);
+void     fake_backend_vfs_audit(const wchar_t *path, const char *op, PSID sid);   /* M5: Event 1200 source */
 
 /* M2. Every hop of the chain: a proxy password prompt when its leg has a proxy user
    (FAKE_PROXY_PASSWORD), TOFU unless trusted, then the same auth as above. Target host prefixes:

@@ -458,6 +458,16 @@ SD_TEST(svc_admin_mounts_reports_and_unmounts)
   sd_json_free(res);
   SD_CHECK(mid[0] != 0);
   SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
+  /* M5, Event 1200 (03 10.3): a change raised by the vfs reaches the Event Log seam as SVC_MSG_AUDIT. The fake vfs
+     posts it to the control thread, so the test waits for it; the real Event Log is never written here. */
+  {
+    static const unsigned char k_sid[] = { 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0xE9, 3, 0, 0 };
+    int i;
+    fake_backend_vfs_audit(L"\\docs\\a.txt", "create", (PSID)(void *)k_sid);
+    for (i = 0; i < 100 && !saw_event(SVC_MSG_AUDIT); i++)
+      Sleep(50);
+    SD_CHECK(saw_event(SVC_MSG_AUDIT));
+  }
   if (st) {
     SD_CHECK(sd_json_get_str(st, "host") != NULL);     /* admins see the details */
     sd_json_free(st);

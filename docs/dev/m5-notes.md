@@ -557,3 +557,53 @@ writing; a group in the write list; SYSTEM with and without `allow_system`; the 
 
 **Build.** `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -NoFixture -AllowSkip -TestRegex 'vfs|webdav|dokany'`:
 pass, 4 of 4 tests (`unit.vfs`, `unit.webdav`, `webdav.redirector`, `dokany.mount`).
+
+## Part 7 follow-up: Dokany requestor cache and Event 1200
+
+Closes two of the open items above (the Dokany 60 s cache and `SD_VFS_EV_AUDIT`). The WebDAV item stays open.
+
+**Dokany cache (02 6.7).** `src/sd_dokan/dokan_cache.c` (private) keeps the enabled groups of a requestor token for
+60 s, bounded to 32 entries, guarded by one critical section, with lookups that return copies. `dokan_mount.c` reads
+the LUID, the elevation type and the user SID on every create, and the groups only on a miss. Decisions:
+
+- The key is (logon LUID, elevation type, user SID), not (LUID, SID). A UAC-filtered and an elevated token of one
+  logon share the LUID; without the elevation type a filtered admin could inherit the elevated token's write right
+  (or the other way round), which 6.7 forbids. XP has no elevation type: "invalid parameter" means type 0 there.
+- A token with restricting SIDs is never cached. A failed token query returns "denied" and stores nothing.
+- The 60 s window is measured from the store; a hit does not extend it.
+
+**Open (decision needed).** A token with deny-only groups but no restricting SIDs (privilege-stripped with
+`DISABLE_MAX_PRIVILEGE`) keeps the LUID, the SID and the elevation type of its unstripped parent. Within 60 s such a
+token can hit an entry stored for the full token and get its groups. Closing this needs a group fingerprint on the
+hit path, which costs the group query the cache is meant to save. Until that is decided, the cache saves the group
+query only; the LUID, SID, elevation and restriction queries still run on every create.
+
+**Event 1200 (03 10.3, TM-R24).** The vfs raises `SD_VFS_EV_AUDIT` in `vfs_access.c` (`vfs_audit`) after a successful
+mutating operation on a global mount: `create` (new file), `write_open` (one per open for write), `delete` (from
+cleanup, with the requestor of the handle), `rename`, `setattr` (winattrs and times) and `set_security`. Requestor
+SIDs come from the create that opened the handle. Denied requests raise nothing: Event 1200 records changes. Per-user
+mounts never raise it. Coalescing is per (requestor SID, operation, path) in a 60 s window (`VFS_AUDIT_WINDOW_MS`)
+with a 32-slot table; suppressed repeats are dropped, not counted. The clock is `v->audit_now` (`sd_tick_ms` by
+default; the tests replace it).
+
+The host seam: `sd_mount_callbacks.on_audit` (control thread, the SID valid during the call) carries the event from
+`mount.c`. `service.c` resolves the account name on the control thread and raises `SVC_MSG_AUDIT` (1200, Information,
+`svc_events.mc`) with the Event Log sink, which tests replace. The agent leaves `on_audit` NULL: it never mounts a
+global drive, and the spec writes Event 1200 from the service only.
+
+**Remaining gaps.**
+- Handle-based operations (`setattr`, `rename`, `set_security`, delete at cleanup) use the handle's node key as the
+  path. The key is case-folded in the insensitive view, so the path can differ in case from the one the client sent.
+- WebDAV reaches the vfs with a caller, so it should raise the same events; this round did not test it.
+- The `delete_path` recursion audits each child delete under its own path, so one recursive delete raises one event
+  per child, subject to coalescing.
+
+**Tests.** `tests/unit/sd_vfs/test_vfs_access.c`: `vfs_audit_raised_for_global_changes` (reads and denied opens silent;
+create, write_open, setattr, rename and delete raised once each), `vfs_audit_coalesces_per_window` (fake clock: inside
+the window coalesced, other SID / path / operation raised, raised again at exactly 60 s),
+`vfs_audit_never_raised_on_per_user_mount`. `tests/unit/sd_dokan/test_dokan.c`: `dokan_cache_hit_expiry_and_keys` (hit
+inside 60 s; expiry at 60 s; different LUID, elevation type or SID miss), `dokan_cache_wraps_and_refreshes` (GetTickCount
+wrap, refresh in place), `dokan_cache_failures_are_not_stored`, `dokan_cache_is_bounded_and_evicts_oldest`.
+`tests/unit/sd_svc/test_service.c` (`svc_admin_mounts_reports_and_unmounts`): a fake vfs audit reaches the Event
+Log seam as SVC_MSG_AUDIT. The Dokany requestor path itself (`requestor_identity`) is not unit-tested: it needs a live
+requestor token.
