@@ -20,6 +20,8 @@
 #include "sd_secret/sd_secret.h"
 #include "sd_mount/sd_mount.h"
 #include "svc_events.h"
+#include "svc_repair.h"
+#include "svc_scm.h"
 #include "fake_backend.h"
 
 /* Event Log sink of the shared core: records the ids in order (the core calls it on its own thread). */
@@ -231,6 +233,31 @@ static DWORD WINAPI core_main(LPVOID arg)
   return 0;
 }
 
+/* SCM seam of service.status (svc_opts.scm_ops): a running, automatic service with no Event Log source. The real SCM is
+   never reached. */
+static DWORD t_query_service(void *ctx, svc_status_report *out)
+{
+  (void)ctx;
+  out->installed = 1;
+  out->state = SERVICE_RUNNING;
+  out->start_type = SERVICE_AUTO_START;
+  wcscpy_s(out->binary, SD_COUNTOF(out->binary), L"\"C:\\fake\\shelldrive-host.exe\" service");
+  return 0;
+}
+
+static DWORD t_query_source(void *ctx, const wchar_t *source, wchar_t *message_file, size_t cch)
+{
+  (void)ctx;
+  (void)source;
+  (void)message_file;
+  (void)cch;
+  return ERROR_FILE_NOT_FOUND;
+}
+
+static svc_scm_ops g_fake_scm;
+static svc_repair_ops g_repair_ops;
+static wchar_t g_repair_base[MAX_PATH];
+
 /* Starts the core once, with a unique pipe name, the test owner SID and the fake backend. */
 static int ensure_core(void)
 {
@@ -255,6 +282,18 @@ static int ensure_core(void)
   o.dacl_extra_ace = L"(A;OICI;FA;;;OW)";   /* the test process is only the owner of its folders (see svc_opts) */
   o.event = test_event;
   o.event_ctx = NULL;
+  memset(&g_fake_scm, 0, sizeof(g_fake_scm));
+  g_fake_scm.query_service = t_query_service;
+  g_fake_scm.query_source = t_query_source;
+  o.scm_ops = &g_fake_scm;
+  /* service.repair_data works on a base folder of its own, never %ProgramData% */
+  memset(&g_repair_ops, 0, sizeof(g_repair_ops));
+  g_repair_ops.owner_trusted = owner_trust_all;
+  g_repair_ops.extra_ace = L"(A;OICI;FA;;;OW)";
+  o.repair_ops = &g_repair_ops;
+  _snwprintf_s(g_repair_base, MAX_PATH, _TRUNCATE, L"%s-repair", g_root);
+  if (!CreateDirectoryW(g_repair_base, NULL)) return 0;
+  o.repair_base = g_repair_base;
   g_running = CreateEventW(NULL, TRUE, FALSE, NULL);
   g_thread = CreateThread(NULL, 0, core_main, &o, 0, NULL);
   if (g_thread == NULL || g_running == NULL)
@@ -1124,6 +1163,102 @@ SD_TEST(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store)
   sd_ipc_close(c);
 }
 
+SD_TEST(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  const sd_json *o;
+  int b = 0;
+  int64_t n = -1;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_CHECK(sd_ipc_conn_has_feature(c, "service.status"));
+  SD_CHECK(sd_ipc_conn_has_feature(c, "service.repair_data"));
+  res = call(c, "service.status", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_bool(res, "installed", &b) && b);
+  SD_CHECK_STR(sd_json_get_str(res, "state"), "running");
+  SD_CHECK_STR(sd_json_get_str(res, "start_type"), "automatic");
+  o = sd_json_get(res, "program");
+  SD_CHECK_STR(sd_json_get_str(o, "path"), "\"C:\\fake\\shelldrive-host.exe\" service");
+  o = sd_json_get(res, "event_source");
+  SD_CHECK_STR(sd_json_get_str(o, "state"), "missing");
+  o = sd_json_get(res, "pipe");
+  SD_CHECK(sd_json_get_bool(o, "reachable", &b) && b);
+  SD_CHECK(sd_json_get_bool(o, "healthy", &b) && b);
+  SD_CHECK(sd_json_get_int64(o, "global_drives", &n) && n == 0);
+  SD_CHECK(sd_json_get_int64(o, "prompts", &n) && n == 0);
+  o = sd_json_get(res, "machine");
+  SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 5);
+  SD_CHECK(sd_json_get_str(o, "reason") == NULL);
+  sd_json_free(res);
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_status_is_open_to_a_non_admin_and_repair_is_not)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  int has_token = 0, b = 0;
+  SD_REQUIRE(ensure_core());
+  e = connect_restricted(&c, &has_token);
+  if (e != SD_OK) {
+    SD_CHECK(has_token == 0 || e == SD_E_ACCESS_DENIED || e == SD_E_CONN_REFUSED || e == SD_E_BUSY);
+    return;
+  }
+  res = call(c, "service.status", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_bool(res, "installed", &b) && b);
+  sd_json_free(res);
+  res = call(c, "service.repair_data", NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "access_denied");
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  const sd_json *o;
+  int64_t n = -1;
+  char mid[16];
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  res = mount_profile(c, "mounted", &err, &e);
+  SD_REQUIRE(res != NULL);
+  copy_str(mid, sizeof(mid), sd_json_get_str(res, "mount_id"));
+  sd_json_free(res);
+  SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
+  if (st)
+    sd_json_free(st);
+  res = call(c, "service.status", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  o = sd_json_get(res, "pipe");
+  SD_CHECK(sd_json_get_int64(o, "global_drives", &n) && n == 1);
+  sd_json_free(res);
+  res = call(c, "service.repair_data", NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "busy");
+  /* the refused repair changed nothing: the profiles are still loaded and the drive is still up */
+  res = call(c, "service.status", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  o = sd_json_get(res, "machine");
+  SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 5);
+  sd_json_free(res);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
 SD_TEST(svc_core_stops_and_leaves_nothing_behind)
 {
   sd_ipc_conn *c = NULL;
@@ -1147,6 +1282,7 @@ SD_TEST(svc_core_stops_and_leaves_nothing_behind)
   CloseHandle(g_running);
   g_running = NULL;
   g_started = 0;
+  RemoveDirectoryW(g_repair_base);
 }
 
 /* ---- start refusal of a machine folder (3.2, TM-R34, Event 3102) ----

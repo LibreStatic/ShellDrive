@@ -60,6 +60,25 @@ Priority 1: the user can not do it at all, and the backend exists.
    - Credential roaming is not locked by any policy (none is defined); the control is always editable.
    To add one of these, give `sd_settings` the field (parse and save in `src/sd_config/profile.c`), make the agent or
    `sd_log` read it, then add a field to `ui_settings_model` with its lock bit.
+
+2. **Service status and repair page for admins. Done in round 15** (branch `wip/r15-uisvc`). Decision: the UI does not
+   shell out to `shelldrive.exe`. The service pipe has two new methods, `service.status` (any client) and
+   `service.repair_data` (elevated administrators only), both on the code of the CLI verbs (`svc_status.c`,
+   `svc_scm.c`, `svc_repair.c`; the CLI output is unchanged). The Service page (`ui_service.c`, model
+   `ui_service_model.c`) is under Tools and the tray menu: it reads the SCM read-only for the install state and, when
+   the service runs, `service.status` for the machine data folder, global drives, open prompts and loaded profiles.
+   **Repair data...** is enabled for administrators only, carries the UAC shield on Vista+ when this process is not
+   elevated (a click offers `--elevated-service`, which reopens the page alone in an elevated process), asks for
+   confirmation with the safe button as the default, and runs through `service.repair_data` (or in process when the
+   service is not running). Details: the last section of m5-notes ("Service page: service.status and service.repair_data"). Still open on this item: install, uninstall, start and stop are
+   CLI verbs only (the page shows the state, it does not change it), and the WebClient and linked-connections status
+   of 7.5 (item 3).
+3. **Settings is missing most of the 7.5 list.** Present: language, backend, cache budget, notify, start at sign-in,
+   updates. Missing: default write mode, credential roaming, "Trust host keys accepted in PuTTY / OpenSSH" with the
+   "Ignored: other users can change this file" state (5.1, TM-R06), "Keep host names and file paths out of log
+   files" (`[log] privacy = strict`, 10.1), WebClient status, Windows 11 menu status (8.6), linked connections
+   (8.7), start tray and agent separately. Backend ok for all that are `settings.ini` keys (direct `sd_config` writes,
+   3.6); WebClient/linked-connections status need system queries (backend missing for a shared helper).
 4. **Changed key and wrong key type notifications do not lead to the host key manager.** Spec 5.2 and 5.4: the
    `host_key_mismatch` details dialog (old and new fingerprint, store and line of the old key, **Manage host
    keys...**, **Open file location**, "Stop using keys from this source") and the `host_key_type_unavailable`

@@ -20,6 +20,7 @@
 #include "cli.h"
 #include "cli_int.h"
 #include "svc_repair.h"
+#include "svc_status.h"
 #include "svc_scm.h"
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
@@ -323,14 +324,6 @@ static int scm_verb(const wchar_t *verb)
 
 /* ---- service status (03 §6.1; M5 part 3) ---- */
 
-/* What the running service reports over its pipe. reachable = 0 when the pipe does not answer. */
-typedef struct svc_pipe_report {
-  int reachable;
-  int healthy;                 /* selftest: the machine data folder is trusted (3.2) */
-  int64_t drives;              /* global drives: visible ones plus the letters of the others (2.2) */
-  int64_t prompts;             /* open administrator prompts, from the content-free attention count (2.6) */
-} svc_pipe_report;
-
 static sd_msg_id svc_state_msg(DWORD st)
 {
   switch (st) {
@@ -343,18 +336,6 @@ static sd_msg_id svc_state_msg(DWORD st)
   }
 }
 
-static const char *svc_state_key(DWORD st)
-{
-  switch (st) {
-  case SERVICE_RUNNING: return "running";
-  case SERVICE_STOPPED: return "stopped";
-  case SERVICE_START_PENDING: return "starting";
-  case SERVICE_STOP_PENDING: return "stopping";
-  case SERVICE_PAUSED: return "paused";
-  default: return "unknown";
-  }
-}
-
 static sd_msg_id start_type_msg(DWORD t)
 {
   switch (t) {
@@ -362,36 +343,6 @@ static sd_msg_id start_type_msg(DWORD t)
   case SERVICE_DEMAND_START: return SD_MSG_CLI_SERVICE_START_TYPE_MANUAL;
   case SERVICE_DISABLED: return SD_MSG_CLI_SERVICE_START_TYPE_DISABLED;
   default: return SD_MSG_CLI_SERVICE_START_TYPE_UNKNOWN;
-  }
-}
-
-static const char *start_type_key(DWORD t)
-{
-  switch (t) {
-  case SERVICE_AUTO_START: return "automatic";
-  case SERVICE_DEMAND_START: return "manual";
-  case SERVICE_DISABLED: return "disabled";
-  default: return "unknown";
-  }
-}
-
-static const char *path_check_key(int c)
-{
-  switch (c) {
-  case SVC_PATH_OK: return "ok";
-  case SVC_PATH_UNQUOTED: return "unquoted";
-  case SVC_PATH_OTHER: return "other";
-  default: return "unknown";
-  }
-}
-
-static const char *source_check_key(int c)
-{
-  switch (c) {
-  case SVC_SRC_OK: return "registered";
-  case SVC_SRC_MISSING: return "missing";
-  case SVC_SRC_OTHER: return "other";
-  default: return "unknown";
   }
 }
 
@@ -476,57 +427,17 @@ static void print_report(const svc_status_report *r, const svc_pipe_report *p)
   }
 }
 
-/* The same facts as print_report, as one JSON object with English keys (03 §6.3). */
+/* The same facts as print_report, as one JSON object with English keys (03 §6.3). The members are written by
+   svc_status.c, shared with the service.status method of the service pipe. */
 static void print_report_json(const svc_status_report *r, const svc_pipe_report *p, int pipe_queried)
 {
   sd_wr w;
   sd_json_writer jw;
   sd_json *j = NULL;
-  char path[1600], message_file[1600];
-  utf8_of(r->binary, path, sizeof(path));
-  utf8_of(r->message_file, message_file, sizeof(message_file));
   sd_wr_init(&w, 512);
   sd_jw_init(&jw, &w);
   sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "installed");
-  sd_jw_bool(&jw, r->installed);
-  sd_jw_key(&jw, "state");
-  sd_jw_cstr(&jw, r->installed ? svc_state_key(r->state) : "not_installed");
-  sd_jw_key(&jw, "start_type");
-  if (r->installed) sd_jw_cstr(&jw, start_type_key(r->start_type)); else sd_jw_null(&jw);
-  sd_jw_key(&jw, "program");
-  if (r->installed) {
-    sd_jw_obj_begin(&jw);
-    sd_jw_key(&jw, "path");
-    sd_jw_cstr(&jw, path);
-    sd_jw_key(&jw, "check");
-    sd_jw_cstr(&jw, path_check_key(r->binary_check));
-    sd_jw_obj_end(&jw);
-  } else {
-    sd_jw_null(&jw);
-  }
-  sd_jw_key(&jw, "event_source");
-  sd_jw_obj_begin(&jw);
-  sd_jw_key(&jw, "state");
-  sd_jw_cstr(&jw, source_check_key(r->source_check));
-  sd_jw_key(&jw, "message_file");
-  sd_jw_cstr(&jw, message_file);
-  sd_jw_obj_end(&jw);
-  sd_jw_key(&jw, "pipe");
-  if (pipe_queried) {
-    sd_jw_obj_begin(&jw);
-    sd_jw_key(&jw, "reachable");
-    sd_jw_bool(&jw, p->reachable);
-    sd_jw_key(&jw, "healthy");
-    sd_jw_bool(&jw, p->healthy);
-    sd_jw_key(&jw, "global_drives");
-    sd_jw_int(&jw, p->drives);
-    sd_jw_key(&jw, "prompts");
-    sd_jw_int(&jw, p->prompts);
-    sd_jw_obj_end(&jw);
-  } else {
-    sd_jw_null(&jw);
-  }
+  svc_status_write_members(&jw, r, pipe_queried ? p : NULL, NULL);
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) == SD_OK && sd_json_parse((const char *)w.p, w.len, 16, &j) == SD_OK)
     json_ok(j);
@@ -607,17 +518,10 @@ static int run_repair(const cli_args *a)
     sd_wr w;
     sd_json_writer jw;
     sd_json *j = NULL;
-    char moved_to[1600];
-    utf8_of(r.path, moved_to, sizeof(moved_to));
     sd_wr_init(&w, 256);
     sd_jw_init(&jw, &w);
     sd_jw_obj_begin(&jw);
-    sd_jw_key(&jw, "moved");
-    sd_jw_bool(&jw, r.moved);
-    sd_jw_key(&jw, "moved_to");
-    if (r.moved) sd_jw_cstr(&jw, moved_to); else sd_jw_null(&jw);
-    sd_jw_key(&jw, "folders");
-    sd_jw_int(&jw, (int64_t)r.folders);
+    svc_status_write_repair(&jw, &r);
     sd_jw_obj_end(&jw);
     if (sd_jw_finish(&jw) == SD_OK && sd_json_parse((const char *)w.p, w.len, 16, &j) == SD_OK)
       json_ok(j);

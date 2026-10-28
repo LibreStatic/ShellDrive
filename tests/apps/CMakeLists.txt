@@ -12,7 +12,8 @@ set(_cli_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive")
 add_executable(sd-test-host-fake
   "${_host_dir}/main.c" "${_host_dir}/agent.c" "${_host_dir}/log_ring.c" "${_host_dir}/state_producer.c"
   "${_host_dir}/explorer_data.c" "${_host_dir}/config_watch.c" "${_host_dir}/update_ipc.c" "${_host_dir}/host.h" host_fake_backend.c "${_host_dir}/installer_hooks.c"
-  "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_folder.c" "${_host_dir}/svc_repair.c")
+  "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_folder.c"
+  "${_host_dir}/svc_scm.c" "${_host_dir}/svc_repair.c" "${_host_dir}/svc_status.c")
 target_compile_definitions(sd-test-host-fake PRIVATE SD_HOST_TEST_HOOKS=1)
 target_include_directories(sd-test-host-fake PRIVATE "${_host_dir}" "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
 add_dependencies(sd-test-host-fake sd_svc_events)

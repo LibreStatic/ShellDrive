@@ -8,6 +8,8 @@
  * Modes: no arguments opens the main window; --tray starts with the window hidden (Run key); --prompt-host
  * and --action <verb> <target> are the verbs of ui_wire.c; --elevated-admin (03 §2.6 rule 3) answers the service
  * prompts over the service pipe with no tray and no agent: it is relaunched by the tray attention item with UAC;
+ * --elevated-service shows only the Service page (ui_service.c) in an elevated process, relaunched by its
+ * "Repair data..." button, and exits when the page is closed;
  * --test-window is the smoke test of tests/ui: it
  * creates the main window hidden, checks the window class and its controls, and exits 0; --test-prompts
  * creates every prompt dialog hidden and destroys it (exit 0 when all were created).
@@ -189,6 +191,9 @@ void ui_app_handle_request(const ui_request *req)
   case UI_VERB_ELEVATED_ADMIN:
     /* --tray changes nothing here; --prompt-host and --elevated-admin were handled in wWinMain (g_app.prompt_host,
        g_app.elevated_admin). */
+    break;
+  case UI_VERB_ELEVATED_SERVICE:
+    ui_service_open();
     break;
   case UI_VERB_UNMOUNT:
     /* The drive must be one of this UI's mounts; the agent checks again. */
@@ -591,7 +596,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   g_app.elevated_admin = req.verb == UI_VERB_ELEVATED_ADMIN;
   /* the admin mode has the prompt host's lifetime (no main window, leaves when the service goes or idles) */
   g_app.prompt_host = req.verb == UI_VERB_PROMPT_HOST || g_app.elevated_admin;
-  if (!g_app.elevated_admin) {
+  g_app.elevated_service = req.verb == UI_VERB_ELEVATED_SERVICE;
+  if (!g_app.elevated_admin && !g_app.elevated_service) {
     /* the admin mode is not a second UI of the user: it never forwards to the running one (no mutex) */
     e = sd_ipc_object_create(SD_IPC_OBJ_UI_MUTEX, &mutex, &existed);
     if (e != SD_OK || mutex == NULL)
@@ -610,11 +616,14 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   g_app.ctrl = CreateWindowExW(0, g_app.class_ctrl, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
   if (g_app.ctrl == NULL)
     goto done;
-  if (!g_app.prompt_host && ui_main_create(inst, g_app.class_main, 0) == NULL)
+  if (!g_app.prompt_host && !g_app.elevated_service && ui_main_create(inst, g_app.class_main, 0) == NULL)
     goto done;
   if (g_app.prompt_host)
     SetTimer(g_app.ctrl, UI_TIMER_PROMPT_IDLE, 1000, NULL);
-  if (g_app.elevated_admin) {
+  if (g_app.elevated_service) {
+    /* the Service page alone: no tray, no agent, no service thread (it reads the service on demand) */
+    g_app.user_admin = ui_svc_user_is_admin();
+  } else if (g_app.elevated_admin) {
     /* no tray icon for the admin mode: its prompt dialogs are the window */
     if (ui_svc_start(1) != SD_OK)
       goto done;
@@ -630,6 +639,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   }
   ui_app_handle_request(&req);
   /* first run (7.5): only for the plain start and "show"; --tray and the prompt host never open it */
+  if (g_app.elevated_service && !ui_service_is_open())
+    goto done;                          /* the page could not be created: nothing to wait for */
   if (req.verb == UI_VERB_NONE || req.verb == UI_VERB_SHOW)
     ui_wizard_run_if_needed(g_app.main, 0, g_app.prompt_host);
 
