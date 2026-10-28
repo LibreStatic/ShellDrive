@@ -31,6 +31,10 @@ typedef struct ui_settings_model {
   int openssh_source;                /* [hostkeys] openssh_source: trust host keys accepted in OpenSSH (5.1) */
   int putty_source;                  /* [hostkeys] putty_source: trust host keys accepted in PuTTY (5.1) */
   int roam_credentials;              /* [credentials] persist = enterprise (roam saved passwords, 3.4) */
+  int write_mode;                    /* [defaults] write_mode: SD_PROFILE_WRITE_THROUGH or _BEHIND (profiles without their own) */
+  int log_strict;                    /* [log] privacy = strict (keep host names and paths out of the log, 10.1) */
+  int agent_logon;                   /* [agent] start_at_logon (the agent's Run value, 3.2 Start) */
+  unsigned notify_kinds;             /* [ui] notify_<kind>: bit k is sd_notify_kind k (7.7); under the notify master */
 } ui_settings_model;
 
 /* Fields of the model, as bits of the masks below. */
@@ -42,6 +46,10 @@ typedef struct ui_settings_model {
 #define UI_SET_F_CACHE    0x400u
 #define UI_SET_F_ROAMING  0x800u
 #define UI_SET_F_LOGON    0x1000u
+#define UI_SET_F_WRITE    0x2000u    /* locked by policy ForceWriteThrough */
+#define UI_SET_F_PRIVACY  0x4000u    /* locked by policy LogPrivacy */
+#define UI_SET_F_KINDS    0x8000u    /* any [ui] notify_<kind> switch */
+#define UI_SET_F_AGENT    0x10000u   /* [agent] start_at_logon */
 
 /* The policy values the window reads (03 §3.5). The view fills it from sd_policy; the tests fill it by hand. A
    locked field is shown read-only with the value the policy enforces and is never written back to settings.ini. */
@@ -49,7 +57,14 @@ typedef struct ui_set_policy {
   int  language_set;                 /* UILanguage has a valid value */
   char language[UI_SET_LANG_MAX];
   int  sources_disabled;             /* DisableKnownHostsSources = 1 */
+  int  force_through;                /* ForceWriteThrough = 1: the default write mode is through */
+  int  privacy_set;                  /* LogPrivacy has a value (0 or 1) */
+  int  privacy_strict;               /* LogPrivacy = 1 */
 } ui_set_policy;
+
+/* Number of notification kinds with a switch, and the mask with all of them on. */
+#define UI_SET_KIND_COUNT SD_NOTIFY_COUNT
+#define UI_SET_KINDS_ALL  ((1u << UI_SET_KIND_COUNT) - 1u)
 
 /* Mask of the UI_SET_F_* fields the policies lock. */
 unsigned ui_settings_locked(const ui_set_policy *p);

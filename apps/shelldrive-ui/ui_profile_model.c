@@ -398,3 +398,27 @@ sd_err ui_mount_params_json(const sd_profile *p, int adhoc, const char *target, 
     out[0] = 0;
   return e;
 }
+
+int ui_pform_write_mode_shown(const sd_profile *p, const sd_settings *s, int force_through, int *locked)
+{
+  int mode = SD_PROFILE_WRITE_THROUGH;
+  if (locked != NULL)
+    *locked = force_through ? 1 : 0;
+  if (p == NULL)
+    return mode;
+  /* an explicit behind under the policy is refused by the agent: the list shows what is enforced */
+  (void)sd_profile_effective_write_mode(p, s, force_through, &mode);
+  return mode;
+}
+
+void ui_pform_write_mode_commit(sd_profile *p, int shown, int selected, int locked)
+{
+  if (p == NULL || locked)
+    return;
+  if (selected != SD_PROFILE_WRITE_THROUGH && selected != SD_PROFILE_WRITE_BEHIND)
+    return;
+  if (!p->write_mode_set && selected == shown)
+    return;
+  p->write_mode = selected;
+  p->write_mode_set = 1;
+}

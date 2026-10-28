@@ -22,6 +22,7 @@ int ui_settings_lang_index(const char *code)
 
 void ui_settings_from_sd(const sd_settings *s, ui_settings_model *m)
 {
+  int k;
   memset(m, 0, sizeof(*m));
   if (strcmp(s->ui_language, "system") != 0)
     strcpy_s(m->language, sizeof(m->language), s->ui_language);
@@ -32,10 +33,17 @@ void ui_settings_from_sd(const sd_settings *s, ui_settings_model *m)
   m->openssh_source = s->openssh_source ? 1 : 0;
   m->putty_source = s->putty_source ? 1 : 0;
   m->roam_credentials = s->persist_enterprise ? 1 : 0;
+  m->write_mode = s->default_write_mode == SD_PROFILE_WRITE_BEHIND ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
+  m->log_strict = s->log_privacy == SD_SETTINGS_PRIVACY_STRICT ? 1 : 0;
+  m->agent_logon = s->agent_start_at_logon ? 1 : 0;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    if (s->notify_kind[k])
+      m->notify_kinds |= 1u << k;
 }
 
 void ui_settings_to_sd(const ui_settings_model *m, sd_settings *s)
 {
+  int k;
   strcpy_s(s->ui_language, sizeof(s->ui_language), m->language);
   s->notify = m->notify ? 1 : 0;
   s->default_backend = m->default_backend;
@@ -43,6 +51,11 @@ void ui_settings_to_sd(const ui_settings_model *m, sd_settings *s)
   s->openssh_source = m->openssh_source ? 1 : 0;
   s->putty_source = m->putty_source ? 1 : 0;
   s->persist_enterprise = m->roam_credentials ? 1 : 0;
+  s->default_write_mode = m->write_mode == SD_PROFILE_WRITE_BEHIND ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
+  s->log_privacy = m->log_strict ? SD_SETTINGS_PRIVACY_STRICT : SD_SETTINGS_PRIVACY_STANDARD;
+  s->agent_start_at_logon = m->agent_logon ? 1 : 0;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    s->notify_kind[k] = (m->notify_kinds & (1u << k)) ? 1 : 0;
 }
 
 unsigned ui_settings_locked(const ui_set_policy *p)
@@ -54,6 +67,10 @@ unsigned ui_settings_locked(const ui_set_policy *p)
     mask |= UI_SET_F_LANGUAGE;
   if (p->sources_disabled)
     mask |= UI_SET_F_OPENSSH | UI_SET_F_PUTTY;
+  if (p->force_through)
+    mask |= UI_SET_F_WRITE;
+  if (p->privacy_set)
+    mask |= UI_SET_F_PRIVACY;
   return mask;
 }
 
@@ -66,6 +83,10 @@ unsigned ui_settings_apply_policy(ui_settings_model *m, const ui_set_policy *p)
     m->openssh_source = 0;
   if (mask & UI_SET_F_PUTTY)
     m->putty_source = 0;
+  if (mask & UI_SET_F_WRITE)
+    m->write_mode = SD_PROFILE_WRITE_THROUGH;
+  if (mask & UI_SET_F_PRIVACY)
+    m->log_strict = p->privacy_strict ? 1 : 0;
   return mask;
 }
 
@@ -80,6 +101,10 @@ unsigned ui_settings_changed(const ui_settings_model *a, const ui_settings_model
   if ((a->openssh_source != 0) != (b->openssh_source != 0)) d |= UI_SET_F_OPENSSH;
   if ((a->putty_source != 0) != (b->putty_source != 0)) d |= UI_SET_F_PUTTY;
   if ((a->roam_credentials != 0) != (b->roam_credentials != 0)) d |= UI_SET_F_ROAMING;
+  if (a->write_mode != b->write_mode) d |= UI_SET_F_WRITE;
+  if ((a->log_strict != 0) != (b->log_strict != 0)) d |= UI_SET_F_PRIVACY;
+  if ((a->agent_logon != 0) != (b->agent_logon != 0)) d |= UI_SET_F_AGENT;
+  if ((a->notify_kinds & UI_SET_KINDS_ALL) != (b->notify_kinds & UI_SET_KINDS_ALL)) d |= UI_SET_F_KINDS;
   return d;
 }
 
@@ -93,6 +118,10 @@ void ui_settings_to_sd_masked(const ui_settings_model *m, unsigned locked, sd_se
     s->openssh_source = keep.openssh_source;
   if (locked & UI_SET_F_PUTTY)
     s->putty_source = keep.putty_source;
+  if (locked & UI_SET_F_WRITE)
+    s->default_write_mode = keep.default_write_mode;
+  if (locked & UI_SET_F_PRIVACY)
+    s->log_privacy = keep.log_privacy;
 }
 
 ui_set_note ui_settings_source_note(int enabled, int locked, int src_state)

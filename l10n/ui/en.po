@@ -2648,3 +2648,113 @@ msgid "{count} event."
 msgid_plural "{count} events."
 msgstr[0] ""
 msgstr[1] ""
+
+#. Settings: title of the Notifications tab.
+msgctxt "ui.settings.tab_notifications"
+msgid "Notifications"
+msgstr ""
+
+#. Settings: label of the list that sets the default write mode of connections that do not choose one (3.4).
+msgctxt "ui.settings.write_default"
+msgid "Default for writes"
+msgstr ""
+
+#. Settings: default write mode list, wait for the server on every write.
+msgctxt "ui.settings.write_through"
+msgid "Wait for the server (safer)"
+msgstr ""
+
+#. Settings: default write mode list, acknowledge writes before the server confirms them.
+msgctxt "ui.settings.write_behind"
+msgid "Write in the background (faster)"
+msgstr ""
+
+#. Settings: checkbox that starts the ShellDrive agent at sign-in (Run key, this user only).
+msgctxt "ui.settings.agent_logon"
+msgid "Start the ShellDrive agent at sign-in"
+msgstr ""
+
+#. Settings: checkbox, strict log privacy (10.1).
+msgctxt "ui.settings.log_privacy"
+msgid "Keep host names and file paths out of log files"
+msgstr ""
+
+#. Settings: text above the list of notification switches.
+msgctxt "ui.settings.notify_hint"
+msgid "Choose which notifications appear. Important problems, such as a changed host key or a write that failed, are always shown."
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_connection_lost"
+msgid "Connection lost"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_reconnected"
+msgid "Connection restored"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mount_failed"
+msgid "A drive could not be connected"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mounted"
+msgid "A drive was connected"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_legacy_algorithms"
+msgid "A connection uses outdated encryption"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_offered"
+msgid "A server offers new host keys"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_saved"
+msgid "New host keys were saved automatically"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_proxy_password"
+msgid "A proxy sends the password unencrypted"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_pool_limited"
+msgid "Extra connections not used because signing in needs typing"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_service_attention"
+msgid "The ShellDrive service needs attention"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_available"
+msgid "An update is available"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_stale"
+msgid "Update information is out of date"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_terrapin"
+msgid "A connection is open to the Terrapin attack"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_source"
+msgid "A host key file was ignored because other users can change it"
+msgstr ""
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_disk_cache"
+msgid "Disk cache refused on a volume without permissions"
+msgstr ""

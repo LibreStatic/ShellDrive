@@ -107,4 +107,12 @@ sd_err ui_json_escape(const char *in, char *out, size_t cap);
 sd_err ui_mount_params_json(const sd_profile *p, int adhoc, const char *target, int read_only,
                             const char *backend, char *out, size_t cap);
 
+/* The Writes list of the editor (3.4.1, M4). A profile without mount.write_mode shows the effective default
+   ([defaults] write_mode, clamped to through under ForceWriteThrough) instead of a fixed entry. Returns the mode
+   the list shows; *locked is 1 when the policy fixes it (the list is then read-only). s may be NULL. */
+int ui_pform_write_mode_shown(const sd_profile *p, const sd_settings *s, int force_through, int *locked);
+/* Applies the list selection after the user may have changed it. The key stays absent while the selection is still
+   what was shown for an unset profile, and nothing is written while the list is locked. */
+void ui_pform_write_mode_commit(sd_profile *p, int shown, int selected, int locked);
+
 #endif /* SD_UI_PROFILE_MODEL_H */

@@ -25,6 +25,7 @@
 #include "sd_base/sd_mem.h"
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
+#include "sd_policy/sd_policy.h"
 #include "ui_dlg.h"
 #include "ui_int.h"
 #include "ui_measure.h"
@@ -39,6 +40,7 @@
 #define ED_ID_ERR     1501
 #define ED_ID_INTRO   1502
 #define ED_ID_LEGACY  1503
+#define ED_ID_WMNOTE  1504
 #define ED_ERR_CHARS  1024                /* wide characters of the error text of one page */
 
 enum { PG_GENERAL = 0, PG_AUTH, PG_CONN, PG_MOUNT, PG_SECURITY };
@@ -78,6 +80,8 @@ struct ed_ctx {
   size_t ntarget;
   ui_pferr parse_errs[UI_PF_COUNT];  /* values that did not parse on the last read */
   size_t nparse;
+  int wm_shown;                     /* the write mode the Writes list showed (effective default for an unset profile) */
+  int wm_locked;                    /* ForceWriteThrough: the Writes list is read-only */
 };
 
 /* ---- value lists (the stored values of each combo box, in display order) ---- */
@@ -359,8 +363,15 @@ static void write_page(ed_ctx *ed, int pg, HWND page)
         SendMessageW(c, BM_SETCHECK, atoi(text) ? BST_CHECKED : BST_UNCHECKED, 0);
       break;
     case K_ENUM:
-      if (ui_pform_get(&ed->work, d[i].f, text, sizeof(text)) == SD_OK)
+      if (d[i].f == UI_PF_WRITE_MODE) {
+        DWORD fv = 0;
+        int force = sd_policy_get_dword(SD_POLICY_FORCEWRITETHROUGH, &fv) && fv != 0;
+        ed->wm_shown = ui_pform_write_mode_shown(&ed->work, &g_app.settings, force, &ed->wm_locked);
+        fill_enum(c, d[i].en, ed->wm_shown);
+        EnableWindow(c, ed->wm_locked ? FALSE : TRUE);
+      } else if (ui_pform_get(&ed->work, d[i].f, text, sizeof(text)) == SD_OK) {
         fill_enum(c, d[i].en, atol(text));
+      }
       remember_closed_height(c);
       break;
     case K_TARGET:
@@ -398,6 +409,8 @@ static void read_page(ed_ctx *ed, int pg, HWND page)
     case K_ENUM:
       if (!enum_value(c, d[i].en, &value)) {
         e = SD_E_INVALID_PARAM;
+      } else if (d[i].f == UI_PF_WRITE_MODE) {
+        ui_pform_write_mode_commit(&ed->work, ed->wm_shown, value, ed->wm_locked);
       } else {
         sprintf_s(text, sizeof(text), "%d", value);
         e = ui_pform_set(&ed->work, d[i].f, text);
@@ -666,6 +679,11 @@ static void add_page_mount(ui_dlg *d)
   add_enum(d, UI_PF_BACKEND, SD_MSG_UI_MOUNT_BACKEND);
   add_check(d, UI_PF_READ_ONLY, SD_MSG_UI_MOUNT_READ_ONLY);
   add_enum(d, UI_PF_WRITE_MODE, SD_MSG_UI_MOUNT_WRITE_MODE);
+  {
+    DWORD fv = 0;
+    if (sd_policy_get_dword(SD_POLICY_FORCEWRITETHROUGH, &fv) && fv != 0)
+      ui_dlg_text(d, ED_ID_WMNOTE, sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_MANAGED), 0);
+  }
   add_enum(d, UI_PF_SYMLINKS, SD_MSG_UI_MOUNT_SYMLINKS);
   add_edit(d, UI_PF_LABEL, SD_MSG_UI_MOUNT_LABEL, 0);
   add_edit(d, UI_PF_OFFLINE_WAIT, SD_MSG_UI_MOUNT_OFFLINE_WAIT, ES_NUMBER);

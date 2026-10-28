@@ -2663,3 +2663,113 @@ msgid_plural "{count} events."
 msgstr[0] "{count} evento."
 msgstr[1] "{count} di eventi."
 msgstr[2] "{count} eventi."
+
+#. Settings: title of the Notifications tab.
+msgctxt "ui.settings.tab_notifications"
+msgid "Notifications"
+msgstr "Notifiche"
+
+#. Settings: label of the list that sets the default write mode of connections that do not choose one (3.4).
+msgctxt "ui.settings.write_default"
+msgid "Default for writes"
+msgstr "Scritture predefinite"
+
+#. Settings: default write mode list, wait for the server on every write.
+msgctxt "ui.settings.write_through"
+msgid "Wait for the server (safer)"
+msgstr "Attendi il server (più sicuro)"
+
+#. Settings: default write mode list, acknowledge writes before the server confirms them.
+msgctxt "ui.settings.write_behind"
+msgid "Write in the background (faster)"
+msgstr "Scrivi in background (più veloce)"
+
+#. Settings: checkbox that starts the ShellDrive agent at sign-in (Run key, this user only).
+msgctxt "ui.settings.agent_logon"
+msgid "Start the ShellDrive agent at sign-in"
+msgstr "Avvia l'agente di ShellDrive all'accesso"
+
+#. Settings: checkbox, strict log privacy (10.1).
+msgctxt "ui.settings.log_privacy"
+msgid "Keep host names and file paths out of log files"
+msgstr "Non includere nomi di server né percorsi di file nei registri"
+
+#. Settings: text above the list of notification switches.
+msgctxt "ui.settings.notify_hint"
+msgid "Choose which notifications appear. Important problems, such as a changed host key or a write that failed, are always shown."
+msgstr "Scegli quali notifiche mostrare. I problemi importanti, come una chiave host modificata o una scrittura non riuscita, vengono sempre mostrati."
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_connection_lost"
+msgid "Connection lost"
+msgstr "Connessione persa"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_reconnected"
+msgid "Connection restored"
+msgstr "Connessione ripristinata"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mount_failed"
+msgid "A drive could not be connected"
+msgstr "Impossibile connettere un'unità"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mounted"
+msgid "A drive was connected"
+msgstr "Un'unità è stata connessa"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_legacy_algorithms"
+msgid "A connection uses outdated encryption"
+msgstr "Una connessione usa una cifratura obsoleta"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_offered"
+msgid "A server offers new host keys"
+msgstr "Un server offre nuove chiavi host"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_saved"
+msgid "New host keys were saved automatically"
+msgstr "Nuove chiavi host sono state salvate automaticamente"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_proxy_password"
+msgid "A proxy sends the password unencrypted"
+msgstr "Un proxy invia la password non cifrata"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_pool_limited"
+msgid "Extra connections not used because signing in needs typing"
+msgstr "Connessioni aggiuntive non usate perché l'accesso richiede di digitare"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_service_attention"
+msgid "The ShellDrive service needs attention"
+msgstr "Il servizio di ShellDrive richiede attenzione"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_available"
+msgid "An update is available"
+msgstr "È disponibile un aggiornamento"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_stale"
+msgid "Update information is out of date"
+msgstr "Le informazioni sugli aggiornamenti sono obsolete"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_terrapin"
+msgid "A connection is open to the Terrapin attack"
+msgstr "Una connessione è esposta all'attacco Terrapin"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_source"
+msgid "A host key file was ignored because other users can change it"
+msgstr "Un file di chiavi host è stato ignorato perché altri utenti possono modificarlo"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_disk_cache"
+msgid "Disk cache refused on a volume without permissions"
+msgstr "Cache su disco rifiutata su un volume senza permessi"

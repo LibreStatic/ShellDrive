@@ -61,8 +61,13 @@ Priority 1: the user can not do it at all, and the backend exists.
      Run value `ShellDriveAgent` (`agent_run_set`) when `sd_settings_agent_run_wanted` says so (the key or a profile
      with autostart = logon). The tray Run value `ShellDriveTray` is unchanged.
    **Still open (frontend or follow-up):**
-   - Settings controls for the four keys above (a second "start agent at sign-in" checkbox, the write mode combo, the
-     privacy checkbox, the per-type notification list) and their policy lock bits in `ui_settings_model`.
+   - DONE in round 18 (branch `wip/r18-uisettings2`): Settings controls for the four keys above. General has "Start the
+     ShellDrive agent at sign-in" and the "Default for writes" list; Security has the log privacy checkbox; the new
+     Notifications tab has one switch per kind under the master switch (disabled, not cleared, while the master is off).
+     Policy locks `ForceWriteThrough` (UI_SET_F_WRITE) and `LogPrivacy` (UI_SET_F_PRIVACY) show the enforced value
+     read-only with "Managed by your organization." and are never written. The profile editor's Writes list shows the
+     effective default for a profile without `mount.write_mode` (`ui_pform_write_mode_shown`) and leaves the key absent
+     unless the user changes the list; under `ForceWriteThrough` it is read-only.
    - The log call sites still print host, user and path with `%s`: they must move to `%Hs`, `%Us`, `%Rs` before strict
      privacy covers the whole log (about 100 sites in agent, sd_ssh, sd_sftp, sd_vfs).
    - Balloons for connection lost, reconnected, mount failed, mounted, proxy password, pool limit and disk cache are

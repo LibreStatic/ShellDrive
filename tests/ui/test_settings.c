@@ -321,3 +321,146 @@ SD_TEST(settings_security_fields_survive_a_save_load_round_trip)
   sd_config_set_root_override(NULL);
   remove_tree(root);
 }
+
+SD_TEST(settings_r17_mapping_and_defaults)
+{
+  sd_settings s;
+  ui_settings_model m;
+  int k;
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &m);
+  SD_CHECK_EQ_INT(m.write_mode, SD_PROFILE_WRITE_THROUGH);
+  SD_CHECK_EQ_INT(m.log_strict, 0);
+  SD_CHECK_EQ_INT(m.agent_logon, 0);
+  /* the 7.7 defaults: every kind on except "mounted" and the pool limit */
+  for (k = 0; k < SD_NOTIFY_COUNT; k++) {
+    int want = (k != SD_NOTIFY_MOUNTED && k != SD_NOTIFY_POOL_LIMITED) ? 1 : 0;
+    SD_CHECK_EQ_INT((m.notify_kinds & (1u << k)) != 0, want);
+  }
+
+  s.default_write_mode = SD_PROFILE_WRITE_BEHIND;
+  s.log_privacy = SD_SETTINGS_PRIVACY_STRICT;
+  s.agent_start_at_logon = 1;
+  memset(s.notify_kind, 0, sizeof(s.notify_kind));
+  s.notify_kind[SD_NOTIFY_TERRAPIN] = 1;
+  ui_settings_from_sd(&s, &m);
+  SD_CHECK_EQ_INT(m.write_mode, SD_PROFILE_WRITE_BEHIND);
+  SD_CHECK_EQ_INT(m.log_strict, 1);
+  SD_CHECK_EQ_INT(m.agent_logon, 1);
+  SD_CHECK(m.notify_kinds == (1u << SD_NOTIFY_TERRAPIN));
+
+  /* and back: only the window fields change, the rest of s stays */
+  s.log_level = 4;
+  m.write_mode = SD_PROFILE_WRITE_THROUGH;
+  m.log_strict = 0;
+  m.agent_logon = 0;
+  m.notify_kinds = (1u << SD_NOTIFY_CONNECTION_LOST) | (1u << SD_NOTIFY_DISK_CACHE);
+  ui_settings_to_sd(&m, &s);
+  SD_CHECK_EQ_INT(s.default_write_mode, SD_PROFILE_WRITE_THROUGH);
+  SD_CHECK_EQ_INT(s.log_privacy, SD_SETTINGS_PRIVACY_STANDARD);
+  SD_CHECK_EQ_INT(s.agent_start_at_logon, 0);
+  SD_CHECK_EQ_INT(s.log_level, 4);
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    SD_CHECK_EQ_INT(s.notify_kind[k], (k == SD_NOTIFY_CONNECTION_LOST || k == SD_NOTIFY_DISK_CACHE) ? 1 : 0);
+  /* the master switch is separate: a kind keeps its value while notifications are off */
+  SD_CHECK_EQ_INT(sd_settings_notify_on(&s, SD_NOTIFY_CONNECTION_LOST), s.notify ? 1 : 0);
+  s.notify = 0;
+  SD_CHECK_EQ_INT(sd_settings_notify_on(&s, SD_NOTIFY_CONNECTION_LOST), 0);
+  SD_CHECK_EQ_INT(s.notify_kind[SD_NOTIFY_CONNECTION_LOST], 1);
+}
+
+SD_TEST(settings_r17_policy_locks_are_never_written)
+{
+  sd_settings s;
+  ui_settings_model m;
+  ui_set_policy pol;
+  unsigned locked;
+  memset(&pol, 0, sizeof(pol));
+  pol.force_through = 1;
+  SD_CHECK(ui_settings_locked(&pol) == UI_SET_F_WRITE);
+  pol.privacy_set = 1;
+  pol.privacy_strict = 1;
+  SD_CHECK(ui_settings_locked(&pol) == (UI_SET_F_WRITE | UI_SET_F_PRIVACY));
+
+  sd_settings_defaults(&s);
+  s.default_write_mode = SD_PROFILE_WRITE_BEHIND;             /* the file says behind and standard */
+  s.log_privacy = SD_SETTINGS_PRIVACY_STANDARD;
+  ui_settings_from_sd(&s, &m);
+  locked = ui_settings_apply_policy(&m, &pol);
+  SD_CHECK(locked == (UI_SET_F_WRITE | UI_SET_F_PRIVACY));
+  SD_CHECK_EQ_INT(m.write_mode, SD_PROFILE_WRITE_THROUGH);     /* the window shows what the policy enforces */
+  SD_CHECK_EQ_INT(m.log_strict, 1);
+
+  /* an unlocked field is written, the locked ones keep the file's values */
+  m.agent_logon = 1;
+  ui_settings_to_sd_masked(&m, locked, &s);
+  SD_CHECK_EQ_INT(s.default_write_mode, SD_PROFILE_WRITE_BEHIND);
+  SD_CHECK_EQ_INT(s.log_privacy, SD_SETTINGS_PRIVACY_STANDARD);
+  SD_CHECK_EQ_INT(s.agent_start_at_logon, 1);
+
+  /* LogPrivacy = 0 locks too, and shows standard */
+  memset(&pol, 0, sizeof(pol));
+  pol.privacy_set = 1;
+  pol.privacy_strict = 0;
+  s.log_privacy = SD_SETTINGS_PRIVACY_STRICT;
+  ui_settings_from_sd(&s, &m);
+  locked = ui_settings_apply_policy(&m, &pol);
+  SD_CHECK(locked == UI_SET_F_PRIVACY);
+  SD_CHECK_EQ_INT(m.log_strict, 0);
+  ui_settings_to_sd_masked(&m, locked, &s);
+  SD_CHECK_EQ_INT(s.log_privacy, SD_SETTINGS_PRIVACY_STRICT);
+}
+
+SD_TEST(settings_r17_diff_writes_only_changed_keys)
+{
+  sd_settings s;
+  ui_settings_model a, b;
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &a);
+  b = a;
+  SD_CHECK_EQ_INT((int)ui_settings_changed(&a, &b), 0);
+  b.write_mode = SD_PROFILE_WRITE_BEHIND;
+  SD_CHECK(ui_settings_changed(&a, &b) == UI_SET_F_WRITE);
+  b = a;
+  b.log_strict = 1;
+  SD_CHECK(ui_settings_changed(&a, &b) == UI_SET_F_PRIVACY);
+  b = a;
+  b.agent_logon = 1;
+  SD_CHECK(ui_settings_changed(&a, &b) == UI_SET_F_AGENT);
+  b = a;
+  b.notify_kinds ^= 1u << SD_NOTIFY_RECONNECTED;
+  SD_CHECK(ui_settings_changed(&a, &b) == UI_SET_F_KINDS);
+  b.notify_kinds |= 0x80000000u;                              /* bits beyond the kinds are not a change */
+  b.notify_kinds ^= 1u << SD_NOTIFY_RECONNECTED;
+  SD_CHECK_EQ_INT((int)ui_settings_changed(&a, &b), 0);
+}
+
+SD_TEST(settings_r17_values_survive_a_save_load_round_trip)
+{
+  wchar_t root[MAX_PATH];
+  sd_settings s, back;
+  ui_settings_model m, m2;
+  temp_root(root, SD_COUNTOF(root));
+  SD_REQUIRE(root[0] != L'\0');
+  remove_tree(root);
+  sd_config_set_root_override(root);
+  SD_REQUIRE(sd_config_ensure_dirs() == SD_OK);
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &m);
+  m.write_mode = SD_PROFILE_WRITE_BEHIND;
+  m.log_strict = 1;
+  m.agent_logon = 1;
+  m.notify_kinds |= 1u << SD_NOTIFY_MOUNTED;
+  m.notify_kinds &= ~(1u << SD_NOTIFY_UPDATE_AVAILABLE);
+  ui_settings_to_sd(&m, &s);
+  SD_CHECK(sd_settings_save(&s) == SD_OK);
+  sd_settings_defaults(&back);
+  SD_CHECK(sd_settings_load(&back) == SD_OK);
+  ui_settings_from_sd(&back, &m2);
+  SD_CHECK_EQ_INT(m2.write_mode, SD_PROFILE_WRITE_BEHIND);
+  SD_CHECK_EQ_INT(m2.log_strict, 1);
+  SD_CHECK_EQ_INT(m2.agent_logon, 1);
+  SD_CHECK(m2.notify_kinds == m.notify_kinds);
+  sd_config_set_root_override(NULL);
+  remove_tree(root);
+}
