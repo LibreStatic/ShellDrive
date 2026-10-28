@@ -1,10 +1,10 @@
-/* The Event Log message tables of shelldrive-host (03 §10.3, §9.1).
+/* The Event Log message tables of shelldrive-host (03 §10.3, §9.1, §9.3).
  *
- * The generated svc_events.mc (written by sdl10n from l10n/svc, compiled by mc.exe -u) must hold six Language= blocks
- * for every MessageId, in the fixed order of the language table below. The shelldrive-host.exe that the build made
- * must resolve every id in every one of those languages (FormatMessage, FROM_HMODULE, LOAD_LIBRARY_AS_DATAFILE), and
- * the text it returns must be the text of that language in the .mc. Nothing here writes the Event Log or registers a
- * source: FormatMessage only reads the message table. */
+ * The generated svc_events.mc (written by sdl10n from l10n/svc, compiled by mc.exe -u) names one language per LANGID:
+ * every sublanguage that Windows defines for the six primary languages, plus the primary-neutral id. The test reads
+ * that LanguageNames list from the .mc, checks that every id has one Language= block per entry, and that the
+ * shelldrive-host.exe the build made resolves every id in every LANGID (FormatMessage, FROM_HMODULE,
+ * LOAD_LIBRARY_AS_DATAFILE) to the text of that block. Nothing here writes the Event Log or registers a source. */
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,21 +21,18 @@
 #error "SD_SVC_HOST_EXE must name the built shelldrive-host.exe"
 #endif
 
-typedef struct mc_lang {
-  const wchar_t *name;             /* the LanguageNames entry of sdl10n's .mc */
-  LANGID lang;
-} mc_lang;
+/* sdl10n write_mc: 17 en + 22 es + 7 fr + 3 pt + 3 it + 6 de LANGIDs (SDK SUBLANG values, with the neutral ids). */
+#define MC_EXPECTED_LANGS 58
+#define MC_MAX_LANGS 80
+#define MC_EVENTS_MIN 10
 
-/* Same order as sdl10n write_mc (k_mc_langs); the LCIDs are 0x409, 0x2C0A, 0x40C, 0x416, 0x410, 0x407. */
-static const mc_lang k_mc_langs[] = {
-  { L"English",          MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US) },
-  { L"Spanish",          MAKELANGID(LANG_SPANISH, 0x0B) },   /* es-AR, the Rioplatense voseo text (11274) */
-  { L"French",           MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH) },
-  { L"PortugueseBrazil", MAKELANGID(LANG_PORTUGUESE, SUBLANG_PORTUGUESE_BRAZILIAN) },
-  { L"Italian",          MAKELANGID(LANG_ITALIAN, SUBLANG_ITALIAN) },
-  { L"German",           MAKELANGID(LANG_GERMAN, SUBLANG_GERMAN) },
-};
-#define MC_LANG_COUNT (sizeof(k_mc_langs) / sizeof(k_mc_langs[0]))
+typedef struct mc_entry {
+  wchar_t name[16];             /* LanguageNames identifier, L<LCID> */
+  LANGID lang;
+} mc_entry;
+
+static mc_entry g_langs[MC_MAX_LANGS];
+static int g_nlangs;
 
 /* Reads the UTF-16LE .mc into a NUL-terminated buffer of wchar_t (16 bits on Windows). */
 static wchar_t *read_mc(size_t *units_out)
@@ -83,8 +80,45 @@ static int severity_code(const wchar_t *name, size_t len)
   return -1;
 }
 
-/* Walks every MessageId block of the .mc. For each id and language, checks the block structure and, when hm is
-   not NULL, that the module resolves the id in that language to the same text. Returns the number of blocks. */
+/* Reads the LanguageNames=( ... ) list: one "L<LCID>=0x<LCID>:MSG<LCID>" entry per line. */
+static int parse_language_names(const wchar_t *w)
+{
+  const wchar_t *p = wcsstr(w, L"LanguageNames=(");
+  const wchar_t *close;
+  int n = 0;
+  if (!p) return 0;
+  close = wcschr(p, L')');
+  if (!close) return 0;
+  p += 15;                       /* past "LanguageNames=(" */
+  while (p < close && n < MC_MAX_LANGS) {
+    const wchar_t *eq, *eol;
+    size_t nl;
+    while (p < close && (*p == L' ' || *p == L'\r' || *p == L'\n')) p++;
+    if (p >= close) break;
+    eq = wcschr(p, L'=');
+    if (!eq || eq > close) break;
+    nl = (size_t)(eq - p);
+    if (nl == 0 || nl >= sizeof(g_langs[0].name) / sizeof(wchar_t)) break;
+    wcsncpy_s(g_langs[n].name, sizeof(g_langs[n].name) / sizeof(wchar_t), p, nl);
+    g_langs[n].lang = (LANGID)(wcstoul(eq + 1, NULL, 16) & 0xFFFF);
+    eol = wcsstr(eq, L"\r\n");
+    if (!eol || eol > close) eol = close;
+    p = eol;
+    n++;
+  }
+  return n;
+}
+
+static int lang_present(LANGID lang)
+{
+  int i;
+  for (i = 0; i < g_nlangs; i++)
+    if (g_langs[i].lang == lang) return 1;
+  return 0;
+}
+
+/* Walks every MessageId block of the .mc. For each id and each LANGID of the LanguageNames list, checks the block and,
+   when hm is not NULL, that the module resolves the id in that LANGID to the text of the block. Returns the blocks. */
 static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
 {
   size_t units = 0;
@@ -93,6 +127,9 @@ static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
   int blocks = 0;
   if (!w) { sd_test_fail(sd_t_, __FILE__, __LINE__, "cannot read the generated %s", SD_SVC_EVENTS_MC); return 0; }
   end_of_file = w + units;
+  g_nlangs = parse_language_names(w);
+  if (g_nlangs != MC_EXPECTED_LANGS)
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "LanguageNames lists %d languages, want %d", g_nlangs, MC_EXPECTED_LANGS);
   p = wcsstr(w, L"MessageId=");
   while (p) {
     const wchar_t *next = wcsstr(p + 10, L"MessageId=");
@@ -100,8 +137,7 @@ static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
     const wchar_t *q = p;
     const wchar_t *sev;
     DWORD id;
-    int sev_code, count = 0;
-    size_t k;
+    int sev_code, count = 0, k;
 
     id = (DWORD)wcstoul(p + 10, NULL, 10);
     sev = wcsstr(p, L"Severity=");
@@ -118,27 +154,27 @@ static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
     }
 
     while ((q = wcsstr(q, L"Language=")) != NULL && q < end) { count++; q++; }
-    if (count != (int)MC_LANG_COUNT)
-      sd_test_fail(sd_t_, __FILE__, __LINE__, "MessageId %lu has %d Language= blocks, want %u",
-                   (unsigned long)id, count, (unsigned)MC_LANG_COUNT);
+    if (count != g_nlangs)
+      sd_test_fail(sd_t_, __FILE__, __LINE__, "MessageId %lu has %d Language= blocks, want %d",
+                   (unsigned long)id, count, g_nlangs);
 
-    for (k = 0; k < MC_LANG_COUNT; k++) {
-      wchar_t needle[64];
+    for (k = 0; k < g_nlangs; k++) {
+      wchar_t needle[32];
       const wchar_t *tstart, *tend;
       size_t tlen;
       wcscpy_s(needle, sizeof(needle) / sizeof(needle[0]), L"Language=");
-      wcscat_s(needle, sizeof(needle) / sizeof(needle[0]), k_mc_langs[k].name);
+      wcscat_s(needle, sizeof(needle) / sizeof(needle[0]), g_langs[k].name);
       wcscat_s(needle, sizeof(needle) / sizeof(needle[0]), L"\r\n");
       tstart = wcsstr(p, needle);
       if (!tstart || tstart >= end) {
-        sd_test_fail(sd_t_, __FILE__, __LINE__, "MessageId %lu lacks the %ls block", (unsigned long)id, k_mc_langs[k].name);
+        sd_test_fail(sd_t_, __FILE__, __LINE__, "MessageId %lu lacks the %ls block", (unsigned long)id, g_langs[k].name);
         continue;
       }
       tstart += wcslen(needle);
       tend = wcsstr(tstart, L"\r\n.\r\n");
       if (!tend || tend >= end || tend == tstart) {
         sd_test_fail(sd_t_, __FILE__, __LINE__, "MessageId %lu %ls text is empty or unterminated",
-                     (unsigned long)id, k_mc_langs[k].name);
+                     (unsigned long)id, g_langs[k].name);
         continue;
       }
       tlen = (size_t)(tend - tstart);
@@ -147,17 +183,17 @@ static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
         DWORD n;
         size_t olen, want;
         n = FormatMessageW(FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_IGNORE_INSERTS, hm, id,
-                           k_mc_langs[k].lang, out, (DWORD)(sizeof(out) / sizeof(out[0])), NULL);
+                           g_langs[k].lang, out, (DWORD)(sizeof(out) / sizeof(out[0])), NULL);
         if (n == 0) {
-          sd_test_fail(sd_t_, __FILE__, __LINE__, "id 0x%08lX does not resolve in %ls (error %lu)",
-                       (unsigned long)id, k_mc_langs[k].name, (unsigned long)GetLastError());
+          sd_test_fail(sd_t_, __FILE__, __LINE__, "id 0x%08lX does not resolve in LANGID 0x%04X (%ls, error %lu)",
+                       (unsigned long)id, (unsigned)g_langs[k].lang, g_langs[k].name, (unsigned long)GetLastError());
           continue;
         }
         olen = trimmed(out, (size_t)n);
         want = trimmed(tstart, tlen);
         if (olen != want || wcsncmp(out, tstart, want) != 0)
-          sd_test_fail(sd_t_, __FILE__, __LINE__, "id 0x%08lX in %ls differs from svc_events.mc (module returned %lu chars, mc %lu)",
-                       (unsigned long)id, k_mc_langs[k].name, (unsigned long)olen, (unsigned long)want);
+          sd_test_fail(sd_t_, __FILE__, __LINE__, "id 0x%08lX in LANGID 0x%04X (%ls) differs from svc_events.mc (module %lu chars, mc %lu)",
+                       (unsigned long)id, (unsigned)g_langs[k].lang, g_langs[k].name, (unsigned long)olen, (unsigned long)want);
       }
     }
     blocks++;
@@ -167,19 +203,30 @@ static int walk_mc(sd_test_ctx *sd_t_, HMODULE hm)
   return blocks;
 }
 
-SD_TEST(evtmsg_mc_has_six_languages_for_every_id)
+/* The LANGIDs the Event Viewer asks for in practice: the six primary neutral ids, the sublanguages the project
+   names (es-ES, es-MX, pt-PT, fr-CA, de-AT, it-CH, en-GB) and the regional ids of the single texts. */
+static const LANGID k_required[] = {
+  0x0409, 0x0809, 0x0C0A, 0x080A, 0x2C0A, 0x0816, 0x0416, 0x0C0C, 0x040C, 0x0C07, 0x0407, 0x0810, 0x0410,
+  0x0009, 0x000A, 0x000C, 0x0016, 0x0010, 0x0007,
+};
+
+SD_TEST(evtmsg_mc_has_every_langid_for_every_id)
 {
   int blocks = walk_mc(sd_t_, NULL);
-  SD_CHECK(blocks >= 10);
+  size_t i;
+  SD_CHECK(blocks >= MC_EVENTS_MIN);
+  for (i = 0; i < sizeof(k_required) / sizeof(k_required[0]); i++)
+    if (!lang_present(k_required[i]))
+      sd_test_fail(sd_t_, __FILE__, __LINE__, "LanguageNames lacks LANGID 0x%04X", (unsigned)k_required[i]);
 }
 
-SD_TEST(evtmsg_module_resolves_every_id_in_every_language)
+SD_TEST(evtmsg_module_resolves_every_id_in_every_langid)
 {
   HMODULE hm = LoadLibraryExA(SD_SVC_HOST_EXE, NULL, LOAD_LIBRARY_AS_DATAFILE);
   int blocks;
   SD_REQUIRE(hm != NULL);
   blocks = walk_mc(sd_t_, hm);
-  SD_CHECK(blocks >= 10);
+  SD_CHECK(blocks >= MC_EVENTS_MIN);
   FreeLibrary(hm);
 }
 

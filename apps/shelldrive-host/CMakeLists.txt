@@ -49,11 +49,8 @@ if(NOT SD_MC_EXE)
 endif()
 set(SD_SVC_EVENTS_DIR "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
 set(SD_SVC_EVENTS_MC "${SD_SVC_EVENTS_DIR}/svc_events.mc")
-# One .bin per language, named by mc.exe from the LanguageNames line that sdl10n writes (keep the two in step).
-set(SD_SVC_EVENTS_BINS "")
-foreach(_bin MSG00409 MSG02C0A MSG0040C MSG00416 MSG00410 MSG00407)
-  list(APPEND SD_SVC_EVENTS_BINS "${SD_SVC_EVENTS_DIR}/${_bin}.bin")
-endforeach()
+# mc.exe writes one MSG<LCID>.bin per LanguageNames entry that sdl10n defines (one per LANGID of the six primary
+# languages, 58 in all). They are not listed as outputs: the .rc file names them, and the set is owned by sdl10n.
 set(SD_SVC_EVENTS_PO "")
 foreach(_lang IN LISTS SD_LANGS)
   list(APPEND SD_SVC_EVENTS_PO "${CMAKE_SOURCE_DIR}/l10n/svc/${_lang}.po")
@@ -67,7 +64,7 @@ add_custom_command(
   COMMENT "sdl10n: Event Log messages of shelldrive-host"
   VERBATIM)
 add_custom_command(
-  OUTPUT "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc" ${SD_SVC_EVENTS_BINS}
+  OUTPUT "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc"
   COMMAND "${SD_MC_EXE}" -u -h "${SD_SVC_EVENTS_DIR}" -r "${SD_SVC_EVENTS_DIR}" "${SD_SVC_EVENTS_MC}"
   DEPENDS "${SD_SVC_EVENTS_MC}"
   COMMENT "mc: Event Log message tables of shelldrive-host (six languages)"

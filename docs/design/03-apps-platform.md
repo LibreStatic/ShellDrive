@@ -2459,14 +2459,18 @@ v1.0 (can ship in v1.x without format changes).
   owner decision, supersedes the earlier English-only rule). The source of truth is the `svc` catalog
   (`l10n/svc/<lang>.po`, 9.1): each event is a PO entry whose `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` comment gives its
   MessageId, severity and symbolic name. `sdl10n --out-mc` writes `svc_events.mc` at build time with one `Language=` block
-  per language for every id, in the order `English`, `Spanish` (LCID 0x2C0A, es-AR, the voseo text as in the MSI
-  transform 11274), `French` (0x040C), `PortugueseBrazil` (0x0416), `Italian` (0x0410), `German` (0x0407). The build fails
-  if any locale lacks an event, even with `--allow-incomplete`; every translation keeps the `%N` placeholders of en in the
-  same order. Event Log insert strings (the `%N` values: paths, SIDs, reason codes such as `owner`, `reparse_point`,
-  `acl`, `not_directory`, the profile and host names) are data and are not translated. The Event Viewer shows the message
-  in the language that `FormatMessage` finds for the user's language; the table has no es-ES block, so Spanish users
-  outside es-AR may see the English text until an LCID is added (the MSI embeds the Spanish transform under several
-  LCIDs, 04 §8.3; the Event Log table could do the same).
+  per LANGID for every id. FormatMessage and the Event Viewer match the exact LANGID, so each language's one text is
+  emitted under every sublanguage LANGID that Windows defines for that primary language (SUBLANG_* in winnt.h), plus the
+  primary-neutral LANGID as a fallback: English 17 LANGIDs (0x0009 neutral, 0x0409, 0x0809, ...), Spanish 22 (0x000A,
+  0x040A, 0x080A, 0x0C0A, 0x2C0A, ... 0x540A), French 7 (0x000C, 0x040C, 0x080C, 0x0C0C, ...), Portuguese 3 (0x0016,
+  0x0416 pt-BR, 0x0816 pt-PT), Italian 3 (0x0010, 0x0410, 0x0810), German 6 (0x0007, 0x0407, 0x0807, 0x0C07, 0x1007,
+  0x1407): 58 `LanguageNames` entries. This mirrors the UI (`lang_from_langid` in sd_l10n: the primary language selects
+  the text, so es-ES and es-MX get the voseo text, pt-PT gets Brazilian Portuguese, as already documented in 9.3).
+  The build fails if any locale lacks an event, even with `--allow-incomplete`; every translation keeps the `%N`
+  placeholders of en in the same order. Event Log insert strings (the `%N` values: paths, SIDs, reason codes such as
+  `owner`, `reparse_point`, `acl`, `not_directory`, the profile and host names) are data and are not translated. The
+  unit test `unit.svc` (`evtmsg_module_resolves_every_id_in_every_langid`) resolves every id in every LANGID of the
+  table through FormatMessage on the built shelldrive-host.exe.
   Event IDs, each with `%1`… inserts:
   1000 service started, 1001 stopped, 1100 global drive mounted (`%1` profile, `%2` target, `%3` host),
   1101 unmounted, 2100 mount failed (`%1` profile, `%2` code, `%3` detail), 2101 reconnecting, 2200 legacy algorithms

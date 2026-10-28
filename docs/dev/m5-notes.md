@@ -1168,3 +1168,13 @@ AGENTS.md is not edited in this round; its wording on event log payloads should 
   may get the English text from FormatMessage until more LCIDs are added. This is recorded in 03 10.3.
 - **Not changed.** The message ids and placeholders, the event sources and the registration. The agent still does not
   write to the Event Log.
+
+### Addendum: Event Log table per LANGID
+
+The "known gap" above is closed. FormatMessage and the Event Viewer match the exact LANGID, so `sdl10n --out-mc` now
+writes each language's one text under every sublanguage LANGID that winnt.h defines for that primary language, plus the
+primary-neutral LANGID: 58 `LanguageNames` entries (English 17, Spanish 22, French 7, Portuguese 3, Italian 3, German 6).
+The mapping mirrors `lang_from_langid` in `src/sd_l10n/l10n.c`, which selects the text by primary language. The
+`.bin` files are named MSG<LCID> by mc.exe and are not listed as build outputs. `unit.svc` checks that the table has
+every LANGID of the required list (including es-ES 0x0C0A, es-MX 0x080A, pt-PT 0x0816, fr-CA 0x0C0C, de-AT 0x0C07,
+it-CH 0x0810, en-GB 0x0809) and that each id resolves in each LANGID to the text of its block.

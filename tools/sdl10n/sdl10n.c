@@ -1171,23 +1171,59 @@ static void w16_line(FILE *o, const char *s)
   w16_utf8(o, "\r\n");
 }
 
-/* Writes the Event Log message table of the catalog (03 §10.3) as a UTF-16LE .mc file for "mc -u". The
-   language names and LCIDs are the ones of the Windows message table of shelldrive-host: es is Rioplatense
-   text under es-AR (11274), the LCID the MSI also uses for its Spanish transform. */
-static const struct { const char *name; unsigned lcid; const char *file; int li; } k_mc_langs[] = {
-  { "English",           0x409,  "MSG00409", 0 },
-  { "Spanish",           0x2C0A, "MSG02C0A", 1 },
-  { "French",            0x40C,  "MSG0040C", 2 },
-  { "PortugueseBrazil",  0x416,  "MSG00416", 3 },
-  { "Italian",           0x410,  "MSG00410", 4 },
-  { "German",            0x407,  "MSG00407", 5 },
+/* Event Log languages (03 §10.3, 9.3). FormatMessage and the Event Viewer match the exact LANGID, so every
+   sublanguage that Windows defines for a primary language gets the one text of that language (the UI maps
+   es-*, pt-*, fr-*, it-*, de-* and en-* the same way, sd_l10n lang_from_langid). SUBLANG_NEUTRAL (0) is the
+   primary-only fallback. Values from the SDK winnt.h. text_index is the msgstr order of the catalog (NPO_LANGS). */
+typedef struct mc_primary {
+  unsigned primary;             /* LANG_* */
+  int text_index;               /* 0 en, 1 es, 2 fr, 3 pt-BR, 4 it, 5 de */
+  int nsub;
+  unsigned subs[24];            /* SUBLANG_* values, 0 = neutral */
+} mc_primary;
+
+static const mc_primary k_mc_primaries[] = {
+  { 0x09, 0, 17, { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x10, 0x11, 0x12 } },
+  { 0x0A, 1, 22, { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+                   0x10, 0x11, 0x12, 0x13, 0x14, 0x15 } },
+  { 0x0C, 2, 7,  { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 } },
+  { 0x16, 3, 3,  { 0x00, 0x01, 0x02 } },
+  { 0x10, 4, 3,  { 0x00, 0x01, 0x02 } },
+  { 0x07, 5, 6,  { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 } },
 };
+
+typedef struct mc_lang {
+  char name[8];                 /* LanguageNames identifier, L<LCID as 4 hex digits> */
+  char file[12];                /* MSG<LCID as 5 hex digits>, the .bin that mc.exe writes */
+  unsigned lcid;
+  int text_index;
+} mc_lang;
+
+#define MC_MAX_LANGS 64
+
+/* Fills langs with one entry per LANGID of k_mc_primaries; returns the count. */
+static int mc_languages(mc_lang *langs)
+{
+  int p, s, n = 0;
+  for (p = 0; p < (int)(sizeof(k_mc_primaries) / sizeof(k_mc_primaries[0])); p++) {
+    for (s = 0; s < k_mc_primaries[p].nsub && n < MC_MAX_LANGS; s++) {
+      mc_lang *l = &langs[n++];
+      l->lcid = (k_mc_primaries[p].subs[s] << 10) | k_mc_primaries[p].primary;
+      snprintf(l->name, sizeof(l->name), "L%04X", l->lcid);
+      snprintf(l->file, sizeof(l->file), "MSG%05X", l->lcid);
+      l->text_index = k_mc_primaries[p].text_index;
+    }
+  }
+  return n;
+}
 
 static int write_mc(const char *out_mc)
 {
   FILE *o;
-  int i, k;
-  char line[256];
+  int i, k, nlang;
+  char line[512];
+  static mc_lang langs[MC_MAX_LANGS];
+  nlang = mc_languages(langs);
   o = fopen(out_mc, "wb");
   if (!o) { diag(1, NULL, 0, "cannot write %s", out_mc); return 0; }
   put_unit(o, 0xFEFF);
@@ -1199,24 +1235,22 @@ static int write_mc(const char *out_mc)
   w16_line(o, "               Error=0x3:STATUS_SEVERITY_ERROR");
   w16_line(o, "              )");
   w16_line(o, "");
-  strcpy(line, "LanguageNames=(");
-  for (k = 0; k < (int)(sizeof(k_mc_langs) / sizeof(k_mc_langs[0])); k++) {
-    char part[128];
-    snprintf(part, sizeof(part), "%s%s=0x%X:%s", k ? " " : "", k_mc_langs[k].name, k_mc_langs[k].lcid, k_mc_langs[k].file);
-    strcat(line, part);
+  w16_line(o, "LanguageNames=(");
+  for (k = 0; k < nlang; k++) {
+    snprintf(line, sizeof(line), "               %s=0x%04X:%s", langs[k].name, langs[k].lcid, langs[k].file);
+    w16_line(o, line);
   }
-  strcat(line, ")");
-  w16_line(o, line);
+  w16_line(o, "              )");
   w16_line(o, "");
   for (i = 0; i < g_nmsgs; i++) {
     const msg *m = &g_msgs[i];
     if (!m->event_id) continue;
     snprintf(line, sizeof(line), "MessageId=%d Severity=%s SymbolicName=%s", m->event_id, m->event_sev, m->event_sym);
     w16_line(o, line);
-    for (k = 0; k < (int)(sizeof(k_mc_langs) / sizeof(k_mc_langs[0])); k++) {
-      const char *text = m->forms[k_mc_langs[k].li][CAT_OTHER];
+    for (k = 0; k < nlang; k++) {
+      const char *text = m->forms[langs[k].text_index][CAT_OTHER];
       if (!text) text = m->forms[0][CAT_OTHER];   /* not reached: strict checks fail first */
-      snprintf(line, sizeof(line), "Language=%s", k_mc_langs[k].name);
+      snprintf(line, sizeof(line), "Language=%s", langs[k].name);
       w16_line(o, line);
       w16_line(o, text);
       w16_line(o, ".");
