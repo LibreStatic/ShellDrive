@@ -266,8 +266,8 @@ anything.
   `service\secrets`, `service\keys`. Store files (`known_hosts`, `settings.ini`) are not checked at start, as before.
 - Event 3102 is written once per start, for the first refused folder: `%1` the folder path, `%2` the reason. Its
   severity is Warning. The message is English only (10.3, and AGENTS.md: event log payloads are English).
-- Deviation from 10.3: the reason vocabulary is `owner`, `reparse_point`, `acl` (as in the spec) plus `not_directory`
-  for a file where a folder belongs. The spec does not list it; it is left as a question for the design owner.
+- The reason vocabulary is `owner`, `reparse_point`, `acl` plus `not_directory` for a file where a folder belongs;
+  10.3 lists all four.
 - Tests never write to the Event Log: the sink is a seam (`svc_opts.event`). Tests never touch `%ProgramData%`.
 - The owner seam (`svc_opts.owner_trusted`) is for tests only in practice: the SCM path leaves it NULL.
 
@@ -280,13 +280,60 @@ anything.
 The reparse-point start refusal (a junction at a machine folder) has the same code path as the owner refusal and the
 shared check tests, but no end-to-end test of its own (the junction helper lives in `test_repair.c`).
 
+## Part 5: hostkey add and the machine gate (partial)
+
+Found on this branch: there was no `hostkey add --from-server` in any scope (per-user or machine). `hostkey
+accept-announced` existed for the per-user store only (agent IPC). The service pipe has no `hostkey.*` method, and
+`service.c` only logs announcements (`svc_on_hostkeys`). The CLI has no SSH connect of its own: `sd_ssh_conn_create` is
+used by `sd_sftp` alone. So the connect-and-store part below is not built; this part adds the command surface and
+the elevation rule.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive/cli_args.c`, `cli.h` | `hostkey add --from-server host[:port] [--type T] [--expect SHA256:...]`, the `--machine` option (hostkey add and accept-announced only), `--from-server` and `--expect` (hostkey add only); the parse checks |
+| `apps/shelldrive/cli_cmds2.c` | `hk_add`, the machine gate on `accept-announced --machine`; the not-built answer |
+| `apps/shelldrive/cli_cmds.c` | help: the `hostkey add` line, the three options |
+| `apps/shelldrive/cli_common.c`, `cli_int.h` | `cli_is_elevated()` (moved from `cli_service.c`, which now calls it) with the test seam below |
+| `l10n/cli/*.po` | 5 entries per locale: `cli.help.opt_from_server`, `cli.help.opt_expect`, `cli.help.opt_machine`, `cli.hk.need_admin`, `cli.hk.not_built` |
+| `tests/apps/test_cli_args.c`, `test_smoke.c`, `main.c` | `cli_parse_hostkey_add_machine` (parser), `smoke_hostkey_add_machine` (exit codes and text through `sd-test-cli.exe`) |
+
+**Behaviour**
+
+- `hostkey add` without `--from-server`, with a bad host, a bad `--expect` (must be `SHA256:` plus base64 characters)
+  or with a positional argument: usage, exit 2.
+- `hostkey add --machine` and `hostkey accept-announced <id> --machine` from a non-elevated console: exit 9, the
+  localized "needs an elevated console" line (JSON: `access_denied`). Nothing is read or written.
+- Elevated, or without `--machine`: exit 1 with "not part of this build yet" (JSON: `not_implemented`). Nothing is written.
+- `--machine`, `--from-server` and `--expect` on any other command: unknown option (exit 2). `--machine` before the
+  command word is accepted, as the other global options.
+
+**Test seam**
+
+`SHELLDRIVE_TEST_ELEVATED=0` makes `cli_is_elevated()` report a non-elevated token (the same style as the other
+`SHELLDRIVE_TEST_*` variables). Only the value `0` is read, so a test can deny elevation but cannot grant it.
+The elevated path is not exercised by any test.
+
+**Not done (open)**
+
+- The connect: the verified connection with the stored key types only (01 §4.3, TM-R04), `sd_ssh_conn_fetch_hostkeys`
+  for the other types (exists since M2, no caller yet), the fingerprint confirmation and `--expect`, and the write.
+- Where the machine store is written from: through the service pipe (new `hostkey.*` methods, the service serves
+  `hostkey.announced.list` and `.accept` as 5.6 describes) or by the elevated CLI directly (`sd_known_hosts` on the
+  `%ProgramData%` store, with the 3.2 owner rule). 03 §2.6 rule 2 says the elevated CLI "connects through the
+  service", so the service-pipe route is the one to build.
+- `hostkey list --announced --machine`; the service's announcement store (`service.c` only logs, Event 2300 is not written).
+- Per-user `hostkey add --from-server` (the same connect path without `--machine`).
+
 ## Left (not in this part)
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
 - The display name as an indirect string (`@<path>,-<id>`, Vista+); the service's own re-set of the description at
   first start (1.3); the Event Log 3100 and 3101 and the other 2xxx/3xxx ids of 10.3 that depend on features not in
   this part. Event 3102 is written (part 4).
-- `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store).
+- `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store): the command
+  surface and the elevation rule are in part 5; the connect, the store write and the service side are not.
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).
 - Identity files: only the path rule (under `<machine root>\service\`). The ACL and handle-based checks of TM-R27 are not

@@ -217,6 +217,28 @@ int fail_code(const cli_args *a, const char *code, const char *detail, const err
   return xc;
 }
 
+/* ---- elevation ---- */
+
+/* Changing a global drive or the machine store needs an elevated token (6.1). On XP the query is unavailable:
+   the service decides. Test seam (tests/apps only, same style as the other SHELLDRIVE_TEST_* variables):
+   SHELLDRIVE_TEST_ELEVATED=0 reports a non-elevated token. Only "0" is read, so a test can deny but never
+   grant elevation. */
+int cli_is_elevated(void)
+{
+  HANDLE tok = NULL;
+  DWORD elevated = 0, len = 0;
+  wchar_t v[4];
+  int r = 1;
+  if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", v, SD_COUNTOF(v)) == 1 && v[0] == L'0')
+    return 0;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+    return 1;
+  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elevated, sizeof(elevated), &len))
+    r = elevated ? 1 : 0;
+  CloseHandle(tok);
+  return r;
+}
+
 /* ---- connection ---- */
 
 int can_prompt(const cli_args *a)

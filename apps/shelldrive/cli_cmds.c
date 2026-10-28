@@ -853,13 +853,17 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"hostkey list <host[:port]> [--announced]", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"hostkey import --from putty|openssh [FILE]", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"hostkey remove <host[:port]> [--type T]", SD_MSG_CLI_HELP_HOSTKEY);
-    help_line(L"hostkey accept-announced <id> [--add-only]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey accept-announced <id> [--add-only] [--machine]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey add --from-server <host[:port]> [--type T] [--expect SHA256:...] [--machine]", SD_MSG_CLI_HELP_HOSTKEY);
     cli_print(L"");
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--announced", SD_MSG_CLI_HELP_OPT_ANNOUNCED);
     help_line(L"--from putty|openssh", SD_MSG_CLI_HELP_OPT_FROM);
     help_line(L"--type T", SD_MSG_CLI_HELP_OPT_TYPE);
     help_line(L"--add-only", SD_MSG_CLI_HELP_OPT_ADD_ONLY);
+    help_line(L"--from-server <host[:port]>", SD_MSG_CLI_HELP_OPT_FROM_SERVER);
+    help_line(L"--expect SHA256:...", SD_MSG_CLI_HELP_OPT_EXPECT);
+    help_line(L"--machine", SD_MSG_CLI_HELP_OPT_MACHINE);
   } else if (topic && wcscmp(topic, L"agent") == 0) {
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
   } else {
@@ -873,7 +877,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
     help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
-    help_line(L"hostkey list | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey list | add | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
     help_line(L"version", SD_MSG_CLI_HELP_VERSION);
     help_line(L"help [command]", SD_MSG_CLI_HELP_HELP);

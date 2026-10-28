@@ -181,3 +181,31 @@ SD_TEST(cli_parse_profile_hostkey_status)
   SD_CHECK(parse_line(L"sd status a b", &a) == CLI_E_EXTRA_ARGUMENT);
   SD_CHECK(parse_line(L"sd hostkey list h --json -q", &a) == CLI_OK && a.json && a.quiet);
 }
+
+/* hostkey add --from-server (03 §6.1), --expect and the --machine option of the machine store (03 §5.6). */
+SD_TEST(cli_parse_hostkey_add_machine)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd hostkey add --from-server good.test:2222 --type ssh-ed25519 "
+                      L"--expect SHA256:abcdefgh+/= --machine", &a) == CLI_OK);
+  SD_CHECK(a.cmd == CLI_CMD_HOSTKEY && wcscmp(a.positional, L"add") == 0 && a.arg2 == NULL);
+  SD_CHECK(wcscmp(a.from_server, L"good.test:2222") == 0 && wcscmp(a.hk_type, L"ssh-ed25519") == 0);
+  SD_CHECK(wcscmp(a.expect, L"SHA256:abcdefgh+/=") == 0 && a.machine);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server=h", &a) == CLI_OK && !a.machine && a.expect == NULL);
+  SD_CHECK(parse_line(L"sd hostkey add", &a) == CLI_E_MISSING_ARGUMENT && wcscmp(a.bad, L"--from-server") == 0);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server", &a) == CLI_E_MISSING_VALUE);
+  SD_CHECK(parse_line(L"sd hostkey add h --from-server h", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --expect md5:abcdef", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --expect SHA256:", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --expect \"SHA256:ab cd\"", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --announced", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --from putty", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey add --from-server h --add-only", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey list h --machine", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--machine") == 0);
+  SD_CHECK(parse_line(L"sd hostkey remove h --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --machine", &a) == CLI_OK && a.machine);
+  SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd mount web --machine", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--machine") == 0);
+  SD_CHECK(parse_line(L"sd status --from-server h", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd --machine hostkey add --from-server h", &a) == CLI_OK && a.machine);
+}

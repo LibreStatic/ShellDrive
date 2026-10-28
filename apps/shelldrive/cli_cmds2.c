@@ -942,6 +942,37 @@ static int hk_accept(const cli_args *a)
   return 0;
 }
 
+/* --machine (the machine store, 03 §5.6, §6.1) needs an elevated console. Exit 9, as for the other admin
+   commands; nothing is read or written. */
+static int hk_machine_denied(const cli_args *a)
+{
+  if (a->json)
+    json_err("access_denied", "the machine store needs an elevated console", 9);
+  else
+    say(SD_MSG_CLI_HK_NEED_ADMIN, NULL, 0, 1);
+  return 9;
+}
+
+/* hostkey add --from-server and accept-announced --machine need the service connect path and the machine
+   store writer, which this build does not have yet (docs/dev/m5-notes.md, "Left"). Exit 1. */
+static int hk_not_built(const cli_args *a)
+{
+  if (a->json)
+    json_err("not_implemented", "not part of this build yet", 1);
+  else
+    say(SD_MSG_CLI_HK_NOT_BUILT, NULL, 0, 1);
+  return 1;
+}
+
+/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] [--machine] (03 §6.1). The parser has
+   checked the options; --machine is refused unless the console is elevated. */
+static int hk_add(const cli_args *a)
+{
+  if (a->machine && !cli_is_elevated())
+    return hk_machine_denied(a);
+  return hk_not_built(a);
+}
+
 int cli_run_hostkey(const cli_args *a)
 {
   char lookup[320];
@@ -949,8 +980,13 @@ int cli_run_hostkey(const cli_args *a)
     return hk_announced(a);
   if (wcscmp(a->positional, L"import") == 0)
     return hk_import(a);
-  if (wcscmp(a->positional, L"accept-announced") == 0)
+  if (wcscmp(a->positional, L"add") == 0)
+    return hk_add(a);
+  if (wcscmp(a->positional, L"accept-announced") == 0) {
+    if (a->machine)
+      return cli_is_elevated() ? hk_not_built(a) : hk_machine_denied(a);
     return hk_accept(a);
+  }
   if (!lookup_name_of(a->arg2, lookup, sizeof(lookup)))
     return fail_code(a, "usage", "invalid host", NULL);
   if (wcscmp(a->positional, L"remove") == 0)

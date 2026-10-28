@@ -1056,3 +1056,28 @@ msgstr "Windows n'a pas pu vous connecter au serveur de fichiers local de ShellD
 msgctxt "cli.prompt.webdav_token_only_question"
 msgid "Continue with a less protected connection? [y]es, [N]o: "
 msgstr "Continuer avec une connexion moins protégée ? [o]ui, [N]on : "
+
+#. Help for hostkey add --from-server. The value is host[:port].
+msgctxt "cli.help.opt_from_server"
+msgid "The server to take host keys from, as host[:port]. Its keys are checked against the stored ones first."
+msgstr "Le serveur dont prendre les clés d'hôte, sous la forme hôte[:port]. Ses clés sont d'abord comparées à celles déjà enregistrées."
+
+#. Help for hostkey add --expect. SHA256: is literal.
+msgctxt "cli.help.opt_expect"
+msgid "Accept the key only when its SHA-256 fingerprint is this value, for example SHA256:abc... Meant for scripts: a mismatch fails."
+msgstr "N'acceptez la clé que si son empreinte SHA-256 correspond à cette valeur, par exemple SHA256:abc... Prévu pour les scripts : une différence fait échouer la commande."
+
+#. Help for --machine on hostkey add and accept-announced.
+msgctxt "cli.help.opt_machine"
+msgid "Work on the machine host keys (the service's store). Needs an elevated console."
+msgstr "Travaille avec les clés d'hôte de la machine (le magasin du service). Demande une console élevée."
+
+#. Printed when --machine is used from a console that is not elevated (exit 9).
+msgctxt "cli.hk.need_admin"
+msgid "Changing the machine host keys needs an elevated console. Run it as administrator."
+msgstr "Modifier les clés d'hôte de la machine demande une console élevée. Exécutez-la en tant qu'administrateur."
+
+#. Printed by hostkey add and accept-announced --machine until the service connect path exists (exit 1).
+msgctxt "cli.hk.not_built"
+msgid "Adding host keys from a server is not part of this build yet."
+msgstr "L'ajout de clés d'hôte depuis un serveur ne fait pas encore partie de cette version."

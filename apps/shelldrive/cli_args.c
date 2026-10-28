@@ -94,7 +94,7 @@ enum {
   OPT_JSON, OPT_QUIET, OPT_LANG, OPT_HELP, OPT_VERSION, OPT_PROMPT, OPT_STDIN,
   OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE,
   OPT_BACKEND, OPT_JUMP, OPT_PROXY, OPT_CONNECTIONS, OPT_TYPE, OPT_FROM, OPT_DRY_RUN, OPT_ADD_ONLY,
-  OPT_ANNOUNCED, OPT_STATS, OPT_OPEN
+  OPT_ANNOUNCED, OPT_STATS, OPT_OPEN, OPT_MACHINE, OPT_FROM_SERVER, OPT_EXPECT
 };
 
 static const opt_def k_opts[] = {
@@ -113,6 +113,8 @@ static const opt_def k_opts[] = {
   { L"--type", O_VALUE, OPT_TYPE }, { L"--from", O_VALUE, OPT_FROM },
   { L"--dry-run", O_FLAG, OPT_DRY_RUN }, { L"--add-only", O_FLAG, OPT_ADD_ONLY },
   { L"--announced", O_FLAG, OPT_ANNOUNCED }, { L"--stats", O_FLAG, OPT_STATS }, { L"--open", O_FLAG, OPT_OPEN },
+  { L"--machine", O_FLAG, OPT_MACHINE }, { L"--from-server", O_VALUE, OPT_FROM_SERVER },
+  { L"--expect", O_VALUE, OPT_EXPECT },
 };
 
 /* Which options each command accepts (globals are always accepted). */
@@ -130,6 +132,7 @@ static int allowed(cli_cmd cmd, int id)
   case OPT_STATS:
     return cmd == CLI_CMD_STATUS;
   case OPT_TYPE: case OPT_FROM: case OPT_ADD_ONLY: case OPT_ANNOUNCED:
+  case OPT_MACHINE: case OPT_FROM_SERVER: case OPT_EXPECT:
     return cmd == CLI_CMD_HOSTKEY;
   case OPT_DRY_RUN:
     return cmd == CLI_CMD_PROFILE;
@@ -147,6 +150,28 @@ static cli_usage_err set_err(cli_args *a, cli_usage_err e, const wchar_t *bad, c
     a->bad_value = value;
   }
   return a->err;
+}
+
+/* --expect SHA256:<base64 of the digest>, as "hostkey add" prints it (03 §5.5). Shape only: the digest is
+   compared with the server's key later. */
+static int hk_expect_ok(const wchar_t *v)
+{
+  size_t i, n = wcslen(v);
+  if (n < 8 || wcsncmp(v, L"SHA256:", 7) != 0)
+    return 0;
+  for (i = 7; i < n; i++) {
+    wchar_t c = v[i];
+    if (!((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') ||
+          c == L'+' || c == L'/' || c == L'='))
+      return 0;
+  }
+  return 1;
+}
+
+/* The first of --machine, --from-server, --expect that is set (for "hostkey list|import|remove"). */
+static const wchar_t *hk_add_option_name(const cli_args *a)
+{
+  return a->machine ? L"--machine" : a->from_server ? L"--from-server" : L"--expect";
 }
 
 static cli_cmd command_of(const wchar_t *w)
@@ -253,6 +278,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       case OPT_DRY_RUN: a->dry_run = 1; break;
       case OPT_ADD_ONLY: a->add_only = 1; break;
       case OPT_ANNOUNCED: a->announced = 1; break;
+      case OPT_MACHINE: a->machine = 1; break;
+      case OPT_FROM_SERVER: a->from_server = value; break;
+      case OPT_EXPECT: a->expect = value; break;
       case OPT_STATS: a->stats = 1; break;
       case OPT_OPEN: a->open_after = 1; break;
       }
@@ -321,6 +349,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   if (a->cmd != CLI_CMD_HOSTKEY && (a->hk_type || a->from || a->add_only || a->announced))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" :
                    a->add_only ? L"--add-only" : L"--announced", NULL);
+  if (a->cmd != CLI_CMD_HOSTKEY && (a->from_server || a->expect || a->machine))
+    return set_err(a, CLI_E_UNKNOWN_OPTION, a->machine ? L"--machine" : a->from_server ? L"--from-server" :
+                   L"--expect", NULL);
   if (a->cmd != CLI_CMD_PROFILE && a->dry_run)
     return set_err(a, CLI_E_UNKNOWN_OPTION, L"--dry-run", NULL);
   if (a->help)
@@ -405,24 +436,49 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
       if (a->hk_type || a->from || a->add_only)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" : L"--add-only", NULL);
+      if (a->from_server || a->expect || a->machine)
+        return set_err(a, CLI_E_UNKNOWN_OPTION, hk_add_option_name(a), NULL);
     } else if (wcscmp(a->positional, L"import") == 0) {
       if (!a->from)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
       if (a->announced || a->add_only || a->hk_type)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->announced ? L"--announced" :
                        a->add_only ? L"--add-only" : L"--type", NULL);
+      if (a->from_server || a->expect || a->machine)
+        return set_err(a, CLI_E_UNKNOWN_OPTION, hk_add_option_name(a), NULL);
     } else if (wcscmp(a->positional, L"remove") == 0) {
       if (!a->arg2)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
       if (a->announced || a->add_only || a->from)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->announced ? L"--announced" :
                        a->add_only ? L"--add-only" : L"--from", NULL);
+      if (a->from_server || a->expect || a->machine)
+        return set_err(a, CLI_E_UNKNOWN_OPTION, hk_add_option_name(a), NULL);
     } else if (wcscmp(a->positional, L"accept-announced") == 0) {
       if (!a->arg2)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
       if (a->announced || a->hk_type || a->from)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->announced ? L"--announced" :
                        a->hk_type ? L"--type" : L"--from", NULL);
+      if (a->from_server || a->expect)
+        return set_err(a, CLI_E_UNKNOWN_OPTION, a->from_server ? L"--from-server" : L"--expect", NULL);
+    } else if (wcscmp(a->positional, L"add") == 0) {
+      /* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] [--machine] (03 §6.1) */
+      if (a->arg2)
+        return set_err(a, CLI_E_EXTRA_ARGUMENT, a->arg2, NULL);
+      if (!a->from_server)
+        return set_err(a, CLI_E_MISSING_ARGUMENT, L"--from-server", NULL);
+      if (a->announced || a->add_only || a->from)
+        return set_err(a, CLI_E_UNKNOWN_OPTION, a->announced ? L"--announced" :
+                       a->add_only ? L"--add-only" : L"--from", NULL);
+      {
+        char user[128], host[256];
+        uint16_t port = 22;
+        if (sd_parse_host_spec(a->from_server, user, sizeof(user), host, sizeof(host), &port) != SD_OK || host[0] == 0)
+          return set_err(a, CLI_E_HOST_SPEC, L"--from-server", a->from_server);
+      }
+      if (a->expect && !hk_expect_ok(a->expect))
+        return set_err(a, CLI_E_BAD_VALUE, L"--expect", a->expect);
     } else {
       return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
     }

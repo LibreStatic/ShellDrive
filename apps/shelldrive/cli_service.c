@@ -38,19 +38,6 @@ static void utf8_of(const wchar_t *w, char *out, size_t cch)
   out[cch - 1] = 0;
 }
 
-/* Changing a global drive needs an elevated token (6.1). On XP the query is unavailable: the service decides. */
-static int is_elevated(void)
-{
-  HANDLE tok = NULL;
-  DWORD elevated = 0, len = 0;
-  int r = 1;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
-    return 1;
-  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elevated, sizeof(elevated), &len))
-    r = elevated ? 1 : 0;
-  CloseHandle(tok);
-  return r;
-}
 
 static int connect_service(sd_ipc_conn **c)
 {
@@ -584,7 +571,7 @@ static int run_repair(const cli_args *a)
   svc_repair_result r;
   wchar_t base[MAX_PATH];
   DWORD e;
-  if (!is_elevated()) {
+  if (!cli_is_elevated()) {
     say(SD_MSG_CLI_SERVICE_NEED_ADMIN, NULL, 0, 1);
     return 9;
   }
@@ -658,7 +645,7 @@ int cli_run_service(const cli_args *a)
     return run_service_report(a);
   if (is_verb(verb, L"repair-data"))
     return run_repair(a);
-  if ((is_verb(verb, L"mount") || is_verb(verb, L"unmount")) && !is_elevated()) {
+  if ((is_verb(verb, L"mount") || is_verb(verb, L"unmount")) && !cli_is_elevated()) {
     say(SD_MSG_CLI_SERVICE_NEED_ADMIN, NULL, 0, 1);
     return 9;
   }
