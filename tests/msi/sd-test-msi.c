@@ -1,6 +1,6 @@
 /* sd-test-msi: checks of a built per-machine MSI (docs/design/04 §8, CTest label msi). Opt-in (SD_BUILD_MSI=ON).
  *
- *   sd-test-msi tables <package.msi> <version> <upgrade-code> <platform> <installer-version> <launch-count>
+ *   sd-test-msi tables <package.msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32>
  *       Reads the package through msi.dll only (nothing is installed):
  *         - ProductVersion, UpgradeCode, ProductName and Manufacturer of the Property table;
  *         - the Template summary: the platform prefix, and every LCID of the language table is listed (C43);
@@ -10,9 +10,14 @@
  *         - the components and features of 04 §8.3, the registry rows (HKLM Run value, the LibreStatic Version
  *           marker, no Uninstall\ShellDrive key: Windows Installer writes the Add/Remove entry of an MSI);
  *         - the installer hooks (04 §8.3, TM-R35): deferred, NoImpersonate exactly where the table says so.
- *   sd-test-msi admin <package.msi> <work-dir>
+ *         - with shellext32 = 1 (the x64 flavours, 04 §8.3, 03 §8.5): the x86 shell extension component in
+ *           Program Files (x86)\LibreStatic\ShellDrive with Win64 = no, in the ShellExt feature, and its 32-bit
+ *           registry rows in components without the 64-bit attribute; with 0 there is no such component or row.
+ *   sd-test-msi admin <package.msi> <work-dir> [shellext32]
  *       Administrative install (msiexec /a) into <work-dir>\target: no registry, service or system change. Checks
- *       that the four binaries are laid out. The caller removes <work-dir>.
+ *       that the four binaries are laid out and, with shellext32 = 1, that the x64 shell extension is there (a PE image
+ *       of machine AMD64; the x86 copy has the same path in an admin image, see the admin check).
+ *       The caller removes <work-dir>.
  *
  * Exit code 0 when every check passes; each check prints "ok" or "FAIL" with its name.
  */
@@ -216,6 +221,42 @@ static int key_in_feature(MSIHANDLE db, const wchar_t *key, const wchar_t *featu
   return query_first(db, sql, comp, 128);
 }
 
+/* Attributes of a Component row (256 = msidbComponentAttributes64bit, set for Win64="yes"). 0 when there is no row. */
+static int component_attributes(MSIHANDLE db, const wchar_t *component, int *attrs)
+{
+  wchar_t sql[512], buf[64];
+  swprintf_s(sql, 512, L"SELECT `Attributes` FROM `Component` WHERE `Component` = '%ls'", component);
+  if (!query_first(db, sql, buf, 64))
+    return 0;
+  *attrs = _wtoi(buf);
+  return 1;
+}
+
+/* Number of Registry rows with this key and value whose component is 32-bit (no 64-bit attribute); -1 when the
+   query does not run. The 64-bit rows of the same key and value are not counted (03 §8.5, 04 §8.3). */
+static int view32_rows(MSIHANDLE db, const wchar_t *key, const wchar_t *value)
+{
+  MSIHANDLE view = 0, rec = 0;
+  wchar_t sql[1024], comp[128];
+  int n = 0;
+  swprintf_s(sql, 1024, L"SELECT `Component_` FROM `Registry` WHERE `Key` = '%ls' AND `Value` = '%ls'", key, value);
+  if (MsiDatabaseOpenViewW(db, sql, &view) != ERROR_SUCCESS)
+    return -1;
+  if (MsiViewExecute(view, 0) == ERROR_SUCCESS) {
+    while (MsiViewFetch(view, &rec) == ERROR_SUCCESS) {
+      DWORD cch = 128;
+      int attrs = 0;
+      if (MsiRecordGetStringW(rec, 1, comp, &cch) == ERROR_SUCCESS && component_attributes(db, comp, &attrs) &&
+          (attrs & 256) == 0)
+        n++;
+      MsiCloseHandle(rec);
+      rec = 0;
+    }
+  }
+  MsiCloseHandle(view);
+  return n;
+}
+
 /* True when a row of the Registry table has a key containing text (case-insensitive). */
 static int any_key_contains(MSIHANDLE db, const wchar_t *text)
 {
@@ -251,8 +292,29 @@ static int seq_of(MSIHANDLE db, const wchar_t *table, const wchar_t *action)
 static const wchar_t *g_remembered_prop[] = { L"SD_REG_DOKANY", L"SD_REG_ELC", L"SD_REG_ELC_OWNED" };
 static const wchar_t *g_remembered_name[] = { L"DOKANY", L"ENABLELINKEDCONNECTIONS", L"ELC_OWNED" };
 
+/* Number of rows of the File table whose file name (short|long form) contains text; -1 when the query does not run. */
+static int count_files_containing(MSIHANDLE db, const wchar_t *text)
+{
+  MSIHANDLE view = 0, rec = 0;
+  int n = 0;
+  if (MsiDatabaseOpenViewW(db, L"SELECT `FileName` FROM `File`", &view) != ERROR_SUCCESS)
+    return -1;
+  if (MsiViewExecute(view, 0) == ERROR_SUCCESS) {
+    while (MsiViewFetch(view, &rec) == ERROR_SUCCESS) {
+      wchar_t name[512];
+      DWORD cch = 512;
+      if (MsiRecordGetStringW(rec, 1, name, &cch) == ERROR_SUCCESS && wcsstr(name, text) != NULL)
+        n++;
+      MsiCloseHandle(rec);
+      rec = 0;
+    }
+  }
+  MsiCloseHandle(view);
+  return n;
+}
+
 static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t *upgrade, const wchar_t *platform,
-                      int installer_version, int launch_count)
+                      int installer_version, int launch_count, int shellext32)
 {
   MSIHANDLE db = 0;
   wchar_t buf[2048], tmpl[1024], copy[MAX_PATH], temp_dir[MAX_PATH];
@@ -383,6 +445,69 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
     }
     check(ok_values, "shell extension rows: CLSIDs with the DLL and Apartment, Drive/Directory/* and This PC handlers, Approved (03 §8.5)");
     check(ok_feature, "shell extension rows are in the ShellExt feature (no registration without the DLL)");
+  }
+  {
+    /* The 32-bit view of the shell extension (04 §8.3, 03 §8.5): the x86 DLL in INSTALLDIR\x86 (Win64 = no) and the
+       CLSID and handler rows of the same keys with the x86 path, in components without the 64-bit attribute. The 64-bit
+       rows of the same keys stay in 64-bit components. With shellext32 = 0 the package has none of this. */
+    static const wchar_t clsid1[] = L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}";
+    static const wchar_t clsid2[] = L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}";
+    static const wchar_t thispc[] =
+      L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\ContextMenuHandlers\\ShellDrive";
+    static const wchar_t handler[] = L"Software\\Classes\\Drive\\shellex\\ContextMenuHandlers\\ShellDrive";
+    static const wchar_t dirhandler[] = L"Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\ShellDrive";
+    static const wchar_t starhandler[] = L"Software\\Classes\\*\\shellex\\ContextMenuHandlers\\ShellDrive";
+    static const wchar_t dll32[] = L"[SD_INSTALLDIR32]shelldrive-shellext.dll";
+    static const wchar_t guid1[] = L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}";
+    static const wchar_t guid2[] = L"{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}";
+    wchar_t key_inproc1[256], key_inproc2[256];
+    int ok32 = 1, n;
+    size_t r;
+    struct { const wchar_t *key; const wchar_t *value; } rows32[8];
+
+    swprintf_s(key_inproc1, 256, L"%ls\\InprocServer32", clsid1);
+    swprintf_s(key_inproc2, 256, L"%ls\\InprocServer32", clsid2);
+    rows32[0].key = clsid1;      rows32[0].value = L"ShellDrive context menu";
+    rows32[1].key = key_inproc1; rows32[1].value = dll32;
+    rows32[2].key = clsid2;      rows32[2].value = L"ShellDrive This PC context menu";
+    rows32[3].key = key_inproc2; rows32[3].value = dll32;
+    rows32[4].key = handler;     rows32[4].value = guid1;
+    rows32[5].key = dirhandler;  rows32[5].value = guid1;
+    rows32[6].key = starhandler; rows32[6].value = guid1;
+    rows32[7].key = thispc;      rows32[7].value = guid2;
+
+    if (shellext32) {
+      int attrs = 0;
+      check(count_rows(db, L"SELECT `Component` FROM `Component` WHERE `Component` = 'C_ShellExt32'") == 1 &&
+            component_attributes(db, L"C_ShellExt32", &attrs) && (attrs & 256) == 0,
+            "32-bit shell extension component C_ShellExt32 has Win64 = no (04 §8.3)");
+      check(query_first(db, L"SELECT `Directory_` FROM `Component` WHERE `Component` = 'C_ShellExt32'", buf, 2048) &&
+            wcscmp(buf, L"SD_INSTALLDIR32") == 0 &&
+            query_first(db, L"SELECT `Directory_Parent` FROM `Directory` WHERE `Directory` = 'SD_VENDOR_PF32'", buf, 2048) &&
+            wcscmp(buf, L"ProgramFilesFolder") == 0,
+            "32-bit shell extension is in Program Files (x86)\\LibreStatic\\ShellDrive");
+      check(query_first(db, L"SELECT `Feature_` FROM `FeatureComponents` WHERE `Component_` = 'C_ShellExt32'", buf, 2048) &&
+            wcscmp(buf, L"ShellExt") == 0, "32-bit shell extension component is in the ShellExt feature");
+      for (r = 0; r < sizeof(rows32) / sizeof(rows32[0]); r++) {
+        n = view32_rows(db, rows32[r].key, rows32[r].value);
+        if (n != 1) {
+          printf("     %d 32-bit rows for %ls [%ls]\n", n, rows32[r].key, rows32[r].value);
+          ok32 = 0;
+        }
+      }
+      check(ok32, "32-bit registry view: CLSIDs, handlers and the x86 DLL path in Win64 = no components (03 §8.5)");
+      check(count_files_containing(db, L"shelldrive-shellext.dll") == 2,
+            "two shell extension files in the package: the x64 copy and the x86 copy (04 §8.3)");
+      check(view32_rows(db, key_inproc1, L"[INSTALLDIR]shelldrive-shellext.dll") == 0,
+            "the 64-bit DLL path is registered only in 64-bit components");
+    } else {
+      check(count_files_containing(db, L"shelldrive-shellext.dll") == 1,
+            "one shell extension file in this package (32-bit flavours)");
+      check(count_rows(db, L"SELECT `Component` FROM `Component` WHERE `Component` = 'C_ShellExt32'") == 0,
+            "no 32-bit shell extension component in this package (32-bit flavours)");
+      check(view32_rows(db, key_inproc1, dll32) == 0 && view32_rows(db, key_inproc2, dll32) == 0,
+            "no 32-bit registry rows in this package (32-bit flavours)");
+    }
   }
   check(!any_key_contains(db, L"Uninstall\\ShellDrive"),
         "no Uninstall key of ShellDrive from the registration rows (Windows Installer writes the ARP entry)");
@@ -530,7 +655,55 @@ static int full_path(const wchar_t *in, wchar_t *out, DWORD cch)
   return GetFullPathNameW(in, cch, out, NULL) != 0;
 }
 
-static int run_admin(const wchar_t *msi_in, const wchar_t *work_in)
+/* PE machine type of the image at path (IMAGE_FILE_MACHINE_I386 0x014c, AMD64 0x8664); 0 when it is not a PE image. */
+static WORD pe_machine(const wchar_t *path)
+{
+  HANDLE h;
+  BYTE hdr[8];
+  DWORD got = 0, lfanew = 0;
+  WORD machine = 0;
+  h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  if (ReadFile(h, hdr, 2, &got, NULL) && got == 2 && hdr[0] == 'M' && hdr[1] == 'Z' &&
+      SetFilePointer(h, 0x3C, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+      ReadFile(h, &lfanew, 4, &got, NULL) && got == 4 &&
+      SetFilePointer(h, (LONG)lfanew, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+      ReadFile(h, hdr, 6, &got, NULL) && got == 6 && hdr[0] == 'P' && hdr[1] == 'E' && hdr[2] == 0 && hdr[3] == 0)
+    machine = (WORD)(hdr[4] | (hdr[5] << 8));
+  CloseHandle(h);
+  return machine;
+}
+
+/* True when a PE image of the given machine type has a full path that ends with suffix (case-insensitive), searched
+   recursively under dir. */
+static int find_pe_suffix(const wchar_t *dir, const wchar_t *suffix, WORD machine)
+{
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  wchar_t pattern[MAX_PATH], path[MAX_PATH];
+  size_t plen, slen = wcslen(suffix);
+  int found = 0;
+  swprintf_s(pattern, MAX_PATH, L"%ls\\*", dir);
+  h = FindFirstFileW(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  do {
+    if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
+      continue;
+    swprintf_s(path, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      found = find_pe_suffix(path, suffix, machine);
+    } else {
+      plen = wcslen(path);
+      found = plen >= slen && _wcsicmp(path + plen - slen, suffix) == 0 && pe_machine(path) == machine;
+    }
+  } while (!found && FindNextFileW(h, &fd));
+  FindClose(h);
+  return found;
+}
+
+static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, int shellext32)
 {
   wchar_t msi[MAX_PATH], work[MAX_PATH], target[MAX_PATH], copy[MAX_PATH], cmd[2048];
   STARTUPINFOW si;
@@ -581,19 +754,27 @@ static int run_admin(const wchar_t *msi_in, const wchar_t *work_in)
     }
   }
   check(ok, "admin install: the binaries of the flavour are laid out");
+  if (shellext32) {
+    /* msiexec /a lays the folders out below TARGETDIR without their root, so Program Files and Program Files (x86)
+       both become LibreStatic\ShellDrive here and the 32-bit copy is not visible. The x64 copy is checked by its PE
+       machine type; the 32-bit copy is checked by its File, Component and Directory rows in the tables check. */
+    int x64 = find_pe_suffix(target, L"\\LibreStatic\\ShellDrive\\shelldrive-shellext.dll", 0x8664);
+    check(x64, "admin install: the x64 shell extension is laid out (04 §8.3)");
+    ok = ok && x64;
+  }
   return ok && code == 0;
 }
 
 int wmain(int argc, wchar_t **argv)
 {
   int ok;
-  if (argc == 8 && wcscmp(argv[1], L"tables") == 0) {
-    ok = run_tables(argv[2], argv[3], argv[4], argv[5], _wtoi(argv[6]), _wtoi(argv[7]));
-  } else if (argc == 4 && wcscmp(argv[1], L"admin") == 0) {
-    ok = run_admin(argv[2], argv[3]);
+  if (argc == 9 && wcscmp(argv[1], L"tables") == 0) {
+    ok = run_tables(argv[2], argv[3], argv[4], argv[5], _wtoi(argv[6]), _wtoi(argv[7]), _wtoi(argv[8]));
+  } else if ((argc == 4 || argc == 5) && wcscmp(argv[1], L"admin") == 0) {
+    ok = run_admin(argv[2], argv[3], argc == 5 && _wtoi(argv[4]) == 1);
   } else {
-    fprintf(stderr, "usage: sd-test-msi tables <msi> <version> <upgrade-code> <platform> <installer-version> <launch-count>\n"
-                    "       sd-test-msi admin <msi> <work-dir>\n");
+    fprintf(stderr, "usage: sd-test-msi tables <msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32>\n"
+                    "       sd-test-msi admin <msi> <work-dir> [shellext32]\n");
     return 2;
   }
   printf("%s\n", ok ? "PASS" : "FAILED");

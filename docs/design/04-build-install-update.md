@@ -1245,8 +1245,9 @@ to the lab (11.4).
 3. Hook rollback counterparts (8.3: "each rollback counterpart carries the same condition") are not authored. The apply hooks are
    idempotent. Add the revert paths for a failed install when the lab shows the need.
 4. `SERVICE`, `SERVICESTART` and the Service feature wait for M5 (see the Service bullet).
-5. Shell extension registration: `packaging/registration.txt` has no COM or context-menu rows yet (8.3 expects them in the generated
-   fragment), so the DLL is installed but not registered. The x64 packages do not carry the x86 copy of the DLL (8.3).
+5. Shell extension registration and the x86 copy: done for the x64 MSI (rows of feature `shellext32`, the x86-sse2 DLL in
+   Program Files (x86), Win64="no" components; m4-notes item 3). The per-user setup and the x64 setup payloads (6.2) do not
+   carry the x86 copy yet.
 6. Spanish WiX dialog strings are Spain Spanish (`WixUI_es-es.wxl`), not Rioplatense. Either provide the dialog buttons from our
    catalog with voseo, or accept WiX's text for the standard buttons and dialogs only.
 7. Remembered choices (resolved in the M4 follow-up, 8.7): `DOKANY`, `ENABLELINKEDCONNECTIONS` and the ownership of the linked
