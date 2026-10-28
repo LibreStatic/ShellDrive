@@ -146,7 +146,7 @@ typedef struct host_mount {
 static const char *const k_agent_features[] = {
   "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued",
   "refresh", "cache.clear", "profile.test", "mount.attach_info", "status.stats", "status.proxy_legs",
-  "config.changed", "agent.stopping", "update", "update.check", "update.apply", NULL
+  "config.changed", "agent.stopping", "update", "update.check", "update.apply", "diag.collect", NULL
 };
 
 #ifdef SD_HOST_TEST_HOOKS
@@ -3138,6 +3138,32 @@ static sd_err handle_hostkey_add(sd_ipc_client *client, const sd_json *params, s
   return e;
 }
 
+/* diag.collect (03 §10.5, 6.1): the agent's own data for "diag --bundle". Counts and warning codes only: no host
+   name, user name or remote path is returned, so the bundle has nothing to anonymize from here. Open to every
+   client of the pipe (the same as status counters). */
+static sd_err handle_diag_collect(sd_json_writer *res)
+{
+  host_mount *h;
+  uint32_t i, start, n = 0;
+  sd_jw_key(res, "version"); sd_jw_cstr(res, SD_VERSION_STRING);
+  sd_jw_key(res, "pid"); sd_jw_int(res, (int64_t)GetCurrentProcessId());
+  sd_mutex_lock(&g.lock);
+  for (h = g.mounts; h; h = h->next)
+    if (!h->test_only)
+      n++;
+  sd_jw_key(res, "mounts"); sd_jw_int(res, (int64_t)n);
+  sd_jw_key(res, "warnings");
+  sd_jw_arr_begin(res);
+  start = (g.warn_next + WARN_RING - g.warn_count) % WARN_RING;
+  for (i = 0; i < g.warn_count; i++) {
+    const host_warn *w = &g.warns[(start + i) % WARN_RING];
+    sd_jw_cstr(res, w->code);
+  }
+  sd_jw_arr_end(res);
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
 static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                           sd_json_writer *res, sd_ipc_error *err)
 {
@@ -3150,6 +3176,7 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "list") == 0) return handle_list(res);
   if (strcmp(method, "status") == 0) return handle_status(params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
+  if (strcmp(method, "diag.collect") == 0) return handle_diag_collect(res);
   if (strcmp(method, "profile.test") == 0) return handle_profile_test(client, params, res, err);
   if (strcmp(method, "refresh") == 0) return handle_refresh(params, res, err);
   if (strcmp(method, "cache.clear") == 0) return handle_cache_clear(params, res, err);

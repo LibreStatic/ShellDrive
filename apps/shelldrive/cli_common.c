@@ -68,7 +68,8 @@ int answer_is(const char *ans, sd_msg_id letter, sd_msg_id word)
   if (sd_utf8_to_utf16(ans, strlen(ans), wa, SD_COUNTOF(wa) - 1, &got, SD_UTF_REPLACE) != SD_OK)
     return 0;
   wa[got] = 0;
-  while (got && (wa[got - 1] == L' ' || wa[got - 1] == L'\t')) wa[--got] = 0;
+  while (got && (wa[got - 1] == L' ' || wa[got - 1] == L'\t' || wa[got - 1] == L'\r' || wa[got - 1] == L'\n'))
+    wa[--got] = 0;
   if (got == 0)
     return 0;
   return CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE, wa, -1, l, -1) == CSTR_EQUAL ||
@@ -201,6 +202,8 @@ void print_error(const cli_args *a, const char *code, const char *detail, int ex
   else if (is(code, "backend_unavailable") && detail && strstr(detail, "WebClient"))
     say(SD_MSG_CLI_ERROR_WEBDAV_UNAVAILABLE, NULL, 0, 1);
   else if (is(code, "backend_unavailable")) say(SD_MSG_CLI_ERROR_BACKEND_UNAVAILABLE, NULL, 0, 1);
+  else if (is(code, "elevation_required")) say(SD_MSG_CLI_DIAG_ELEVATION_REQUIRED, NULL, 0, 1);
+  else if (is(code, "policy_denied")) say(SD_MSG_CLI_DIAG_FIX_POLICY, NULL, 0, 1);
   else say1(SD_MSG_CLI_ERROR_GENERIC, "code", code, 1);
 }
 

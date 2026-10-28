@@ -37,6 +37,17 @@ SD_TEST_DECL(agent_shutdown_event_stops_agent);
 SD_TEST_DECL(m3_webdav_token_only_question_routes_to_ui);
 SD_TEST_DECL(cli_parse_diag_bench);
 SD_TEST_DECL(smoke_diag_bench);
+SD_TEST_DECL(zip_crc32_matches_the_check_value);
+SD_TEST_DECL(zip_writes_stored_entries_with_descriptors);
+SD_TEST_DECL(zip_refuses_bad_names_and_sink_failures);
+SD_TEST_DECL(anon_tokens_are_stable_per_context);
+SD_TEST_DECL(anon_log_lines_hide_fields_and_registered_values);
+SD_TEST_DECL(anon_log_lines_redact_secrets_always);
+SD_TEST_DECL(anon_config_lines_keep_structure);
+SD_TEST_DECL(anon_secret_key_names);
+SD_TEST_DECL(cli_parse_diag_forms);
+SD_TEST_DECL(smoke_diag_check_and_fix);
+SD_TEST_DECL(smoke_diag_bundle);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -76,6 +87,17 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_parse_diag_bench),
   SD_TEST_ENTRY(smoke_diag_bench),
   SD_TEST_ENTRY(smoke_hostkey_add_offers),
+  SD_TEST_ENTRY(zip_crc32_matches_the_check_value),
+  SD_TEST_ENTRY(zip_writes_stored_entries_with_descriptors),
+  SD_TEST_ENTRY(zip_refuses_bad_names_and_sink_failures),
+  SD_TEST_ENTRY(anon_tokens_are_stable_per_context),
+  SD_TEST_ENTRY(anon_log_lines_hide_fields_and_registered_values),
+  SD_TEST_ENTRY(anon_log_lines_redact_secrets_always),
+  SD_TEST_ENTRY(anon_config_lines_keep_structure),
+  SD_TEST_ENTRY(anon_secret_key_names),
+  SD_TEST_ENTRY(cli_parse_diag_forms),
+  SD_TEST_ENTRY(smoke_diag_check_and_fix),
+  SD_TEST_ENTRY(smoke_diag_bundle),
 };
 
 int main(int argc, char **argv)

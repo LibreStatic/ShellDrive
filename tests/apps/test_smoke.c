@@ -4,6 +4,7 @@
  * instance suffix and configuration root, so a real agent of the user is never touched. */
 #include <windows.h>
 #include <sddl.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_test.h"
@@ -801,4 +802,172 @@ SD_TEST(smoke_hostkey_add_offers)
              NULL) == 6 && strstr(r.out, "host_key_mismatch") != NULL, "verified host with a wrong --expect is a mismatch");
 
   EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+}
+
+/* ---- diag (M6, 03 §6.1, §10.5) through the real CLI ----
+   The checks and fixes read and write the fake of the system seam (SHELLDRIVE_TEST_DIAG_FAKE, test builds only),
+   a text file of the test. The real WebClient service, registry and drives are never touched by these tests. */
+static int smoke_write_text(const wchar_t *path, const char *content)
+{
+  HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD put = 0;
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  WriteFile(h, content, (DWORD)strlen(content), &put, NULL);
+  CloseHandle(h);
+  return 1;
+}
+
+static size_t smoke_read_bytes(const wchar_t *path, unsigned char *buf, size_t cap)
+{
+  HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD got = 0;
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  if (!ReadFile(h, buf, (DWORD)(cap - 1), &got, NULL))
+    got = 0;
+  CloseHandle(h);
+  buf[got] = 0;
+  return got;
+}
+
+static int smoke_has(const unsigned char *hay, size_t hn, const char *needle)
+{
+  size_t i, nn = strlen(needle);
+  if (hn < nn)
+    return 0;
+  for (i = 0; i + nn <= hn; i++)
+    if (memcmp(hay + i, needle, nn) == 0)
+      return 1;
+  return 0;
+}
+
+static void smoke_fake_path(wchar_t *p)
+{
+  wcscpy_s(p, MAX_PATH, g_root);
+  wcscat_s(p, MAX_PATH, L"\\diag-fake.txt");
+}
+
+SD_TEST(smoke_diag_check_and_fix)
+{
+  static run_result r;
+  static char text[4096];
+  wchar_t fake[MAX_PATH];
+  SD_REQUIRE(setup());
+  smoke_fake_path(fake);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", fake);
+
+  /* checks: WebClient stopped (start type 4 = disabled), tuned WebDAV limits, not elevated */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=stopped\r\nwebclient_start=4\r\nsize=4294967295\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=1\r\nsplit=0\r\nw32=1\r\ndomain=0\r\ndrives=3\r\n"
+                                    "elevated=0\r\n"));
+  EXPECT(RUN(L"--json diag --check", NULL) == 0 && strstr(r.out, "\"ok\":true") != NULL &&
+         strstr(r.out, "\"state\":\"stopped\"") != NULL && strstr(r.out, "\"start_type\":4") != NULL &&
+         strstr(r.out, "\"problems\":0") != NULL && strstr(r.out, "\"file_size_limit\":4294967295") != NULL,
+         "json checks read the fake WebClient state");
+  EXPECT(RUN(L"diag", NULL) == 0 && strstr(r.out, "WebClient") != NULL && strstr(r.out, "diagnostics") != NULL,
+         "human checks report");
+  EXPECT(RUN(L"--json diag", NULL) == 0 && strstr(r.out, "\"checks\"") != NULL, "plain diag is the checks");
+
+  /* a running WebClient on a domain-joined computer is a warning, not a problem */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=running\r\nwebclient_start=3\r\nsize=50000000\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=0\r\nsplit=0\r\nw32=0\r\ndomain=1\r\ndrives=3\r\n"
+                                    "elevated=0\r\n"));
+  EXPECT(RUN(L"--json diag --check", NULL) == 0 && strstr(r.out, "\"webclient\":{\"status\":\"warn\"") != NULL &&
+         strstr(r.out, "\"webdav\":{\"status\":\"warn\"") != NULL,
+         "domain WebClient and untuned WebDAV warn");
+
+  /* fixes need an administrator: refused with exit 9 and nothing changes */
+  EXPECT(RUN(L"--json diag --fix webclient --yes", NULL) == 9 && strstr(r.out, "elevation_required") != NULL,
+         "fix refused without elevation");
+  EXPECT(RUN(L"diag --fix linked-connections --yes", NULL) == 9, "linked fix refused without elevation");
+
+  /* elevated (the fake grants it): the WebClient fix sets manual start and starts the service */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=stopped\r\nwebclient_start=4\r\nsize=50000000\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=0\r\nsplit=0\r\nw32=0\r\ndomain=0\r\ndrives=3\r\n"
+                                    "elevated=1\r\n"));
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"0");
+  EXPECT(RUN(L"--json diag --fix webclient --yes", NULL) == 9, "SHELLDRIVE_TEST_ELEVATED=0 denies even a fake grant");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
+  EXPECT(RUN(L"--json diag --fix webclient --yes", NULL) == 0 && strstr(r.out, "\"changed\":true") != NULL,
+         "webclient fix when elevated");
+  SD_REQUIRE(smoke_read_bytes(fake, (unsigned char *)text, sizeof(text)) > 0);
+  EXPECT(strstr(text, "webclient_start=3") != NULL && strstr(text, "webclient=running") != NULL,
+         "the fake shows manual start and running");
+  EXPECT(RUN(L"--json diag --fix webclient --yes", NULL) == 0 && strstr(r.out, "\"changed\":false") != NULL,
+         "a second webclient fix changes nothing");
+
+  /* linked connections: the question is asked; a no leaves the value alone (exit 13) */
+  EXPECT(RUN(L"diag --fix linked-connections", "n\r\n") == 13, "a no is a cancellation");
+  SD_REQUIRE(smoke_read_bytes(fake, (unsigned char *)text, sizeof(text)) > 0);
+  EXPECT(strstr(text, "linked=none") != NULL, "a cancelled fix changes nothing");
+  EXPECT(RUN(L"diag --fix linked-connections", "y\r\n") == 0, "a yes sets EnableLinkedConnections");
+  SD_REQUIRE(smoke_read_bytes(fake, (unsigned char *)text, sizeof(text)) > 0);
+  EXPECT(strstr(text, "linked=1") != NULL, "the fake shows the linked value");
+  EXPECT(RUN(L"--json diag --fix linked-connections --yes", NULL) == 0 && strstr(r.out, "\"changed\":false") != NULL,
+         "linked fix is idempotent");
+
+  /* no WebClient at all: the fix cannot run (backend unavailable, exit 11) */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=missing\r\nelevated=1\r\nlinked=1\r\n"));
+  EXPECT(RUN(L"--json diag --fix webclient --yes", NULL) == 11 && strstr(r.out, "backend_unavailable") != NULL,
+         "missing WebClient");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", NULL);
+  DeleteFileW(fake);
+}
+
+SD_TEST(smoke_diag_bundle)
+{
+  static run_result r;
+  static unsigned char zip[1 << 20];
+  wchar_t fake[MAX_PATH], profile[MAX_PATH], path[MAX_PATH], args[1024];
+  size_t got;
+  SD_REQUIRE(setup());
+  smoke_fake_path(fake);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", fake);
+  SD_REQUIRE(smoke_write_text(fake, "webclient=missing\r\nelevated=0\r\ndrives=3\r\n"));
+
+  /* a profile with a host, a user, a remote path and a password: the password must never reach the bundle */
+  wcscpy_s(profile, MAX_PATH, g_root);
+  wcscat_s(profile, MAX_PATH, L"\\profiles\\bundle-test.ini");
+  SD_REQUIRE(smoke_write_text(profile, "name = bundle-test\r\nhost = secret.example.test\r\nuser = carol\r\n"
+                                       "remote_path = /home/carol/private\r\npassword = hunter2-pass\r\n"));
+
+  /* anonymized by default */
+  wcscpy_s(path, MAX_PATH, g_root);
+  wcscat_s(path, MAX_PATH, L"\\bundle-anon.zip");
+  DeleteFileW(path);
+  _snwprintf_s(args, SD_COUNTOF(args), _TRUNCATE, L"--json diag --bundle \"%s\"", path);
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"anonymized\":true") != NULL && strstr(r.out, "\"files\":") != NULL,
+         "bundle written, anonymized");
+  got = smoke_read_bytes(path, zip, sizeof(zip));
+  EXPECT(got > 200 && zip[0] == 'P' && zip[1] == 'K' && zip[2] == 3 && zip[3] == 4, "the file is a ZIP");
+  EXPECT(smoke_has(zip, got, "README.txt") && smoke_has(zip, got, "check.json") && smoke_has(zip, got, "versions.txt") &&
+         smoke_has(zip, got, "agent.json") && smoke_has(zip, got, "crash/list.txt") &&
+         smoke_has(zip, got, "config/profiles/bundle-test.ini"), "the expected entries");
+  EXPECT(!smoke_has(zip, got, "hunter2-pass"), "no password in the bundle");
+  EXPECT(!smoke_has(zip, got, "secret.example.test") && !smoke_has(zip, got, "carol") &&
+         !smoke_has(zip, got, "/home/carol"), "host, user and remote path are anonymized");
+  EXPECT(smoke_has(zip, got, "host = h:"), "the host field is a token");
+
+  /* --no-anonymize keeps the names, and still no secret */
+  wcscpy_s(path, MAX_PATH, g_root);
+  wcscat_s(path, MAX_PATH, L"\\bundle-plain.zip");
+  DeleteFileW(path);
+  _snwprintf_s(args, SD_COUNTOF(args), _TRUNCATE, L"--json diag --bundle \"%s\" --no-anonymize", path);
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"anonymized\":false") != NULL, "bundle without anonymization");
+  got = smoke_read_bytes(path, zip, sizeof(zip));
+  EXPECT(smoke_has(zip, got, "secret.example.test") && smoke_has(zip, got, "carol") &&
+         !smoke_has(zip, got, "hunter2-pass"), "names kept, password still removed");
+
+  /* an existing file is never replaced */
+  EXPECT(RUN(args, NULL) == 1, "an existing bundle file is refused");
+
+  DeleteFileW(path);
+  wcscpy_s(path, MAX_PATH, g_root);
+  wcscat_s(path, MAX_PATH, L"\\bundle-anon.zip");
+  DeleteFileW(path);
+  DeleteFileW(profile);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", NULL);
+  DeleteFileW(fake);
 }

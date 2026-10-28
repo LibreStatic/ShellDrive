@@ -82,7 +82,7 @@ sd_err cli_split_cmdline(const wchar_t *cmd, int *argc_out, wchar_t ***argv_out)
 
 /* ---- parsing ---- */
 
-typedef enum { O_FLAG, O_VALUE } opt_kind;
+typedef enum { O_FLAG, O_VALUE, O_OPTVALUE } opt_kind;   /* O_OPTVALUE: the value may be left out (--bundle) */
 
 typedef struct opt_def {
   const wchar_t *name;
@@ -95,7 +95,8 @@ enum {
   OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE,
   OPT_BACKEND, OPT_JUMP, OPT_PROXY, OPT_CONNECTIONS, OPT_TYPE, OPT_FROM, OPT_DRY_RUN, OPT_ADD_ONLY,
   OPT_ANNOUNCED, OPT_STATS, OPT_OPEN, OPT_MACHINE, OPT_FROM_SERVER, OPT_EXPECT,
-  OPT_SCENARIO, OPT_SIZE, OPT_WRITE_MODE
+  OPT_SCENARIO, OPT_SIZE, OPT_WRITE_MODE,
+  OPT_CHECK, OPT_BUNDLE, OPT_INCLUDE_DUMPS, OPT_NO_ANONYMIZE, OPT_ANONYMIZE, OPT_FIX, OPT_YES
 };
 
 static const opt_def k_opts[] = {
@@ -118,6 +119,9 @@ static const opt_def k_opts[] = {
   { L"--expect", O_VALUE, OPT_EXPECT },
   { L"--scenario", O_VALUE, OPT_SCENARIO }, { L"--size", O_VALUE, OPT_SIZE },
   { L"--write-mode", O_VALUE, OPT_WRITE_MODE },
+  { L"--check", O_FLAG, OPT_CHECK }, { L"--bundle", O_OPTVALUE, OPT_BUNDLE },
+  { L"--include-dumps", O_FLAG, OPT_INCLUDE_DUMPS }, { L"--no-anonymize", O_FLAG, OPT_NO_ANONYMIZE },
+  { L"--anonymize", O_FLAG, OPT_ANONYMIZE }, { L"--fix", O_VALUE, OPT_FIX }, { L"--yes", O_FLAG, OPT_YES },
 };
 
 /* Which options each command accepts (globals are always accepted). */
@@ -145,6 +149,9 @@ static int allowed(cli_cmd cmd, int id)
     return cmd == CLI_CMD_UNMOUNT || cmd == CLI_CMD_CACHE;
   case OPT_SCENARIO: case OPT_SIZE: case OPT_WRITE_MODE:
     return cmd == CLI_CMD_DIAG || cmd == CLI_CMD_BENCH;
+  case OPT_CHECK: case OPT_BUNDLE: case OPT_INCLUDE_DUMPS: case OPT_NO_ANONYMIZE: case OPT_ANONYMIZE:
+  case OPT_FIX: case OPT_YES:
+    return cmd == CLI_CMD_DIAG;
   }
   return 0;
 }
@@ -201,7 +208,8 @@ static int bench_drive_ok(const wchar_t *s)
 
 static cli_cmd command_of(const wchar_t *w)
 {
-  if (wcscmp(w, L"diag") == 0) return CLI_CMD_DIAG;     /* diag bench <X:> (the only diag form so far) */
+  if (wcscmp(w, L"diag") == 0) return CLI_CMD_DIAG;     /* diag [--check|--bundle|--fix], diag bench <X:>, diag collect */
+  if (wcscmp(w, L"admin") == 0) return CLI_CMD_DIAG;    /* admin webclient-enable = diag --fix webclient (03 §6.1) */
   if (wcscmp(w, L"bench") == 0) return CLI_CMD_BENCH;   /* alias of diag bench (03 §6.1) */
   if (wcscmp(w, L"mount") == 0) return CLI_CMD_MOUNT;
   if (wcscmp(w, L"unmount") == 0 || wcscmp(w, L"umount") == 0) return CLI_CMD_UNMOUNT;
@@ -241,6 +249,15 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
         else if (i + 1 < argc) value = argv[++i];
         if (value == NULL || value[0] == 0)
           return set_err(a, CLI_E_MISSING_VALUE, d->name, NULL);
+      } else if (d->kind == O_OPTVALUE) {
+        /* --bundle [FILE]: the value is optional; the next word is taken only when it is not an option */
+        if (eq) {
+          value = eq + 1;
+          if (value[0] == 0)
+            return set_err(a, CLI_E_MISSING_VALUE, d->name, NULL);
+        } else if (i + 1 < argc && argv[i + 1][0] != L'-') {
+          value = argv[++i];
+        }
       } else if (eq) {
         return set_err(a, CLI_E_BAD_VALUE, d->name, eq + 1);
       }
@@ -334,6 +351,16 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
         break;
       case OPT_STATS: a->stats = 1; break;
       case OPT_OPEN: a->open_after = 1; break;
+      case OPT_CHECK: a->diag_check = 1; break;
+      case OPT_BUNDLE: a->diag_bundle = 1; a->bundle_file = value; break;
+      case OPT_INCLUDE_DUMPS: a->include_dumps = 1; break;
+      case OPT_NO_ANONYMIZE: a->no_anonymize = 1; break;
+      case OPT_ANONYMIZE: a->anonymize = 1; break;
+      case OPT_FIX:
+        if (wcscmp(value, L"webclient") == 0 || wcscmp(value, L"linked-connections") == 0) a->fix_item = value;
+        else return set_err(a, CLI_E_BAD_VALUE, d->name, value);
+        break;
+      case OPT_YES: a->yes = 1; break;
       }
       continue;
     }
@@ -387,16 +414,47 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   /* options given before the command word: re-check against the command */
   if (a->cmd == CLI_CMD_NONE && !a->help)
     return set_err(a, CLI_E_MISSING_ARGUMENT, NULL, NULL);
-  /* diag bench <X:> is the bench command (03 §6.1); "diag" has no other verb in this build */
+  /* diag (03 §6.1): "diag bench <X:>" is the bench command, "diag collect" the bundle, "admin webclient-enable"
+     the webclient fix; the options pick the form otherwise, and a plain "diag" is the checks. */
   if (a->cmd == CLI_CMD_DIAG && !a->help) {
-    if (a->positional == NULL)
-      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
-    if (wcscmp(a->positional, L"bench") != 0)
-      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
-    a->cmd = CLI_CMD_BENCH;
-    a->positional = a->arg2;
-    a->arg2 = NULL;
+    if (a->cmd_name && wcscmp(a->cmd_name, L"admin") == 0) {
+      if (a->positional == NULL || wcscmp(a->positional, L"webclient-enable") != 0 || a->arg2)
+        return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional ? a->positional : a->cmd_name, NULL);
+      a->fix_item = L"webclient";
+      a->positional = NULL;
+    } else if (a->positional) {
+      if (wcscmp(a->positional, L"bench") == 0) {
+        a->cmd = CLI_CMD_BENCH;
+        a->positional = a->arg2;
+        a->arg2 = NULL;
+      } else if (wcscmp(a->positional, L"collect") == 0) {
+        if (a->arg2)
+          return set_err(a, CLI_E_EXTRA_ARGUMENT, a->arg2, NULL);
+        a->diag_bundle = 1;
+        a->positional = NULL;
+      } else {
+        return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+      }
+    }
   }
+  if (a->cmd == CLI_CMD_DIAG && !a->help) {
+    int forms = a->diag_check + a->diag_bundle + (a->fix_item != NULL);
+    if (forms > 1)
+      return set_err(a, CLI_E_CONFLICT, a->diag_bundle ? L"--bundle" : a->fix_item ? L"--fix" : L"--check",
+                     a->diag_check ? L"--check" : a->fix_item ? L"--fix" : L"--bundle");
+    if (forms == 0)
+      a->diag_check = 1;
+    if (a->yes && a->fix_item == NULL)
+      return set_err(a, CLI_E_UNKNOWN_OPTION, L"--yes", NULL);
+    if ((a->include_dumps || a->no_anonymize || a->anonymize) && !a->diag_bundle)
+      return set_err(a, CLI_E_UNKNOWN_OPTION, a->include_dumps ? L"--include-dumps" : a->no_anonymize ?
+                     L"--no-anonymize" : L"--anonymize", NULL);
+    if (a->no_anonymize && a->anonymize)
+      return set_err(a, CLI_E_CONFLICT, L"--anonymize", L"--no-anonymize");
+  }
+  if (a->cmd == CLI_CMD_BENCH && (a->diag_check || a->diag_bundle || a->fix_item || a->yes || a->include_dumps ||
+                                  a->no_anonymize || a->anonymize))
+    return set_err(a, CLI_E_UNKNOWN_OPTION, L"--check", NULL);
   if (a->cmd != CLI_CMD_BENCH && (a->bench_scenario || a->bench_size_mib || a->bench_write_mode))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->bench_scenario ? L"--scenario" : a->bench_size_mib ? L"--size" :
                    L"--write-mode", NULL);

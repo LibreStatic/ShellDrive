@@ -12,6 +12,16 @@ set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_bench.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_service.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c
+  # diag (M6, 03 §10.5): checks and fixes over the diag_env seam, the support bundle, its stored ZIP writer and the
+  # anonymizer. cli_diag_fake.c is empty unless SD_CLI_TEST_HOOKS is defined.
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_fake.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_bundle.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_anon.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_anon.c
   # service install/uninstall/start/stop/status (M5): the SCM seam lives with the service it registers (03 §1.3).
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.c
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.h
@@ -29,5 +39,5 @@ sd_add_app(shelldrive
   OUTPUT_NAME shelldrive
   DESCRIPTION "ShellDrive command-line interface"
   SOURCES main.c ${SD_CLI_SOURCES}
-  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh advapi32)
+  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32)
 target_include_directories(shelldrive PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")

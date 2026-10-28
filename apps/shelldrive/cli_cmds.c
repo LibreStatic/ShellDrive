@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cli_int.h"
+#include "cli_diag.h"
 #include "sd/version.h"
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
@@ -840,7 +841,23 @@ void cli_print_help(const wchar_t *topic)
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--all", SD_MSG_CLI_HELP_OPT_ALL);
     help_line(L"--force", SD_MSG_CLI_HELP_OPT_FORCE);
-  } else if (topic && (wcscmp(topic, L"bench") == 0 || wcscmp(topic, L"diag") == 0)) {
+  } else if (topic && wcscmp(topic, L"diag") == 0) {
+    help_line(L"diag [--check] [--json]", SD_MSG_CLI_HELP_DIAG_CHECK);
+    help_line(L"diag --bundle [FILE] [--no-anonymize] [--include-dumps]", SD_MSG_CLI_HELP_DIAG_BUNDLE);
+    help_line(L"diag --fix webclient|linked-connections [--yes]", SD_MSG_CLI_HELP_DIAG_FIX);
+    help_line(L"admin webclient-enable", SD_MSG_CLI_HELP_ADMIN_WEBCLIENT);
+    help_line(L"diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind]", SD_MSG_CLI_HELP_BENCH);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--bundle [FILE]", SD_MSG_CLI_HELP_OPT_BUNDLE);
+    help_line(L"--no-anonymize", SD_MSG_CLI_HELP_OPT_NO_ANONYMIZE);
+    help_line(L"--include-dumps", SD_MSG_CLI_HELP_OPT_INCLUDE_DUMPS);
+    help_line(L"--fix webclient|linked-connections", SD_MSG_CLI_HELP_OPT_FIX);
+    help_line(L"--yes", SD_MSG_CLI_HELP_OPT_YES);
+    help_line(L"--scenario all|seq-write|seq-write-64k|seq-read|small-files|open", SD_MSG_CLI_HELP_OPT_SCENARIO);
+    help_line(L"--size MIB", SD_MSG_CLI_HELP_OPT_SIZE);
+    help_line(L"--write-mode through|behind", SD_MSG_CLI_HELP_OPT_WRITE_MODE);
+  } else if (topic && wcscmp(topic, L"bench") == 0) {
     help_line(L"diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind] [--json]", SD_MSG_CLI_HELP_BENCH);
     cli_print(L"");
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
@@ -883,7 +900,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
     help_line(L"cache clear [<profile>|X:] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
-    help_line(L"diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind]", SD_MSG_CLI_HELP_BENCH);
+    help_line(L"diag [--check] | --bundle [FILE] | --fix webclient|linked-connections", SD_MSG_CLI_HELP_DIAG);
     help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
     help_line(L"hostkey list | add | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
@@ -935,6 +952,10 @@ int cli_run(const cli_args *a)
   case CLI_CMD_CACHE:      return cli_run_cache(a);
   case CLI_CMD_SERVICE:    return cli_run_service(a);
   case CLI_CMD_BENCH:      return cli_run_bench(a);
+  case CLI_CMD_DIAG:
+    if (a->diag_bundle) return cli_run_diag_bundle(a);
+    if (a->fix_item) return cli_run_diag_fix(a);
+    return cli_run_diag_check(a);
   default:
     cli_print_help(NULL);
     return 2;

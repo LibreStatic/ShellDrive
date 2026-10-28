@@ -24,12 +24,13 @@ add_executable(sd-test-cli "${_cli_dir}/main.c" ${SD_CLI_SOURCES})
 target_compile_definitions(sd-test-cli PRIVATE SD_CLI_TEST_HOOKS=1)
 target_include_directories(sd-test-cli PRIVATE "${_cli_dir}" "${_host_dir}")
 target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform
-                      sd_base sd_ssh advapi32)
+                      sd_base sd_ssh sd_crypto sd_policy advapi32)
 set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps
-  SOURCES main.c test_cli_args.c test_cli_m3.c test_smoke.c test_agent_m3.c "${_cli_dir}/cli_args.c"
-  DEPS sd_ipc sd_state sd_config sd_platform sd_base ole32 shell32 advapi32 user32)
+  SOURCES main.c test_cli_args.c test_cli_m3.c test_smoke.c test_agent_m3.c test_diag_units.c "${_cli_dir}/cli_args.c"
+          "${_cli_dir}/cli_zip.c" "${_cli_dir}/cli_anon.c"
+  DEPS sd_ipc sd_state sd_config sd_platform sd_base sd_crypto ole32 shell32 advapi32 user32)
 target_include_directories(sd-test-apps PRIVATE "${_cli_dir}")
 add_dependencies(sd-test-apps sd-test-cli sd-test-host-fake)
 # unit.apps writes and removes the HKCU key tree Software\LibreStatic\ShellDriveTest (test_agent_m3.c), which the

@@ -1277,3 +1277,357 @@ msgstr ""
 msgctxt "cli.hk.add_choices"
 msgid "[y]es, [N]o: "
 msgstr ""
+
+
+#. Heading of "shelldrive diag" output. {version} is the product version.
+msgctxt "cli.diag.header"
+msgid "ShellDrive diagnostics, version {version}"
+msgstr ""
+
+#. One check row: {status} is the status word, {label} the check name, {value} what was found.
+msgctxt "cli.diag.row"
+msgid "{status} {label}: {value}"
+msgstr ""
+
+#. Status word of a check that is fine.
+msgctxt "cli.diag.status_ok"
+msgid "[OK]"
+msgstr ""
+
+#. Status word of a check that needs attention but is not a failure.
+msgctxt "cli.diag.status_warn"
+msgid "[Warning]"
+msgstr ""
+
+#. Status word of a check that failed.
+msgctxt "cli.diag.status_problem"
+msgid "[Problem]"
+msgstr ""
+
+msgctxt "cli.diag.label_os"
+msgid "Windows"
+msgstr ""
+
+msgctxt "cli.diag.label_agent"
+msgid "Agent"
+msgstr ""
+
+msgctxt "cli.diag.label_service"
+msgid "Service"
+msgstr ""
+
+msgctxt "cli.diag.label_webclient"
+msgid "WebClient"
+msgstr ""
+
+msgctxt "cli.diag.label_webdav"
+msgid "WebDAV limits"
+msgstr ""
+
+msgctxt "cli.diag.label_dokany"
+msgid "Dokany"
+msgstr ""
+
+msgctxt "cli.diag.label_linked"
+msgid "Linked connections"
+msgstr ""
+
+msgctxt "cli.diag.label_elevation"
+msgid "Elevation"
+msgstr ""
+
+msgctxt "cli.diag.label_domain"
+msgid "Domain"
+msgstr ""
+
+msgctxt "cli.diag.label_drives"
+msgid "Drive letters"
+msgstr ""
+
+msgctxt "cli.diag.label_settings"
+msgid "Settings"
+msgstr ""
+
+msgctxt "cli.diag.label_privacy"
+msgid "Log privacy"
+msgstr ""
+
+msgctxt "cli.diag.label_clock"
+msgid "Clock"
+msgstr ""
+
+#. Value of the Windows check. {version} is the build version, {flavour} the build flavour.
+msgctxt "cli.diag.v_os"
+msgid "{version}, {flavour} build"
+msgstr ""
+
+msgctxt "cli.diag.v_agent_running"
+msgid "running"
+msgstr ""
+
+msgctxt "cli.diag.v_agent_stopped"
+msgid "not running (it starts when you mount a drive)"
+msgstr ""
+
+msgctxt "cli.diag.v_service_missing"
+msgid "not installed"
+msgstr ""
+
+msgctxt "cli.diag.v_service_running"
+msgid "installed, running"
+msgstr ""
+
+msgctxt "cli.diag.v_service_stopped"
+msgid "installed, not running"
+msgstr ""
+
+#. WebClient running on a domain-joined computer: a warning (03 §10.5).
+msgctxt "cli.diag.v_webclient_domain"
+msgid "running on a domain-joined computer. If every connection uses Dokany, consider disabling it."
+msgstr ""
+
+msgctxt "cli.diag.v_webclient_running"
+msgid "running"
+msgstr ""
+
+msgctxt "cli.diag.v_webclient_stopped"
+msgid "stopped"
+msgstr ""
+
+msgctxt "cli.diag.v_webclient_disabled"
+msgid "disabled"
+msgstr ""
+
+msgctxt "cli.diag.v_webclient_missing"
+msgid "not installed"
+msgstr ""
+
+msgctxt "cli.diag.v_unknown"
+msgid "unknown"
+msgstr ""
+
+#. WebDAV limits as set: {size} and {attributes} are byte counts or "not set".
+msgctxt "cli.diag.v_webdav"
+msgid "file size limit {size}, file attribute limit {attributes}"
+msgstr ""
+
+#. WebDAV limits at the Windows defaults (warning): large files cannot be opened until the installer hook webdav-tune runs.
+msgctxt "cli.diag.v_webdav_default"
+msgid "file size limit {size}, file attribute limit {attributes}. Large files cannot be opened with these limits."
+msgstr ""
+
+msgctxt "cli.diag.v_not_set"
+msgid "not set"
+msgstr ""
+
+msgctxt "cli.diag.v_present"
+msgid "installed"
+msgstr ""
+
+msgctxt "cli.diag.v_absent"
+msgid "not installed"
+msgstr ""
+
+msgctxt "cli.diag.v_linked_on"
+msgid "enabled"
+msgstr ""
+
+msgctxt "cli.diag.v_linked_off"
+msgid "not set"
+msgstr ""
+
+#. Warning when EnableLinkedConnections is not set for an administrator account.
+msgctxt "cli.diag.v_linked_off_admin"
+msgid "not set, so programs run as administrator cannot see the drives"
+msgstr ""
+
+msgctxt "cli.diag.v_elev_yes"
+msgid "elevated"
+msgstr ""
+
+msgctxt "cli.diag.v_elev_split"
+msgid "not elevated (administrator account with a filtered token)"
+msgstr ""
+
+msgctxt "cli.diag.v_elev_no"
+msgid "not elevated"
+msgstr ""
+
+msgctxt "cli.diag.v_domain_yes"
+msgid "joined to a domain"
+msgstr ""
+
+msgctxt "cli.diag.v_domain_no"
+msgid "not joined to a domain"
+msgstr ""
+
+#. Free drive letters from D: on. {count} is the number of free letters.
+#, plural-arg=count
+msgctxt "cli.diag.v_drives"
+msgid "{count} free drive letter"
+msgid_plural "{count} free drive letters"
+msgstr[0] ""
+msgstr[1] ""
+
+msgctxt "cli.diag.v_settings_ok"
+msgid "readable"
+msgstr ""
+
+msgctxt "cli.diag.v_settings_bad"
+msgid "cannot be read"
+msgstr ""
+
+msgctxt "cli.diag.v_privacy_strict"
+msgid "strict: host and user names and remote paths are hashed"
+msgstr ""
+
+msgctxt "cli.diag.v_privacy_standard"
+msgid "standard: host and user names are logged"
+msgstr ""
+
+#. Clock row. {time} is the local time, {offset} the UTC offset, {state} the state of Windows Time.
+msgctxt "cli.diag.v_clock"
+msgid "{time} (UTC{offset}), Windows Time {state}"
+msgstr ""
+
+msgctxt "cli.diag.v_w32_running"
+msgid "running"
+msgstr ""
+
+msgctxt "cli.diag.v_w32_stopped"
+msgid "not running"
+msgstr ""
+
+msgctxt "cli.diag.summary_ok"
+msgid "No problems found."
+msgstr ""
+
+#, plural-arg=count
+msgctxt "cli.diag.summary_problem"
+msgid "{count} problem found."
+msgid_plural "{count} problems found."
+msgstr[0] ""
+msgstr[1] ""
+
+#. A fix failed. {code} is the Windows error number.
+msgctxt "cli.diag.fix_failed"
+msgid "The change failed (error {code})."
+msgstr ""
+
+#. The fix is refused by the AllowedBackends policy (exit 15).
+msgctxt "cli.diag.fix_policy"
+msgid "The AllowedBackends policy excludes WebDAV, so WebClient is not changed."
+msgstr ""
+
+#. A fix needs an administrator (exit 9).
+msgctxt "cli.diag.elevation_required"
+msgid "This needs an administrator. Open a console as administrator and run the command again."
+msgstr ""
+
+#. The letter and the word that answer yes. The letter in brackets of the questions below must match.
+msgctxt "cli.diag.letter_yes"
+msgid "y"
+msgstr ""
+
+msgctxt "cli.diag.word_yes"
+msgid "yes"
+msgstr ""
+
+#. Question before the WebClient fix. The letters in brackets must match cli.diag.letter_yes; the default (capital) is no.
+msgctxt "cli.diag.fix_confirm_webclient"
+msgid "Set WebClient to start on demand and start it now? [y]es, [N]o: "
+msgstr ""
+
+#. Question before the linked-connections fix. The letters in brackets must match cli.diag.letter_yes; the default (capital) is no.
+msgctxt "cli.diag.fix_confirm_linked"
+msgid "Let programs run as administrator see the drives (EnableLinkedConnections)? [y]es, [N]o: "
+msgstr ""
+
+msgctxt "cli.diag.fix_webclient_done"
+msgid "WebClient starts on demand and is running."
+msgstr ""
+
+msgctxt "cli.diag.fix_webclient_unchanged"
+msgid "WebClient already runs on demand. Nothing was changed."
+msgstr ""
+
+#. Note before the WebClient fix on a domain-joined computer.
+msgctxt "cli.diag.fix_domain_note"
+msgid "This computer is joined to a domain. If every connection uses Dokany, WebClient is not needed."
+msgstr ""
+
+msgctxt "cli.diag.fix_linked_done"
+msgid "EnableLinkedConnections is set. Restart Windows for it to take effect."
+msgstr ""
+
+msgctxt "cli.diag.fix_linked_unchanged"
+msgid "EnableLinkedConnections is already set. Nothing was changed."
+msgstr ""
+
+#. Printed before a bundle that keeps host names, user names and remote paths.
+msgctxt "cli.diag.bundle_no_anon"
+msgid "Host names, user names and remote paths are NOT anonymized (--no-anonymize)."
+msgstr ""
+
+msgctxt "cli.diag.bundle_dumps_note"
+msgid "Crash dumps are included. They can contain file names and file content."
+msgstr ""
+
+#. {path} is the file name that already exists. The file is not replaced.
+msgctxt "cli.diag.bundle_exists"
+msgid "{path} already exists. Choose another name; the existing file was not replaced."
+msgstr ""
+
+#. {code} is the Windows error number.
+msgctxt "cli.diag.bundle_failed"
+msgid "The bundle could not be written (error {code})."
+msgstr ""
+
+#. Printed after a bundle is written. {path} is the file, {count} the number of files in it.
+#, plural-arg=count
+msgctxt "cli.diag.bundle_written"
+msgid "Diagnostic bundle written: {path} ({count} file). Nothing was sent; attach the file yourself when you report a problem."
+msgid_plural "Diagnostic bundle written: {path} ({count} files). Nothing was sent; attach the file yourself when you report a problem."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Help: the diag command in the general list.
+msgctxt "cli.help.diag"
+msgid "Check this computer, write a support bundle or apply one of the two fixes."
+msgstr ""
+
+msgctxt "cli.help.diag_check"
+msgid "Run the checks of this computer (the default)."
+msgstr ""
+
+msgctxt "cli.help.diag_bundle"
+msgid "Write a ZIP file with the checks, logs and settings. Anonymized by default."
+msgstr ""
+
+msgctxt "cli.help.diag_fix"
+msgid "Apply one fix after a question. Needs an administrator."
+msgstr ""
+
+msgctxt "cli.help.admin_webclient"
+msgid "The same as diag --fix webclient: WebClient starts on demand and runs now."
+msgstr ""
+
+msgctxt "cli.help.opt_bundle"
+msgid "The new ZIP file. Without FILE the name is shelldrive-diag-<date>-<time>.zip in the current folder."
+msgstr ""
+
+msgctxt "cli.help.opt_no_anonymize"
+msgid "Keep host names, user names and remote paths in the bundle."
+msgstr ""
+
+msgctxt "cli.help.opt_include_dumps"
+msgid "Include the crash dumps. They can contain file content."
+msgstr ""
+
+msgctxt "cli.help.opt_fix"
+msgid "webclient: start on demand and run now. linked-connections: administrator programs see the drives after a restart."
+msgstr ""
+
+msgctxt "cli.help.opt_yes"
+msgid "Do not ask before a fix."
+msgstr ""
