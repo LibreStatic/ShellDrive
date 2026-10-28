@@ -13,6 +13,16 @@
 #include "sd_test.h"
 #include "test_common.h"
 
+#ifndef KEY_WOW64_64KEY
+#define KEY_WOW64_64KEY 0x0100
+#endif
+#ifndef IMAGE_FILE_MACHINE_I386
+#define IMAGE_FILE_MACHINE_I386 0x014c
+#endif
+#ifndef IMAGE_FILE_MACHINE_AMD64
+#define IMAGE_FILE_MACHINE_AMD64 0x8664
+#endif
+
 typedef LONG (WINAPI *sd_RegOverridePredefKey_t)(HKEY, HKEY);
 
 /* The redirected HKCU for one test: its real-HKCU key is removed at the end. */
@@ -406,6 +416,121 @@ SD_TEST(setup_portable_roundtrip)
   fake_hkcu_end(&f);
   payload_free(&tp);
   test_remove_tree(base);
+}
+
+/* The 32-bit view of the per-user shell registration (04 §6.2, 03 §8.5), through the seam: without an x86 copy the
+   CLSID names the x64 DLL; with one, the SHELL32 rows name the x86 copy (they come last, so they win in a shared view). */
+SD_TEST(setup_reg_shell32_rows)
+{
+  static const wchar_t clsid_inproc[] = L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\\InprocServer32";
+  static const wchar_t clsid[] = L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}";
+  sd_setup_regctx c;
+  fake_hkcu f;
+
+  SD_REQUIRE(fake_hkcu_begin(&f) == 0);
+  memset(&c, 0, sizeof(c));
+  c.root = HKEY_CURRENT_USER;
+  c.install_dir = L"C:\\ShellDriveTest\\app\\";
+  c.version = L"1.2.3";
+  c.flavour = L"x64-modern";
+  c.install_bytes = 1024;
+  c.shell_access = KEY_WOW64_64KEY;
+
+  SD_CHECK_EQ_INT(sd_setup_reg_apply(&c), 0);
+  SD_CHECK(reg_sz_is(clsid_inproc, L"", L"C:\\ShellDriveTest\\app\\shelldrive-shellext.dll"));
+
+  c.install_dir32 = L"C:\\ShellDriveTest\\app\\x86\\";
+  SD_CHECK_EQ_INT(sd_setup_reg_apply(&c), 0);
+  SD_CHECK(reg_sz_is(clsid_inproc, L"", L"C:\\ShellDriveTest\\app\\x86\\shelldrive-shellext.dll"));
+
+  /* Removal takes the rows of both views, and the emptied CLSID key goes with them. */
+  SD_CHECK_EQ_INT(sd_setup_reg_remove(&c), 0);
+  SD_CHECK(!reg_key_exists(clsid_inproc));
+  SD_CHECK(!reg_key_exists(clsid));
+
+  fake_hkcu_end(&f);
+}
+
+/* An x64 per-user install carries the x86 copy in x86\ (payload-x64.cab). The views of this system are shared
+   (Windows Vista and later), so the 32-bit rows are not written and the CLSID keeps the x64 DLL; the copy is removed
+   with the rest of the folder. XP x64, where the views are split, is covered by sd_setup_shell32_wanted in test_install. */
+SD_TEST(setup_user_x64_install_carries_x86_copy)
+{
+  static const wchar_t clsid_inproc[] = L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\\InprocServer32";
+  static const wchar_t clsid[] = L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}";
+  test_payload tp;
+  sd_setup_install_opts o;
+  sd_setup_uninstall_opts uo;
+  sd_setup_result r;
+  sd_setup_host host;
+  wchar_t base[MAX_PATH];
+  wchar_t app[MAX_PATH];
+  wchar_t expect[MAX_PATH * 2];
+  fake_hkcu f;
+  int rc;
+
+  SD_REQUIRE(payload_load(L"payload-x64.cab", &tp) == 0);
+  SD_REQUIRE(test_make_temp_dir(base, MAX_PATH) == 0);
+  SD_REQUIRE(sd_setup_path_join(app, MAX_PATH, base, L"app") == 0);
+  SD_REQUIRE(fake_hkcu_begin(&f) == 0);
+
+  user_opts(&o, &tp, app, L"1.2.3");
+  o.flavour = SD_SETUP_FL_X64_MODERN;
+  rc = sd_setup_install(&o, &r);
+  SD_CHECK_EQ_INT(rc, 0);
+  SD_CHECK_EQ_INT(r.count, 6);
+  SD_CHECK(file_in(app, L"shelldrive-shellext.dll"));
+  SD_CHECK(file_in(app, L"x86\\shelldrive-shellext.dll"));
+  SD_CHECK(reg_sz_is(L"Software\\LibreStatic\\ShellDrive", L"Flavour", L"x64-modern"));
+
+  sd_setup_detect_host(&host);
+  if (!sd_setup_views_split(&host)) {
+    StringCchPrintfW(expect, SD_SETUP_COUNTOF_LOCAL(expect), L"%s\\shelldrive-shellext.dll", app);
+    SD_CHECK(reg_sz_is(clsid_inproc, L"", expect));
+  }
+
+  memset(&uo, 0, sizeof(uo));
+  uo.install_dir = app;
+  uo.skip_shortcut = 1;
+  uo.skip_hooks = 1;
+  uo.skip_agents = 1;
+  uo.log_path = L"";
+  SD_CHECK_EQ_INT(sd_setup_uninstall(&uo, &r), 0);
+  SD_CHECK(!file_in(app, L"x86\\shelldrive-shellext.dll"));
+  SD_CHECK(!reg_key_exists(clsid_inproc));
+  SD_CHECK(!reg_key_exists(clsid));
+
+  payload_free(&tp);
+  test_remove_tree(base);
+  fake_hkcu_end(&f);
+}
+
+/* The gate of the 32-bit rows: only the x64 flavours have an x86 copy, and only on the systems whose HKCU classes
+   are split by view (x64 XP and Server 2003). */
+SD_TEST(setup_shell32_gate)
+{
+  sd_setup_host h;
+
+  memset(&h, 0, sizeof(h));
+  h.native_machine = IMAGE_FILE_MACHINE_AMD64;
+  h.os_major = 5;
+  h.os_minor = 2;
+  SD_CHECK(sd_setup_views_split(&h));
+  SD_CHECK(sd_setup_shell32_wanted(SD_SETUP_FL_X64_XP, &h));
+  SD_CHECK(sd_setup_shell32_wanted(SD_SETUP_FL_X64_MODERN, &h));
+  SD_CHECK(!sd_setup_shell32_wanted(SD_SETUP_FL_X86_IA32, &h));
+  SD_CHECK(!sd_setup_shell32_wanted(SD_SETUP_FL_ARM64, &h));
+
+  h.os_major = 10;
+  h.os_minor = 0;
+  SD_CHECK(!sd_setup_views_split(&h));
+  SD_CHECK(!sd_setup_shell32_wanted(SD_SETUP_FL_X64_MODERN, &h));
+
+  h.native_machine = IMAGE_FILE_MACHINE_I386;
+  h.os_major = 5;
+  h.os_minor = 2;
+  SD_CHECK(!sd_setup_views_split(&h));
+  SD_CHECK(!sd_setup_views_split(NULL));
 }
 
 SD_TEST(setup_machine_mode_not_in_this_build)

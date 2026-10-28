@@ -16,10 +16,13 @@
 #                 writes them with the other rows; they match apps/shelldrive-shellext/shellext_register.c, 03 §8.5)
 #               | shellext32 (the 32-bit view of the shell extension, 04 §8.3, 03 §8.5: the same CLSIDs and handlers
 #                 with the x86 DLL in Program Files (x86), written by the MSI of the x64 flavours only as Win64="no"
-#                 components. The per-user setup has no x86 DLL and skips these rows. Approved stays shared: it is
-#                 not under Software\Classes, so it is not redirected and its one row (shellext) serves both views.)
-#   [INSTALLDIR32]  the 32-bit install folder of the x64 MSI (Program Files (x86)\LibreStatic\ShellDrive\, with a
-#                 trailing backslash); shellext32 rows only
+#                 components. The per-user setup writes them only when its x86 copy is in x86\ and the 32-bit and 64-bit
+#                 views of HKCU\Software\Classes are separate (XP x64, setup_reg.c sd_setup_shell32_wanted). Approved
+#                 stays shared: it is not under Software\Classes, so it is not redirected and its one row (shellext)
+#                 serves both views.)
+#   [INSTALLDIR32]  the 32-bit install folder of the x86 copy of the shell extension: Program Files (x86)\LibreStatic\
+#                 ShellDrive\ in the x64 MSI, <install folder>\x86\ in the per-user setup (each with a trailing
+#                 backslash); shellext32 rows only
 # Rows are written and removed in file order. Keys are removed by the uninstaller when empty.
 # Lines starting with # are comments. A "|" never appears inside data.
 

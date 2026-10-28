@@ -23,6 +23,8 @@ static int expand(const wchar_t *src, wchar_t *out, size_t cch, const sd_setup_r
       tlen = (size_t)(close - p) + 1;
       if (tlen == 12 && wcsncmp(p, L"[INSTALLDIR]", 12) == 0)
         rep = c->install_dir;
+      else if (tlen == 14 && wcsncmp(p, L"[INSTALLDIR32]", 14) == 0)
+        rep = c->install_dir32;
       else if (tlen == 9 && wcsncmp(p, L"[VERSION]", 9) == 0)
         rep = c->version;
       else if (tlen == 9 && wcsncmp(p, L"[FLAVOUR]", 9) == 0)
@@ -208,6 +210,31 @@ int sd_setup_machine_install_dir(wchar_t *out, size_t cch)
   return 1;
 }
 
+/* Access mask of the view a row belongs to (04 §6.2, 03 §8.5). 0 = the setup process's own view. KEY_WOW64_* are
+   ignored on 32-bit Windows. The SHELL32 rows always name the 32-bit view: they are written only with an x86 copy. */
+static REGSAM row_view_access(const sd_setup_regrow *row, const sd_setup_regctx *c)
+{
+  if (row->view == SD_SETUP_REGVIEW_SHELL)
+    return c->shell_access;
+  if (row->view == SD_SETUP_REGVIEW_SHELL32)
+    return KEY_WOW64_32KEY;
+  return 0;
+}
+
+/* Deletes an empty key in the given view. RegDeleteKeyExW is resolved at run time (XP x64 and later, 04 §2.4). */
+typedef LONG (WINAPI *sd_RegDeleteKeyExW_t)(HKEY, const wchar_t *, REGSAM, DWORD);
+
+static LONG delete_key_in_view(HKEY root, const wchar_t *subkey, REGSAM view)
+{
+  sd_RegDeleteKeyExW_t del = NULL;
+  if (view == 0)
+    return RegDeleteKeyW(root, subkey);
+  del = (sd_RegDeleteKeyExW_t)sd_setup_proc(L"advapi32.dll", "RegDeleteKeyExW");
+  if (del == NULL)
+    return RegDeleteKeyW(root, subkey);
+  return del(root, subkey, view, 0);
+}
+
 int sd_setup_reg_apply(const sd_setup_regctx *c)
 {
   size_t i;
@@ -221,11 +248,14 @@ int sd_setup_reg_apply(const sd_setup_regctx *c)
 
     if (row->autostart && !c->autostart)
       continue;
+    /* No x86 copy installed (or the views are shared): the 32-bit view is not written (see sd_setup_shell32_wanted). */
+    if (row->view == SD_SETUP_REGVIEW_SHELL32 && c->install_dir32 == NULL)
+      continue;
     if (expand(row->data, data, SD_SETUP_COUNTOF(data), c) != 0)
       return SD_SETUP_EXIT_FATAL;
 
-    rc = RegCreateKeyExW(c->root, row->subkey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &hk,
-                         &disp);
+    rc = RegCreateKeyExW(c->root, row->subkey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | row_view_access(row, c),
+                         NULL, &hk, &disp);
     if (rc != ERROR_SUCCESS) {
       sd_setup_log_error("reg.create", row->subkey, (DWORD)rc);
       return SD_SETUP_EXIT_FATAL;
@@ -250,12 +280,15 @@ int sd_setup_reg_remove(const sd_setup_regctx *c)
 {
   size_t i;
 
+  /* The SHELL32 values are removed whatever the install: the 32-bit view is the one of the x86 copy, and removing an
+     absent value is harmless. */
   for (i = 0; i < sd_setup_regtable_count; i++) {
     const sd_setup_regrow *row = &sd_setup_regtable[i];
     HKEY hk = NULL;
+    REGSAM view = row->view == SD_SETUP_REGVIEW_SHELL32 ? KEY_WOW64_32KEY : row_view_access(row, c);
 
     /* An empty name is the key's default value, deleted the same way (so an emptied key can go). */
-    if (RegOpenKeyExW(c->root, row->subkey, 0, KEY_SET_VALUE, &hk) == ERROR_SUCCESS) {
+    if (RegOpenKeyExW(c->root, row->subkey, 0, KEY_SET_VALUE | view, &hk) == ERROR_SUCCESS) {
       RegDeleteValueW(hk, row->name != NULL ? row->name : L"");
       RegCloseKey(hk);
     }
@@ -266,19 +299,32 @@ int sd_setup_reg_remove(const sd_setup_regctx *c)
     const sd_setup_regrow *row = &sd_setup_regtable[i - 1];
     HKEY hk = NULL;
     DWORD subkeys = 0, values = 0;
+    REGSAM view = row->view == SD_SETUP_REGVIEW_SHELL32 ? KEY_WOW64_32KEY : row_view_access(row, c);
 
     if (!row_is_product_key(row->subkey))
       continue;
-    if (RegOpenKeyExW(c->root, row->subkey, 0, KEY_READ, &hk) != ERROR_SUCCESS)
+    if (RegOpenKeyExW(c->root, row->subkey, 0, KEY_READ | view, &hk) != ERROR_SUCCESS)
       continue;
     if (RegQueryInfoKeyW(hk, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL) ==
         ERROR_SUCCESS && subkeys == 0 && values == 0) {
       RegCloseKey(hk);
       hk = NULL;
-      RegDeleteKeyW(c->root, row->subkey);
+      delete_key_in_view(c->root, row->subkey, view);
     }
     if (hk != NULL)
       RegCloseKey(hk);
   }
   return 0;
+}
+
+/* The views of the x64 and x86 copies (04 §6.2): x64 Windows XP and Server 2003 keep HKCU\Software\Classes per view;
+   later systems share one tree between the views, so the x86 copy is not registered there. */
+int sd_setup_views_split(const sd_setup_host *h)
+{
+  return h != NULL && h->native_machine == IMAGE_FILE_MACHINE_AMD64 && h->os_major == 5 && h->os_minor == 2;
+}
+
+int sd_setup_shell32_wanted(sd_setup_flavour f, const sd_setup_host *h)
+{
+  return (f == SD_SETUP_FL_X64_XP || f == SD_SETUP_FL_X64_MODERN) && sd_setup_views_split(h);
 }

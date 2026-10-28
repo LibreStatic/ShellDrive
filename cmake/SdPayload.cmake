@@ -49,10 +49,6 @@ function(sd_setup_generate_regtable out_var)
     list(GET _parts 2 _type)
     list(GET _parts 3 _data)
     list(GET _parts 4 _feature)
-    if(_feature STREQUAL "shellext32")
-      # The 32-bit view exists only in the x64 MSI (04 §8.3): the per-user setup has no x86 shell DLL to register.
-      continue()
-    endif()
     foreach(_v IN ITEMS _subkey _name _data)
       string(REPLACE "\\" "\\\\" ${_v} "${${_v}}")
       string(REPLACE "\"" "\\\"" ${_v} "${${_v}}")
@@ -66,12 +62,21 @@ function(sd_setup_generate_regtable out_var)
     endif()
     if(_feature STREQUAL "autostart")
       set(_auto 1)
-    elseif(_feature STREQUAL "core" OR _feature STREQUAL "shellext")
+      set(_view 0)
+    elseif(_feature STREQUAL "core")
       set(_auto 0)
+      set(_view 0)
+    elseif(_feature STREQUAL "shellext")
+      set(_auto 0)
+      set(_view 1)
+    elseif(_feature STREQUAL "shellext32")
+      # The x86 copy of the shell extension (04 §6.2, 03 §8.5): registered in the 32-bit view when the setup has one.
+      set(_auto 0)
+      set(_view 2)
     else()
       message(FATAL_ERROR "packaging/registration.txt: unknown feature ${_feature}")
     endif()
-    string(APPEND _rows "  { L\"${_subkey}\", L\"${_name}\", ${_dword}, L\"${_data}\", ${_auto} },\n")
+    string(APPEND _rows "  { L\"${_subkey}\", L\"${_name}\", ${_dword}, L\"${_data}\", ${_auto}, ${_view} },\n")
     math(EXPR _count "${_count} + 1")
   endforeach()
 
@@ -114,6 +119,32 @@ function(sd_setup_add_payload stub_target out_exe flavour)
     set(_msi_target msi)
   endif()
 
+  # The x64 payloads carry the x86-sse2 copy of the shell extension in x86\ beside the x64 files (04 §6.2, 03 §8.5).
+  # It comes from the nested x86 configure (cmake/SdShellExtX86.cmake), the same copy the x64 MSI carries. The
+  # per-user setup registers it in the 32-bit view (setup_reg.c, sd_setup_shell32_wanted). The arm64 payload does not
+  # carry it here: its cross-included DLLs are the release pipeline's (apps/shelldrive-setup/CMakeLists.txt).
+  set(_x86_member "")
+  set(_x86_deps "")
+  set(_x86_target "")
+  if(flavour MATCHES "^x64-")
+    include(SdShellExtX86)
+    sd_add_x86_shellext(_sd_x86_shellext_target)
+    set(_x86_member "\"$<TARGET_FILE:sd_shellext_x86_dll>\" x86\\shelldrive-shellext.dll\n")
+    set(_x86_deps "$<TARGET_FILE:sd_shellext_x86_dll>")
+    set(_x86_target sd_shellext_x86)
+    # The same audits as the MSI copy (tests/msi/CMakeLists.txt, x86-sse2 rules), on the file the CAB carries.
+    add_test(NAME importcheck.payload.${flavour}.shellext-x86
+             COMMAND sd-importcheck --floor "${CMAKE_SOURCE_DIR}/tests/os-imports/xp-sp3-x86.txt"
+                     --subsystem 5.01 --forbid-cfg --require-safeseh "$<TARGET_FILE:sd_shellext_x86_dll>")
+    set_tests_properties(importcheck.payload.${flavour}.shellext-x86 PROPERTIES LABELS importcheck)
+    add_test(NAME isacheck.payload.${flavour}.shellext-x86
+             COMMAND sd-isacheck --floor sse2
+                     --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/crt-allow.txt"
+                     --allow "${CMAKE_SOURCE_DIR}/tools/sd-isacheck/hw-allow.txt"
+                     "$<TARGET_FILE:sd_shellext_x86_dll>")
+    set_tests_properties(isacheck.payload.${flavour}.shellext-x86 PROPERTIES LABELS isacheck)
+  endif()
+
   # The member list is generated per configuration: the binaries of this tree, and the stub as uninstall.exe.
   file(GENERATE OUTPUT "${_dir}/payload-$<CONFIG>.ddf" CONTENT
 ".OPTION EXPLICIT
@@ -129,17 +160,17 @@ function(sd_setup_add_payload stub_target out_exe flavour)
 \"$<TARGET_FILE:shelldrive>\" shelldrive.exe
 \"$<TARGET_FILE:shelldrive-host>\" shelldrive-host.exe
 ${_ui_members}\"$<TARGET_FILE:${stub_target}>\" uninstall.exe
-${_msi_member}")
+${_msi_member}${_x86_member}")
 
   find_program(SD_MAKECAB makecab REQUIRED)
   add_custom_command(
     OUTPUT "${_cab}"
     COMMAND "${SD_MAKECAB}" /F "${_dir}/payload-$<CONFIG>.ddf"
-    DEPENDS "${_dir}/payload-$<CONFIG>.ddf" ${_msi_deps}
+    DEPENDS "${_dir}/payload-$<CONFIG>.ddf" ${_msi_deps} ${_x86_deps}
     COMMENT "makecab: payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup-payload-${flavour} DEPENDS "${_cab}")
-  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target} ${_msi_target})
+  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target} ${_msi_target} ${_x86_target})
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
 
   # The table channel and, when given, the PAYLOAD_SIG file (tools/sd-release sign --kind payload --sig-only).

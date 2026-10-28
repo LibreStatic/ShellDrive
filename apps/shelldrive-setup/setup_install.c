@@ -24,6 +24,13 @@
 #define SD_PORTABLE_MARK    L"shelldrive.portable"
 #define SD_FILE_PERSISTENT_ACLS 0x00000008
 
+#ifndef KEY_WOW64_64KEY
+#define KEY_WOW64_64KEY 0x0100
+#endif
+#ifndef KEY_WOW64_32KEY
+#define KEY_WOW64_32KEY 0x0200
+#endif
+
 static void setup_logf(const char *event, const wchar_t *fmt, ...)
 {
   wchar_t buf[1024];
@@ -45,6 +52,13 @@ static void strip_slash(wchar_t *s)
   size_t n = wcslen(s);
   while (n > 0 && s[n - 1] == L'\\')
     s[--n] = L'\0';
+}
+
+/* The view of the installed shell extension (its bitness): x86 flavours are 32-bit, the others native (KEY_WOW64_64KEY,
+   ignored on 32-bit Windows). The setup process is 32-bit on every x64 system, so the rows must name their view. */
+static REGSAM shell_access_for(sd_setup_flavour f)
+{
+  return (f == SD_SETUP_FL_X86_IA32 || f == SD_SETUP_FL_X86_SSE2) ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
 }
 
 static int reg_read_sz(HKEY root, const wchar_t *sub, const wchar_t *name, wchar_t *out, DWORD cbytes)
@@ -421,6 +435,10 @@ static int install_user(const sd_setup_install_opts *o, sd_setup_result *r)
   rc.root = HKEY_CURRENT_USER;
   {
     wchar_t slashed[MAX_PATH];
+    wchar_t x86dir[MAX_PATH];
+    wchar_t x86dll[MAX_PATH];
+    sd_setup_host host;
+
     if (sd_setup_dir_with_slash(slashed, SD_SETUP_COUNTOF(slashed), dir) != 0)
       return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE, 0);
     rc.install_dir = slashed;
@@ -428,6 +446,21 @@ static int install_user(const sd_setup_install_opts *o, sd_setup_result *r)
     rc.flavour = sd_setup_flavour_name(o->flavour);
     rc.install_bytes = bytes;
     rc.autostart = o->autostart == 1;
+    rc.shell_access = shell_access_for(o->flavour);
+
+    /* The x86 copy lives in x86\ under the install folder (per-user has no Program Files (x86), 03 §8.5). It is
+       registered in the 32-bit view only where the views are split and the copy came with the payload. */
+    sd_setup_detect_host(&host);
+    if (StringCchPrintfW(x86dir, SD_SETUP_COUNTOF(x86dir), L"%sx86\\", slashed) == S_OK &&
+        sd_setup_path_join(x86dll, MAX_PATH, dir, L"x86\\shelldrive-shellext.dll") == 0 &&
+        sd_setup_shell32_wanted(o->flavour, &host) && GetFileAttributesW(x86dll) != INVALID_FILE_ATTRIBUTES) {
+      rc.install_dir32 = x86dir;
+      setup_logf("shellext.32", L"x86 copy registered in the 32-bit view: %s", x86dll);
+    } else if (sd_setup_shell32_wanted(o->flavour, &host)) {
+      setup_logf("shellext.32", L"no x86 copy in the payload: the 32-bit view is not registered");
+    } else {
+      setup_logf("shellext.32", L"the 32-bit view is not registered (shared views or no x86 copy in this flavour)");
+    }
     if (sd_setup_reg_apply(&rc) != 0)
       return sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE, 0);
   }
@@ -622,6 +655,13 @@ int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r)
 
   memset(&rc, 0, sizeof(rc));
   rc.root = HKEY_CURRENT_USER;
+  /* The view of the shell rows follows the installed flavour, not this (32-bit) uninstaller (04 §6.2). */
+  {
+    wchar_t flavour[32];
+    rc.shell_access = KEY_WOW64_64KEY;
+    if (reg_read_sz(HKEY_CURRENT_USER, SD_STATE_SUBKEY, L"Flavour", flavour, sizeof(flavour)) == 0)
+      rc.shell_access = shell_access_for(sd_setup_flavour_parse(flavour));
+  }
   sd_setup_reg_remove(&rc);
   setup_logf("uninstall.registration", L"account registration removed");
 

@@ -659,9 +659,28 @@ install; the 32-bit shell registration; empty keys left by the per-user removal)
   64-bit attribute), the 64-bit rows, and that the package has two shell extension files. `sd-test-msi admin ... 1` checks
   the x64 DLL by PE machine type. The admin image cannot show the x86 copy: `msiexec /a` drops the root of each folder, so
   both `LibreStatic\ShellDrive` paths land in one place. The x86 copy is covered by the tables check only.
-- Open: the per-user setup and the x64 setup payloads (`cmake/SdPayload.cmake`) do not cross-include the x86 DLL, although
-  04 6.2 says they do. Lab (04 11.4): after an MSI install on x64, a 32-bit application's file dialog shows the menu items,
-  loaded from `Program Files (x86)`.
+- Lab (04 11.4): after an MSI install on x64, a 32-bit application's file dialog shows the menu items, loaded from
+  `Program Files (x86)`. The per-user counterpart is in the next section.
+
+### 32-bit shell extension in the per-user setup (item 3, round 20)
+
+- `cmake/SdPayload.cmake`: the x64 payloads (`x64-*` flavours) carry the x86-sse2 DLL as `x86\shelldrive-shellext.dll`, from
+  the nested x86 configure (`sd_add_x86_shellext`, now created once per tree). Their audits are the MSI copy's
+  (`importcheck.payload.<flavour>.shellext-x86`, `isacheck.payload.<flavour>.shellext-x86`). No preset of this tree calls
+  `sd_setup_add_payload` with an x64 flavour yet (the stub is built in `x86-ia32` only), so that branch runs when the x64
+  setup is assembled. The arm64 payload does not carry the copy here.
+- Registration: rows of feature `shellext32` are no longer skipped. Each row has a view (`SD_SETUP_REGVIEW_*`). `shellext`
+  rows are written in the view of the installed flavour (`shell_access`: 64-bit for x64 and ARM64, 32-bit for x86). The
+  setup process is 32-bit, so an x64 install must name its view. `shellext32` rows need `install_dir32`
+  (`<install folder>\x86\`) and are written only when `sd_setup_shell32_wanted` holds: the flavour has an x86 copy
+  (`x64-xp`, `x64-modern`), the copy came with the payload, and the system splits `HKCU\Software\Classes` by view (x64 XP
+  and Server 2003, `sd_setup_views_split`). On later systems one HKCU tree serves both views, so a second registration
+  would replace the 64-bit CLSIDs; those installs keep the x64 DLL only.
+- Uninstall reads the installed `Flavour` to choose the view of the shell rows and deletes empty keys with
+  `RegDeleteKeyExW` (resolved at run time) in that view.
+- Open (lab): the split-view premise (XP x64 keeps `HKCU\Software\Classes` per view) is not verified on hardware. On Vista
+  and later the x86 copy is shipped but not registered per user, so 32-bit file dialogs show no ShellDrive items after a
+  per-user install; only the MSI registers them there. 03 8.5 names no per-user 32-bit mechanism; this needs a decision.
 
 ### Removal of empty keys (item 4)
 
