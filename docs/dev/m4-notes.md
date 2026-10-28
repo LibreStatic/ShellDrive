@@ -378,3 +378,46 @@ Verification (`x86-ia32` debug, `sd-test-engine`, stub import and ISA audits, `u
 6. Release: `installer/` keys and records, `tools/sd-release`, signed tag gate, `resign.yml`, `CODEOWNERS`, `workflow-lint`.
 7. Sparse MSIX (D27) build switch.
 8. Lab checks: install smoke, `REMOVESECRETS`, Dokany and XP import captures (04 §11.4).
+
+## Installer audit update (wip/r16-setupelev)
+
+Second pass on the round 15 audit above: rows 3, 4, 6, 7, 11 and 23 (and their open items 1, 2 and 4 of that section).
+Paths are relative to the repository root. Status words as in the audit table.
+
+| # | Backlog item | Status | Where / evidence |
+|---|---|---|---|
+| 3 | Per-machine install through the MSI | Partial | `apps/shelldrive-setup/setup_main.c` (`run_machine`): `/permachine` starts the two stages and reads their result. Open: the MSI is not yet a member of the payload CAB (the release pipeline adds it), so stage 2 stops with `installer.error.msi_missing` today; the wizard's all-users choice stays disabled (`SD_FLOW_MACHINE_AVAILABLE = 0`); `/extract=` and the per-machine uninstall are not in this pass. |
+| 4 | Two-stage elevation (04 §6.4) | Done in the engine; lab pending | `apps/shelldrive-setup/setup_elevate.c|h`. Parent (asInvoker): pipe server with the user SID DACL, `runas` (or in-process when already elevated). Stage 1: `secure_programdata`, `create_stage` (one call, protected DACL), `copy_image` (source opened with `FILE_SHARE_READ`), start the copy with `/elevated-child`. Stage 2: re-derives the folder from its own image, checks the stage name and root, the owner, the payload table hash, extracts, runs msiexec. Every process start, elevation check and msiexec call goes through `sd_setup_elev_ops`. Tests: `tests/setup/test_elevate.c` (15 tests, `setup_elev_*`). |
+| 6 | Owner and link checks of `%ProgramData%\LibreStatic\ShellDrive` (TM-R34) | Done for the machine path | Stage 1 runs `sd_setup_secure_programdata` before any stage folder exists; stage 2 checks its folder for a reparse point and a trusted owner (`svc_repair_real_ops`). |
+| 7 | Stage folder with its protected DACL (04 §6.4 stage 1, step c) | Done | `sd_setup_create_stage_dir` is called by stage 1. A successful stage removes its folder; a failed one keeps the MSI log (admin-only). |
+| 11 | `DEFAULTPROFILES` (C9) | Done (authored); install lab pending | `packaging/msi/ShellDrive.wxs`: a `CustomTable` named `MoveFile` (copy, `*.ini`, source property `DEFAULTPROFILES`, destination `SD_CAD_PROFILES`) and component `C_DefaultProfiles`. WiX 3.14 has no `MoveFile` element; the custom table must sit directly in `Product` (in a fragment light drops it). Checked by `msi.x86-ia32.tables`. |
+| 23 | `programdata-secure` before any ProgramData write (TM-R34, TM-R35) | Done | `CA_ProgramDataSecure` now runs from the `BIN_ShellDriveHost` Binary entry (BinaryKey), because the installed copy does not exist before `InstallFiles`. It is scheduled `Before="MoveFiles"` (and so before `InstallFiles`), and `MoveFiles` follows it. Runs again on repair (TM-R35). Checked by `msi.x86-ia32.tables`. |
+
+Design decisions taken in this pass:
+
+- Pipe protocol: one UTF-16 line per message: `P <percent>`, `M <msg id> <code>`, `R <exit code>` (last). The server end is
+  nonblocking, so a stage that never connected cannot hang the parent. The parent reads the pipe after the stage has exited;
+  live progress in the window is not done yet.
+- Stage 2 takes no path from the command line. The forwarded switches are the sanitised set of `sd_setup_elev_forward`
+  (quiet, passive, norestart, force, update, dokany, lang, flavour and the validated `PROPERTY=value` tokens, quoted). `/log=` and
+  `/installdir=` are not forwarded; the MSI log is `msi.log` in the stage folder.
+- `PROPERTY=value` tokens are now kept (`sd_setup_args.props`), each quoted, and reach msiexec unchanged. A token with a double
+  quote is refused.
+- Stage 2 checks the payload table hash of its own image before extraction, as the user path does. Hashes of the members after
+  extraction are not checked: the payload has no member manifest yet (TM-R38, `PAYLOAD_SIG`).
+- Four new installer messages (`installer.error.elevation`, `.stage_untrusted`, `.msi_missing`, `.msi_failed`) in all six
+  catalogs of `l10n/installer`.
+- `CA_ProgramDataSecure` moved from `After="InstallFiles"` to `Before="MoveFiles"`. `MoveFiles` is the default MSI step (before
+  `InstallFiles`), so the hook also precedes `InstallFiles`.
+
+Verification (`x86-ia32` Release, `ctest -C Release`): `unit.engine` (`sd-test-engine`, 52 tests, 15 new), `importcheck.shelldrive-setup-stub`, `isacheck.shelldrive-setup-stub`, `importcheck.stub.knowndlls` and the setup stub test-page checks pass; with `-DSD_BUILD_MSI=ON`, `msi.x86-ia32.tables`, `.admin` and `.wixui` pass (`msiexec /a` admin image only).
+
+Open items after this pass:
+
+1. Put `ShellDrive.msi` into the payload of each flavour (`cmake/SdPayload.cmake`, `tools/sd-payload`; the MSI needs WiX, so the payload step must follow the `msi` target). Until then `/permachine` reports `installer.error.msi_missing`.
+2. Live progress in the parent window; copy the stage log to the user's `/log=` path.
+3. Per-member SHA-256 manifest for the post-extraction check, together with `PAYLOAD_SIG` (TM-R38).
+4. Wizard: the all-users choice and its options page (`SD_FLOW_MACHINE_AVAILABLE`), so interactive per-machine installs show the pages.
+5. Per-machine uninstall through the same two stages, and `/extract=`.
+6. Lab checks (04 §11.4): UAC prompt and the XP Run As dialog, the pipe under a split token, the stage folder DACL, msiexec install, Change, Repair and Remove, and the ProgramData hook order.
+7. CI note: the required gate's `-TestRegex 'setup|msi|l10n|importcheck|isacheck'` does not match the CTest name `unit.engine`, so the 52 engine tests run only with `ctest -R engine` (or `-R unit`). Add `engine` to the regex in the release gate.

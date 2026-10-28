@@ -24,6 +24,9 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="ShellDriveIcon" SourceFile="$(var.SD_ICON)" />
+    <!-- The host binary as a Binary table entry: the programdata-secure hook runs before InstallFiles (TM-R34), when the
+         installed copy does not exist yet (CA_ProgramDataSecure, BinaryKey). -->
+    <Binary Id="BIN_ShellDriveHost" SourceFile="$(var.SD_BIN_DIR)\shelldrive-host.exe" />
     <Property Id="ARPPRODUCTICON" Value="ShellDriveIcon" />
     <!-- ARPNOMODIFY=0: Add/Remove Programs offers "Change", which runs the feature tree and the options page of the
          ShellDriveUI dialog set below (04 §6.7). Explicit so that the Property table shows it. -->
@@ -170,8 +173,13 @@
                Section="backend" Key="dokany" Value="no" />
     </Component>
 
-    <!-- DEFAULTPROFILES (C9) is not authored yet: WiX 3.14 has no element for the MSI MoveFile table (wildcard
-         copy). Open item in 04 §8.4; the property is accepted and ignored until the table is added. -->
+    <!-- DEFAULTPROFILES (C9, 04 §8.4): a folder of .ini profiles copied into the profiles folder by the native MoveFile table
+         (copy mode, *.ini, no custom action). The table row is below the components; this component carries it while the
+         property is set. The copy runs with MoveFiles, after the ProgramData check (CA_ProgramDataSecure, before InstallFiles). -->
+    <Component Id="C_DefaultProfiles" Guid="$(var.G_C_DefaultProfiles)" Directory="SD_CAD_PROFILES" Win64="$(var.SD_WIN64)">
+      <Condition><![CDATA[DEFAULTPROFILES <> "" AND NOT REMOVE~="ALL"]]></Condition>
+      <CreateFolder />
+    </Component>
 
     <!-- ENABLELINKEDCONNECTIONS (D24, 04 §8.7): installed only when this package owns the value, that is when it creates it
          (none existed) or already owns it (ELC_OWNED). The component is installed, so its value is removed on uninstall,
@@ -238,6 +246,7 @@
         <ComponentRef Id="C_Ini_Update" />
         <ComponentRef Id="C_Ini_UpdateUrl" />
         <ComponentRef Id="C_Ini_Backend" />
+        <ComponentRef Id="C_DefaultProfiles" />
         <ComponentRef Id="C_LinkedConn" />
         <ComponentRef Id="C_Installer" />
         <ComponentRef Id="C_Rm_Secrets" />
@@ -261,9 +270,10 @@
     </Feature>
 
     <!-- Deferred custom actions of our own binary (04 §8.3, TM-R35). The conditions are the table of 04 §8.3.
-         FileKey runs the installed copy, so each action is scheduled after InstallFiles. Impersonate="no" only
-         where the table says so. -->
-    <CustomAction Id="CA_ProgramDataSecure" FileKey="F_shelldrive_host" ExeCommand="--installer-hook programdata-secure --apply"
+         FileKey runs the installed copy, so each action is scheduled after InstallFiles. The exception is
+         CA_ProgramDataSecure: it runs from the Binary table (BinaryKey) before InstallFiles, so the ProgramData check
+         (TM-R34) comes before any file or profile is written there. Impersonate="no" only where the table says so. -->
+    <CustomAction Id="CA_ProgramDataSecure" BinaryKey="BIN_ShellDriveHost" ExeCommand="--installer-hook programdata-secure --apply"
                   Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction Id="CA_WebDavTune_Apply" FileKey="F_shelldrive_host" ExeCommand="--installer-hook webdav-tune --apply"
                   Execute="deferred" Impersonate="no" Return="check" />
@@ -276,11 +286,34 @@
 
     <InstallExecuteSequence>
       <Custom Action="CA_SignalShutdown" Before="RemoveExistingProducts"><![CDATA[NOT REINSTALL AND (REMOVE~="ALL" OR WIX_UPGRADE_DETECTED)]]></Custom>
-      <Custom Action="CA_ProgramDataSecure" After="InstallFiles"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+      <Custom Action="CA_ProgramDataSecure" Before="MoveFiles"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+      <MoveFiles />
       <Custom Action="CA_WebDavTune_Apply" After="InstallFiles"><![CDATA[WEBDAV_TUNING = "1" AND NOT REMOVE~="ALL"]]></Custom>
       <Custom Action="CA_WebDavTune_Revert" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
       <Custom Action="CA_UserCleanup" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
     </InstallExecuteSequence>
+
+    <!-- DEFAULTPROFILES (C9, 04 §8.4). WiX 3.14 has no element for the MoveFile table, so the table is authored as a custom
+         table with the standard name and columns (MSI 3.1 MoveFile: FileKey, Component_, SourceName, DestName, SourceFolder,
+         DestFolder, Options; Options 0 = copy). It must sit in the Product element, not in a fragment: a fragment drops it.
+         SourceFolder is the property: the folder of .ini profiles given on the command line (empty = nothing to copy). -->
+    <CustomTable Id="MoveFile">
+      <Column Id="FileKey" Type="string" Width="72" PrimaryKey="yes" Category="Identifier" />
+      <Column Id="Component_" Type="string" Width="72" Category="Identifier" KeyTable="Component" KeyColumn="1" />
+      <Column Id="SourceName" Type="string" Width="255" Nullable="yes" Category="Text" />
+      <Column Id="DestName" Type="string" Width="255" Nullable="yes" Category="Text" />
+      <Column Id="SourceFolder" Type="string" Width="72" Nullable="yes" Category="Identifier" />
+      <Column Id="DestFolder" Type="string" Width="72" Category="Identifier" KeyTable="Directory" KeyColumn="1" />
+      <Column Id="Options" Type="int" Width="2" />
+      <Row>
+        <Data Column="FileKey">SD_MF_DEFAULTPROFILES</Data>
+        <Data Column="Component_">C_DefaultProfiles</Data>
+        <Data Column="SourceName">*.ini</Data>
+        <Data Column="SourceFolder">DEFAULTPROFILES</Data>
+        <Data Column="DestFolder">SD_CAD_PROFILES</Data>
+        <Data Column="Options">0</Data>
+      </Row>
+    </CustomTable>
 
     <!-- Dialog set (04 §6.7, 04 §8.4): the WixUI_FeatureTree flow with an options page after the feature tree. The dialogs
          are the stock WixUI_Common ones (ids and loc.* strings of packaging/msi/wixui/dialog-set.txt); the flow is ours.

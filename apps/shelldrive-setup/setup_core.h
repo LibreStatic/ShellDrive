@@ -68,12 +68,15 @@ typedef struct sd_setup_args {
   sd_setup_dokany_arg dokany;
   int uninstall_relaunched;      /* internal: /uninstall-from-temp, the copy in %TEMP% */
   unsigned long wait_pid;        /* internal: /waitpid=<pid>, the parent uninstaller to wait for */
+  int elevate_stage;             /* internal (04 §6.4): 1 = /elevated-stage1, 2 = /elevated-child; 0 otherwise */
+  wchar_t pipe_name[64];         /* internal: /pipe=ShellDrive-setup-<hex>, the progress pipe of the elevated stages */
   wchar_t lang[16];
   wchar_t log_path[MAX_PATH];
   wchar_t portable_dir[MAX_PATH];
   wchar_t extract_dir[MAX_PATH];
   wchar_t install_dir[MAX_PATH]; /* /installdir= (internal, tests) */
-  unsigned properties;           /* PROPERTY=value pairs: accepted, logged, used by the MSI path only */
+  unsigned properties;           /* number of PROPERTY=value tokens */
+  wchar_t props[1024];           /* the PROPERTY=value tokens, each quoted, for the msiexec command line (04 §8.4) */
 } sd_setup_args;
 
 /* 0, or SD_SETUP_EXIT_BADARGS with *bad pointing at the offending argv element. argv[0] is skipped. */

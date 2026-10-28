@@ -408,3 +408,23 @@ msgstr "Consenti ai programmi elevati di vedere le unità mappate"
 msgctxt "msi.options.linked.hint"
 msgid "Sets the Windows EnableLinkedConnections setting, so that programs run as administrator can see the drives that ShellDrive maps. Unchecked by default."
 msgstr "Attiva l'impostazione Windows EnableLinkedConnections, così i programmi eseguiti come amministratore vedono le unità che ShellDrive mappa. Disattivata per impostazione predefinita."
+
+#. Shown when administrator rights for the all-users install were refused or the stages could not start.
+msgctxt "installer.error.elevation"
+msgid "Administrator rights were not granted for the installation for all users. Nothing was installed."
+msgstr "Non sono stati concessi i diritti di amministratore per l'installazione per tutti gli utenti. Non è stato installato nulla."
+
+#. Shown when the setup folder in ProgramData failed the owner or link check (TM-R34).
+msgctxt "installer.error.stage_untrusted"
+msgid "The setup folder in ProgramData could not be secured, so setup stopped. Nothing was installed."
+msgstr "Non è stato possibile proteggere la cartella di installazione in ProgramData, quindi l'installazione si è interrotta. Non è stato installato nulla."
+
+#. Shown when the setup program carries no MSI for the all-users install.
+msgctxt "installer.error.msi_missing"
+msgid "This setup program does not contain the package for all users. Nothing was installed."
+msgstr "Questo programma di installazione non contiene il pacchetto per tutti gli utenti. Non è stato installato nulla."
+
+#. Shown when msiexec failed for the all-users install. {code} is the Windows Installer exit code.
+msgctxt "installer.error.msi_failed"
+msgid "The installation for all users failed with Windows Installer code {code}."
+msgstr "L'installazione per tutti gli utenti non è riuscita con il codice {code} di Windows Installer."

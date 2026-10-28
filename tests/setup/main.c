@@ -41,6 +41,22 @@ SD_TEST_DECL(setup_dokany_choose_chain);
 SD_TEST_DECL(setup_dokany_command_lines);
 SD_TEST_DECL(setup_dokany_run_gate);
 
+SD_TEST_DECL(setup_elev_pipe_names);
+SD_TEST_DECL(setup_elev_pipe_roundtrip);
+SD_TEST_DECL(setup_elev_result_line_parse);
+SD_TEST_DECL(setup_elev_forward_switches);
+SD_TEST_DECL(setup_elev_args_stage_switches);
+SD_TEST_DECL(setup_elev_stage1_needs_elevation);
+SD_TEST_DECL(setup_elev_stage1_copies_and_starts_stage2);
+SD_TEST_DECL(setup_elev_stage2_refuses_image_outside_stage);
+SD_TEST_DECL(setup_elev_stage2_refuses_untrusted_folder_and_bad_hash);
+SD_TEST_DECL(setup_elev_stage2_without_msi_runs_nothing);
+SD_TEST_DECL(setup_elev_stage2_runs_msiexec_for_the_msi);
+SD_TEST_DECL(setup_elev_stage2_reports_msiexec_failure);
+SD_TEST_DECL(setup_elev_parent_cancelled_uac);
+SD_TEST_DECL(setup_elev_parent_silent_channel_fails);
+SD_TEST_DECL(setup_elev_parent_in_process_when_elevated);
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flavour_table),
   SD_TEST_ENTRY(setup_flavour_names),
@@ -79,6 +95,22 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_dokany_choose_chain),
   SD_TEST_ENTRY(setup_dokany_command_lines),
   SD_TEST_ENTRY(setup_dokany_run_gate),
+
+  SD_TEST_ENTRY(setup_elev_pipe_names),
+  SD_TEST_ENTRY(setup_elev_pipe_roundtrip),
+  SD_TEST_ENTRY(setup_elev_result_line_parse),
+  SD_TEST_ENTRY(setup_elev_forward_switches),
+  SD_TEST_ENTRY(setup_elev_args_stage_switches),
+  SD_TEST_ENTRY(setup_elev_stage1_needs_elevation),
+  SD_TEST_ENTRY(setup_elev_stage1_copies_and_starts_stage2),
+  SD_TEST_ENTRY(setup_elev_stage2_refuses_image_outside_stage),
+  SD_TEST_ENTRY(setup_elev_stage2_refuses_untrusted_folder_and_bad_hash),
+  SD_TEST_ENTRY(setup_elev_stage2_without_msi_runs_nothing),
+  SD_TEST_ENTRY(setup_elev_stage2_runs_msiexec_for_the_msi),
+  SD_TEST_ENTRY(setup_elev_stage2_reports_msiexec_failure),
+  SD_TEST_ENTRY(setup_elev_parent_cancelled_uac),
+  SD_TEST_ENTRY(setup_elev_parent_silent_channel_fails),
+  SD_TEST_ENTRY(setup_elev_parent_in_process_when_elevated),
 };
 
 int main(int argc, char **argv)

@@ -179,6 +179,23 @@ static int build_fixtures(void)
   if (write_text(ddf, text) != 0 || run_makecab(ddf) != 0)
     return 1;
 
+  /* msi.ddf: a payload that carries the all-users MSI (test_elevate.c). The MSI bytes are a placeholder: msiexec is never
+     run by the tests. */
+  if (sd_setup_path_join(p, MAX_PATH, src, L"ShellDrive.msi") != 0 || write_text(p, "fake msi\r\n"))
+    return 1;
+  StringCchPrintfA(text, sizeof(text),
+                   ".OPTION EXPLICIT\r\n.Set CabinetNameTemplate=payload-msi.cab\r\n"
+                   ".Set DiskDirectoryTemplate=%s\\\r\n.Set InfFileName=%s\\msi.inf\r\n"
+                   ".Set RptFileName=%s\\msi.rpt\r\n.Set CompressionType=LZX\r\n"
+                   ".Set CompressionMemory=21\r\n.Set Compress=ON\r\n.Set Cabinet=ON\r\n"
+                   "\"%s\\shelldrive.exe\" shelldrive.exe\r\n"
+                   "\"%s\\ShellDrive.msi\" ShellDrive.msi\r\n",
+                   ascii_dir, ascii_dir, ascii_dir, ascii_src, ascii_src);
+  if (sd_setup_path_join(ddf, MAX_PATH, g_fixture_dir, L"msi.ddf") != 0 || narrow(ddf, ascii_ddf, sizeof(ascii_ddf)))
+    return 1;
+  if (write_text(ddf, text) != 0 || run_makecab(ddf) != 0)
+    return 1;
+
   g_fixture_state = 1;
   return 0;
 }

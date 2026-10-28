@@ -70,7 +70,7 @@ endif()
 
 set(_components C_Core_Cli C_Core_Host C_Core_Ui C_ShellExt C_StartMenu C_Ini_Update C_Ini_UpdateUrl
                 C_Ini_Backend C_LinkedConn C_Installer C_Rm_Secrets C_Rm_Keys C_Rm_Data C_Rm_DataProfiles
-                C_Rm_DataState C_Rm_DataService)
+                C_Rm_DataState C_Rm_DataService C_DefaultProfiles)
 set(_guids_file "${_work}/Guids.wxi")
 file(WRITE "${_guids_file}" "<Include>\n<?define SD_PRODUCT_CODE = \"${_product_code}\" ?>\n<?define SD_PACKAGE_CODE = \"${_package_code}\" ?>\n")
 foreach(_c IN LISTS _components)
