@@ -90,7 +90,7 @@ SD_TEST(dokan_probe_and_deny_list)
   SD_CHECK_EQ_INT(sd_dokan_probe(NULL, &info), SD_DOKAN_OK);
 }
 
-/* ---- requestor identity cache (02 6.7: 60 s per (logon LUID, SID); dokan_cache.c) ---- */
+/* ---- requestor identity cache (02 6.7; dokan_cache.c). Keyed by token object (TokenId, ModifiedId) and user SID. ---- */
 
 /* S-1-5-21-1-2-3-1001 (alice); S-1-5-32-545 BUILTIN\Users, S-1-5-32-544 BUILTIN\Administrators */
 static const unsigned char k_alice_sid[] = { 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0xE9, 3, 0, 0 };
@@ -98,7 +98,7 @@ static const unsigned char k_bob_sid[]   = { 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0
 static const unsigned char k_users_sid[] = { 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 33, 2, 0, 0 };
 static const unsigned char k_admins_sid[] = { 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0 };
 
-static LUID luid_of(DWORD low)
+static LUID id_of(DWORD low)
 {
   LUID l;
   l.LowPart = low;
@@ -106,14 +106,14 @@ static LUID luid_of(DWORD low)
   return l;
 }
 
-/* Stores the two groups for (luid, elev, user) at time `now`; returns TRUE when a later get returns both groups. */
-static BOOL cache_has(dk_cache *c, LUID luid, DWORD elev, const unsigned char *user, DWORD now)
+/* TRUE when a get for (token, modified, user) at `now` returns exactly the two stored groups. A wrong copy is a miss,
+   so the caller's check fails. */
+static BOOL cache_has(dk_cache *c, LUID token, LUID modified, const unsigned char *user, DWORD now)
 {
   PSID *g = NULL;
   UINT n = 0;
-  BOOL hit = dk_cache_get(c, &luid, elev, (PSID)(void *)user, now, &g, &n);
+  BOOL hit = dk_cache_get(c, &token, &modified, (PSID)(void *)user, now, &g, &n);
   if (hit) {
-    /* a hit must return the stored groups in full; a wrong copy counts as a miss so the caller's check fails */
     if (!(n == 2 && g != NULL && EqualSid(g[0], (PSID)(void *)k_users_sid) &&
           EqualSid(g[1], (PSID)(void *)k_admins_sid)))
       hit = FALSE;
@@ -126,20 +126,50 @@ SD_TEST(dokan_cache_hit_expiry_and_keys)
 {
   dk_cache *c = dk_cache_new();
   PSID groups[2];
-  LUID l1 = luid_of(0x100);
+  LUID t1 = id_of(0x100), m1 = id_of(0x500);
   SD_REQUIRE(c != NULL);
   groups[0] = (PSID)(void *)k_users_sid;
   groups[1] = (PSID)(void *)k_admins_sid;
-  dk_cache_put(c, &l1, 2, (PSID)(void *)k_alice_sid, groups, 2, 1000);
-  SD_CHECK(cache_has(c, l1, 2, k_alice_sid, 1000));                  /* same key: hit */
-  SD_CHECK(cache_has(c, l1, 2, k_alice_sid, 1000 + DK_CACHE_TTL_MS - 1));  /* just inside 60 s */
-  /* different LUID, elevation type or SID: never a hit (a filtered and an elevated token share the LUID) */
-  SD_CHECK(!cache_has(c, luid_of(0x101), 2, k_alice_sid, 1000));
-  SD_CHECK(!cache_has(c, l1, 1, k_alice_sid, 1000));
-  SD_CHECK(!cache_has(c, l1, 2, k_bob_sid, 1000));
+  dk_cache_put(c, &t1, &m1, (PSID)(void *)k_alice_sid, groups, 2, 1000);
+  SD_CHECK(cache_has(c, t1, m1, k_alice_sid, 1000));                       /* same token, same user: hit */
+  SD_CHECK(cache_has(c, t1, m1, k_alice_sid, 1000 + DK_CACHE_TTL_MS - 1)); /* just inside 60 s */
+  /* another user, or another token object: never a hit */
+  SD_CHECK(!cache_has(c, t1, m1, k_bob_sid, 1000));
+  SD_CHECK(!cache_has(c, id_of(0x101), m1, k_alice_sid, 1000));
   /* expired at 60 s: a miss, and the entry is dropped */
-  SD_CHECK(!cache_has(c, l1, 2, k_alice_sid, 1000 + DK_CACHE_TTL_MS));
-  SD_CHECK(!cache_has(c, l1, 2, k_alice_sid, 1000));
+  SD_CHECK(!cache_has(c, t1, m1, k_alice_sid, 1000 + DK_CACHE_TTL_MS));
+  SD_CHECK(!cache_has(c, t1, m1, k_alice_sid, 1000));
+  dk_cache_free(c);
+}
+
+/* The residual this key closes: a filtered or stripped token of the same logon has the same LUID and SID as its
+   parent, but its own TokenId, so it must miss the parent's entry. */
+SD_TEST(dokan_cache_different_token_object_misses)
+{
+  dk_cache *c = dk_cache_new();
+  PSID groups[2];
+  LUID parent = id_of(0x200), child = id_of(0x201), m = id_of(0x600);
+  SD_REQUIRE(c != NULL);
+  groups[0] = (PSID)(void *)k_users_sid;
+  groups[1] = (PSID)(void *)k_admins_sid;
+  dk_cache_put(c, &parent, &m, (PSID)(void *)k_alice_sid, groups, 2, 1000);
+  SD_CHECK(cache_has(c, parent, m, k_alice_sid, 1000));
+  SD_CHECK(!cache_has(c, child, m, k_alice_sid, 1000));   /* same LUID and SID, different TokenId: miss */
+  dk_cache_free(c);
+}
+
+/* ModifiedId changes when the token's groups or privileges are adjusted: an entry made before that is not reused. */
+SD_TEST(dokan_cache_changed_modified_id_misses)
+{
+  dk_cache *c = dk_cache_new();
+  PSID groups[2];
+  LUID t = id_of(0x300), m1 = id_of(0x700), m2 = id_of(0x701);
+  SD_REQUIRE(c != NULL);
+  groups[0] = (PSID)(void *)k_users_sid;
+  groups[1] = (PSID)(void *)k_admins_sid;
+  dk_cache_put(c, &t, &m1, (PSID)(void *)k_alice_sid, groups, 2, 1000);
+  SD_CHECK(cache_has(c, t, m1, k_alice_sid, 1000));
+  SD_CHECK(!cache_has(c, t, m2, k_alice_sid, 1000));      /* adjusted token: miss */
   dk_cache_free(c);
 }
 
@@ -147,16 +177,16 @@ SD_TEST(dokan_cache_wraps_and_refreshes)
 {
   dk_cache *c = dk_cache_new();
   PSID groups[2];
-  LUID l1 = luid_of(0x200);
+  LUID t = id_of(0x400), m = id_of(0x800);
   SD_REQUIRE(c != NULL);
   groups[0] = (PSID)(void *)k_users_sid;
   groups[1] = (PSID)(void *)k_admins_sid;
   /* GetTickCount wraps every 49.7 days: an entry stored just before the wrap is still fresh after it */
-  dk_cache_put(c, &l1, 0, (PSID)(void *)k_alice_sid, groups, 2, 0xFFFFFF00u);
-  SD_CHECK(cache_has(c, l1, 0, k_alice_sid, 0x00000010u));
-  /* a second put for the same requestor refreshes it in place: the new time counts */
-  dk_cache_put(c, &l1, 0, (PSID)(void *)k_alice_sid, groups, 2, 0x00000100u);
-  SD_CHECK(cache_has(c, l1, 0, k_alice_sid, 0x00000200u));
+  dk_cache_put(c, &t, &m, (PSID)(void *)k_alice_sid, groups, 2, 0xFFFFFF00u);
+  SD_CHECK(cache_has(c, t, m, k_alice_sid, 0x00000010u));
+  /* a second put for the same token refreshes it in place: the new time counts */
+  dk_cache_put(c, &t, &m, (PSID)(void *)k_alice_sid, groups, 2, 0x00000100u);
+  SD_CHECK(cache_has(c, t, m, k_alice_sid, 0x00000200u));
   dk_cache_free(c);
 }
 
@@ -164,13 +194,13 @@ SD_TEST(dokan_cache_failures_are_not_stored)
 {
   dk_cache *c = dk_cache_new();
   PSID groups[2];
-  LUID l1 = luid_of(0x300);
+  LUID t = id_of(0x500), m = id_of(0x900);
   SD_REQUIRE(c != NULL);
   groups[0] = (PSID)(void *)k_users_sid;
   groups[1] = (PSID)(void *)k_admins_sid;
   /* a store without a valid user SID (what a failed token query yields) keeps nothing */
-  dk_cache_put(c, &l1, 0, NULL, groups, 2, 1000);
-  SD_CHECK(!cache_has(c, l1, 0, k_alice_sid, 1000));
+  dk_cache_put(c, &t, &m, NULL, groups, 2, 1000);
+  SD_CHECK(!cache_has(c, t, m, k_alice_sid, 1000));
   dk_cache_free(c);
 }
 
@@ -179,17 +209,18 @@ SD_TEST(dokan_cache_is_bounded_and_evicts_oldest)
   dk_cache *c = dk_cache_new();
   PSID groups[2];
   DWORD i;
+  LUID m = id_of(0xA00);
   SD_REQUIRE(c != NULL);
   groups[0] = (PSID)(void *)k_users_sid;
   groups[1] = (PSID)(void *)k_admins_sid;
   for (i = 0; i < DK_CACHE_SLOTS + 8; i++) {
-    LUID lu = luid_of(i + 1);
-    dk_cache_put(c, &lu, 0, (PSID)(void *)k_alice_sid, groups, 2, 1000);
+    LUID t = id_of(i + 1);
+    dk_cache_put(c, &t, &m, (PSID)(void *)k_alice_sid, groups, 2, 1000);
   }
   /* the first 8 inserts were evicted, the newest DK_CACHE_SLOTS are still there */
-  SD_CHECK(!cache_has(c, luid_of(1), 0, k_alice_sid, 1000));
-  SD_CHECK(!cache_has(c, luid_of(8), 0, k_alice_sid, 1000));
-  SD_CHECK(cache_has(c, luid_of(9), 0, k_alice_sid, 1000));
-  SD_CHECK(cache_has(c, luid_of(DK_CACHE_SLOTS + 8), 0, k_alice_sid, 1000));
+  SD_CHECK(!cache_has(c, id_of(1), m, k_alice_sid, 1000));
+  SD_CHECK(!cache_has(c, id_of(8), m, k_alice_sid, 1000));
+  SD_CHECK(cache_has(c, id_of(9), m, k_alice_sid, 1000));
+  SD_CHECK(cache_has(c, id_of(DK_CACHE_SLOTS + 8), m, k_alice_sid, 1000));
   dk_cache_free(c);
 }

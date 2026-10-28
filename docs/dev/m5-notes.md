@@ -564,19 +564,23 @@ Closes two of the open items above (the Dokany 60 s cache and `SD_VFS_EV_AUDIT`)
 
 **Dokany cache (02 6.7).** `src/sd_dokan/dokan_cache.c` (private) keeps the enabled groups of a requestor token for
 60 s, bounded to 32 entries, guarded by one critical section, with lookups that return copies. `dokan_mount.c` reads
-the LUID, the elevation type and the user SID on every create, and the groups only on a miss. Decisions:
+`TOKEN_STATISTICS` (one query) and the user SID on every create, and the groups only on a miss. Decisions:
 
-- The key is (logon LUID, elevation type, user SID), not (LUID, SID). A UAC-filtered and an elevated token of one
-  logon share the LUID; without the elevation type a filtered admin could inherit the elevated token's write right
-  (or the other way round), which 6.7 forbids. XP has no elevation type: "invalid parameter" means type 0 there.
-- A token with restricting SIDs is never cached. A failed token query returns "denied" and stores nothing.
-- The 60 s window is measured from the store; a hit does not extend it.
+- The key is (`TokenId`, `ModifiedId`, user SID). `TokenId` identifies one token object: a UAC-filtered, restricted,
+  privilege-stripped or duplicated token has its own, even when it shares the logon LUID and the SID with its parent.
+  `ModifiedId` changes when the token's groups or privileges are adjusted, so an entry from before the change is not
+  reused. The LUID is not part of the key.
+- The earlier key (LUID, elevation type, SID) was not enough. A privilege-stripped token with deny-only groups kept
+  the LUID, SID and elevation type of its parent, so within 60 s it could hit the parent's entry and inherit an
+  enabled Administrators group it does not have, which grants write. The residual is closed by the TokenId key.
+- Restricted tokens are cached too, under their own TokenId. There is no restriction query on the path any more.
+- A failed token query returns "denied" and stores nothing. The 60 s window is measured from the store; a hit does
+  not extend it.
+- Hit rate depends on `DokanOpenRequestorToken` returning the same token object for repeated opens from one process.
+  If it duplicates the token on each call, each open gets a new TokenId and misses. Not verified on a live mount.
 
-**Open (decision needed).** A token with deny-only groups but no restricting SIDs (privilege-stripped with
-`DISABLE_MAX_PRIVILEGE`) keeps the LUID, the SID and the elevation type of its unstripped parent. Within 60 s such a
-token can hit an entry stored for the full token and get its groups. Closing this needs a group fingerprint on the
-hit path, which costs the group query the cache is meant to save. Until that is decided, the cache saves the group
-query only; the LUID, SID, elevation and restriction queries still run on every create.
+**Open.** Verify the hit rate on a live Dokany mount (the TokenId stability above). Without a stable token object
+the cache saves nothing, but it still never grants more than a fresh read.
 
 **Event 1200 (03 10.3, TM-R24).** The vfs raises `SD_VFS_EV_AUDIT` in `vfs_access.c` (`vfs_audit`) after a successful
 mutating operation on a global mount: `create` (new file), `write_open` (one per open for write), `delete` (from
@@ -601,9 +605,10 @@ global drive, and the spec writes Event 1200 from the service only.
 **Tests.** `tests/unit/sd_vfs/test_vfs_access.c`: `vfs_audit_raised_for_global_changes` (reads and denied opens silent;
 create, write_open, setattr, rename and delete raised once each), `vfs_audit_coalesces_per_window` (fake clock: inside
 the window coalesced, other SID / path / operation raised, raised again at exactly 60 s),
-`vfs_audit_never_raised_on_per_user_mount`. `tests/unit/sd_dokan/test_dokan.c`: `dokan_cache_hit_expiry_and_keys` (hit
-inside 60 s; expiry at 60 s; different LUID, elevation type or SID miss), `dokan_cache_wraps_and_refreshes` (GetTickCount
-wrap, refresh in place), `dokan_cache_failures_are_not_stored`, `dokan_cache_is_bounded_and_evicts_oldest`.
+`vfs_audit_never_raised_on_per_user_mount`. `tests/unit/sd_dokan/test_dokan.c`: `dokan_cache_hit_expiry_and_keys`
+(hit inside 60 s; expiry at 60 s; another user misses), `dokan_cache_different_token_object_misses` (same LUID and SID,
+different TokenId: miss), `dokan_cache_changed_modified_id_misses` (adjusted ModifiedId: miss),
+`dokan_cache_wraps_and_refreshes`, `dokan_cache_failures_are_not_stored`, `dokan_cache_is_bounded_and_evicts_oldest`.
 `tests/unit/sd_svc/test_service.c` (`svc_admin_mounts_reports_and_unmounts`): a fake vfs audit reaches the Event
-Log seam as SVC_MSG_AUDIT. The Dokany requestor path itself (`requestor_identity`) is not unit-tested: it needs a live
-requestor token.
+Log seam as SVC_MSG_AUDIT. The Dokany requestor path itself (`requestor_identity`) is not unit-tested: it needs a
+live requestor token.

@@ -1,4 +1,4 @@
-/* Requestor identity cache (dokan_cache.h, 02 6.7). */
+/* Requestor identity cache (dokan_cache.h, 02 6.7): keyed by token object (TokenId, ModifiedId) and user SID. */
 #include <windows.h>
 #include <string.h>
 
@@ -7,8 +7,8 @@
 
 typedef struct dk_entry {
   BOOL used;
-  LUID luid;
-  DWORD elev;
+  LUID token_id;                        /* TOKEN_STATISTICS.TokenId: the token object */
+  LUID modified_id;                     /* TOKEN_STATISTICS.ModifiedId: changes on group/privilege adjustment */
   PSID user;                            /* owned */
   PSID *groups;                         /* owned array of owned SIDs */
   UINT n_groups;
@@ -73,9 +73,10 @@ static void entry_clear(dk_entry *d)
   memset(d, 0, sizeof(*d));
 }
 
-static BOOL entry_matches(const dk_entry *d, const LUID *luid, DWORD elev, PSID user)
+static BOOL entry_matches(const dk_entry *d, const LUID *token_id, const LUID *modified_id, PSID user)
 {
-  return d->used && d->luid.LowPart == luid->LowPart && d->luid.HighPart == luid->HighPart && d->elev == elev &&
+  return d->used && d->token_id.LowPart == token_id->LowPart && d->token_id.HighPart == token_id->HighPart &&
+         d->modified_id.LowPart == modified_id->LowPart && d->modified_id.HighPart == modified_id->HighPart &&
          EqualSid(d->user, user);
 }
 
@@ -101,18 +102,19 @@ void dk_cache_free(dk_cache *c)
   sd_free(c);
 }
 
-BOOL dk_cache_get(dk_cache *c, const LUID *luid, DWORD elev, PSID user, DWORD now, PSID **groups, UINT *n_groups)
+BOOL dk_cache_get(dk_cache *c, const LUID *token_id, const LUID *modified_id, PSID user, DWORD now, PSID **groups,
+                  UINT *n_groups)
 {
   UINT i;
   BOOL hit = FALSE;
   *groups = NULL;
   *n_groups = 0;
-  if (c == NULL || luid == NULL || user == NULL || !IsValidSid(user))
+  if (c == NULL || token_id == NULL || modified_id == NULL || user == NULL || !IsValidSid(user))
     return FALSE;
   EnterCriticalSection(&c->lock);
   for (i = 0; i < DK_CACHE_SLOTS; i++) {
     dk_entry *d = &c->e[i];
-    if (!entry_matches(d, luid, elev, user))
+    if (!entry_matches(d, token_id, modified_id, user))
       continue;
     if (now - d->stored < DK_CACHE_TTL_MS) {  /* unsigned: wrap-safe */
       PSID *g = groups_copy(d->groups, d->n_groups);
@@ -130,11 +132,12 @@ BOOL dk_cache_get(dk_cache *c, const LUID *luid, DWORD elev, PSID user, DWORD no
   return hit;
 }
 
-void dk_cache_put(dk_cache *c, const LUID *luid, DWORD elev, PSID user, PSID const *groups, UINT n_groups, DWORD now)
+void dk_cache_put(dk_cache *c, const LUID *token_id, const LUID *modified_id, PSID user, PSID const *groups,
+                  UINT n_groups, DWORD now)
 {
   dk_entry fresh;
   UINT i, victim = DK_CACHE_SLOTS;
-  if (c == NULL || luid == NULL || user == NULL || !IsValidSid(user))
+  if (c == NULL || token_id == NULL || modified_id == NULL || user == NULL || !IsValidSid(user))
     return;
   memset(&fresh, 0, sizeof(fresh));
   fresh.user = sid_copy(user);
@@ -145,13 +148,13 @@ void dk_cache_put(dk_cache *c, const LUID *luid, DWORD elev, PSID user, PSID con
     return;                             /* nothing stored: a later open reads the token again */
   }
   fresh.used = TRUE;
-  fresh.luid = *luid;
-  fresh.elev = elev;
+  fresh.token_id = *token_id;
+  fresh.modified_id = *modified_id;
   fresh.n_groups = n_groups;
   fresh.stored = now;
   EnterCriticalSection(&c->lock);
   for (i = 0; i < DK_CACHE_SLOTS; i++) {
-    if (entry_matches(&c->e[i], luid, elev, user)) {
+    if (entry_matches(&c->e[i], token_id, modified_id, user)) {
       victim = i;                       /* refresh the same requestor in place */
       break;
     }

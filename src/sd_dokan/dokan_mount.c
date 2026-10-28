@@ -97,56 +97,32 @@ static void requestor_free(requestor_ident *r)
   memset(r, 0, sizeof(*r));
 }
 
-/* TRUE when the token has restricting SIDs (CreateRestrictedToken). Also TRUE when the answer is unknown: the token is
-   then read every time, never cached. */
-static BOOL token_is_restricted(HANDLE tok)
-{
-  DWORD n = 0;
-  BYTE *buf;
-  BOOL restricted = TRUE;
-  if (GetTokenInformation(tok, TokenRestrictedSids, NULL, 0, &n) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-    return TRUE;
-  buf = (BYTE *)sd_alloc(n);
-  if (buf == NULL)
-    return TRUE;
-  if (GetTokenInformation(tok, TokenRestrictedSids, buf, n, &n))
-    restricted = ((TOKEN_GROUPS *)buf)->GroupCount != 0;
-  sd_free(buf);
-  return restricted;
-}
-
-/* Requestor identity, cached per (logon LUID, elevation type, SID) for 60 s (02 6.7; dokan_cache.h). A cache hit saves
-   the group query. Every token query that fails returns FALSE and stores nothing. */
+/* Requestor identity (02 6.7, 7.7), cached per token object: the key is TOKEN_STATISTICS (TokenId, ModifiedId) and the
+   user SID (dokan_cache.h). Each create reads the statistics and the user; the groups are read only on a miss. The
+   TokenId separates filtered, restricted and duplicated tokens of one logon, so no restriction check is needed.
+   Every token query that fails returns FALSE and stores nothing. */
 static BOOL requestor_identity(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi, requestor_ident *r)
 {
   const sd_dokan_api *api = sd_dokan_api_get();
   HANDLE tok;
-  DWORD n = 0, i, ng = 0, elev = 0, now;
+  DWORD n = 0, i, ng = 0, now;
   TOKEN_STATISTICS stats;
-  TOKEN_ELEVATION_TYPE et;
   TOKEN_GROUPS *tg;
-  BOOL ok = FALSE, cacheable = FALSE, hit = FALSE;
+  BOOL ok = FALSE, hit = FALSE;
   memset(r, 0, sizeof(*r));
   tok = api->OpenRequestorToken(fi);
   if (tok == INVALID_HANDLE_VALUE || tok == NULL)
     return FALSE;
-  /* The LUID is shared by a UAC-filtered and an elevated token of one logon: the elevation type separates them. On XP
-     there is no elevation type and no linked token, so the query's "invalid parameter" means type 0. */
   if (!GetTokenInformation(tok, TokenStatistics, &stats, sizeof(stats), &n))
-    goto out;
-  if (GetTokenInformation(tok, TokenElevationType, &et, sizeof(et), &n))
-    elev = (DWORD)et;
-  else if (GetLastError() != ERROR_INVALID_PARAMETER)
     goto out;
   if (!GetTokenInformation(tok, TokenUser, NULL, 0, &n) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
     goto out;
   r->user = (BYTE *)sd_alloc(n);
   if (r->user == NULL || !GetTokenInformation(tok, TokenUser, r->user, n, &n))
     goto out;
-  cacheable = m->cache != NULL && !token_is_restricted(tok);
   now = GetTickCount();
-  if (cacheable && dk_cache_get(m->cache, &stats.AuthenticationId, elev, ((TOKEN_USER *)r->user)->User.Sid, now,
-                                &r->gsids, &r->n_gsids)) {
+  if (m->cache != NULL && dk_cache_get(m->cache, &stats.TokenId, &stats.ModifiedId,
+                                       ((TOKEN_USER *)r->user)->User.Sid, now, &r->gsids, &r->n_gsids)) {
     r->gsids_owned = TRUE;
     hit = TRUE;
   }
@@ -167,8 +143,8 @@ static BOOL requestor_identity(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi, reques
         r->gsids[ng++] = tg->Groups[i].Sid;
     }
     r->n_gsids = ng;
-    if (cacheable)
-      dk_cache_put(m->cache, &stats.AuthenticationId, elev, ((TOKEN_USER *)r->user)->User.Sid, r->gsids, ng, now);
+    if (m->cache != NULL)
+      dk_cache_put(m->cache, &stats.TokenId, &stats.ModifiedId, ((TOKEN_USER *)r->user)->User.Sid, r->gsids, ng, now);
   }
   r->caller.sid = ((TOKEN_USER *)r->user)->User.Sid;
   r->caller.can_write = TRUE;           /* the vfs applies the write rule (TM-R24) */
