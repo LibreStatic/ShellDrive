@@ -75,6 +75,12 @@ SD_TEST_DECL(hk_row_lists_wildcards_and_hashed_entries);
 SD_TEST_DECL(hk_row_cells_and_source_labels);
 SD_TEST_DECL(hk_announcement_cells);
 SD_TEST_DECL(hk_store_enumeration_and_remove);
+SD_TEST_DECL(hk_target_parse_forms);
+SD_TEST_DECL(hk_target_parse_refusals);
+SD_TEST_DECL(hk_add_params_json);
+SD_TEST_DECL(hk_offer_parse_first_contact_and_verified);
+SD_TEST_DECL(hk_offer_parse_degenerate_replies);
+SD_TEST_DECL(hk_add_fail_classes);
 SD_TEST_DECL(settings_model_defaults_and_mapping);
 SD_TEST_DECL(settings_model_round_trip_keeps_other_fields);
 SD_TEST_DECL(settings_save_load_round_trip_in_a_temp_root);
@@ -172,6 +178,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(hk_row_cells_and_source_labels),
   SD_TEST_ENTRY(hk_announcement_cells),
   SD_TEST_ENTRY(hk_store_enumeration_and_remove),
+  SD_TEST_ENTRY(hk_target_parse_forms),
+  SD_TEST_ENTRY(hk_target_parse_refusals),
+  SD_TEST_ENTRY(hk_add_params_json),
+  SD_TEST_ENTRY(hk_offer_parse_first_contact_and_verified),
+  SD_TEST_ENTRY(hk_offer_parse_degenerate_replies),
+  SD_TEST_ENTRY(hk_add_fail_classes),
   SD_TEST_ENTRY(settings_model_defaults_and_mapping),
   SD_TEST_ENTRY(settings_model_round_trip_keeps_other_fields),
   SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),

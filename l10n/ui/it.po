@@ -1253,6 +1253,105 @@ msgstr[0] "{count} chiave annunciata."
 msgstr[1] "{count} chiavi annunciate."
 msgstr[2] "{count} chiavi annunciate."
 
+#. Host key manager button (Known keys tab): asks a server for its host keys and adds the ones the user confirms.
+msgctxt "ui.hostkeys.btn_add_server"
+msgid "Add key from server…"
+msgstr "Aggiungi chiave dal server…"
+
+#. Title of the dialog that asks for the server to get host keys from.
+msgctxt "ui.hostkeys.add.title"
+msgid "Add a host key from a server"
+msgstr "Aggiungi una chiave host da un server"
+
+#. Intro of the dialog that asks for the server. The user types a host name, optionally followed by :port.
+msgctxt "ui.hostkeys.add.intro"
+msgid "ShellDrive connects to the server and asks for the host keys it has. Nothing is saved until you have checked the fingerprints. Type the server name, or name:port."
+msgstr "ShellDrive si connette al server e ne chiede le chiavi host. Non viene salvato nulla finché non hai controllato le impronte. Scrivi il nome del server, oppure nome:porta."
+
+#. Label of the server field. The mnemonic letter moves focus to the field.
+msgctxt "ui.hostkeys.add.host_label"
+msgid "&Server:"
+msgstr "&Server:"
+
+#. Button of the server dialog: connects and asks the server for its host keys.
+msgctxt "ui.hostkeys.add.btn_ok"
+msgid "&Look up"
+msgstr "Ce&rca"
+
+#. Button of the server dialog: closes it without doing anything.
+msgctxt "ui.hostkeys.add.btn_cancel"
+msgid "&Cancel"
+msgstr "&Annulla"
+
+#. Server dialog: the field does not hold a usable server name.
+msgctxt "ui.hostkeys.add.invalid_host"
+msgid "Type a server name such as example.org or example.org:2222. Use letters, digits, dots and hyphens only."
+msgstr "Scrivi il nome di un server, ad esempio example.org o example.org:2222. Usa solo lettere, cifre, punti e trattini."
+
+#. Host key manager status line while the agent connects to the server. {host} is the server name.
+msgctxt "ui.hostkeys.add.working"
+msgid "Asking {host} for its host keys…"
+msgstr "Richiesta delle chiavi host a {host}…"
+
+#. Host key manager status line: the server offered no key that is not stored yet. {host} is the server name.
+msgctxt "ui.hostkeys.add.none"
+msgid "{host} has no other host keys to add."
+msgstr "{host} non ha altre chiavi host da aggiungere."
+
+#. Title of the dialog that shows the host keys a server offered.
+msgctxt "ui.hostkeys.add.review_title"
+msgid "Add host keys"
+msgstr "Aggiungi chiavi host"
+
+#. Review dialog for a server whose key ShellDrive already stores: it offers {count} more. {host} is the server name.
+#, plural-arg=count
+msgctxt "ui.hostkeys.add.review_verified"
+msgid "{host} also has {count} other host key. Add it?"
+msgid_plural "{host} also has {count} other host keys. Add them?"
+msgstr[0] "{host} ha anche {count} altra chiave host. Aggiungila?"
+msgstr[1] "{host} ha anche {count} di altre chiavi host. Aggiungile?"
+msgstr[2] "{host} ha anche {count} altre chiavi host. Aggiungile?"
+
+#. Review dialog for a server ShellDrive has no stored key for (first contact, 03 5.2). {host} is the server name.
+msgctxt "ui.hostkeys.add.review_first"
+msgid "ShellDrive has no key stored for {host}, so it cannot tell whether this is the server you mean. Compare the fingerprint with the one the server's administrator gave you."
+msgstr "ShellDrive non ha nessuna chiave salvata per {host}, quindi non può sapere se è il server che intendi. Confronta l'impronta con quella che ti ha dato l'amministratore del server."
+
+#. Label of the read-only list of keys the server offered (type and SHA-256 fingerprint). The mnemonic letter moves focus to the list.
+msgctxt "ui.hostkeys.add.review_list_label"
+msgid "&Keys offered by the server:"
+msgstr "Chia&vi offerte dal server:"
+
+#. Review dialog button: stores the keys in the user's known hosts.
+msgctxt "ui.hostkeys.add.review_btn_add"
+msgid "&Add"
+msgstr "A&ggiungi"
+
+#. Review dialog button: closes the dialog without adding anything. It is the default button.
+msgctxt "ui.hostkeys.add.review_btn_skip"
+msgid "&Don't add"
+msgstr "&Non aggiungere"
+
+#. Host key manager status line: the user did not add the offered keys.
+msgctxt "ui.hostkeys.add.declined"
+msgid "No key was added. The offer stays on the Announced keys tab."
+msgstr "Nessuna chiave è stata aggiunta. L'offerta resta nella scheda delle chiavi annunciate."
+
+#. Host key manager: this build of the agent cannot connect to a server to collect its host keys yet.
+msgctxt "ui.hostkeys.add.err_unsupported"
+msgid "ShellDrive cannot collect host keys from a server in this version yet."
+msgstr "Questa versione di ShellDrive non può ancora ottenere le chiavi host da un server."
+
+#. Host key manager: the server presented a key that does not match the stored one. {host} is the server name.
+msgctxt "ui.hostkeys.add.err_mismatch"
+msgid "The host key {host} presented does not match the one stored for it. Nothing was added."
+msgstr "La chiave host presentata da {host} non corrisponde a quella salvata. Non è stato aggiunto nulla."
+
+#. Host key manager: the host keys of a server could not be collected. {host} is the server name, {code} the error name.
+msgctxt "ui.hostkeys.add.err_connect"
+msgid "ShellDrive could not get the host keys of {host} ({code})."
+msgstr "ShellDrive non è riuscito a ottenere le chiavi host di {host} ({code})."
+
 #. Logs viewer window title.
 msgctxt "ui.logs.title"
 msgid "Logs"

@@ -6,7 +6,12 @@
  * confirmation; Import copies the keys of PuTTY or of an OpenSSH known_hosts file into the user store.
  * "Announced keys" lists the UpdateHostKeys announcements the agent holds (hostkey.announced.list). Add keys
  * applies the proven additions; Add and remove also applies the removals, after a confirmation. Nothing changes
- * until the user asks for it (5.6). */
+ * until the user asks for it (5.6).
+ *
+ * "Add key from server..." (5.2, 6.1 hostkey add --from-server) asks for a server name, sends hostkey.add to the
+ * agent and shows the keys the server offered with their SHA-256 fingerprints. Nothing is stored until the user
+ * chooses Add; the default button is "Don't add". Add calls hostkey.announced.accept with add_only, as the CLI
+ * does. The model (parsing, request, reply, error classes) is ui_hostkeys_model.c. */
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -21,9 +26,11 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_ssh/sd_known_hosts.h"
+#include "ui_dlg.h"
 #include "ui_dpi.h"
 #include "ui_hostkeys_model.h"
 #include "ui_int.h"
+#include "ui_measure.h"
 #include "ui_win.h"
 
 #define HK_ID_TAB          4201
@@ -36,13 +43,17 @@
 #define HK_ID_ADD          4208
 #define HK_ID_ADDALL       4209
 #define HK_ID_STATUS       4210
+#define HK_ID_SERVER       4211
+#define HK_DLG_HOST        4301       /* ids inside the two dialogs */
+#define HK_DLG_LIST        4302
+#define HK_DLG_WIDTH       280
 
 #define HK_TAB_KNOWN       0
 #define HK_TAB_ANNOUNCED   1
 #define HK_MAX_KEYS        65536u
 #define HK_MAX_ANN         1024u
 #define HK_ANN_ID_MAX      64
-#define HK_CLIENT_W        760
+#define HK_CLIENT_W        900
 #define HK_CLIENT_H        460
 
 typedef struct hk_entry {
@@ -61,7 +72,7 @@ typedef struct hk_ann {
 
 static struct {
   HWND wnd, tab, list_known, list_ann, status;
-  HWND btn_remove, btn_putty, btn_openssh, btn_refresh, btn_add, btn_addall;
+  HWND btn_remove, btn_putty, btn_openssh, btn_refresh, btn_add, btn_addall, btn_server;
   HFONT font;
   unsigned dpi;
   hk_entry *keys;
@@ -70,6 +81,8 @@ static struct {
   size_t nanns, capanns;
   int ann_wait;                      /* hostkey.announced.list in flight */
   int accept_wait;                   /* hostkey.announced.accept in flight */
+  int add_wait;                      /* hostkey.add in flight */
+  wchar_t add_host[UI_HK_HOST_MAX];  /* the server asked for, for the messages */
   wchar_t accept_host[UI_HK_HOST_MAX];
 } g_hk;
 
@@ -324,7 +337,7 @@ static void update_buttons(void)
   if (ann_sel >= 0) {
     LPARAM p = item_param(g_hk.list_ann, ann_sel);
     if (p >= 0 && (size_t)p < g_hk.nanns) {
-      ann_ok = !g_hk.ann_wait && !g_hk.accept_wait && g_app.agent_up;
+      ann_ok = !g_hk.ann_wait && !g_hk.accept_wait && !g_hk.add_wait && g_app.agent_up;
       has_removals = ann_has_removals(g_hk.anns[p].id);
     }
   }
@@ -334,6 +347,8 @@ static void update_buttons(void)
     EnableWindow(g_hk.btn_putty, tab == HK_TAB_KNOWN);
   if (g_hk.btn_openssh)
     EnableWindow(g_hk.btn_openssh, tab == HK_TAB_KNOWN);
+  if (g_hk.btn_server)
+    EnableWindow(g_hk.btn_server, tab == HK_TAB_KNOWN && g_app.agent_up && !g_hk.add_wait && !g_hk.accept_wait);
   if (g_hk.btn_add)
     EnableWindow(g_hk.btn_add, tab == HK_TAB_ANNOUNCED && ann_ok);
   if (g_hk.btn_addall)
@@ -351,6 +366,7 @@ static void show_tab(void)
   ShowWindow(g_hk.btn_remove, known ? SW_SHOW : SW_HIDE);
   ShowWindow(g_hk.btn_putty, known ? SW_SHOW : SW_HIDE);
   ShowWindow(g_hk.btn_openssh, known ? SW_SHOW : SW_HIDE);
+  ShowWindow(g_hk.btn_server, known ? SW_SHOW : SW_HIDE);
   ShowWindow(g_hk.btn_add, known ? SW_HIDE : SW_SHOW);
   ShowWindow(g_hk.btn_addall, known ? SW_HIDE : SW_SHOW);
 }
@@ -370,7 +386,7 @@ static void layout(HWND hwnd)
 {
   RECT rc, tabrc;
   int m, bh, sh, W, H, by, x, i;
-  HWND btns[6];
+  HWND btns[7];
   if (!g_hk.tab || !g_hk.status)
     return;
   GetClientRect(hwnd, &rc);
@@ -384,16 +400,17 @@ static void layout(HWND hwnd)
   btns[0] = g_hk.btn_remove;
   btns[1] = g_hk.btn_putty;
   btns[2] = g_hk.btn_openssh;
-  btns[3] = g_hk.btn_add;
-  btns[4] = g_hk.btn_addall;
-  btns[5] = g_hk.btn_refresh;
+  btns[3] = g_hk.btn_server;
+  btns[4] = g_hk.btn_add;
+  btns[5] = g_hk.btn_addall;
+  btns[6] = g_hk.btn_refresh;
   x = m;
-  for (i = 0; i < 6; i++) {
+  for (i = 0; i < 7; i++) {
     int visible;
     if (!btns[i])
       continue;
-    visible = (int)SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) == HK_TAB_KNOWN ? (i < 3 || i == 5)
-                                                                              : (i == 3 || i == 4 || i == 5);
+    visible = (int)SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) == HK_TAB_KNOWN ? (i < 4 || i == 6)
+                                                                              : (i >= 4);
     if (!visible)
       continue;
     MoveWindow(btns[i], x, by, button_width(btns[i]), bh, TRUE);
@@ -606,12 +623,27 @@ static void parse_announced(const sd_json *result)
   }
 }
 
+/* hostkey.announced.accept for the announcement id; host (UTF-8) is named in the status line afterwards. */
+static void send_accept(const char *id, int add_only, const char *host)
+{
+  char params[HK_ANN_ID_MAX + 48];
+  if (!ui_hk_id_ok(id))
+    return;
+  sprintf_s(params, sizeof(params), "{\"id\":\"%s\",\"add_only\":%s}", id, add_only ? "true" : "false");
+  ui_text_utf8(host, g_hk.accept_host, SD_COUNTOF(g_hk.accept_host));
+  if (ui_ipc_call(UI_IPC_ACCEPT, "hostkey.announced.accept", params) == SD_OK) {
+    g_hk.accept_wait = 1;
+    update_buttons();
+  } else {
+    status_msg(SD_MSG_UI_HOSTKEYS_ACCEPT_FAILED_QUEUE);
+  }
+}
+
 static void accept_selected(int add_only)
 {
   int sel = sel_index(g_hk.list_ann);
   LPARAM p;
   const hk_ann *a;
-  char params[HK_ANN_ID_MAX + 48];
   if (sel < 0)
     return;
   p = item_param(g_hk.list_ann, sel);
@@ -623,13 +655,292 @@ static void accept_selected(int add_only)
                     MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
       return;
   }
-  sprintf_s(params, sizeof(params), "{\"id\":\"%s\",\"add_only\":%s}", a->id, add_only ? "true" : "false");
-  ui_text_utf8(a->host, g_hk.accept_host, SD_COUNTOF(g_hk.accept_host));
-  if (ui_ipc_call(UI_IPC_ACCEPT, "hostkey.announced.accept", params) == SD_OK) {
-    g_hk.accept_wait = 1;
-    update_buttons();
-  } else {
+  send_accept(a->id, add_only, a->host);
+}
+
+/* ---- Add key from server (hostkey.add) ---- */
+
+typedef struct hk_ask {
+  ui_hk_target target;               /* the validated server, set on OK */
+} hk_ask;
+
+static INT_PTR CALLBACK ask_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+  hk_ask *c = (hk_ask *)GetWindowLongPtrW(hwnd, DWLP_USER);
+  switch (msg) {
+  case WM_INITDIALOG:
+    SetWindowLongPtrW(hwnd, DWLP_USER, (LONG_PTR)lp);
+    SendDlgItemMessageW(hwnd, HK_DLG_HOST, EM_LIMITTEXT, UI_HK_SPEC_MAX - 1, 0);
+    return TRUE;
+  case WM_COMMAND:
+    if (c == NULL)
+      break;
+    if (LOWORD(wp) == IDOK) {
+      wchar_t text[UI_HK_SPEC_MAX];
+      char spec[UI_HK_SPEC_MAX];
+      GetDlgItemTextW(hwnd, HK_DLG_HOST, text, SD_COUNTOF(text));
+      ui_text_ascii(text, spec, sizeof(spec));       /* a non-ASCII character becomes '?' and is refused */
+      if (!ui_hk_target_parse(spec, &c->target)) {
+        ui_win_message(hwnd, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_INVALID_HOST), MB_OK | MB_ICONWARNING);
+        SetFocus(GetDlgItem(hwnd, HK_DLG_HOST));
+        return TRUE;
+      }
+      EndDialog(hwnd, IDOK);
+      return TRUE;
+    }
+    if (LOWORD(wp) == IDCANCEL) {
+      EndDialog(hwnd, IDCANCEL);
+      return TRUE;
+    }
+    break;
+  default:
+    break;
+  }
+  return FALSE;
+}
+
+/* Builds the server dialog template. Release *blob with sd_free. */
+static sd_err build_ask(unsigned char **blob, size_t *len)
+{
+  static const WORD ids[2] = { IDOK, IDCANCEL };
+  const wchar_t *texts[2];
+  wchar_t face[UI_DLG_FACE_MAX];
+  WORD points = 8;
+  int dpi = 96;
+  ui_measure m;
+  ui_dlg *d = (ui_dlg *)sd_calloc(1, sizeof(ui_dlg));
+  sd_err e;
+  if (d == NULL)
+    return SD_E_NO_MEMORY;
+  ui_message_font(face, &points, &dpi);
+  ui_measure_init(&m, face, points, dpi);
+  texts[0] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_BTN_OK);
+  texts[1] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_BTN_CANCEL);
+  e = ui_dlg_init(d, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_TITLE), HK_DLG_WIDTH, face, points, ui_measure_cb, &m);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_INTRO), SS_NOPREFIX);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_HOST_LABEL), 0);
+  if (e == SD_OK) e = ui_dlg_edit(d, HK_DLG_HOST, 0);
+  if (e == SD_OK) e = ui_dlg_space(d, 4);
+  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 2, IDOK);
+  if (e == SD_OK) e = ui_dlg_build(d, blob, len);
+  ui_measure_free(&m);
+  sd_free(d);
+  return e;
+}
+
+/* Asks for the server. 1 when the user chose Look up with a usable name. */
+static int ask_server(HWND owner, ui_hk_target *t)
+{
+  unsigned char *blob = NULL;
+  size_t len = 0;
+  hk_ask c;
+  INT_PTR r = IDCANCEL;
+  memset(&c, 0, sizeof(c));
+  if (build_ask(&blob, &len) == SD_OK && blob != NULL)
+    r = DialogBoxIndirectParamW(g_app.inst, (LPCDLGTEMPLATEW)blob, owner, ask_proc, (LPARAM)&c);
+  sd_free(blob);
+  if (r != IDOK)
+    return 0;
+  *t = c.target;
+  return 1;
+}
+
+static INT_PTR CALLBACK review_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+  (void)lp;
+  switch (msg) {
+  case WM_INITDIALOG:
+    return TRUE;
+  case WM_COMMAND:
+    if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+      EndDialog(hwnd, LOWORD(wp));
+      return TRUE;
+    }
+    break;
+  default:
+    break;
+  }
+  return FALSE;
+}
+
+/* Builds the review dialog template for an offer. Release *blob with sd_free. */
+static sd_err build_review(const ui_hk_offer *o, unsigned char **blob, size_t *len)
+{
+  static const WORD ids[2] = { IDOK, IDCANCEL };
+  const wchar_t *texts[2];
+  wchar_t face[UI_DLG_FACE_MAX];
+  WORD points = 8;
+  int dpi = 96;
+  ui_measure m;
+  wchar_t host[UI_HK_HOST_MAX];
+  wchar_t lines[UI_HK_OFFER_KEYS * (UI_HK_TYPE_MAX + UI_HK_FP_MAX + 8) + 8];
+  wchar_t *intro;
+  sd_arg a[2];
+  ui_dlg *d = (ui_dlg *)sd_calloc(1, sizeof(ui_dlg));
+  sd_err e;
+  if (d == NULL)
+    return SD_E_NO_MEMORY;
+  ui_text_utf8(o->host, host, SD_COUNTOF(host));
+  a[0].name = "host";
+  a[0].type = SD_ARG_STR;
+  a[0].v.s = host;
+  a[1].name = "count";
+  a[1].type = SD_ARG_INT;
+  a[1].v.i = (long long)o->nkeys;
+  intro = sd_l10n_format_alloc(o->verified ? SD_MSG_UI_HOSTKEYS_ADD_REVIEW_VERIFIED : SD_MSG_UI_HOSTKEYS_ADD_REVIEW_FIRST,
+                               a, 2);
+  ui_hk_offer_lines(o, lines, SD_COUNTOF(lines));
+  ui_message_font(face, &points, &dpi);
+  ui_measure_init(&m, face, points, dpi);
+  texts[0] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_REVIEW_BTN_ADD);
+  texts[1] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_REVIEW_BTN_SKIP);
+  e = ui_dlg_init(d, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_REVIEW_TITLE), HK_DLG_WIDTH + 80, face, points, ui_measure_cb,
+                  &m);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, intro != NULL ? intro : L"", SS_NOPREFIX);
+  if (e == SD_OK) e = ui_dlg_text(d, 0, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_REVIEW_LIST_LABEL), 0);
+  if (e == SD_OK) e = ui_dlg_multiline(d, HK_DLG_LIST, lines, UI_HK_OFFER_KEYS);
+  if (e == SD_OK) e = ui_dlg_space(d, 4);
+  /* the safe answer is the default button: Enter never adds a key (TM-R03) */
+  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 2, IDCANCEL);
+  if (e == SD_OK) e = ui_dlg_build(d, blob, len);
+  ui_measure_free(&m);
+  sd_free(d);
+  sd_free(intro);
+  return e;
+}
+
+/* The review of the keys a server offered. 1 when the user chose Add. */
+static int review_offer(HWND owner, const ui_hk_offer *o)
+{
+  unsigned char *blob = NULL;
+  size_t len = 0;
+  INT_PTR r = IDCANCEL;
+  if (build_review(o, &blob, &len) == SD_OK && blob != NULL)
+    r = DialogBoxIndirectParamW(g_app.inst, (LPCDLGTEMPLATEW)blob, owner, review_proc, 0);
+  sd_free(blob);
+  return r == IDOK;
+}
+
+/* --test-windows: both templates build and parse (no modal loop). */
+int ui_hostkeys_dialogs_smoke(void)
+{
+  static const char *const k_types[] = { "ssh-ed25519", "ecdsa-sha2-nistp256" };
+  unsigned char *blob = NULL;
+  size_t len = 0, count = 0, offs[UI_DLG_MAX_ITEMS];
+  ui_hk_offer o;
+  size_t i;
+  int ok;
+  ok = build_ask(&blob, &len) == SD_OK && blob != NULL &&
+       ui_dlg_parse_check(blob, len, &count, offs, SD_COUNTOF(offs)) == SD_OK && count == 5;
+  sd_free(blob);
+  blob = NULL;
+  memset(&o, 0, sizeof(o));
+  strcpy_s(o.host, sizeof(o.host), "example.org");
+  strcpy_s(o.id, sizeof(o.id), "a-1");
+  for (i = 0; i < 2; i++) {
+    strcpy_s(o.keys[i].type, sizeof(o.keys[i].type), k_types[i]);
+    strcpy_s(o.keys[i].fp, sizeof(o.keys[i].fp), "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG");
+  }
+  o.nkeys = 2;
+  for (i = 0; i < 2 && ok; i++) {
+    o.verified = (int)i;
+    ok = build_review(&o, &blob, &len) == SD_OK && blob != NULL &&
+         ui_dlg_parse_check(blob, len, &count, offs, SD_COUNTOF(offs)) == SD_OK && count == 5;
+    sd_free(blob);
+    blob = NULL;
+  }
+  return ok;
+}
+
+static void add_from_server(void)
+{
+  ui_hk_target t;
+  char params[UI_HK_HOST_MAX * 2 + 96];
+  wchar_t *text;
+  if (!g_app.agent_up) {
+    status_msg(SD_MSG_UI_HOSTKEYS_AGENT_DOWN);
+    return;
+  }
+  if (g_hk.add_wait || g_hk.accept_wait || !ask_server(g_hk.wnd, &t))
+    return;
+  if (ui_hk_add_params(&t, NULL, params, sizeof(params)) != SD_OK)
+    return;
+  ui_text_utf8(t.host, g_hk.add_host, SD_COUNTOF(g_hk.add_host));
+  if (ui_ipc_call(UI_IPC_HK_ADD, "hostkey.add", params) != SD_OK) {
     status_msg(SD_MSG_UI_HOSTKEYS_ACCEPT_FAILED_QUEUE);
+    return;
+  }
+  g_hk.add_wait = 1;
+  text = ui_format1(SD_MSG_UI_HOSTKEYS_ADD_WORKING, "host", g_hk.add_host);
+  if (text != NULL) {
+    status_text(text);
+    sd_free(text);
+  }
+  update_buttons();
+}
+
+static void add_failed(sd_err err)
+{
+  wchar_t code[64];
+  sd_arg a[2];
+  wchar_t *text;
+  sd_msg_id id;
+  switch (ui_hk_add_fail_of(err)) {
+  case UI_HK_ADD_FAIL_AGENT_DOWN:
+    status_msg(SD_MSG_UI_HOSTKEYS_AGENT_DOWN);
+    return;
+  case UI_HK_ADD_FAIL_BUSY:
+    status_msg(SD_MSG_UI_HOSTKEYS_ACCEPT_FAILED_QUEUE);
+    return;
+  case UI_HK_ADD_FAIL_UNSUPPORTED:
+    status_text(L"");
+    ui_win_message(g_hk.wnd, sd_l10n_get(SD_MSG_UI_HOSTKEYS_ADD_ERR_UNSUPPORTED), MB_OK | MB_ICONINFORMATION);
+    return;
+  case UI_HK_ADD_FAIL_MISMATCH:
+    id = SD_MSG_UI_HOSTKEYS_ADD_ERR_MISMATCH;
+    break;
+  default:
+    id = SD_MSG_UI_HOSTKEYS_ADD_ERR_CONNECT;
+    break;
+  }
+  ui_text_utf8(sd_err_name(err), code, SD_COUNTOF(code));
+  a[0].name = "host";
+  a[0].type = SD_ARG_STR;
+  a[0].v.s = g_hk.add_host;
+  a[1].name = "code";
+  a[1].type = SD_ARG_STR;
+  a[1].v.s = code;
+  text = sd_l10n_format_alloc(id, a, 2);
+  status_text(L"");
+  if (text != NULL) {
+    ui_win_message(g_hk.wnd, text, MB_OK | MB_ICONERROR);
+    sd_free(text);
+  }
+}
+
+/* The reply of hostkey.add: show the offered keys and, on Add, store them with hostkey.announced.accept. */
+static void on_add_reply(sd_err err, const sd_json *result)
+{
+  ui_hk_offer o;
+  wchar_t *text;
+  g_hk.add_wait = 0;
+  if (err != SD_OK || result == NULL || ui_hk_offer_parse(result, &o) != SD_OK) {
+    add_failed(err != SD_OK ? err : SD_E_PROTOCOL);
+    return;
+  }
+  if (o.id[0] == '\0' || o.nkeys == 0) {
+    text = ui_format1(SD_MSG_UI_HOSTKEYS_ADD_NONE, "host", g_hk.add_host);
+    if (text != NULL) {
+      status_text(text);
+      sd_free(text);
+    }
+    return;
+  }
+  if (review_offer(g_hk.wnd, &o)) {
+    send_accept(o.id, 1, o.host[0] != '\0' ? o.host : "");
+  } else {
+    status_msg(SD_MSG_UI_HOSTKEYS_ADD_DECLINED);
+    request_announced();                 /* the refused offer stays in the announcements */
   }
 }
 
@@ -637,7 +948,11 @@ static void accept_selected(int add_only)
 
 void ui_hostkeys_on_reply(int kind, sd_err err, const sd_json *result)
 {
-  if (kind == UI_IPC_ANNOUNCED) {
+  if (g_hk.wnd == NULL)
+    return;
+  if (kind == UI_IPC_HK_ADD) {
+    on_add_reply(err, result);
+  } else if (kind == UI_IPC_ANNOUNCED) {
     g_hk.ann_wait = 0;
     if (err == SD_OK && result != NULL) {
       parse_announced(result);
@@ -663,6 +978,7 @@ void ui_hostkeys_on_reply(int kind, sd_err err, const sd_json *result)
         status_text(t);
         sd_free(t);
       }
+      refresh_known();                  /* the user store changed */
       request_announced();
     }
   }
@@ -683,6 +999,7 @@ void ui_hostkeys_on_agent_state(int up)
     clear_anns();
     g_hk.ann_wait = 0;
     g_hk.accept_wait = 0;
+    g_hk.add_wait = 0;
     populate_ann();
   }
   if (up)
@@ -724,6 +1041,9 @@ static void create_children(HWND hwnd)
   g_hk.btn_openssh = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_IMPORT_OPENSSH),
                                      WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
                                      (HMENU)(UINT_PTR)HK_ID_OPENSSH, inst, NULL);
+  g_hk.btn_server = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_ADD_SERVER),
+                                    WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
+                                    (HMENU)(UINT_PTR)HK_ID_SERVER, inst, NULL);
   g_hk.btn_add = CreateWindowExW(0, L"BUTTON", sd_l10n_get(SD_MSG_UI_HOSTKEYS_BTN_ADD),
                                  WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, hwnd,
                                  (HMENU)(UINT_PTR)HK_ID_ADD, inst, NULL);
@@ -799,6 +1119,9 @@ static void on_command(WORD id, WORD code)
     break;
   case HK_ID_OPENSSH:
     import_openssh();
+    break;
+  case HK_ID_SERVER:
+    add_from_server();
     break;
   case HK_ID_REFRESH:
     refresh_known();

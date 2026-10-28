@@ -176,6 +176,7 @@ void ui_windows_on_reply(int kind, sd_err err, const sd_json *result)
   switch (kind) {
   case UI_IPC_ANNOUNCED:
   case UI_IPC_ACCEPT:
+  case UI_IPC_HK_ADD:
     ui_hostkeys_on_reply(kind, err, result);
     break;
   case UI_IPC_LOG:
@@ -226,6 +227,7 @@ int ui_windows_smoke_test(void)
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
   if (w)
     DestroyWindow(w);
+  ok = ok && ui_hostkeys_dialogs_smoke();
 
   w = ui_logs_create_hidden();
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
