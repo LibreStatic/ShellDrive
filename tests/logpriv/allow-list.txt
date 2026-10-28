@@ -1,0 +1,3 @@
+# Exceptions to tests/logpriv/check-log-privacy.ps1: "relative/path|identifier|reason". The identifier is the one the
+# check reports; an entry covers every %s use of it in that file. Keep this list short and reviewed.
+apps/shelldrive-host/agent.c|host_backend|the implementation name of the host backend (a code word such as "dokan"), not a host name

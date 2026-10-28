@@ -407,7 +407,7 @@ static void eval_decide(kh_eval *c, kh_subject *s, uint64_t now_unix, sd_hk_resu
       return;
     }
     s->cert_why = why;
-    SD_LOGW("ssh", "host certificate for %s rejected: %s", c->name, why ? why : "?");
+    SD_LOGW("ssh", "host certificate for %Hs rejected: %s", c->name, why ? why : "?");
   }
   if (c->mismatch) {
     res->status = SD_HK_MISMATCH;
@@ -699,7 +699,7 @@ sd_err sd_known_hosts_check(sd_known_hosts *kh, const char *lookup_name, const u
     ssh_kh_date_comment(live_kind == SD_KH_SRC_PUTTY ? "# imported-from=putty added=" : "# imported-from=openssh added=",
                         comment, sizeof(comment));
     e = sd_known_hosts_add(kh, SD_KH_STORE_USER, lookup_name, s.key, s.key_len, comment);
-    if (e != SD_OK) SD_LOGW("ssh", "copying the host key of %s into the user store failed: %s", lookup_name, sd_err_name(e));
+    if (e != SD_OK) SD_LOGW("ssh", "copying the host key of %Hs into the user store failed: %s", lookup_name, sd_err_name(e));
   }
   sd_free(tmp);
   subject_free(&s);

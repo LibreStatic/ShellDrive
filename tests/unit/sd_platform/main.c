@@ -264,6 +264,55 @@ SD_TEST(log_privacy_standard_and_strict)
   sd_log_remove_sink(priv_sink_fn, &s);
 }
 
+/* The typed specifiers of the migrated call sites (agent.c, service.c, ssh, sftp; 03 §10.1, TM-R31), in the
+   messages as the code writes them. Strict mode must keep the host, user and remote path out of every record at
+   every level; standard mode prints the host and user and a remote path only at debug. */
+SD_TEST(log_privacy_real_messages)
+{
+  static const char host[] = "files.example.org";
+  static const char user[] = "alice";
+  static const char path[] = "/srv/alice/private.txt";
+  priv_sink s;
+  memset(&s, 0, sizeof(s));
+  SD_REQUIRE(sd_log_add_sink(priv_sink_fn, &s) == SD_OK);
+  sd_log_set_level(SD_LOG_TRACE);
+
+  sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, priv_hash, NULL);
+  sd_log(SD_LOG_INFO, "ssh", NULL, "hop %u (%Hs) connected; opening hop %u through it", 1u, host, 2u);
+  SD_CHECK(strstr(s.last, "hop 1 (h:3f9a1c) connected") != NULL);
+  sd_log(SD_LOG_WARN, "ssh", NULL, "chain connect failed at hop %u (%Hs): %s", 1u, host, "refused");
+  SD_CHECK(strstr(s.last, "(h:3f9a1c): refused") != NULL);
+  sd_log(SD_LOG_INFO, "ssh", NULL, "authenticated as %Us", user);
+  SD_CHECK(strstr(s.last, "authenticated as u:3f9a1c") != NULL);
+  sd_log(SD_LOG_INFO, "svc", NULL, "hostkey add for %Hs refused: %s", host, "untrusted");
+  sd_log(SD_LOG_ERROR, "mount", NULL, "%c: UpdateHostKeys: %u new key(s) for %Hs saved (%s)", 'X', 1u, host, "ok");
+  sd_log(SD_LOG_DEBUG, "sftp", NULL, "home=%Rs", path);
+  SD_CHECK(strstr(s.last, "home=p:3f9a1c") != NULL);
+  sd_log(SD_LOG_WARN, "sftp", NULL, "readdir: dropped malformed entry name \"%Rs\" (len %u)", path, 4u);
+  SD_CHECK(strstr(s.last, "private.txt") == NULL);
+  SD_CHECK(strstr(s.last, "p:3f9a1c") != NULL);
+
+  /* No record of any level carries the host, user or path in clear. */
+  sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, priv_hash, NULL);
+  sd_log(SD_LOG_TRACE, "ssh", NULL, "lookup %Hs user %Us path %Rs", host, user, path);
+  SD_CHECK(strstr(s.last, host) == NULL);
+  SD_CHECK(strstr(s.last, user) == NULL);
+  SD_CHECK(strstr(s.last, "/srv/") == NULL);
+  SD_CHECK(strstr(s.last, "private") == NULL);
+
+  /* Standard: host and user are printed, the remote path is hidden at info and shown at debug. */
+  sd_log_set_privacy(SD_LOG_PRIVACY_STANDARD, NULL, NULL);
+  sd_log(SD_LOG_INFO, "ssh", NULL, "authenticated as %Us", user);
+  SD_CHECK(strstr(s.last, "authenticated as alice") != NULL);
+  sd_log(SD_LOG_INFO, "sftp", NULL, "home=%Rs", path);
+  SD_CHECK(strstr(s.last, "home=(hidden)") != NULL);
+  sd_log(SD_LOG_DEBUG, "sftp", NULL, "home=%Rs", path);
+  SD_CHECK(strstr(s.last, "home=/srv/alice/private.txt") != NULL);
+
+  sd_log_set_level(SD_LOG_INFO);
+  sd_log_remove_sink(priv_sink_fn, &s);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(platform_os_version),
   SD_TEST_ENTRY(platform_resolve),
@@ -275,6 +324,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(log_sinks_and_levels),
   SD_TEST_ENTRY(log_file_sink),
   SD_TEST_ENTRY(log_privacy_standard_and_strict),
+  SD_TEST_ENTRY(log_privacy_real_messages),
   SD_TEST_ENTRY(secbuf_small_and_large),
 };
 

@@ -697,7 +697,7 @@ sd_upd_res sd_upd_apply_setup(const wchar_t *staged_exe, uint32_t timeout_ms)
   if (r != SD_UPD_OK)
     return r;
   if (code != 0) {
-    SD_LOGE("upd", "update.apply_failed setup exit=%lu", (unsigned long)code);
+    SD_LOGE("upd", "update.apply_failed setup exit=%u", (unsigned)code);
     return SD_UPD_E_APPLY;
   }
   SD_LOGI("upd", "update.applied via setup");
@@ -792,7 +792,7 @@ sd_upd_res sd_upd_apply_files(const sd_upd_request *r, const wchar_t *payload, c
     } else {
       sd_upd_res pr = run_process(self, L"--selftest", selftest_ms, &code);
       if (pr != SD_UPD_OK || code != 0) {
-        SD_LOGE("upd", "update.rolled_back selftest exit=%lu", (unsigned long)code);
+        SD_LOGE("upd", "update.rolled_back selftest exit=%u", (unsigned)code);
         res = SD_UPD_E_SELFTEST;
       }
     }

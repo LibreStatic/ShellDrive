@@ -2404,6 +2404,12 @@ plural entries with every CLDR form of 9.4. Log lines, Event Log messages and JS
     configuration and `diag --check` output); `--no-anonymize` (CLI) or unchecking "Hide server names and file
     paths" (UI, checked by default) opts out.
   - The Event Log follows the same rule for remote paths except Event 1200, whose purpose is attribution (3.4.1).
+  - Call sites: every log call that formats a host name, a lookup name (`[host]:port`), a user name or a remote path
+    uses the typed specifier (`%Hs`, `%Us`, `%Rs`); local paths, error names, algorithm names and profile ids stay
+    `%s`. The restricted format language is not printf, so `sd_log` and `ssh_log` are not annotated
+    `_Printf_format_string_` (`/analyze` would reject the typed specifiers). `tests/logpriv/check-log-privacy.ps1`
+    (run by ctest) fails on an untyped host, user or path, on an unknown conversion, and on a conversion and
+    argument count that differ.
 - `OutputDebugStringW` sink at debug level when a debugger is attached (`IsDebuggerPresent`).
 
 ### 10.2 ETW (optional, Vista+)

@@ -176,7 +176,7 @@ static void raise_announced(sd_ssh_conn *c, const uint32_t *add_idx, uint32_t na
   ev.add_count = nadd;
   ev.remove = u->nrem ? rem : NULL;
   ev.remove_count = u->nrem;
-  ssh_log(c, SD_LOG_INFO, "hostkeys-00: %u proven new key(s), %u removal candidate(s) for %s (%s store%s)", nadd,
+  ssh_log(c, SD_LOG_INFO, "hostkeys-00: %u proven new key(s), %u removal candidate(s) for %Hs (%s store%s)", nadd,
           u->nrem, c->lookup_name, u->target == SD_KH_STORE_MACHINE ? "machine" : "user",
           u->target == SD_KH_STORE_MACHINE ? ", informational" : "");
   if (c->cb.on_hostkey_event) c->cb.on_hostkey_event(c->cb.ctx, &ev);
@@ -283,7 +283,7 @@ static void start_update(sd_ssh_conn *c)
     return;
   }
   if (c->hk_res.wildcard_only) {
-    ssh_log(c, SD_LOG_INFO, "hostkeys-00 ignored: the trusted entry matches %s only through a wildcard", c->lookup_name);
+    ssh_log(c, SD_LOG_INFO, "hostkeys-00 ignored: the trusted entry matches %Hs only through a wildcard", c->lookup_name);
     return;
   }
   if (u->update_started) return;

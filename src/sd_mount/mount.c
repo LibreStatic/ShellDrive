@@ -1020,7 +1020,7 @@ static void run_item(void *arg)
         sd_mount_announcement *a = it->ann;
         if (a->mode == SD_HKU_YES && m->kh && m->be->kh_apply_hostkeys) {
           sd_err ae = apply_on(m->be, m->kh, SD_KH_STORE_USER, a, 1);   /* removals always need the review (5.6) */
-          SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %s saved (%s)", mount_log_letter(m),
+          SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %Hs saved (%s)", mount_log_letter(m),
                   (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
           if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 1, ae);
           if (a->remove_count && m->cb.on_hostkeys_announced) {
@@ -1030,7 +1030,7 @@ static void run_item(void *arg)
         } else if (a->mode != SD_HKU_NO) {
           if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 0, SD_OK);
         } else {
-          SD_LOGI("mount", "%c: UpdateHostKeys announcement for %s ignored (update_host_keys = no)",
+          SD_LOGI("mount", "%c: UpdateHostKeys announcement for %Hs ignored (update_host_keys = no)",
                   mount_log_letter(m), a->lookup_name);
         }
       }

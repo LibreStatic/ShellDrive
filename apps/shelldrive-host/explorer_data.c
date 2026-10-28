@@ -237,7 +237,7 @@ static int icon_set(wchar_t letter)
   icon_default_value(value, SD_COUNTOF(value));
   rc = RegCreateKeyExW(HKEY_CURRENT_USER, sub, 0, NULL, 0, KEY_SET_VALUE, NULL, &hk, NULL);
   if (rc != ERROR_SUCCESS) {
-    SD_LOGW(EX_LOG, "drive icon key for %lc: %ld", (wint_t)letter, (long)rc);
+    SD_LOGW(EX_LOG, "drive icon key for %c: %d", (int)letter, (int)rc);
     return 0;
   }
   rc = RegSetValueExW(hk, NULL, 0, REG_SZ, (const BYTE *)value, (DWORD)((wcslen(value) + 1) * sizeof(wchar_t)));

@@ -576,7 +576,7 @@ static int hostkey_is_pinned(const sd_ssh_conn *c)
 static int accept_pinned(sd_ssh_conn *c)
 {
   if (!c->is_reconnect || !hostkey_is_pinned(c)) return 0;
-  ssh_log(c, SD_LOG_INFO, "reconnect: host key of %s equals the key accepted for this session", c->lookup_name);
+  ssh_log(c, SD_LOG_INFO, "reconnect: host key of %Hs equals the key accepted for this session", c->lookup_name);
   c->hostkey_just_accepted = 1;
   c->hk_once = 1;
   hostkey_ok(c);
@@ -588,7 +588,7 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
   hk_work *h = (hk_work *)cmd;
   if (h->add) {
     if (h->err != SD_OK) ssh_log(c, SD_LOG_WARN, "storing the host key failed: %s", sd_err_name(h->err));
-    else ssh_log(c, SD_LOG_INFO, "host key stored for %s", h->name);
+    else ssh_log(c, SD_LOG_INFO, "host key stored for %Hs", h->name);
     sd_free(h);
     return;
   }
@@ -605,9 +605,9 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
   case SD_HK_MATCH:
   case SD_HK_MATCH_CA:
     if (c->is_reconnect && c->pinned_len && !hostkey_is_pinned(c))
-      ssh_log(c, SD_LOG_WARN, "host key of %s changed since the previous connection; it matches a trusted entry",
+      ssh_log(c, SD_LOG_WARN, "host key of %Hs changed since the previous connection; it matches a trusted entry",
               c->lookup_name);
-    ssh_log(c, SD_LOG_INFO, "host key verified for %s%s", c->lookup_name,
+    ssh_log(c, SD_LOG_INFO, "host key verified for %Hs%s", c->lookup_name,
             h->res.status == SD_HK_MATCH_CA ? " (certificate)" : "");
     sd_free(h);
     hostkey_ok(c);
@@ -643,7 +643,7 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
     newk.blob = c->hostkey; newk.len = c->hostkey_len; newk.type = c->kex.algs.hostkey; newk.fp_sha256 = c->hostkey_fp;
     ev.old_key = &oldk;
     ev.new_key = &newk;
-    ssh_log(c, SD_LOG_WARN, "host key %s for %s (line %u)", h->res.status == SD_HK_MISMATCH ? "MISMATCH" : "REVOKED",
+    ssh_log(c, SD_LOG_WARN, "host key %s for %Hs (line %u)", h->res.status == SD_HK_MISMATCH ? "MISMATCH" : "REVOKED",
             c->lookup_name, h->res.line);
     if (c->cb.on_hostkey_event) c->cb.on_hostkey_event(c->cb.ctx, &ev);
     {

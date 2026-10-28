@@ -58,9 +58,12 @@ typedef void (*sd_log_sink_fn)(void *ctx, sd_log_level level, const char *line, 
 sd_err sd_log_add_sink(sd_log_sink_fn fn, void *ctx);     /* line excludes the CRLF */
 void   sd_log_remove_sink(sd_log_sink_fn fn, void *ctx);
 
-/* component: short English tag ("ssh", "sftp", "vfs", "ipc", ...); mount_id may be NULL. */
+/* component: short English tag ("ssh", "sftp", "vfs", "ipc", ...); mount_id may be NULL.
+   fmt is NOT annotated _Printf_format_string_: it is the restricted language above, and /analyze reads %Hs, %Us and
+   %Rs as printf conversions with no argument (C6271 "extra argument" on every typed call). The argument count and
+   the specifier set are checked by tests/logpriv/check-log-privacy.ps1 instead (03 §10.1). */
 void sd_log(sd_log_level level, const char *component, const char *mount_id,
-            _Printf_format_string_ const char *fmt, ...);
+            const char *fmt, ...);
 void sd_logv(sd_log_level level, const char *component, const char *mount_id,
              const char *fmt, va_list ap);
 

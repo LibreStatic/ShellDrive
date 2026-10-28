@@ -451,7 +451,7 @@ uint16_t       ssh_lower_port(const sd_ssh_conn *c);
 
 /* conn.c helpers used by the protocol units */
 extern const char ssh_ident_c[];        /* V_C, without CR LF */
-void ssh_log(sd_ssh_conn *c, sd_log_level level, _Printf_format_string_ const char *fmt, ...);
+void ssh_log(sd_ssh_conn *c, sd_log_level level, const char *fmt, ...);   /* restricted sd_log language, see sd_log.h */
 sd_err ssh_send(sd_ssh_conn *c, const uint8_t *payload, size_t n);   /* seals or defers during KEX */
 sd_err ssh_send_wr(sd_ssh_conn *c, sd_wr *w);                         /* sends w (checks w->err) */
 void ssh_fail(sd_ssh_conn *c, sd_err e, uint32_t reason, const char *why);
