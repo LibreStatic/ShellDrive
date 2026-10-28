@@ -50,6 +50,27 @@ rel(0 pub_beta_out pubkey --seed beta.seed)
 string(REGEX REPLACE "^pub ([0-9a-f]+) kid.*" "\\1" PUB_BETA "${pub_beta_out}")
 file(WRITE "${WORK}/beta.pub" "${PUB_BETA}\n")
 
+# ---- release gates record (04 §12.3): every sign below needs a validated stable record for this version and commit ----
+set(FLOW_COMMIT "0123456789abcdef0123456789abcdef01234567")
+set(GATES_TEXT
+"release-gates 1
+version 1.0.0
+commit ${FLOW_COMMIT}
+channel stable
+gate ci-local pass 2026-10-26 FacuM
+gate lab pass 2026-10-27 FacuM all VMs
+gate review-pass1 pass 2026-06-12 FacuM
+gate authenticode pass 2026-10-20 FacuM
+gate review-pass2 pass 2026-10-27 FacuM
+gate p3-tests pass 2026-10-27 FacuM
+gate rebuild pass 2026-10-28 FacuM
+approved FacuM 2026-10-28
+")
+file(WRITE "${WORK}/release-gates.txt" "${GATES_TEXT}")
+set(GATES --gates release-gates.txt --version 1.0.0 --commit ${FLOW_COMMIT})
+rel(0 out gates check release-gates.txt --version 1.0.0 --commit ${FLOW_COMMIT})
+expect_contains("${out}" "gates ok version 1.0.0 commit ${FLOW_COMMIT} channel stable")
+
 # ---- payload table (one flavour per setup EXE) ----
 file(WRITE "${WORK}/payload.cab" "MSCF test payload bytes, not a real cabinet")
 rel(0 out table --channel stable --flavour x86-ia32 --cab payload.cab --out table.txt)
@@ -67,7 +88,7 @@ rel(0 out session --kind payload --out "${WORK}" table.txt)
 file(READ "${WORK}/SESSION.txt" session_text)
 expect_contains("${session_text}" "kind payload")
 expect_contains("${session_text}" "message sha256:")
-rel(0 out sign --kind payload --seed stable.seed --in table.txt --out payload.sig --sig-only)
+rel(0 out sign --kind payload --seed stable.seed --in table.txt --out payload.sig --sig-only ${GATES})
 file(READ "${WORK}/payload.sig" sig_text)
 string(LENGTH "${sig_text}" n)
 if(NOT n EQUAL 118)
@@ -83,11 +104,11 @@ rel(3 out verify --kind payload --pub stable.pub --in table_bad.txt --sig payloa
 # A beta key does not verify a stable signature (channel and key binding, TM-R37).
 rel(3 out verify --kind payload --pub beta.pub --in table.txt --sig payload.sig)
 # Domain separation: the sums domain does not verify a payload signature.
-rel(0 out sign --kind sums --seed stable.seed --in table.txt --out sums.sig --sig-only)
+rel(0 out sign --kind sums --seed stable.seed --in table.txt --out sums.sig --sig-only ${GATES})
 rel(3 out verify --kind payload --pub stable.pub --in table.txt --sig sums.sig)
 # A body without its final LF is not signed.
 file(WRITE "${WORK}/nolf.txt" "x")
-rel(2 out sign --kind payload --seed stable.seed --in nolf.txt --out bad.sig --sig-only)
+rel(2 out sign --kind payload --seed stable.seed --in nolf.txt --out bad.sig --sig-only ${GATES})
 
 # ---- manifest (04 §9.2): stable, 29 days, verified whole ----
 file(WRITE "${WORK}/root/setup.exe" "setup stand-in bytes for the manifest file line")
@@ -112,7 +133,7 @@ file(READ "${WORK}/body.txt" body_text)
 expect_contains("${body_text}" "shelldrive-manifest 1\n")
 expect_contains("${body_text}" "file setup-universal ShellDrive-1.0.0-setup.exe ")
 expect_contains("${body_text}" " sha256:")
-rel(0 out sign --kind manifest --seed stable.seed --in body.txt --out manifest.txt)
+rel(0 out sign --kind manifest --seed stable.seed --in body.txt --out manifest.txt ${GATES})
 rel(0 out verify --kind manifest --pub stable.pub --in manifest.txt)
 expect_contains("${out}" "manifest channel stable serial 2026102401")
 expect_contains("${out}" "OK manifest")
@@ -143,7 +164,7 @@ rel(1 out manifest --spec spec_evil.txt --root "${WORK}/root" --out body_evil.tx
 rel(0 out sums --out SHA256SUMS root/setup.exe payload.cab)
 file(READ "${WORK}/SHA256SUMS" sums_text)
 expect_contains("${sums_text}" "  setup.exe\n")
-rel(0 out sign --kind sums --seed stable.seed --in SHA256SUMS --out sums.sig --sig-only)
+rel(0 out sign --kind sums --seed stable.seed --in SHA256SUMS --out sums.sig --sig-only ${GATES})
 rel(0 out verify --kind sums --pub stable.pub --in SHA256SUMS --sig sums.sig)
 expect_contains("${out}" "OK sums")
 string(REPLACE "setup.exe" "setup.ex3" sums_bad "${sums_text}")

@@ -18,6 +18,12 @@
  *   sd-release pubkey     --seed SEED                       public key (hex) and key ID of a seed file
  *   sd-release session    --kind K --out DIR FILE...        writes DIR\SESSION.txt: the hashes an offline signing
  *                                                           session compares before it signs (D42)
+ *   sd-release gates check FILE --version V --commit C      validates the release gates record (04 §12.3): exit 0,
+ *                                                           2 malformed, 3 refused (gate missing, failed or waived
+ *                                                           where not allowed, wrong version or commit, not approved)
+ *
+ * sign takes --gates FILE --version V --commit C for every K and refuses (exit 3) unless gates check passes; a manifest
+ * or payload body must also carry the record's channel, and a manifest the record's version.
  *
  * K is payload (PAYLOAD_SIG of a setup EXE), manifest, keyset or sums. The domain strings are those of sd_update.h
  * (manifest, keyset), setup_payload_sig.h (payload) and RL_SUMS_DOMAIN below (sums).
@@ -610,22 +616,346 @@ static int cmd_manifest(int argc, char **argv)
   return rc;
 }
 
+/* ---- release gates record (04 §12.3; r21) ----
+ * The record is the maintainer's statement that every gate of the channel passed (or was waived where the table allows
+ * it). Grammar: printable ASCII with LF or CRLF line ends, comment and blank lines allowed, header lines in this order,
+ * gate lines,
+ * then the approved line last. Exit codes: 2 for a malformed record, 3 for a record that refuses the release. */
+
+#define RG_MAX_BYTES     (16u * 1024u)
+#define RG_MAX_LINE      512u
+#define RG_STATUS_NONE   0
+#define RG_STATUS_PASS   1
+#define RG_STATUS_FAIL   2
+#define RG_STATUS_WAIVED 3
+
+/* One row per gate. beta and stable are 1 when the gate is required on that channel and 0 when a record may not carry
+   it. waive_* is 1 when a waived status is accepted on that channel. */
+typedef struct rg_def {
+  const char *name;
+  int beta, stable;
+  int waive_beta, waive_stable;
+} rg_def;
+
+static const rg_def rg_defs[] = {
+  {"ci-local", 1, 1, 0, 0},
+  {"lab", 1, 1, 1, 0},
+  {"review-pass1", 1, 1, 0, 0},
+  {"authenticode", 1, 1, 0, 0},
+  {"review-pass2", 0, 1, 0, 0},
+  {"p3-tests", 0, 1, 0, 0},
+  {"rebuild", 0, 1, 0, 0}
+};
+#define RG_NDEFS ((int)(sizeof(rg_defs) / sizeof(rg_defs[0])))
+
+typedef struct rg_record {
+  int have_magic, have_version, have_commit, have_channel, approved;
+  int beta;                          /* 1 beta, 0 stable */
+  char version[64], commit[64], channel[16];
+  int status[RG_NDEFS];
+} rg_record;
+
+/* A value read from a text body may end in a CR when the body was written with CRLF line ends. 0 always. */
+static int strip_cr(char *s)
+{
+  size_t k = strlen(s);
+  if (k > 0 && s[k - 1] == '\r')
+    s[k - 1] = '\0';
+  return 0;
+}
+
+static int rg_bad(unsigned line, const char *msg)
+{
+  if (line == 0)
+    fprintf(stderr, "sd-release: release gates record: %s\n", msg);
+  else
+    fprintf(stderr, "sd-release: release gates line %u: %s\n", line, msg);
+  return -1;
+}
+
+/* The next space-separated token of *pp, non-empty and shorter than cap. 0 on success; *pp moves past the token and
+   the one space that follows it. */
+static int rg_token(char **pp, char *out, size_t cap)
+{
+  char *p = *pp, *e;
+  size_t n;
+  if (*p == '\0')
+    return -1;
+  e = strchr(p, ' ');
+  n = e != NULL ? (size_t)(e - p) : strlen(p);
+  if (n == 0 || n >= cap)
+    return -1;
+  memcpy(out, p, n);
+  out[n] = '\0';
+  *pp = e != NULL ? e + 1 : p + n;
+  return 0;
+}
+
+static int rg_is_digits(const char *s, size_t n)
+{
+  size_t i;
+  if (n == 0)
+    return 0;
+  for (i = 0; i < n; i++) {
+    if (s[i] < '0' || s[i] > '9')
+      return 0;
+  }
+  return 1;
+}
+
+/* N.N.N with 1 to 5 decimal digits per part. */
+static int rg_valid_version(const char *v)
+{
+  const char *p = v, *e;
+  size_t n;
+  int parts = 0;
+  for (;;) {
+    e = strchr(p, '.');
+    n = e != NULL ? (size_t)(e - p) : strlen(p);
+    if (n > 5 || !rg_is_digits(p, n))
+      return 0;
+    parts++;
+    if (e == NULL)
+      break;
+    p = e + 1;
+  }
+  return parts == 3;
+}
+
+static int rg_valid_commit(const char *c)
+{
+  size_t i;
+  if (strlen(c) != 40)
+    return 0;
+  for (i = 0; i < 40; i++) {
+    if (!((c[i] >= '0' && c[i] <= '9') || (c[i] >= 'a' && c[i] <= 'f')))
+      return 0;
+  }
+  return 1;
+}
+
+/* YYYY-MM-DD with month 01 to 12 and day 01 to 31. */
+static int rg_valid_date(const char *d)
+{
+  int month, day;
+  if (strlen(d) != 10 || d[4] != '-' || d[7] != '-')
+    return 0;
+  if (!rg_is_digits(d, 4) || !rg_is_digits(d + 5, 2) || !rg_is_digits(d + 8, 2))
+    return 0;
+  month = (d[5] - '0') * 10 + (d[6] - '0');
+  day = (d[8] - '0') * 10 + (d[9] - '0');
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+/* gate NAME pass|fail|waived DATE WHO [NOTE]; p is the text after the word "gate". */
+static int rg_gate_line(rg_record *r, char *p, unsigned lineno)
+{
+  char name[64], st[16], date[16], who[64];
+  int i, idx = -1, s;
+  if (rg_token(&p, name, sizeof(name)) != 0 || rg_token(&p, st, sizeof(st)) != 0 ||
+      rg_token(&p, date, sizeof(date)) != 0 || rg_token(&p, who, sizeof(who)) != 0 || *p == ' ')
+    return rg_bad(lineno, "a gate line is: gate NAME pass|fail|waived DATE WHO [NOTE]");
+  for (i = 0; i < RG_NDEFS; i++) {
+    if (strcmp(rg_defs[i].name, name) == 0)
+      idx = i;
+  }
+  if (idx < 0)
+    return rg_bad(lineno, "unknown gate name");
+  if (!(r->beta ? rg_defs[idx].beta : rg_defs[idx].stable))
+    return rg_bad(lineno, "this gate is not allowed on this channel");
+  if (r->status[idx] != RG_STATUS_NONE)
+    return rg_bad(lineno, "duplicate gate");
+  if (strcmp(st, "pass") == 0)
+    s = RG_STATUS_PASS;
+  else if (strcmp(st, "fail") == 0)
+    s = RG_STATUS_FAIL;
+  else if (strcmp(st, "waived") == 0)
+    s = RG_STATUS_WAIVED;
+  else
+    return rg_bad(lineno, "the status must be pass, fail or waived");
+  if (!rg_valid_date(date))
+    return rg_bad(lineno, "the date must be YYYY-MM-DD");
+  if (s == RG_STATUS_WAIVED && *p == '\0')
+    return rg_bad(lineno, "a waived gate needs a note");
+  r->status[idx] = s;
+  return 0;
+}
+
+/* One non-blank, non-comment line, in the order the grammar gives. */
+static int rg_line(rg_record *r, char *line, unsigned lineno)
+{
+  char *p = line, tok[64], v[64];
+  if (r->approved)
+    return rg_bad(lineno, "nothing may follow the approved line");
+  if (!r->have_magic) {
+    if (rg_token(&p, tok, sizeof(tok)) != 0 || strcmp(tok, "release-gates") != 0 || strcmp(p, "1") != 0)
+      return rg_bad(lineno, "the first line must be: release-gates 1");
+    r->have_magic = 1;
+    return 0;
+  }
+  if (rg_token(&p, tok, sizeof(tok)) != 0)
+    return rg_bad(lineno, "empty field");
+  if (!r->have_version) {
+    if (strcmp(tok, "version") != 0 || rg_token(&p, v, sizeof(v)) != 0 || *p != '\0' || !rg_valid_version(v))
+      return rg_bad(lineno, "expected: version N.N.N");
+    strcpy(r->version, v);
+    r->have_version = 1;
+    return 0;
+  }
+  if (!r->have_commit) {
+    if (strcmp(tok, "commit") != 0 || rg_token(&p, v, sizeof(v)) != 0 || *p != '\0' || !rg_valid_commit(v))
+      return rg_bad(lineno, "expected: commit <40 lowercase hex digits>");
+    strcpy(r->commit, v);
+    r->have_commit = 1;
+    return 0;
+  }
+  if (!r->have_channel) {
+    if (strcmp(tok, "channel") != 0 || rg_token(&p, v, sizeof(v)) != 0 || *p != '\0')
+      return rg_bad(lineno, "expected: channel stable|beta");
+    if (strcmp(v, "stable") == 0)
+      r->beta = 0;
+    else if (strcmp(v, "beta") == 0)
+      r->beta = 1;
+    else
+      return rg_bad(lineno, "expected: channel stable|beta");
+    strcpy(r->channel, v);
+    r->have_channel = 1;
+    return 0;
+  }
+  if (strcmp(tok, "gate") == 0)
+    return rg_gate_line(r, p, lineno);
+  if (strcmp(tok, "approved") == 0) {
+    char who[64], date[16];
+    if (rg_token(&p, who, sizeof(who)) != 0 || rg_token(&p, date, sizeof(date)) != 0 || *p != '\0' ||
+        !rg_valid_date(date))
+      return rg_bad(lineno, "approved is: approved WHO YYYY-MM-DD");
+    r->approved = 1;
+    return 0;
+  }
+  return rg_bad(lineno, "unknown line");
+}
+
+/* Parses a whole record (the caller has checked the bytes). 0 on success; a malformed record prints its line. */
+static int rg_parse(const char *s, size_t n, rg_record *r)
+{
+  size_t i = 0;
+  unsigned lineno = 0;
+  char line[RG_MAX_LINE];
+  memset(r, 0, sizeof(*r));
+  if (n == 0 || s[n - 1] != '\n')
+    return rg_bad(0, "the record must end with LF");
+  while (i < n) {
+    size_t start = i, len;
+    lineno++;
+    while (i < n && s[i] != '\n')
+      i++;
+    len = i - start;
+    i++;
+    if (len == 0 || s[start] == '#')
+      continue;
+    if (len >= sizeof(line))
+      return rg_bad(lineno, "line too long");
+    memcpy(line, s + start, len);
+    line[len] = '\0';
+    if (line[len - 1] == ' ')
+      return rg_bad(lineno, "trailing space");
+    if (rg_line(r, line, lineno) != 0)
+      return -1;
+  }
+  if (!r->have_magic || !r->have_version || !r->have_commit || !r->have_channel)
+    return rg_bad(0, "a header line is missing");
+  return 0;
+}
+
+/* Checks the record at path against the release: RC_OK when it is well formed and every required gate of its channel
+   passes (or is waived where allowed) and it is approved. Malformed: RC_IO. Refused: RC_VERIFY. channel receives the
+   record's channel. */
+static int rg_check(const char *path, const char *version, const char *commit, char channel[16])
+{
+  unsigned char *buf;
+  size_t n = 0, i, j;
+  rg_record r;
+  int k;
+  buf = read_file(path, RG_MAX_BYTES, &n);
+  if (buf == NULL)
+    return fail(RC_IO, "cannot read the release gates record (16 KB max)");
+  /* A CRLF pair (a Windows editor) is read as LF; any other CR, a tab or a byte outside printable ASCII is refused. */
+  for (i = 0, j = 0; i < n; i++) {
+    unsigned char b = buf[i];
+    if (b == '\r' && i + 1 < n && buf[i + 1] == '\n')
+      continue;
+    if (b != '\n' && (b < 0x20u || b > 0x7eu)) {
+      free(buf);
+      return fail(RC_IO, "the release gates record takes printable ASCII, LF and CRLF only");
+    }
+    buf[j++] = b;
+  }
+  n = j;
+  buf[n] = '\0';
+  if (rg_parse((const char *)buf, n, &r) != 0) {
+    free(buf);
+    return RC_IO;
+  }
+  free(buf);
+  if (strcmp(r.version, version) != 0)
+    return fail(RC_VERIFY, "release gates refused: the record's version differs from --version");
+  if (strcmp(r.commit, commit) != 0)
+    return fail(RC_VERIFY, "release gates refused: the record's commit differs from --commit");
+  for (k = 0; k < RG_NDEFS; k++) {
+    int required = r.beta ? rg_defs[k].beta : rg_defs[k].stable;
+    int waivable = r.beta ? rg_defs[k].waive_beta : rg_defs[k].waive_stable;
+    if (!required)
+      continue;
+    if (r.status[k] == RG_STATUS_NONE)
+      fprintf(stderr, "sd-release: release gates refused: required gate %s is missing\n", rg_defs[k].name);
+    else if (r.status[k] == RG_STATUS_FAIL)
+      fprintf(stderr, "sd-release: release gates refused: required gate %s failed\n", rg_defs[k].name);
+    else if (r.status[k] == RG_STATUS_WAIVED && !waivable)
+      fprintf(stderr, "sd-release: release gates refused: gate %s cannot be waived\n", rg_defs[k].name);
+    else
+      continue;
+    return RC_VERIFY;
+  }
+  if (!r.approved)
+    return fail(RC_VERIFY, "release gates refused: the record has no approved line");
+  strcpy(channel, r.channel);
+  return RC_OK;
+}
+
+/* sd-release gates check FILE --version V --commit C */
+static int cmd_gates(int argc, char **argv)
+{
+  const char *ver = opt(argc, argv, "--version"), *com = opt(argc, argv, "--commit");
+  char channel[16];
+  int rc;
+  if (argc < 4 || argv[3][0] == '-' || strcmp(argv[2], "check") != 0 || ver == NULL || com == NULL)
+    return fail(RC_USAGE, "usage: sd-release gates check FILE --version V --commit C");
+  rc = rg_check(argv[3], ver, com, channel);
+  if (rc == RC_OK)
+    printf("gates ok version %s commit %s channel %s\n", ver, com, channel);
+  return rc;
+}
+
 static int cmd_sign(int argc, char **argv)
 {
   const char *kind = opt(argc, argv, "--kind"), *seed = opt(argc, argv, "--seed");
   const char *in = opt(argc, argv, "--in"), *out = opt(argc, argv, "--out");
+  const char *gates = opt(argc, argv, "--gates"), *gver = opt(argc, argv, "--version");
+  const char *gcom = opt(argc, argv, "--commit");
   const char *domain = NULL;
   int sig_only = 0, i, rc = RC_OK;
   size_t bn = 0, total, dl;
   unsigned char *body, *msg, *full;
   uint8_t seedv[32], pub[32], kid[8], sig[64];
-  char line[RL_SIG_LINE_LEN + 1], kh[17], ph[65];
+  char line[RL_SIG_LINE_LEN + 1], kh[17], ph[65], channel[16], bv[64];
   for (i = 2; i < argc; i++) {
     if (strcmp(argv[i], "--sig-only") == 0)
       sig_only = 1;
   }
-  if (kind == NULL || seed == NULL || in == NULL || out == NULL || domain_for(kind, &domain) != 0)
-    return fail(RC_USAGE, "usage: sd-release sign --kind manifest|keyset|payload|sums --seed SEED --in BODY --out OUT [--sig-only]");
+  if (kind == NULL || seed == NULL || in == NULL || out == NULL || domain_for(kind, &domain) != 0 ||
+      gates == NULL || gver == NULL || gcom == NULL)
+    return fail(RC_USAGE, "usage: sd-release sign --kind manifest|keyset|payload|sums --seed SEED --in BODY --out OUT "
+                          "--gates FILE --version V --commit C [--sig-only]");
   body = read_file(in, RL_MAX_BODY, &bn);
   if (body == NULL || bn == 0 || body[bn - 1] != '\n')
     return fail(RC_IO, "cannot read the body (64 KB max, LF at the end)");
@@ -633,6 +963,27 @@ static int cmd_sign(int argc, char **argv)
       strstr((const char *)body, "\nsig ") != NULL) {
     free(body);
     return fail(RC_USAGE, "the body already carries a sig line");
+  }
+  /* Nothing is signed unless the gates record validates for this version and commit (04 §12.3). The body must
+     also name the record's channel, and a manifest its version. */
+  {
+    int g = rg_check(gates, gver, gcom, channel);
+    if (g != RC_OK) {
+      free(body);
+      return g;
+    }
+    if ((strcmp(kind, "manifest") == 0 || strcmp(kind, "payload") == 0) &&
+        (find_value((const char *)body, "channel", bv, sizeof(bv)) != 0 || strip_cr(bv) != 0 ||
+         strcmp(bv, channel) != 0)) {
+      free(body);
+      return fail(RC_VERIFY, "release gates refused: the body's channel differs from the gates record");
+    }
+    if (strcmp(kind, "manifest") == 0 &&
+        (find_value((const char *)body, "version", bv, sizeof(bv)) != 0 || strip_cr(bv) != 0 ||
+         strcmp(bv, gver) != 0)) {
+      free(body);
+      return fail(RC_VERIFY, "release gates refused: the manifest's version differs from --version");
+    }
   }
   if (load_seed(seed, seedv, pub) != 0) {
     free(body);
@@ -867,7 +1218,7 @@ static int cmd_session(int argc, char **argv)
 
 static void usage(void)
 {
-  fprintf(stderr, "usage: sd-release hash|sums|table|check-table|manifest|sign|verify|pubkey|session ... "
+  fprintf(stderr, "usage: sd-release hash|sums|table|check-table|manifest|sign|verify|pubkey|session|gates ... "
                   "(see the header of tools/sd-release/sd-release.c)\n");
 }
 
@@ -895,6 +1246,8 @@ int main(int argc, char **argv)
     return cmd_pubkey(argc, argv);
   if (strcmp(argv[1], "session") == 0)
     return cmd_session(argc, argv);
+  if (strcmp(argv[1], "gates") == 0)
+    return cmd_gates(argc, argv);
   usage();
   return RC_USAGE;
 }

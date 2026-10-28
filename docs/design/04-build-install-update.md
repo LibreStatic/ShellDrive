@@ -1843,6 +1843,51 @@ Shipping code must not use `__DATE__`, `__TIME__`, `__TIMESTAMP__` or `__FILE__`
 | **Public beta** (public links, public beta manifest) | External crypto review **pass 1** (end of M2: all SSH and crypto code, D38) completed and its findings closed; **and** Authenticode signing in place (TM-R38: no public download links for unsigned builds) |
 | **1.0 and later stable** | Crypto review **pass 2** closed (D38, TST-33); certificate (D29); all P3 tests of 05 §7; independent maintainer rebuild (TM-R39) |
 
+**Release gates record format (`installer/keys/release-gates.txt`, r21).** One record per release, committed in the
+release PR. It is ASCII (printable characters, notes included), with LF or CRLF line ends and no BOM; a CRLF pair is read
+as LF, because the maintainer edits the record on Windows. Any other control character is refused.
+Blank lines and `#` comment lines are allowed. The record has this shape, and the lines appear in this order:
+
+```
+release-gates 1
+version 1.0.0
+commit 0123456789abcdef0123456789abcdef01234567
+channel stable
+gate ci-local pass 2026-10-26 FacuM
+gate lab pass 2026-10-27 FacuM all VMs, smoke run
+gate review-pass1 pass 2026-06-12 FacuM pass 1 findings closed
+gate authenticode pass 2026-10-20 FacuM certificate in place (D29)
+gate review-pass2 pass 2026-10-27 FacuM
+gate p3-tests pass 2026-10-27 FacuM 05 section 7
+gate rebuild pass 2026-10-28 FacuM rebuilt outside GitHub, hashes equal
+approved FacuM 2026-10-28
+```
+
+- `release-gates 1` is the format version; any other value is refused. `version` is `N.N.N` with decimal numbers.
+  `commit` is the full 40-digit lowercase hex SHA of the tag. `channel` is `stable` or `beta`.
+- `gate <name> <status> <date> <who> [note]`: `status` is `pass`, `fail` or `waived`; `date` is `YYYY-MM-DD`; `who`
+  is one token without spaces; `note` is the rest of the line. A `waived` gate needs a note.
+- `approved <who> <date>` is the last line and appears once. The maintainer writes it after every gate is recorded.
+- Each gate name appears once, and only for the channel that requires or allows it:
+
+| Gate | Beta | Stable | Waiver |
+|---|---|---|---|
+| `ci-local` | required | required | never |
+| `lab` | required | required | beta only (named testers and beta VM runs); stable never |
+| `review-pass1` | required | required | never |
+| `authenticode` | required | required | never (TM-R38) |
+| `review-pass2` | not allowed | required | never |
+| `p3-tests` | not allowed | required | never |
+| `rebuild` | not allowed | required | never |
+
+`sd-release gates check FILE --version V --commit C` validates the record. A malformed record (grammar, unknown or
+duplicate gate, gate not allowed for the channel, missing header line, text after `approved`) exits 2. A record that is well formed
+but refuses the release exits 3: `version` or `commit` differ from `V` or `C`; a required gate is missing or `fail`; a
+`waived` status on a gate that cannot be waived; no `approved` line. `sd-release sign` (every `--kind`) takes
+`--gates FILE --version V --commit C` and refuses unless the check passes. For a manifest or payload table, the
+`channel` line of the signed body must also equal the record's channel, and a manifest's `version` must equal `V`.
+`release.yml` runs the check in job `check-gates` before the signing sessions, with no secrets.
+
 **Steps**
 
 1. Bump `VERSION`, update `CHANGELOG.md`, PR, merge to `main`.

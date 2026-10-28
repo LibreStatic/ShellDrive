@@ -5,3 +5,10 @@ add_test(NAME release.flow
                  "-DWORK=${CMAKE_BINARY_DIR}/tests/release/work"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/release_flow.cmake")
 set_tests_properties(release.flow PROPERTIES LABELS release TIMEOUT 300)
+
+# Release gates record (04 §12.3, r21): gates check verdicts and sign refusals.
+add_test(NAME release.gates
+         COMMAND "${CMAKE_COMMAND}" "-DSD_RELEASE=$<TARGET_FILE:sd-release>"
+                 "-DWORK=${CMAKE_BINARY_DIR}/tests/release/gates"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/gates_flow.cmake")
+set_tests_properties(release.gates PROPERTIES LABELS release TIMEOUT 300)
