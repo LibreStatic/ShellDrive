@@ -684,17 +684,20 @@ SD_TEST(setup_elev_parent_relays_progress)
   f.progress = 1;
   f.reply_code = 0;
   memset(&a, 0, sizeof(a));
+  StringCchCopyW(a.log_path, SD_SETUP_COUNTOF(a.log_path), L"C:\\Temp\\install.log");
   g_seen_n = 0;
   /* Not elevated: the stage starts with runas on the worker thread; its "P" lines reach the progress callback. */
   rc = sd_setup_elev_parent_ex(&ops, L"C:\\ProgramData", L"C:\\Temp\\setup.exe", &a, &r, record_progress, NULL);
   SD_CHECK(rc == 0);
   SD_CHECK(r.exit_code == 0);
   SD_CHECK(f.last_runas == 1);
+  /* The /log= path is never on an elevated command line (the parent keeps it). */
+  SD_CHECK(wcsstr(f.last_cmd, L"/log=") == NULL);
   SD_CHECK(g_seen_n >= 1);
   SD_CHECK(g_seen_n >= 1 && g_seen[g_seen_n - 1] == 40);
 }
 
-SD_TEST(setup_elev_stage1_copies_the_stage_log)
+SD_TEST(setup_elev_stage1_keeps_the_stage_log_in_the_stage)
 {
   sd_setup_elev_ops ops;
   fake_t f;
@@ -703,6 +706,7 @@ SD_TEST(setup_elev_stage1_copies_the_stage_log)
   wchar_t name[64];
   wchar_t good[MAX_PATH];
   wchar_t refused[MAX_PATH];
+  wchar_t staged[MAX_PATH];
   sd_setup_args a;
   DWORD child = 99;
 
@@ -719,19 +723,16 @@ SD_TEST(setup_elev_stage1_copies_the_stage_log)
   StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
   a.quiet = 1;
 
-  /* A .log path in an existing folder: the stage log is copied there. */
+  /* The stage fails, so its folder is kept. Stage 1 never writes the caller's /log= path: the log stays in the stage
+     folder (msi.log), and nothing outside the stage folder is written by the elevated process. */
+  f.run_exit = 1;
   StringCchCopyW(a.log_path, SD_SETUP_COUNTOF(a.log_path), good);
   SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
-  SD_CHECK(child == 0);
-  SD_CHECK(GetFileAttributesW(good) != INVALID_FILE_ATTRIBUTES);
-
-  /* Any other extension is refused: nothing is written there. */
-  StringCchCopyW(a.log_path, SD_SETUP_COUNTOF(a.log_path), refused);
-  SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
+  SD_CHECK(child == 1);
+  SD_CHECK(GetFileAttributesW(good) == INVALID_FILE_ATTRIBUTES);
+  SD_REQUIRE(sd_setup_path_join(staged, MAX_PATH, f.last_dir, L"msi.log") == 0);
+  SD_CHECK(GetFileAttributesW(staged) != INVALID_FILE_ATTRIBUTES);
+  SD_CHECK(wcsstr(f.last_cmd, L"/log=") == NULL);
   SD_CHECK(GetFileAttributesW(refused) == INVALID_FILE_ATTRIBUTES);
-
-  /* A parent-folder component is refused too. */
-  StringCchPrintfW(a.log_path, SD_SETUP_COUNTOF(a.log_path), L"%s\\..\\install-log.log", base);
-  SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
   test_remove_tree(base);
 }

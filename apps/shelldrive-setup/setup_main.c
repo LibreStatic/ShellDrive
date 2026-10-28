@@ -383,7 +383,7 @@ static void elev_progress(void *ctx, unsigned value)
 }
 
 /* Per-machine install (04 §6.3, 6.4): the unelevated parent starts the two stages and relays their progress to ui (which
-   has begun its progress view, or is NULL for /quiet). The UAC prompt is the consent step. The stage log goes to /log=. */
+   has begun its progress view, or is NULL for /quiet). The UAC prompt is the consent step. No path is passed to the elevated stages. */
 static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
 {
   sd_setup_elev_ops ops;

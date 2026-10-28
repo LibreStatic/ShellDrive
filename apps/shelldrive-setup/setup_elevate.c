@@ -526,13 +526,10 @@ static DWORD WINAPI elev_job_main(LPVOID param)
   } else if (sd_setup_elev_forward(&j->args, fwd, SD_SETUP_COUNTOF(fwd)) != 0) {
     j->rc = ERROR_BUFFER_OVERFLOW;
   } else {
-    /* The log path goes to stage 1 only: stage 1 copies the stage log there (stage 2 never gets a path). */
-    if (j->args.log_path[0] != L'\0')
-      StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s/log=\"%s\"", j->self,
-                       j->args.pipe_name, fwd, j->args.log_path);
-    else
-      StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s", j->self, j->args.pipe_name,
-                       fwd);
+    /* No path goes to the elevated stages: the /log= path is written by the unelevated parent, never by an elevated
+       process (TM-R33, TM-R34). The stage log stays in the protected stage folder. */
+    StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s", j->self, j->args.pipe_name,
+                     fwd);
     j->rc = j->ops->run(j->ops->ctx, j->self, cmd, NULL, 1, &j->child);
   }
   return 0;
@@ -651,6 +648,10 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
   if (job.child != SD_SETUP_EXIT_OK && job.child != SD_SETUP_EXIT_REBOOT && r->msg == 0)
     r->msg = SD_MSG_INSTALLER_ERROR_ELEVATION;
   sd_setup_log("elevate.result", L"the parent received the stage result");
+  /* The stage log stays in the protected stage folder, which the unelevated parent cannot read (04 section 6.4): the
+     /log= copy is not made. This line says so in the setup log. */
+  if (args->log_path[0] != L'\0')
+    sd_setup_log("elevate.log_not_copied", L"the stage log is in the protected stage folder; /log= was not written");
   return r->exit_code;
 }
 
@@ -667,53 +668,6 @@ static int plain_file(const wchar_t *path)
 {
   DWORD a = GetFileAttributesW(path);
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0 && (a & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
-}
-
-/* 1 when path may take the stage log (/log=, stage 1): an absolute drive path of a .log file, no parent-folder
-   component, in a folder that exists and is not a reparse point. An existing target must be a plain file (replaced). */
-static int log_target_ok(const wchar_t *path)
-{
-  wchar_t dir[MAX_PATH];
-  size_t n = wcslen(path);
-  size_t i;
-  DWORD a;
-
-  if (n < 8 || n >= MAX_PATH || path[1] != L':' || path[2] != L'\\' || wcschr(path, L'"') != NULL)
-    return 0;
-  for (i = 0; i + 1 < n; i++) {
-    if (path[i] == L'.' && path[i + 1] == L'.')
-      return 0;
-  }
-  if (_wcsicmp(path + n - 4, L".log") != 0 || parent_of(path, dir, MAX_PATH) != 0)
-    return 0;
-  a = GetFileAttributesW(dir);
-  if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_DIRECTORY) == 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-    return 0;
-  a = GetFileAttributesW(path);
-  if (a != INVALID_FILE_ATTRIBUTES && ((a & FILE_ATTRIBUTE_DIRECTORY) != 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0))
-    return 0;
-  return 1;
-}
-
-/* Copies the stage log (msi.log in the stage folder) to the /log= path. Stage 1 does it after stage 2 has finished:
-   the stage folder is admin-only, so the unelevated parent cannot read the log itself. */
-static void copy_stage_log(const sd_setup_elev_ops *ops, const wchar_t *stage, const wchar_t *log_path)
-{
-  wchar_t src[MAX_PATH];
-
-  if (log_path == NULL || log_path[0] == L'\0')
-    return;
-  if (!log_target_ok(log_path)) {
-    sd_setup_log("elevate.log_refused", L"the log path is not a usable .log file");
-    return;
-  }
-  if (sd_setup_path_join(src, MAX_PATH, stage, SD_ELEV_MSI_LOG) != 0 || !plain_file(src))
-    return;
-  DeleteFileW(log_path);
-  if (ops->copy_image(ops->ctx, src, log_path) != 0)
-    sd_setup_log("elevate.log_failed", L"the stage log could not be copied");
-  else
-    sd_setup_log("elevate.log", L"the stage log was copied to the log path");
 }
 
 DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
@@ -763,7 +717,6 @@ DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, co
   if (rc != 0)
     return rc;
   sd_setup_log("elevate.stage1", L"stage 2 finished");
-  copy_stage_log(ops, stage, args->log_path);
   /* A successful stage removes its folder; a failed one keeps the MSI log for diagnosis (admin-only folder). */
   if (*child_exit == 0)
     sd_setup_remove_tree(stage, NULL);
