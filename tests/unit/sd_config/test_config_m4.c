@@ -121,6 +121,9 @@ SD_TEST(settings_m4_notify_kinds_and_codes)
   SD_CHECK_EQ_INT(sd_notify_kind_from_code("legacy_algorithms"), SD_NOTIFY_LEGACY_ALGORITHMS);
   SD_CHECK_EQ_INT(sd_notify_kind_from_code("terrapin_exposed"), SD_NOTIFY_TERRAPIN);
   SD_CHECK_EQ_INT(sd_notify_kind_from_code("pool_limited"), SD_NOTIFY_POOL_LIMITED);
+  /* the agent raises proxy_cleartext (03 §3.8); proxy_password is the older code: both are the proxy password kind */
+  SD_CHECK_EQ_INT(sd_notify_kind_from_code("proxy_cleartext"), SD_NOTIFY_PROXY_PASSWORD);
+  SD_CHECK_EQ_INT(sd_notify_kind_from_code("proxy_password"), SD_NOTIFY_PROXY_PASSWORD);
   SD_CHECK_EQ_INT(sd_notify_kind_from_code("write_failed"), -1);       /* always shown: no switch */
   SD_CHECK_EQ_INT(sd_notify_kind_from_code(NULL), -1);
 

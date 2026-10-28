@@ -13,7 +13,7 @@ add_executable(sd-test-host-fake
   "${_host_dir}/main.c" "${_host_dir}/agent.c" "${_host_dir}/log_ring.c" "${_host_dir}/state_producer.c"
   "${_host_dir}/explorer_data.c" "${_host_dir}/config_watch.c" "${_host_dir}/update_ipc.c" "${_host_dir}/host.h" host_fake_backend.c "${_host_dir}/installer_hooks.c"
   "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_folder.c"
-  "${_host_dir}/svc_scm.c" "${_host_dir}/svc_repair.c" "${_host_dir}/svc_status.c")
+  "${_host_dir}/svc_scm.c" "${_host_dir}/svc_repair.c" "${_host_dir}/svc_status.c" "${_host_dir}/agent_events.c")
 target_compile_definitions(sd-test-host-fake PRIVATE SD_HOST_TEST_HOOKS=1)
 target_include_directories(sd-test-host-fake PRIVATE "${_host_dir}" "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
 add_dependencies(sd-test-host-fake sd_svc_events)
@@ -30,9 +30,9 @@ set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps
   SOURCES main.c test_cli_args.c test_cli_m3.c test_smoke.c test_agent_m3.c test_diag_units.c "${_cli_dir}/cli_args.c"
-          "${_cli_dir}/cli_zip.c" "${_cli_dir}/cli_anon.c"
+          "${_cli_dir}/cli_zip.c" "${_cli_dir}/cli_anon.c" test_agent_events.c "${_host_dir}/agent_events.c"
   DEPS sd_ipc sd_state sd_config sd_platform sd_base sd_crypto ole32 shell32 advapi32 user32)
-target_include_directories(sd-test-apps PRIVATE "${_cli_dir}")
+target_include_directories(sd-test-apps PRIVATE "${_cli_dir}" "${_host_dir}")
 add_dependencies(sd-test-apps sd-test-cli sd-test-host-fake)
 # unit.apps writes and removes the HKCU key tree Software\LibreStatic\ShellDriveTest (test_agent_m3.c), which the
 # transport tests also use for their keys (unit.ssh_transport, same parent): one lock for both.

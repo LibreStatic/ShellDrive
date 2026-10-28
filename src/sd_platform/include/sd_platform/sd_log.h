@@ -68,8 +68,11 @@ void sd_logv(sd_log_level level, const char *component, const char *mount_id,
              const char *fmt, va_list ap);
 
 /* Formats with the same restricted language into buf (always NUL-terminated if cap > 0).
-   Returns the number of bytes written, excluding the NUL. */
+   Returns the number of bytes written, excluding the NUL. No level: a remote path (%Rs) is printed. */
 size_t sd_log_format(char *buf, size_t cap, const char *fmt, va_list ap);
+/* As sd_log_format for a record of the given level: %Rs follows the same rule as sd_log (standard privacy prints a
+   remote path only at error, debug and trace). Used by the wrappers that format before they call sd_log (ssh_log). */
+size_t sd_log_format_level(char *buf, size_t cap, sd_log_level level, const char *fmt, va_list ap);
 
 #define SD_LOGE(comp, ...) sd_log(SD_LOG_ERROR, comp, NULL, __VA_ARGS__)
 #define SD_LOGW(comp, ...) sd_log(SD_LOG_WARN,  comp, NULL, __VA_ARGS__)

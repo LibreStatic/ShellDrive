@@ -131,6 +131,38 @@ SD_TEST(log_restricted_format)
   SD_CHECK_STR(buf, "abc");
 }
 
+static size_t fmt_level(char *buf, size_t cap, sd_log_level level, const char *f, ...)
+{
+  va_list ap;
+  size_t n;
+  va_start(ap, f);
+  n = sd_log_format_level(buf, cap, level, f, ap);
+  va_end(ap);
+  return n;
+}
+
+/* ssh_log formats with its level (03 §10.1): a remote path is printed only at error, debug and trace in standard
+   privacy, so a %Rs in an info or warning record cannot leak it. Host and user are printed at every level. */
+SD_TEST(log_format_remote_path_follows_level)
+{
+  char buf[128];
+  sd_log_set_privacy(SD_LOG_PRIVACY_STANDARD, NULL, NULL);
+  fmt_level(buf, sizeof(buf), SD_LOG_INFO, "p=%Rs", "/home/u/x");
+  SD_CHECK_STR(buf, "p=(hidden)");
+  fmt_level(buf, sizeof(buf), SD_LOG_WARN, "p=%Rs", "/home/u/x");
+  SD_CHECK_STR(buf, "p=(hidden)");
+  fmt_level(buf, sizeof(buf), SD_LOG_ERROR, "p=%Rs", "/home/u/x");
+  SD_CHECK_STR(buf, "p=/home/u/x");
+  fmt_level(buf, sizeof(buf), SD_LOG_DEBUG, "p=%Rs", "/home/u/x");
+  SD_CHECK_STR(buf, "p=/home/u/x");
+  fmt_level(buf, sizeof(buf), SD_LOG_TRACE, "p=%Rs", "/home/u/x");
+  SD_CHECK_STR(buf, "p=/home/u/x");
+  fmt_level(buf, sizeof(buf), SD_LOG_INFO, "h=%Hs u=%Us", "srv", "bob");
+  SD_CHECK_STR(buf, "h=srv u=bob");
+  fmt(buf, sizeof(buf), "p=%Rs", "/home/u/x");       /* no level: printed, as sd_log_format always did */
+  SD_CHECK_STR(buf, "p=/home/u/x");
+}
+
 typedef struct sink_state { int calls; char last[256]; } sink_state;
 
 static void test_sink(void *ctx, sd_log_level level, const char *line, size_t len)

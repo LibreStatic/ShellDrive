@@ -82,6 +82,9 @@ ui_mv_icon ui_mv_sec_icon(unsigned sec);
 typedef enum ui_mv_group { UI_MV_GROUP_MINE = 0, UI_MV_GROUP_ORG = 1, UI_MV_GROUP_GLOBAL = 2, UI_MV_GROUPS = 3 } ui_mv_group;
 /* scope: SD_PROFILE_SCOPE_*; -1 for a mount without a saved profile. */
 ui_mv_group ui_mv_group_of_scope(int scope);
+/* 1 for a machine template (scope = users, "Provided by your organization"): listed and mountable, but Edit, Duplicate
+   and Delete do not apply to it. */
+int ui_mv_scope_read_only(int scope);
 
 /* ---- algorithms ---- */
 

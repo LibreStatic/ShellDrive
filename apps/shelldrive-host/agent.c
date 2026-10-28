@@ -43,11 +43,13 @@
 #include "sd_ipc/sd_ipc.h"
 #include "sd_policy/sd_policy.h"
 #include "sd_secret/sd_secret.h"
+#include "sd_ssh/sd_known_hosts.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
 
 #include "log_ring.h"
+#include "agent_events.h"
 #include "state_producer.h"
 #include "explorer_data.h"
 #include "config_watch.h"
@@ -136,6 +138,8 @@ typedef struct host_mount {
   char hk_lookup[300];
   char hk_type[64];
   char hk_expect[96];
+  /* M5 mount.state reason (round 19): the error code of the offline period the connection is coming back from */
+  char drop_code[32];
 } host_mount;
 
 /* ---- M3 constants (03 §2.5, §3.3, 1.7.4) ---- */
@@ -236,6 +240,7 @@ static struct {
   uint64_t boot_tick;           /* log.tail cursor boot id */
   /* M3 agent.stopping reason: "request", "event" or "idle" */
   const char *stop_reason;
+  uint32_t kh_warned;           /* round 19: live sources (bit per source) already warned hostkey_source_insecure */
 } g;
 
 /* forward declarations: the prompt broker and the warning ring are defined further down */
@@ -529,6 +534,15 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
       sd_jw_key(&jw, "offered_fp"); sd_jw_cstr(&jw, f.offered_fp);
     }
     sd_jw_obj_end(&jw);
+  }
+  {
+    /* reason (03 §2.4): the error that took the mount offline, while it reconnects; an additive member */
+    char reason[32];
+    if (agent_reason_on_state(h->drop_code, sizeof(h->drop_code), sd_mount_state_name(st), ecode, reason,
+                              sizeof(reason))) {
+      sd_jw_key(&jw, "reason");
+      sd_jw_cstr(&jw, reason);
+    }
   }
   write_conn_json(&jw, h);
   sd_jw_obj_end(&jw);
@@ -1588,6 +1602,48 @@ static void ipc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 
 /* ---- control-thread work items ---- */
 
+/* warning hostkey_source_insecure (03 §5.1, TM-R06): a live known_hosts source (OpenSSH, PuTTY) that other users can
+   write is skipped by every lookup. Checked when a mount starts, outside g.lock (the probe reads the file's security
+   and the registry key); the warning goes to the mount that started first, once per source and agent run. */
+static void warn_insecure_sources(host_mount *h)
+{
+  static const sd_kh_store_kind kinds[2] = { SD_KH_SRC_OPENSSH, SD_KH_SRC_PUTTY };
+  static const char *const names[2] = { "openssh", "putty" };
+  int on[2], i;
+  sd_mutex_lock(&g.lock);
+  on[0] = g.settings.openssh_source;
+  on[1] = g.settings.putty_source;
+  sd_mutex_unlock(&g.lock);
+  for (i = 0; i < 2; i++) {
+    sd_known_hosts *kh = NULL;
+    sd_kh_store store;
+    sd_kh_src_state st = SD_KH_SRC_OK;
+    wchar_t sid[256] = { 0 };
+    uint32_t bit = 1u << i;
+    int warned;
+    if (!on[i])
+      continue;
+    sd_mutex_lock(&g.lock);
+    warned = (g.kh_warned & bit) != 0;
+    sd_mutex_unlock(&g.lock);
+    if (warned)
+      continue;
+    memset(&store, 0, sizeof(store));
+    store.kind = kinds[i];                       /* the default path of the source */
+    if (sd_known_hosts_open(&store, 1, &kh) != SD_OK)
+      continue;
+    if (sd_known_hosts_source_state(kh, kinds[i], &st, sid, SD_COUNTOF(sid)) == SD_OK && st == SD_KH_SRC_INSECURE) {
+      sd_mutex_lock(&g.lock);
+      if (agent_source_warn_take(&g.kh_warned, bit)) {
+        SD_LOGW("agent", "%s: known_hosts source %s is ignored: other users can change it", h->id, names[i]);
+        send_warning(h, "hostkey_source_insecure", NULL, 0, NULL, names[i]);
+      }
+      sd_mutex_unlock(&g.lock);
+    }
+    sd_known_hosts_close(kh);
+  }
+}
+
 static void work_start(void *arg)
 {
   host_mount *h = (host_mount *)arg;
@@ -1608,6 +1664,7 @@ static void work_start(void *arg)
   cb.secret_put = secret_put;
   cb.on_warning = on_warning;
   cb.on_hostkeys_announced = on_hostkeys_announced;
+  warn_insecure_sources(h);
   sd_mutex_lock(&g.lock);
   if (h->stop_requested) {
     /* unmounted before it started */
@@ -1918,7 +1975,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
     if (sd_profile_validate(prof, &bad) != SD_OK)
       return fail(err, SD_E_INVALID_PARAM, "usage", bad);
   } else if (pname) {
-    e = sd_profile_find(pname, prof, NULL, 0);
+    e = sd_profile_find_mountable(pname, prof, NULL, 0);     /* the user's profiles, then the machine templates (03 §3.2) */
     if (e == SD_E_NOT_FOUND)
       return fail(err, e, "profile_not_found", "no such profile");
     if (e != SD_OK)

@@ -215,6 +215,11 @@ size_t sd_log_format(char *buf, size_t cap, const char *fmt, va_list ap)
   return format_levelled(buf, cap, fmt, ap, SD_LOG_TRACE);   /* no level: remote paths are printed */
 }
 
+size_t sd_log_format_level(char *buf, size_t cap, sd_log_level level, const char *fmt, va_list ap)
+{
+  return format_levelled(buf, cap, fmt, ap, level);
+}
+
 static size_t format_levelled(char *buf, size_t cap, const char *fmt, va_list ap, sd_log_level level)
 {
   out_buf o;

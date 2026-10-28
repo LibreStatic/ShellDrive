@@ -334,6 +334,10 @@ sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx);
    SD_E_ACCESS_DENIED and nothing is listed; an untrusted file is skipped. A missing folder lists nothing. Under the test
    override (sd_config_set_root_override) the machine root is <override>\machine and only the link check applies. */
 sd_err sd_profile_enum_templates(sd_profile_enum_cb cb, void *ctx);
+/* Finds a profile by id or name for a mount (03 §3.2): as sd_profile_find, then the machine templates, so a
+   "Provided by your organization" profile can be mounted. Only the agent's mount path uses it; sd_profile_find keeps
+   the user's store only (saves and duplicate checks must not see templates). */
+sd_err sd_profile_find_mountable(const char *name_or_id, sd_profile *p, wchar_t *path_out, size_t path_cch);
 /* The machine data root: %ProgramData%\LibreStatic\ShellDrive, or <override>\machine under the test override. */
 sd_err sd_config_machine_root(wchar_t *out, size_t cch);
 

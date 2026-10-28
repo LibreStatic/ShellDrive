@@ -138,3 +138,44 @@ SD_TEST(profile_templates_machine_scope_users)
   sd_config_set_root_override(NULL);
   tpl_remove_dir(root);
 }
+
+/* The mount path finds a template by id or name (sd_profile_find_mountable); sd_profile_find, which saves and duplicate
+   checks use, still reads the user's store only. */
+SD_TEST(profile_find_mountable_reaches_templates)
+{
+  wchar_t tmp[MAX_PATH], root[MAX_PATH], machine[MAX_PATH], profiles[MAX_PATH], file[MAX_PATH];
+  wchar_t num[64];
+  DWORD n;
+  sd_profile p;
+  n = GetTempPathW(MAX_PATH, tmp);
+  SD_REQUIRE(n != 0 && n < MAX_PATH - 64);
+  swprintf_s(num, SD_COUNTOF(num), L"sd-test-config-mnt-%lu-%llu", (unsigned long)GetCurrentProcessId(),
+             (unsigned long long)sd_tick_ms());
+  wcscpy_s(root, MAX_PATH, tmp);
+  wcscat_s(root, MAX_PATH, num);
+  tpl_remove_dir(root);
+  SD_REQUIRE(CreateDirectoryW(root, NULL));
+  sd_config_set_root_override(root);
+  SD_REQUIRE(sd_config_machine_root(machine, SD_COUNTOF(machine)) == SD_OK);
+  wcscpy_s(profiles, MAX_PATH, machine);
+  wcscat_s(profiles, MAX_PATH, L"\\profiles");
+  SD_REQUIRE(CreateDirectoryW(machine, NULL));
+  SD_REQUIRE(CreateDirectoryW(profiles, NULL));
+  wcscpy_s(file, MAX_PATH, profiles);
+  wcscat_s(file, MAX_PATH, L"\\team.ini");
+  SD_REQUIRE(tpl_write(file, k_users_profile));
+
+  memset(&p, 0, sizeof(p));
+  SD_CHECK(sd_profile_find_mountable("3a1f0c2b9d8e4f7a8b6c5d4e3f2a1b0c", &p, NULL, 0) == SD_OK);
+  SD_CHECK_STR(p.name, "Team share");
+  SD_CHECK(p.scope == SD_PROFILE_SCOPE_USERS);
+  memset(&p, 0, sizeof(p));
+  SD_CHECK(sd_profile_find_mountable("team share", &p, NULL, 0) == SD_OK);   /* by name, case-insensitively */
+  SD_CHECK_STR(p.id, "3a1f0c2b9d8e4f7a8b6c5d4e3f2a1b0c");
+  SD_CHECK(sd_profile_find("3a1f0c2b9d8e4f7a8b6c5d4e3f2a1b0c", &p, NULL, 0) != SD_OK);
+  SD_CHECK(sd_profile_find_mountable("Nobody here", &p, NULL, 0) == SD_E_NOT_FOUND);
+  SD_CHECK(sd_profile_find_mountable(NULL, &p, NULL, 0) == SD_E_INVALID_PARAM);
+
+  sd_config_set_root_override(NULL);
+  tpl_remove_dir(root);
+}
