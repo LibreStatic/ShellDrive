@@ -692,8 +692,49 @@ Done when the four workstreams above were merged. Acceptance results: `docs/dev/
 - `tools/ci-local.ps1`: under Windows PowerShell 5.1 a native stderr line became a terminating error, so a
   failing CTest run was reported as "Errors while running CTest" without its output; build and test now run
   with `Continue` and are judged by the exit code.
-- Not changed: the vfs offline wait still polls the session state every 50 ms. `SD_SFTP_REQ_WAIT_READY`
+- Not changed (done in r14, see the r14 section below): the vfs offline wait still polled the session state every 50 ms. `SD_SFTP_REQ_WAIT_READY`
   would need a WAIT_READY queue in the unit tests' fake sd_sftp and a cancel path for quiesce; left for
   the vfs owner.
 - XP floor: the import audit is green on every preset with sd_webdav's dynamic resolution of secur32,
   iphlpapi, the WNet enumeration and ETW; unchanged.
+
+### M1 remainder: offline waits and negative entries while offline (r14, `wip/r14-offwait`)
+
+Spec: `docs/design/02-filesystem.md` §5.2 (offline behaviour, `offline_wait`) and §7.6 (negative cache).
+
+- **Offline wait is event-driven (`sd_vfs`, `vfs_data.c`).** `vfs_wait_online` no longer sleeps 50 ms in a loop.
+  It submits one path operation (`realpath "."`) with `SD_SFTP_REQ_WAIT_READY` and `timeout_ms = offline_wait`;
+  sd_sftp holds it until READY (then it runs at once) or its deadline, and the completion callback wakes the
+  waiter. The request's token is kept per waiter. Each waiter has a heap object with two references (the
+  waiter and the callback), so a waiter that gives up cancels its request and returns without waiting for the
+  callback. Waits are bounded: `offline_wait` plus `VFS_WAIT_GRACE_MS`.
+- **Cancel path.** `vfs_cancel_waits()` cancels every offline waiter; `sd_vfs_quiesce` and `sd_vfs_unmount` call
+  it after setting `quiescing`, so a waiting read or write returns `SD_VFS_E_DISCONNECTED` at once instead of at
+  its deadline. A waiter that starts after the quiesce flag is set is cancelled as soon as its token is
+  published (both sides take `wait_lock`). Not wired: a close of one handle does not cancel another request's
+  wait (a handle is closed by the client that is waiting on it, so there is nothing to cancel in practice);
+  the WebDAV and Dokany request layers end a wait through the quiesce path only.
+- **Behaviour change.** A waiter now also returns at once when sd_sftp fails the session (`FAILED`, `CLOSED`,
+  reconnect stopped), because the request is refused without a callback or completes with the error. Before, it
+  slept to the deadline in those states. 02 §5.2 already says the outage ends in `DISCONNECTED`.
+- **Negative entries while offline (`vfs_core.c`, `lookup_child`).** Option chosen: the vfs reports
+  `SD_VFS_E_DISCONNECTED` (not `NOT_FOUND`) for a cached negative entry while the session is not READY, whatever
+  its age, and for a name absent from a cached listing while offline (which is not recorded as a negative
+  entry any more). WebDAV already maps `DISCONNECTED` to `503` + `Retry-After`, so `sd_mount` wiring and
+  `sd_webdav_export_cfg` do not change. The alternative (passing `sd_sftp_session_state` into the export config)
+  would have needed a per-connection state accessor and a second source of truth for the same answer.
+- **Not changed, open:** an unknown name (not cached) still fails at once while offline, as before. 02 §5.2 says
+  lookups wait `offline_wait` with `WAIT_READY`; that is not implemented for lookups (a cache-miss probe would then
+  stall for 3 s on every Explorer probe during an outage). Decide with the 02 owner. The 60 s WebClient cache of
+  a miss that the server answered 404 while the link was up is unchanged (02 §7.6 (b)).
+- **Tests.** `unit.vfs`: `vfs_offline_wait_completes_on_reconnect` (the wait ends right after `fake_reconnect`,
+  not at its 5 s deadline), `vfs_offline_wait_cancel_returns_promptly` (quiesce ends a 10 s wait), and
+  `vfs_offline_negative_lookup_is_disconnected` (online NOT_FOUND, offline DISCONNECTED, online NOT_FOUND again).
+  `unit.webdav`: `webdav_server_cached_miss_is_503_while_link_down` (a 404 the vfs cached is 503 while down, 404
+  again after READY). The fake sd_sftp (`tests/unit/sd_vfs/fake_sftp.c`) now holds WAIT_READY requests while not
+  READY, completes them with `SD_E_TIMEOUT` at the deadline or `SD_E_CANCELLED`, and wakes on cancel. The tests
+  use bounded waits (5 s to 10 s) and check the outcome, not a latency: a 50 ms poll and an event wake both pass
+  "completes within 2 s", so the test does not show the poll is gone; that is shown by reading the code.
+- **Build/test:** `tools/ci-local.ps1 -Presets x64-modern -ReleaseOnly -NoFixture -AllowSkip -TestRegex
+  'vfs|webdav|sftp|mount'` (log in `build/agent-offwait.log`, not committed). Debug, x86 presets and the lab
+  runs were not run here.

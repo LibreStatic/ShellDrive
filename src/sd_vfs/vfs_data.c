@@ -166,18 +166,130 @@ void vfs_sync_generation(sd_vfs *v)
   }
 }
 
+/* ---- offline wait (02 §5.2) ----
+   A waiter submits one path operation with SD_SFTP_REQ_WAIT_READY and timeout_ms = offline_wait. sd_sftp
+   holds it until the session is READY (then it runs at once) or its deadline passes, so the callback is the
+   wake-up: no polling. The request token lets vfs_cancel_waits() (quiesce, unmount) end the wait early.
+   Lifetime: the callback and the waiter each hold a reference, so either may finish first; a waiter that
+   gives up cancels its request and leaves without waiting for the callback. */
+
+typedef struct vfs_online_wait {
+  sd_vfs *v;
+  struct vfs_online_wait *prev, *next;  /* v->waits */
+  sd_event ev;                          /* set by the callback */
+  sd_sftp_req *tok;                     /* under v->wait_lock; NULL until submitted */
+  sd_err err;                           /* under v->wait_lock */
+  BOOL completed;                       /* under v->wait_lock; the callback ran */
+  LONG refs;                            /* the waiter and the callback */
+} vfs_online_wait;
+
+static void online_wait_release(vfs_online_wait *w)
+{
+  if (InterlockedDecrement(&w->refs) == 0) {
+    sd_event_destroy(&w->ev);
+    sd_free(w);
+  }
+}
+
+static void online_wait_unlink(sd_vfs *v, vfs_online_wait *w)
+{
+  sd_mutex_lock(&v->wait_lock);
+  if (w->prev) w->prev->next = w->next;
+  else if (v->waits == w) v->waits = w->next;
+  if (w->next) w->next->prev = w->prev;
+  w->prev = w->next = NULL;
+  sd_mutex_unlock(&v->wait_lock);
+}
+
+/* wait_lock held. Cancelling a request that already completed is never done: the token may be gone. */
+static void online_wait_cancel_locked(vfs_online_wait *w)
+{
+  if (w->tok && !w->completed)
+    (void)sd_sftp_cancel(w->tok);
+}
+
+static void online_wait_cb(void *ctx, const sd_sftp_completion *c)
+{
+  vfs_online_wait *w = (vfs_online_wait *)ctx;
+  sd_mutex_lock(&w->v->wait_lock);
+  w->err = c->err;
+  w->completed = TRUE;
+  sd_mutex_unlock(&w->v->wait_lock);
+  sd_event_set(&w->ev);
+  online_wait_release(w);
+}
+
+void vfs_cancel_waits(sd_vfs *v)
+{
+  vfs_online_wait *w;
+  sd_mutex_lock(&v->wait_lock);
+  for (w = v->waits; w; w = w->next)
+    online_wait_cancel_locked(w);
+  sd_mutex_unlock(&v->wait_lock);
+}
+
 BOOL vfs_wait_online(sd_vfs *v)
 {
-  /* Polls the session state: sd_sftp has no per-caller "ready" notification for the vfs, and this
-     wait is the rare offline case (02 §5.2 offline_wait, default 3 s). */
-  uint64_t end = sd_tick_ms() + v->offline_wait;
-  while (!vfs_online(v)) {
-    if (sd_tick_ms() >= end || InterlockedCompareExchange(&v->quiescing, 0, 0))
-      return FALSE;
-    Sleep(50);
+  vfs_online_wait *w;
+  sd_sftp_req *tok = NULL;
+  sd_sftp_reqopt o;
+  sd_err e;
+  BOOL ok;
+
+  if (vfs_online(v)) {
+    vfs_sync_generation(v);
+    return TRUE;
   }
-  vfs_sync_generation(v);
-  return TRUE;
+  if (InterlockedCompareExchange(&v->quiescing, 0, 0) || v->offline_wait == 0)
+    return FALSE;
+  w = (vfs_online_wait *)sd_calloc(1, sizeof(*w));
+  if (!w)
+    return FALSE;
+  w->v = v;
+  w->refs = 2;
+  if (sd_event_init(&w->ev, 0, 0) != SD_OK) {
+    sd_free(w);
+    return FALSE;
+  }
+  sd_mutex_lock(&v->wait_lock);
+  w->next = v->waits;
+  if (w->next) w->next->prev = w;
+  v->waits = w;
+  sd_mutex_unlock(&v->wait_lock);
+
+  o.flags = SD_SFTP_REQ_WAIT_READY;
+  o.timeout_ms = v->offline_wait;
+  o.token_out = &tok;
+  e = sd_sftp_realpath(v->s, ".", &o, online_wait_cb, w);
+  if (e != SD_OK) {
+    /* Refused without a callback (not waitable in this state). */
+    online_wait_unlink(v, w);
+    online_wait_release(w);
+    online_wait_release(w);
+    return FALSE;
+  }
+  /* Publish the token; a quiesce that started before this point is applied here. */
+  sd_mutex_lock(&v->wait_lock);
+  w->tok = tok;
+  if (InterlockedCompareExchange(&v->quiescing, 0, 0))
+    online_wait_cancel_locked(w);
+  sd_mutex_unlock(&v->wait_lock);
+
+  /* The request deadline (offline_wait) bounds the wait; the grace only guards a stuck session. */
+  (void)sd_event_wait(&w->ev, v->offline_wait + VFS_WAIT_GRACE_MS);
+
+  sd_mutex_lock(&v->wait_lock);
+  if (!w->completed)
+    online_wait_cancel_locked(w);         /* gave up: the callback still releases its reference */
+  ok = w->completed && w->err == SD_OK;
+  sd_mutex_unlock(&v->wait_lock);
+  online_wait_unlink(v, w);
+  online_wait_release(w);
+
+  ok = ok && !InterlockedCompareExchange(&v->quiescing, 0, 0) && vfs_online(v);
+  if (ok)
+    vfs_sync_generation(v);
+  return ok;
 }
 
 /* ---- validator (02 §4.2) ---- */

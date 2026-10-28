@@ -764,7 +764,7 @@ events and shrinks the pool (5.6); the session state is the primary's.
 
 | Operation | Behavior |
 |---|---|
-| stat / lookup / listing | Served from cache ignoring TTL (positive and negative). Unknown → submitted with `SD_SFTP_REQ_WAIT_READY` and `timeout_ms = offline_wait` (default 3 s), then `SD_VFS_E_DISCONNECTED`. Not `NOT_FOUND`: apps must not conclude a file was deleted. |
+| stat / lookup / listing | Positive entries served from cache ignoring TTL. Negative entries and names absent from a cached listing → `SD_VFS_E_DISCONNECTED` (never `NOT_FOUND`: apps must not conclude a file was deleted; WebDAV 503, 7.6). Unknown → `SD_VFS_E_DISCONNECTED` now; the design wait (`SD_SFTP_REQ_WAIT_READY`, `timeout_ms = offline_wait`, default 3 s, before `DISCONNECTED`) is not implemented for lookups yet (`m1-notes`, r14). |
 | read | Served from cache if blocks are present and the validator was valid at disconnect. Otherwise `WAIT_READY` up to `offline_wait`, then `SD_VFS_E_DISCONNECTED`. |
 | write / create / delete / rename / setattr / mkdir | Fail immediately with `SD_VFS_E_DISCONNECTED`; writes are never submitted with `WAIT_READY` (01 §10.5). Mutations other than writes wait at most `offline_wait` if a reconnect attempt is already in progress. No offline queue. |
 | `GetDiskFreeSpace` | last known values |
@@ -1572,11 +1572,9 @@ other 500. This table and the NTSTATUS table in 8 are normative; 01 §10.9's hin
     does not have (Explorer, Office) stay fast `404`s (4.1), as the Office and FrontPage probes do.
   - Our own flows never depend on a name that was missed just before: the create sequence (`PUT` 0 bytes,
     `PROPPATCH`, `LOCK`, `PUT`) and the save sequence (temp file, `MOVE`) create the names they then look up.
-  - Remaining, not fixable in the server: (a) a `404` from a negative entry that the vfs serves while the link is
-    down (the vfs answers from its cache, 4.1, and reports `NOT_FOUND`, not `DISCONNECTED`); the HTTP layer has
-    no link state (sd_vfs exposes none per connection), so this case still reaches the redirector as `404`.
-    Closing it needs the session state in `sd_webdav_export_cfg` (`sd_sftp_session_state`), an open item for
-    `sd_mount`; (b) a `404` the redirector caches for a name that the user creates right after: that stays
+  - A negative entry the vfs serves while the link is down reports `DISCONNECTED` (4.1, 5.2), so it is `503` too;
+    the vfs decides it, the HTTP layer needs no link state. Test `webdav_server_cached_miss_is_503_while_link_down`.
+  - Remaining, not fixable in the server: (b) a `404` the redirector caches for a name that the user creates right after: that stays
     stale for up to 60 s. The user-facing wait and the CLI/agent avoidance are in `docs/dev/m1-notes.md`.
 - Typical create sequence (Vista+): `PUT` (0 bytes) → `PROPPATCH` (Win32 times/attrs) → `LOCK` → ... →
   `PUT` (content) → `PROPPATCH` → `UNLOCK`. Every step must succeed quickly.
