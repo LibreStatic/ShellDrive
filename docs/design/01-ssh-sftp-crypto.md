@@ -897,8 +897,11 @@ surface.
   forwarded-tcpip) are refused with `ADMINISTRATIVELY_PROHIBITED`.
 - Receive window: initial **2 MiB**, max packet **32768**. 32768 is the RFC 4254 minimum every server accepts, and
   SFTP messages bigger than that simply span several CHANNEL_DATA messages. WINDOW_ADJUST is sent when the consumer has
-  freed >= half of the window. Adaptive growth (post-1.0, M7): if the window was exhausted (sender stalled) twice
-  within one RTT estimate, double it, up to 16 MiB. RTT is measured as described in section 4.6.
+  freed >= half of the window. Adaptive growth (post-1.0, M7): an RTT epoch in which the peer delivered at least half
+  of the window counts as window-limited (the bandwidth-delay form of "the sender stalled": consumers free data at once,
+  so the allowance itself never reaches zero); two such epochs in a row double the window, up to 16 MiB per channel and
+  32 MiB summed over the channels of one connection. RTT is measured as described in section 4.6; before the first
+  sample it is taken as 500 ms. The window never shrinks.
 - Send side: we respect the peer's window and max packet. Each channel has a send queue. The connection-level scheduler
   round-robins channels with data, sending at most one max-packet per turn, so a bulk write on one SFTP channel cannot
   starve another channel or a nested hop.
