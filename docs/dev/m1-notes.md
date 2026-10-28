@@ -723,10 +723,12 @@ Spec: `docs/design/02-filesystem.md` §5.2 (offline behaviour, `offline_wait`) a
   entry any more). WebDAV already maps `DISCONNECTED` to `503` + `Retry-After`, so `sd_mount` wiring and
   `sd_webdav_export_cfg` do not change. The alternative (passing `sd_sftp_session_state` into the export config)
   would have needed a per-connection state accessor and a second source of truth for the same answer.
-- **Not changed, open:** an unknown name (not cached) still fails at once while offline, as before. 02 §5.2 says
-  lookups wait `offline_wait` with `WAIT_READY`; that is not implemented for lookups (a cache-miss probe would then
-  stall for 3 s on every Explorer probe during an outage). Decide with the 02 owner. The 60 s WebClient cache of
-  a miss that the server answered 404 while the link was up is unchanged (02 §7.6 (b)).
+- **Decided (project owner, r21): an unknown name fails at once while offline.** A lookup of a name with no vfs entry
+  (not cached, not in a cached listing) returns `SD_VFS_E_DISCONNECTED` without waiting `offline_wait`, so Explorer,
+  Office and the redirector probes do not stall for 3 s each during an outage. Known entries keep the wait-free
+  behaviour above. 02 §5.2 states the rule and its reason; the unit test `vfs_offline_unknown_lookup_fails_at_once`
+  pins it. The 60 s WebClient cache of a miss that the server answered 404 while the link was up is unchanged
+  (02 §7.6 (b)).
 - **Tests.** `unit.vfs`: `vfs_offline_wait_completes_on_reconnect` (the wait ends right after `fake_reconnect`,
   not at its 5 s deadline), `vfs_offline_wait_cancel_returns_promptly` (quiesce ends a 10 s wait), and
   `vfs_offline_negative_lookup_is_disconnected` (online NOT_FOUND, offline DISCONNECTED, online NOT_FOUND again).
