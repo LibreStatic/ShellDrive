@@ -489,6 +489,10 @@ warning-free on x64-modern; ctest 31/34):
 | ssh `connect` | `conn.c`, `channel.c`, `jump_chain.c`, `proxy_*.c` | Jump chain and proxies written; pool + `SD_SFTP_O_STRIPED` in `src/sd_sftp/` not started. |
 | apps backend | `src/sd_secret/`, `src/sd_config/{import.c,profile_m2.c}`, `src/sd_mount/*`, `apps/shelldrive-host/agent.c` | Secrets, importers, profile keys done; `sd_mount` mapping half done; CLI commands not done. |
 
+Done (TM-R31, branch `wip/r18-logpriv`): the typed log specifiers (`%Hs`, `%Us`, `%Rs`) are used at every call site
+that logs a host, lookup name, user or remote path (40 call sites in `src/sd_mount`, `src/sd_sftp`, `src/sd_ssh`,
+`apps/shelldrive-host`); `tests/logpriv` checks it in ctest. The unsupported `%lu`/`%ld`/`%lc` in log calls are fixed.
+
 Order: (1) fix RSA, then config validation; (2) transport interop over every KEX × host-key alg on `modern`,
 `ossh10`, `ossh10pq`, `legacy`, `legacy3des`, `cert`, `rotate`; (3) auth: all key types/formats (encrypted PPK v3
 cross-checked with `puttygen`), user certs on `cert`, OTP on `otp`, password change, Pageant/OpenSSH agent clients;

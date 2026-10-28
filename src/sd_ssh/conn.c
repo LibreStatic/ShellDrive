@@ -37,7 +37,7 @@ const char ssh_ident_c[] = SSH_IDENT_C;
 
 uint64_t ssh_now(void) { return sd_tick_ms(); }
 
-void ssh_log(sd_ssh_conn *c, sd_log_level level, _Printf_format_string_ const char *fmt, ...)
+void ssh_log(sd_ssh_conn *c, sd_log_level level, const char *fmt, ...)
 {
   char buf[1024];
   va_list ap;
@@ -1362,7 +1362,7 @@ void ssh_on_authenticated(sd_ssh_conn *c)
   c->last_rx_tick = ssh_now();
   c->next_ka_tick = c->last_rx_tick + c->ka_interval_ms;
   ssh_auth_clear(c);
-  ssh_log(c, SD_LOG_INFO, "authenticated as %s", c->user);
+  ssh_log(c, SD_LOG_INFO, "authenticated as %Us", c->user);
   if (cd) cd(ctx, SD_OK, 0);
 }
 

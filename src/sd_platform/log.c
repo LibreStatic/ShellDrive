@@ -435,7 +435,7 @@ void sd_logv(sd_log_level level, const char *component, const char *mount_id,
 }
 
 void sd_log(sd_log_level level, const char *component, const char *mount_id,
-            _Printf_format_string_ const char *fmt, ...)
+            const char *fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);

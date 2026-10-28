@@ -174,7 +174,7 @@ static void sys_done(sd_ssh_conn *c, ssh_cmd *cmd)
       } else {
         set_lower(c, d.kind, d.host, d.port);
         c->pxr.sspi_allowed = d.sspi_allowed;
-        ssh_log(c, SD_LOG_INFO, "hop %u: system proxy %s %s:%u (origin %s)", c->hop_index,
+        ssh_log(c, SD_LOG_INFO, "hop %u: system proxy %s %Hs:%u (origin %s)", c->hop_index,
                 d.kind == SD_PROXY_SOCKS5 ? "socks5" : "http", c->pxr.host8, (unsigned)c->pxr.port,
                 d.discovered ? "discovered" : "configured");
       }
@@ -204,7 +204,7 @@ void ssh_proxy_begin(sd_ssh_conn *c)
     return;
   }
   if (ssh_proxy_active(c))
-    ssh_log(c, SD_LOG_INFO, "hop %u: via %s proxy %s:%u", c->hop_index, c->pxr.kind == SD_PROXY_SOCKS5 ? "socks5" : "http",
+    ssh_log(c, SD_LOG_INFO, "hop %u: via %s proxy %Hs:%u", c->hop_index, c->pxr.kind == SD_PROXY_SOCKS5 ? "socks5" : "http",
             c->pxr.host8, (unsigned)c->pxr.port);
   proceed_lower(c);
 }
@@ -407,7 +407,7 @@ static void sspi_done(sd_ssh_conn *c, ssh_cmd *cmd)
   c->pxr.sspi = k->s;
   k->s = NULL;
   if (k->err != SD_OK) {
-    ssh_log(c, SD_LOG_WARN, "hop %u: SSPI %ls for proxy %s failed%s", c->hop_index, k->package, c->pxr.host8,
+    ssh_log(c, SD_LOG_WARN, "hop %u: SSPI %ls for proxy %Hs failed%s", c->hop_index, k->package, c->pxr.host8,
             k->kerberos_only ? " (Kerberos only, proxy_auth = auto)" : "");
     ssh_fail(c, k->err == SD_E_NO_MEMORY ? k->err : SD_E_PROXY_AUTH, 0, "SSPI");
   } else if (ssh_px_set_token(&c->pxr.px, k->out, k->out_len) != SD_OK) {
@@ -484,7 +484,7 @@ static void handle(sd_ssh_conn *c, ssh_px_status st)
       return;
     }
     if (x->px.password_failed && x->pw_from_cache) ssh_secret_clear(&c->px_secret);
-    ssh_log(c, SD_LOG_WARN, "hop %u: proxy %s:%u: %s", c->hop_index, x->host8, (unsigned)x->port,
+    ssh_log(c, SD_LOG_WARN, "hop %u: proxy %Hs:%u: %s", c->hop_index, x->host8, (unsigned)x->port,
             x->px.why[0] ? x->px.why : sd_err_name(x->px.err));
     ssh_fail(c, x->px.err != SD_OK ? x->px.err : SD_E_PROXY, 0, "proxy handshake failed");
     return;

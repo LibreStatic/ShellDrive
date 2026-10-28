@@ -1491,7 +1491,7 @@ static const char *svc_kh_read_check(void)
     return "machine known_hosts path is not set";
   e = svc_store_check(g.kh, g.owner_trusted, NULL, &why);
   if (e != 0 || why != SVC_FOLDER_OK) {
-    SD_LOGW("svc", "the machine known_hosts is refused for reading (win32 %lu, reason %d) (TM-R27)", (unsigned long)e,
+    SD_LOGW("svc", "the machine known_hosts is refused for reading (win32 %u, reason %d) (TM-R27)", (unsigned)e,
             (int)why);
     return "machine known_hosts refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
   }
@@ -1553,7 +1553,7 @@ static void svc_on_hostkeys(void *ctx, sd_mount *m, const sd_mount_announcement 
   }
   if (a->add_count != 0 && svc_policy_hk_accept()) {
     sd_err ae = svc_machine_apply(a, 1);                /* add only: removals need the review (5.6) */
-    SD_LOGI("svc", "UpdateHostKeys policy 2: %u new key(s) for %s saved to the machine store (%s)",
+    SD_LOGI("svc", "UpdateHostKeys policy 2: %u new key(s) for %Hs saved to the machine store (%s)",
             (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
     if (ae == SD_OK) {
       if (a->remove_count == 0)
@@ -1567,10 +1567,10 @@ static void svc_on_hostkeys(void *ctx, sd_mount *m, const sd_mount_announcement 
     strcpy_s(mid, sizeof(mid), r->id);
   sd_mutex_unlock(&g.lock);
   if (!ann_keep(mid, a, drop_adds, id, sizeof(id))) {
-    SD_LOGW("svc", "host keys announced for %s were not kept (out of memory)", a->lookup_name);
+    SD_LOGW("svc", "host keys announced for %Hs were not kept (out of memory)", a->lookup_name);
     return;
   }
-  SD_LOGI("svc", "host keys announced for %s kept for review (%s)", a->lookup_name, id);
+  SD_LOGI("svc", "host keys announced for %Hs kept for review (%s)", a->lookup_name, id);
   svc_event_announced(a, drop_adds);
   sd_wr_init(&d, 4096);
   sd_jw_init(&jw, &d);
@@ -1592,7 +1592,7 @@ static sd_err svc_machine_apply(const sd_mount_announcement *a, int add_only)
     return SD_E_FAILURE;
   e = svc_store_check(g.kh, g.owner_trusted, NULL, &why);
   if (e != 0 || why != SVC_FOLDER_OK) {
-    SD_LOGW("svc", "the machine known_hosts is refused (win32 %lu, reason %d): not changed", (unsigned long)e, (int)why);
+    SD_LOGW("svc", "the machine known_hosts is refused (win32 %u, reason %d): not changed", (unsigned)e, (int)why);
     return SD_E_ACCESS_DENIED;
   }
   memset(&st, 0, sizeof(st));
@@ -1653,7 +1653,7 @@ static void svc_hk_send(svc_hk *hk, sd_err e, const char *code, const char *deta
     return;
   se = sd_ipc_reply_deferred(g.srv, hk->defer_cid, hk->defer_rid, e, code, detail, json, len);
   if (se != SD_OK && se != SD_E_NOT_FOUND)
-    SD_LOGW("svc", "hostkey add reply for %s not sent (%s)", hk->lookup, sd_err_name(se));
+    SD_LOGW("svc", "hostkey add reply for %Hs not sent (%s)", hk->lookup, sd_err_name(se));
 }
 
 /* The keys of a finished hostkey connection: the requested type only, fingerprints recomputed from the blobs. With
@@ -1708,7 +1708,7 @@ static sd_err svc_hk_complete(sd_json_writer *jw, const svc_hk *hk, sd_mount_hk_
       strcpy_s(detail, cap, "cannot update known_hosts");
       return e;
     }
-    SD_LOGI("svc", "hostkey add: stored one key of %s (%s)", hk->lookup, verified ? "verified" : "first contact");
+    SD_LOGI("svc", "hostkey add: stored one key of %Hs (%s)", hk->lookup, verified ? "verified" : "first contact");
     sd_jw_key(jw, "added"); sd_jw_int(jw, 1);
     sd_jw_key(jw, "removed"); sd_jw_int(jw, 0);
     write_keys_json(jw, "keys", f->keys, n);
@@ -1735,7 +1735,7 @@ static sd_err svc_hk_complete(sd_json_writer *jw, const svc_hk *hk, sd_mount_hk_
     }
     sd_free(a);
     sd_jw_key(jw, "id"); sd_jw_cstr(jw, id);
-    SD_LOGI("svc", "hostkey add: %s offers %u key(s), kept for review (%s)", hk->lookup, (unsigned)n, id);
+    SD_LOGI("svc", "hostkey add: %Hs offers %u key(s), kept for review (%s)", hk->lookup, (unsigned)n, id);
   }
   return SD_OK;
 }
@@ -1818,10 +1818,10 @@ static void svc_hk_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
 {
   svc_hk *hk = (svc_hk *)ctx;
   if (p->kind == SD_MP_HOSTKEY)     /* only a jump host's key reaches here (sd_mount takes the target's first contact) */
-    SD_LOGW("svc", "hostkey add for %s: the key of jump host %s is not in the machine store: refused (add it first)",
+    SD_LOGW("svc", "hostkey add for %Hs: the key of jump host %Hs is not in the machine store: refused (add it first)",
             hk ? hk->lookup : "", p->host);
   else
-    SD_LOGW("svc", "hostkey add for %s asked for a %s prompt: refused (no one can answer it)",
+    SD_LOGW("svc", "hostkey add for %Hs asked for a %s prompt: refused (no one can answer it)",
             hk ? hk->lookup : "", sd_mount_prompt_kind_name(p->kind));
   (void)sd_mount_answer(m, p->id, SD_MA_REJECT, 0, NULL);
 }
@@ -1894,12 +1894,12 @@ static void job_hk_start(void *arg)
   }
   svc_chain_free(chain);            /* sd_mount_create copied the strings and the key bytes */
   if (why != NULL) {
-    SD_LOGW("svc", "hostkey add for %s refused: %s", hk->lookup, why);
+    SD_LOGW("svc", "hostkey add for %Hs refused: %s", hk->lookup, why);
     svc_hk_send(hk, SD_E_INVALID_PARAM, "usage", why, NULL, 0);
     return;
   }
   if (e != SD_OK) {
-    SD_LOGW("svc", "hostkey add for %s: the connection cannot start (%s)", hk->lookup, sd_err_name(e));
+    SD_LOGW("svc", "hostkey add for %Hs: the connection cannot start (%s)", hk->lookup, sd_err_name(e));
     svc_hk_send(hk, e, "connect_failed", "cannot start the connection", NULL, 0);
     return;
   }
@@ -2843,7 +2843,7 @@ static sd_err handle_hk_add(sd_ipc_client *c, const sd_json *params, sd_json_wri
   g.hks = hk;
   g.nhk++;
   sd_mutex_unlock(&g.lock);
-  SD_LOGI("svc", "hostkey add for %s queued", lookup);
+  SD_LOGI("svc", "hostkey add for %Hs queued", lookup);
   svc_enqueue(job_hk_start, hk);
   (void)res;
   return SD_OK;
@@ -2888,7 +2888,7 @@ static sd_err handle_hk_reject(sd_ipc_client *c, const sd_json *params, sd_json_
   sd_mutex_unlock(&g.lock);
   if (x == NULL)
     return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
-  SD_LOGI("svc", "host keys of %s not added (%s rejected)", x->a.lookup_name, x->id);
+  SD_LOGI("svc", "host keys of %Hs not added (%s rejected)", x->a.lookup_name, x->id);
   sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
   sd_jw_key(res, "rejected"); sd_jw_bool(res, 1);
   sd_free(x);
@@ -2928,7 +2928,7 @@ static sd_err handle_hk_accept(sd_ipc_client *c, const sd_json *params, sd_json_
     sd_mutex_unlock(&g.lock);
     return fail(err, e, NULL, "cannot update known_hosts");
   }
-  SD_LOGI("svc", "machine host keys of %s updated (%u added, %u removed)", x->a.lookup_name,
+  SD_LOGI("svc", "machine host keys of %Hs updated (%u added, %u removed)", x->a.lookup_name,
           (unsigned)x->a.add_count, add_only ? 0u : (unsigned)x->a.remove_count);
   sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
   sd_jw_key(res, "added"); sd_jw_int(res, x->a.add_count);
@@ -3362,10 +3362,10 @@ static DWORD WINAPI scm_control(DWORD ctrl, DWORD evt, LPVOID data, LPVOID ctx)
     svc_request_stop();
     return NO_ERROR;
   case SERVICE_CONTROL_POWEREVENT:
-    SD_LOGI("svc", "power event %lu", (unsigned long)evt);     /* no action: mounts stay (1.3) */
+    SD_LOGI("svc", "power event %u", (unsigned)evt);     /* no action: mounts stay (1.3) */
     return NO_ERROR;
   case SERVICE_CONTROL_SESSIONCHANGE:
-    SD_LOGI("svc", "session change %lu", (unsigned long)evt);  /* the admin-session list arrives with the UI (2.6) */
+    SD_LOGI("svc", "session change %u", (unsigned)evt);  /* the admin-session list arrives with the UI (2.6) */
     return NO_ERROR;
   case SERVICE_CONTROL_INTERROGATE:
     return NO_ERROR;

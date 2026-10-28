@@ -181,7 +181,7 @@ static void chain_hop_done(void *ctx, sd_err err, uint32_t failed_hop)
   SD_UNUSED(failed_hop);
   if (err == SD_OK && h != r) {
     sd_ssh_conn *nx = r->hops[h->hop_index + 1];
-    ssh_log(h, SD_LOG_INFO, "hop %u (%s) connected; opening hop %u through it", h->hop_index, h->host_utf8,
+    ssh_log(h, SD_LOG_INFO, "hop %u (%Hs) connected; opening hop %u through it", h->hop_index, h->host_utf8,
             nx->hop_index);
     ssh_hop_connect(nx, chain_hop_done, nx);
     return;
@@ -191,7 +191,7 @@ static void chain_hop_done(void *ctx, sd_err err, uint32_t failed_hop)
   r->chain_done = NULL;
   r->chain_ctx = NULL;
   if (err != SD_OK && r->nhops > 1)
-    ssh_log(h, SD_LOG_WARN, "chain connect failed at hop %u (%s): %s", h->hop_index, h->host_utf8, sd_err_name(err));
+    ssh_log(h, SD_LOG_WARN, "chain connect failed at hop %u (%Hs): %s", h->hop_index, h->host_utf8, sd_err_name(err));
   if (done) done(dctx, err, err == SD_OK ? 0 : h->hop_index);
 }
 
@@ -275,7 +275,7 @@ static void tun_on_open(void *ctx, sd_err err)
     if (c) {
       c->tun = NULL;
       if (c->st == SSH_ST_TUNNEL && !c->failing) {
-        ssh_log(c, SD_LOG_WARN, "hop %u: %s could not open a tunnel to %s:%u: %s", c->hop_index,
+        ssh_log(c, SD_LOG_WARN, "hop %u: %Hs could not open a tunnel to %Hs:%u: %s", c->hop_index,
                 c->outer ? c->outer->host_utf8 : "?", ssh_lower_host8(c), (unsigned)ssh_lower_port(c), sd_err_name(err));
         ssh_fail(c, map_tunnel_err(err), 0, "tunnel open failed");
       }
@@ -338,7 +338,7 @@ void ssh_tunnel_open(sd_ssh_conn *c)
   if (!t) { ssh_fail(c, SD_E_NO_MEMORY, 0, "tunnel"); return; }
   t->c = c;
   c->tun = t;
-  ssh_log(c, SD_LOG_INFO, "hop %u: opening direct-tcpip to %s:%u on %s", c->hop_index, ssh_lower_host8(c),
+  ssh_log(c, SD_LOG_INFO, "hop %u: opening direct-tcpip to %Hs:%u on %Hs", c->hop_index, ssh_lower_host8(c),
           (unsigned)ssh_lower_port(c), o->host_utf8);
   e = ssh_channel_open_tcpip(o, ssh_lower_host8(c), ssh_lower_port(c), &k_tun_sink, t, &ch);
   if (e != SD_OK) {        /* nothing was registered: no callback follows */

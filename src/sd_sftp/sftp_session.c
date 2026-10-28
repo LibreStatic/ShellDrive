@@ -1518,7 +1518,7 @@ static void go_ready(sd_sftp_session *s)
   sd_log(SD_LOG_INFO, SFTP_COMP, NULL, "ready: generation %u channels=%u ext=0x%x max_read=%llu max_write=%llu quirks=0x%x",
          s->generation, s->nchan, s->info.ext, (unsigned long long)s->info.limits.max_read,
          (unsigned long long)s->info.limits.max_write, quirks);
-  SD_LOGD(SFTP_COMP, "home=%s", s->info.home);     /* paths at debug level only (TM-R31) */
+  SD_LOGD(SFTP_COMP, "home=%Rs", s->info.home);     /* paths at debug level only (TM-R31) */
   set_state(s, SD_SFTP_ST_READY, SD_OK);
   if (s->ev) {
     memset(&e, 0, sizeof(e));
@@ -1916,7 +1916,7 @@ static void readdir_reply(sd_sftp_session *s, sftp_req *r, sd_rd *rd)
           r->f->drop_logged = 1;
           if (sd_text_sanitize_server((const char *)nm.p, nm.n < 20 ? nm.n : 20, esc, sizeof(esc), &el) != SD_OK) el = 0;
           esc[el < sizeof(esc) ? el : sizeof(esc) - 1] = 0;
-          sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "readdir: dropped malformed entry name \"%s\" (len %u)", esc,
+          sd_log(SD_LOG_WARN, SFTP_COMP, NULL, "readdir: dropped malformed entry name \"%Rs\" (len %u)", esc,
                  (unsigned)nm.n);
         }
       }

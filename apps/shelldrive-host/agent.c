@@ -772,7 +772,7 @@ static void shell_explore(const wchar_t *root)
   }
 #else
   if ((INT_PTR)ShellExecuteW(NULL, L"explore", root, NULL, NULL, SW_SHOWNORMAL) <= 32)
-    SD_LOGW("agent", "explorer did not open the drive (error %lu)", (unsigned long)GetLastError());
+    SD_LOGW("agent", "explorer did not open the drive (error %u)", (unsigned)GetLastError());
 #endif
 }
 
@@ -1033,7 +1033,7 @@ static void on_hostkeys_announced(void *ctx, sd_mount *m, const sd_mount_announc
         g.announces = x;
       }
       write_announce_json(&jw, x);
-      SD_LOGI("agent", "%s: %s offered new host keys (%s)", h->id, a->lookup_name, x->id);
+      SD_LOGI("agent", "%s: %Hs offered new host keys (%s)", h->id, a->lookup_name, x->id);
     }
     if (sd_jw_finish(&jw) == SD_OK) {
       broadcast_data("mount", "hostkeys.announced", &d);
@@ -3012,7 +3012,7 @@ static sd_err handle_announced_accept(const sd_json *params, sd_json_writer *res
     sd_mutex_unlock(&g.lock);
     return fail(err, e, NULL, "cannot update known_hosts");
   }
-  SD_LOGI("agent", "host keys of %s updated (%u added, %u removed)", x->a.lookup_name, (unsigned)x->a.add_count,
+  SD_LOGI("agent", "host keys of %Hs updated (%u added, %u removed)", x->a.lookup_name, (unsigned)x->a.add_count,
           add_only ? 0u : (unsigned)x->a.remove_count);
   sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
   sd_jw_key(res, "added"); sd_jw_int(res, x->a.add_count);
@@ -3035,7 +3035,7 @@ static sd_err handle_announced_reject(const sd_json *params, sd_json_writer *res
   sd_mutex_unlock(&g.lock);
   if (x == NULL)
     return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
-  SD_LOGI("agent", "host keys of %s not added (%s rejected)", x->a.lookup_name, x->id);
+  SD_LOGI("agent", "host keys of %Hs not added (%s rejected)", x->a.lookup_name, x->id);
   sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
   sd_jw_key(res, "rejected"); sd_jw_bool(res, 1);
   sd_free(x);
@@ -3148,7 +3148,7 @@ static sd_err hk_complete(sd_json_writer *jw, host_mount *h, sd_mount_hk_fetch *
       scopy(detail, cap, "cannot update known_hosts");
       return e;
     }
-    SD_LOGI("agent", "hostkey add: stored one key of %s (%s)", h->hk_lookup, verified ? "verified" : "first contact");
+    SD_LOGI("agent", "hostkey add: stored one key of %Hs (%s)", h->hk_lookup, verified ? "verified" : "first contact");
     sd_jw_key(jw, "added"); sd_jw_int(jw, 1);
     sd_jw_key(jw, "removed"); sd_jw_int(jw, 0);
     write_keys_json(jw, "keys", f->keys, n);
@@ -3174,7 +3174,7 @@ static sd_err hk_complete(sd_json_writer *jw, host_mount *h, sd_mount_hk_fetch *
     g.announces = x;
     sd_mutex_unlock(&g.lock);
     sd_jw_key(jw, "id"); sd_jw_cstr(jw, x->id);
-    SD_LOGI("agent", "hostkey add: %s offers %u key(s), kept for review (%s)", h->hk_lookup, (unsigned)n, x->id);
+    SD_LOGI("agent", "hostkey add: %Hs offers %u key(s), kept for review (%s)", h->hk_lookup, (unsigned)n, x->id);
   }
   return SD_OK;
 }

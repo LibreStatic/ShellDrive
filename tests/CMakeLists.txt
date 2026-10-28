@@ -16,6 +16,7 @@ add_subdirectory(fuzz)
 add_subdirectory(apps)
 add_subdirectory(l10n)
 add_subdirectory(policy)
+add_subdirectory(logpriv)
 add_subdirectory(repro)
 add_subdirectory(importcheck)
 # The UI and the shell extension are not built for ARM32 (04 §5.1), so their tests are not either.
