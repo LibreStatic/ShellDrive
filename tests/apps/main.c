@@ -29,6 +29,8 @@ SD_TEST_DECL(m4_events_recent_history_and_limits);
 SD_TEST_DECL(m4_update_consent_and_disabled_check);
 SD_TEST_DECL(m3_snapshot_and_icon_follow_mount);
 SD_TEST_DECL(m3_network_location_entries_at_start);
+SD_TEST_DECL(m3_network_location_follows_profile_changes);
+SD_TEST_DECL(m3_user_cleanup_hook_removes_our_entries);
 SD_TEST_DECL(m3_profile_test_results_and_errors);
 SD_TEST_DECL(m3_config_changed_and_agent_stopping);
 SD_TEST_DECL(m3_refresh_cache_attach_and_status_stats);
@@ -80,6 +82,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m4_update_consent_and_disabled_check),
   SD_TEST_ENTRY(m3_snapshot_and_icon_follow_mount),
   SD_TEST_ENTRY(m3_network_location_entries_at_start),
+  SD_TEST_ENTRY(m3_network_location_follows_profile_changes),
+  SD_TEST_ENTRY(m3_user_cleanup_hook_removes_our_entries),
   SD_TEST_ENTRY(m3_profile_test_results_and_errors),
   SD_TEST_ENTRY(m3_config_changed_and_agent_stopping),
   SD_TEST_ENTRY(m3_refresh_cache_attach_and_status_stats),

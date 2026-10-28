@@ -3476,6 +3476,12 @@ static void broadcast_all_json(const char *event, sd_wr *data)
 
 /* config.changed {what: "settings" | "profiles", ids?}: runs on the watch thread. The ids of the profiles are the
    ids of the changed files that still exist (a removed profile is not named; clients list again). */
+static void work_explorer_profiles(void *arg)
+{
+  SD_UNUSED(arg);
+  explorer_config_changed();
+}
+
 static void on_config_changed(void *ctx, const char *what, const wchar_t *const *paths, uint32_t npaths)
 {
   sd_wr d;
@@ -3502,6 +3508,8 @@ static void on_config_changed(void *ctx, const char *what, const wchar_t *const 
   if (sd_jw_finish(&jw) == SD_OK)
     broadcast_all_json("config.changed", &d);
   sd_wr_free(&d);
+  if (strcmp(what, "profiles") == 0)
+    post(NULL, work_explorer_profiles, NULL);   /* Network locations follow saved, renamed and deleted profiles */
   SD_LOGI("agent", "configuration changed: %s", what);
 }
 

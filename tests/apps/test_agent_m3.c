@@ -405,6 +405,121 @@ SD_TEST(m3_network_location_entries_at_start)
   sd_ipc_close(c);
 }
 
+static int write_text(const wchar_t *path, const char *text)
+{
+  HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD wrote = 0;
+  int ok;
+  if (f == INVALID_HANDLE_VALUE) {
+    fprintf(stderr, "write_text: error %lu\n", (unsigned long)GetLastError());
+    return 0;
+  }
+  ok = WriteFile(f, text, (DWORD)strlen(text), &wrote, NULL) && wrote == strlen(text);
+  CloseHandle(f);
+  return ok;
+}
+
+static int wait_exists(const wchar_t *path, int want, unsigned ms)
+{
+  uint64_t end = sd_tick_ms() + ms;
+  while (sd_tick_ms() < end) {
+    if ((GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) == want)
+      return 1;
+    Sleep(100);
+  }
+  return (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) == want;
+}
+
+/* M3 (03 section 8.7, lifecycle): while the agent runs, a profile saved with the default network_location gets
+   its folder, a rename moves it, network_location = no and deleting the profile remove it; a profile of scope
+   service never gets one. A folder without our marker stays. */
+SD_TEST(m3_network_location_follows_profile_changes)
+{
+  static const char k_first[] =
+    "[profile]\r\nformat = 1\r\nid = 1a3c2a90d1e44b6c9a0e5b21c4d7f8aa\r\nname = Live One\r\n"
+    "host = new.test\r\nuser = alice\r\n";
+  static const char k_renamed[] =
+    "[profile]\r\nformat = 1\r\nid = 1a3c2a90d1e44b6c9a0e5b21c4d7f8aa\r\nname = Live Two\r\n"
+    "host = new.test\r\nuser = alice\r\n";
+  static const char k_off[] =
+    "[profile]\r\nformat = 1\r\nid = 1a3c2a90d1e44b6c9a0e5b21c4d7f8aa\r\nname = Live Two\r\n"
+    "host = new.test\r\nuser = alice\r\n[mount]\r\nnetwork_location = no\r\n";
+  static const char k_service[] =
+    "[profile]\r\nformat = 1\r\nid = 2b3c2a90d1e44b6c9a0e5b21c4d7f8aa\r\nname = Svc One\r\n"
+    "host = new.test\r\nuser = alice\r\nscope = service\r\n";
+  wchar_t cfg[MAX_PATH], nh[MAX_PATH], pdir[MAX_PATH], p1[MAX_PATH], p2[MAX_PATH], path[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  SD_REQUIRE(setup_agent(L"netlive", NULL, NULL, NULL));
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", cfg, MAX_PATH) > 0);
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", nh, MAX_PATH) > 0);
+  _snwprintf_s(pdir, SD_COUNTOF(pdir), _TRUNCATE, L"%s\\profiles", cfg);
+  CreateDirectoryW(pdir, NULL);
+  _snwprintf_s(p1, SD_COUNTOF(p1), _TRUNCATE, L"%s\\1a3c2a90d1e44b6c9a0e5b21c4d7f8aa.ini", pdir);
+  _snwprintf_s(p2, SD_COUNTOF(p2), _TRUNCATE, L"%s\\2b3c2a90d1e44b6c9a0e5b21c4d7f8aa.ini", pdir);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Foreign", nh);
+  CreateDirectoryW(path, NULL);
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+
+  SD_REQUIRE(write_text(p1, k_first));
+  SD_REQUIRE(write_text(p2, k_service));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live One\\desktop.ini", nh);
+  SD_CHECK(wait_exists(path, 1, 10000));
+
+  SD_REQUIRE(write_text(p1, k_renamed));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live Two\\desktop.ini", nh);
+  SD_CHECK(wait_exists(path, 1, 10000));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live One", nh);
+  SD_CHECK(wait_exists(path, 0, 10000));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Svc One", nh);
+  SD_CHECK(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES);
+
+  SD_REQUIRE(write_text(p1, k_off));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live Two", nh);
+  SD_CHECK(wait_exists(path, 0, 10000));
+
+  SD_REQUIRE(write_text(p1, k_renamed));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live Two\\desktop.ini", nh);
+  SD_CHECK(wait_exists(path, 1, 10000));
+  DeleteFileW(p1);
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Live Two", nh);
+  SD_CHECK(wait_exists(path, 0, 10000));
+  _snwprintf_s(path, SD_COUNTOF(path), _TRUNCATE, L"%s\\Foreign", nh);
+  SD_CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
+
+/* M3 (03 section 8.7, uninstall): the installer hook user-cleanup removes our NetHood entries and placeholder
+   folders and leaves a foreign folder alone. */
+SD_TEST(m3_user_cleanup_hook_removes_our_entries)
+{
+  wchar_t nh[MAX_PATH], dir[MAX_PATH], ini[MAX_PATH], cmd[MAX_PATH * 2];
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  DWORD code = 99;
+  SD_REQUIRE(setup_agent(L"cleanup", NULL, NULL, NULL));
+  SD_REQUIRE(GetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", nh, MAX_PATH) > 0);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Ours", nh);
+  CreateDirectoryW(dir, NULL);
+  _snwprintf_s(ini, SD_COUNTOF(ini), _TRUNCATE, L"%s\\desktop.ini", dir);
+  WritePrivateProfileStringW(L"ShellDrive", L"profile", L"3c3c2a90d1e44b6c9a0e5b21c4d7f8aa", ini);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Theirs", nh);
+  CreateDirectoryW(dir, NULL);
+  _snwprintf_s(cmd, SD_COUNTOF(cmd), _TRUNCATE, L"\"%s\\sd-test-host-fake.exe\" --installer-hook user-cleanup --apply", g_dir);
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  SD_REQUIRE(CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi));
+  WaitForSingleObject(pi.hProcess, 30000);
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  SD_CHECK(code == 0);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Ours", nh);
+  SD_CHECK(GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES);
+  _snwprintf_s(dir, SD_COUNTOF(dir), _TRUNCATE, L"%s\\Theirs", nh);
+  SD_CHECK(GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES);
+}
+
 /* A UI that is the only client: the prompts reach it once each, answers route back, the mount
    completes, prompt.closed carries reason answered and answered_by ui. */
 SD_TEST(m3_ui_only_prompts_and_answers)

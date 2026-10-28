@@ -14,6 +14,7 @@
 #include <wchar.h>
 
 #include "svc_repair.h"
+#include "explorer_data.h"
 
 #define SD_HOOK_AGENT_EVENT L"Global\\com.librestatic.shelldrive.agent.shutdown."
 
@@ -137,6 +138,13 @@ int sd_host_installer_hook(int argc, wchar_t **argv)
     if (!apply)
       return 0;
     return programdata_secure();
+  }
+
+  if (wcscmp(name, L"user-cleanup") == 0) {
+    /* Explorer data of this user (03 8.7); other users of a per-machine install keep inert entries. */
+    if (apply)
+      explorer_cleanup_user();
+    return 0;
   }
 
   wprintf(L"installer hook %s: not yet implemented (M5)\n", name);

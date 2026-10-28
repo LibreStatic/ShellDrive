@@ -42,6 +42,7 @@ typedef struct ex_profile {
   char id[33];
   char name[PROFILE_NAME_CCH];
   int network_location;
+  int scope;
 } ex_profile;
 
 static int g_inited;
@@ -52,6 +53,7 @@ static wchar_t g_icon_key[256];            /* HKCU subkey of the drive icons */
 static wchar_t g_nethood_test[MAX_PATH];   /* test override of the NetHood folder */
 static wchar_t g_ui_path[MAX_PATH];        /* <install dir>\shelldrive-ui.exe */
 static int g_active[26];                   /* drives this agent shows as present */
+static char g_loc_id[26][33];              /* profile id of the Network location mounted on each letter, "" = none */
 
 /* ---- small helpers ---- */
 
@@ -225,6 +227,26 @@ static void icon_key_path(wchar_t letter, wchar_t *out, size_t cch)
 static void icon_default_value(wchar_t *out, size_t cch)
 {
   _snwprintf_s(out, cch, _TRUNCATE, L"\"%s\",-%d", g_ui_path, ICON_INDEX);
+}
+
+/* 1 when the DefaultIcon key exists and its value does not point at our binary (never overwritten). */
+static int icon_foreign(const wchar_t *sub)
+{
+  wchar_t cur[MAX_PATH + 32], mine[MAX_PATH + 8];
+  HKEY hk;
+  DWORD t = 0, sz = sizeof(cur);
+  int foreign = 0;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_QUERY_VALUE, &hk) != ERROR_SUCCESS)
+    return 0;
+  if (RegQueryValueExW(hk, NULL, NULL, &t, (LPBYTE)cur, &sz) == ERROR_SUCCESS && t == REG_SZ) {
+    cur[SD_COUNTOF(cur) - 1] = 0;
+    _snwprintf_s(mine, SD_COUNTOF(mine), _TRUNCATE, L"\"%s\"", g_ui_path);
+    foreign = wcsncmp(cur, mine, wcslen(mine)) != 0;
+  } else {
+    foreign = 1;
+  }
+  RegCloseKey(hk);
+  return foreign;
 }
 
 static int icon_set(wchar_t letter)
@@ -638,8 +660,32 @@ void explorer_apply(const host_explorer_mount *m)
       g_active[idx] = 0;
     }
   }
+  if (g_netloc_on && m->profile_id[0] && m->network_location) {
+    if (m->present)
+      strncpy_s(g_loc_id[idx], sizeof(g_loc_id[idx]), m->profile_id, _TRUNCATE);
+    else
+      g_loc_id[idx][0] = 0;
+  } else {
+    g_loc_id[idx][0] = 0;
+  }
   if (g_netloc_on && m->profile_id[0] && m->network_location)
     netloc_sync(m->profile_id, m->profile_name, m->letter, m->present);
+}
+
+/* A profile gets a Network location when it asks for one and is not a service profile (03 §8.7). */
+static int netloc_wanted(const ex_profile *p)
+{
+  return p->network_location && p->scope != SD_PROFILE_SCOPE_SERVICE;
+}
+
+/* Letter of the mapped drive of a profile, 0 when it is not mapped. */
+static wchar_t loc_letter(const char *id)
+{
+  int i;
+  for (i = 0; i < 26; i++)
+    if (g_loc_id[i][0] && strcmp(g_loc_id[i], id) == 0)
+      return (wchar_t)(L'A' + i);
+  return 0;
 }
 
 typedef struct ex_collect {
@@ -657,6 +703,7 @@ static int collect_profile(void *ctx, const sd_profile *p, const wchar_t *path)
     strncpy_s(x->id, sizeof(x->id), p->id, _TRUNCATE);
     strncpy_s(x->name, sizeof(x->name), p->name, _TRUNCATE);
     x->network_location = p->network_location;
+    x->scope = p->scope;
   }
   return 1;
 }
@@ -693,7 +740,7 @@ static void netloc_reconcile(void)
       if (!folder_marker(folder, mid, sizeof(mid)))
         continue;
       for (i = 0; i < c.n; i++)
-        if (strcmp(c.items[i].id, mid) == 0 && c.items[i].network_location)
+        if (strcmp(c.items[i].id, mid) == 0 && netloc_wanted(&c.items[i]))
           keep = 1;
       if (!keep) {
         delete_entry(folder);
@@ -703,8 +750,10 @@ static void netloc_reconcile(void)
     FindClose(h);
   }
   for (i = 0; i < c.n; i++)
-    if (c.items[i].network_location && valid_id(c.items[i].id))
-      netloc_sync(c.items[i].id, c.items[i].name, 0, 0);
+    if (netloc_wanted(&c.items[i]) && valid_id(c.items[i].id)) {
+      wchar_t l = loc_letter(c.items[i].id);     /* a mounted profile keeps pointing at its drive */
+      netloc_sync(c.items[i].id, c.items[i].name, l, l != 0);
+    }
   SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, nethood, NULL);
 
 done:
@@ -756,4 +805,44 @@ void explorer_shutdown(void)
   ini_set_letters("");
   for (i = 0; i < 26; i++)
     g_active[i] = 0;
+}
+
+/* The profiles changed while the agent runs (config watch): entries are created, renamed and removed to match,
+   mounted ones keep pointing at their drive. Control thread. */
+void explorer_config_changed(void)
+{
+  if (g_netloc_on)
+    netloc_reconcile();
+}
+
+/* User uninstall (--installer-hook user-cleanup, 03 §8.7): every entry of ours in NetHood, the placeholder
+   folders and any drive icon left in explorer.ini go; foreign entries stay. Works without an agent. */
+void explorer_cleanup_user(void)
+{
+  wchar_t nethood[MAX_PATH], pattern[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE h;
+  explorer_init();
+  if ((!g_test || g_netloc_on) && nethood_path(nethood, SD_COUNTOF(nethood))) {
+    _snwprintf_s(pattern, SD_COUNTOF(pattern), _TRUNCATE, L"%s\\*", nethood);
+    h = FindFirstFileW(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      do {
+        wchar_t folder[MAX_PATH];
+        char mid[33];
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcscmp(fd.cFileName, L".") == 0 ||
+            wcscmp(fd.cFileName, L"..") == 0)
+          continue;
+        _snwprintf_s(folder, SD_COUNTOF(folder), _TRUNCATE, L"%s\\%s", nethood, fd.cFileName);
+        if (folder_marker(folder, mid, sizeof(mid))) {
+          delete_entry(folder);
+          remove_placeholder(mid);
+        }
+      } while (FindNextFileW(h, &fd));
+      FindClose(h);
+    }
+    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, nethood, NULL);
+  }
+  if (g_icons_on)
+    explorer_shutdown();
 }
