@@ -10,6 +10,11 @@ file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/msi-admin")
 add_executable(sd-test-msi sd-test-msi.c)
 target_link_libraries(sd-test-msi PRIVATE msi.lib)
 set_target_properties(sd-test-msi PROPERTIES FOLDER "tests")
+# The package must exist before these tests run: on the x64 flavours no setup payload pulls the msi target into the
+# build, so the test tool depends on it.
+if(TARGET msi)
+  add_dependencies(sd-test-msi msi)
+endif()
 
 add_test(NAME msi.${SD_FLAVOUR}.tables
          COMMAND sd-test-msi tables "${SD_MSI_PACKAGE}" "${SD_MSI_TEST_VERSION}" "${SD_MSI_TEST_UPGRADE}"
