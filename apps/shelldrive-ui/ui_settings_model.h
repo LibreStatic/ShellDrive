@@ -28,7 +28,51 @@ typedef struct ui_settings_model {
   int default_backend;               /* SD_PROFILE_BACKEND_* */
   unsigned cache_mb;                 /* memory cache budget in MiB; 0 = the default budget */
   int start_at_logon;                /* tray Run key (not in settings.ini) */
+  int openssh_source;                /* [hostkeys] openssh_source: trust host keys accepted in OpenSSH (5.1) */
+  int putty_source;                  /* [hostkeys] putty_source: trust host keys accepted in PuTTY (5.1) */
+  int roam_credentials;              /* [credentials] persist = enterprise (roam saved passwords, 3.4) */
 } ui_settings_model;
+
+/* Fields of the model, as bits of the masks below. */
+#define UI_SET_F_LANGUAGE 0x01u      /* locked by policy UILanguage */
+#define UI_SET_F_OPENSSH  0x02u      /* locked by policy DisableKnownHostsSources */
+#define UI_SET_F_PUTTY    0x04u      /* locked by policy DisableKnownHostsSources */
+#define UI_SET_F_NOTIFY   0x100u
+#define UI_SET_F_BACKEND  0x200u
+#define UI_SET_F_CACHE    0x400u
+#define UI_SET_F_ROAMING  0x800u
+#define UI_SET_F_LOGON    0x1000u
+
+/* The policy values the window reads (03 §3.5). The view fills it from sd_policy; the tests fill it by hand. A
+   locked field is shown read-only with the value the policy enforces and is never written back to settings.ini. */
+typedef struct ui_set_policy {
+  int  language_set;                 /* UILanguage has a valid value */
+  char language[UI_SET_LANG_MAX];
+  int  sources_disabled;             /* DisableKnownHostsSources = 1 */
+} ui_set_policy;
+
+/* Mask of the UI_SET_F_* fields the policies lock. */
+unsigned ui_settings_locked(const ui_set_policy *p);
+
+/* Forces the displayed value of every locked field to what the policy enforces (language: the policy language;
+   host key sources: off, because nothing is read from them). Returns the locked mask. */
+unsigned ui_settings_apply_policy(ui_settings_model *m, const ui_set_policy *p);
+
+/* Mask of the fields that differ between two models (the write diff: nothing changed, nothing is written). */
+unsigned ui_settings_changed(const ui_settings_model *before, const ui_settings_model *after);
+
+/* Like ui_settings_to_sd, but the fields in `locked` keep the value s holds. */
+void ui_settings_to_sd_masked(const ui_settings_model *m, unsigned locked, sd_settings *s);
+
+/* Note under a host key source toggle. enabled: the toggle is on; locked: a policy locks it; src_state: the
+   sd_kh_src_state of the source (3 = INSECURE, TM-R06). */
+typedef enum ui_set_note { UI_SET_NOTE_NONE = 0, UI_SET_NOTE_MANAGED, UI_SET_NOTE_INSECURE } ui_set_note;
+ui_set_note ui_settings_source_note(int enabled, int locked, int src_state);
+
+/* WebClient service state as the window words it (read-only, 02 §7.2). state: sd_webdav_client_state. */
+typedef enum ui_set_webclient { UI_SET_WC_UNKNOWN = 0, UI_SET_WC_RUNNING, UI_SET_WC_STOPPED, UI_SET_WC_DISABLED,
+                                UI_SET_WC_MISSING } ui_set_webclient;
+ui_set_webclient ui_settings_webclient_kind(int state);
 
 /* Languages offered by the combo box, in order. The first entry is the system default (""). */
 #define UI_SET_LANG_COUNT 7

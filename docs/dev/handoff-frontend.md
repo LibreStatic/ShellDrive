@@ -38,12 +38,28 @@ Priority 1: the user can not do it at all, and the backend exists.
    folder from an elevated process. The UI should run the CLI elevated (the `--elevated-admin` relaunch path, `runas`
    on Vista+) and read its JSON, or link the same SCM code. Needs a decision: shell out to `shelldrive.exe` or share
    the code in a library. Install, uninstall, start and stop are CLI verbs too (`service install` etc.).
-3. **Settings is missing most of the 7.5 list.** Present: language, backend, cache budget, notify, start at sign-in,
-   updates. Missing: default write mode, credential roaming, "Trust host keys accepted in PuTTY / OpenSSH" with the
-   "Ignored: other users can change this file" state (5.1, TM-R06), "Keep host names and file paths out of log
-   files" (`[log] privacy = strict`, 10.1), WebClient status, Windows 11 menu status (8.6), linked connections
-   (8.7), start tray and agent separately. Backend ok for all that are `settings.ini` keys (direct `sd_config` writes,
-   3.6); WebClient/linked-connections status need system queries (backend missing for a shared helper).
+3. **Settings: the 7.5 list.** PARTLY DONE (round 15, branch `wip/r15-uisettings`). The window now has the tabs
+   General, Security and Updates. Done, all with a backend: "Trust host keys accepted in PuTTY" and "... in OpenSSH"
+   (`[hostkeys] putty_source`, `openssh_source`), with the "Ignored: other users can change this file." note read from
+   `sd_known_hosts_source_state` (TM-R06) and locked and unchecked when policy `DisableKnownHostsSources = 1`;
+   "Roam saved passwords with my profile" (`[credentials] persist = enterprise`); the WebClient service state as a
+   read-only line (`sd_webdav_query_client`, never changes the service); language locked read-only by policy
+   `UILanguage`. Only changed values are written (`ui_settings_changed`), locked fields are never rewritten, and the
+   agent is asked for `config.reload` only after a write. Model and tests: `ui_settings_model.c`,
+   `tests/ui/test_settings.c`, smoke `ui_settings_security_smoke` in `--test-windows`.
+   **Still missing, shown nowhere until the backend exists (backend missing):**
+   - Default write mode (`[defaults] write_mode`): `sd_settings` has no field, `sd_settings_from_ini` does not parse it,
+     new profiles do not take it. Policy `ForceWriteThrough` exists, but nothing reads the default to lock.
+   - "Keep host names and file paths out of log files" (`[log] privacy = strict`, policy `LogPrivacy`): no field in
+     `sd_settings`, `sd_log` does not read it.
+   - Windows 11 menu status and `[explorer] modern_menu = auto|off` (8.6): there is no registration query and no
+     `sd_settings` field (policy `DisableModernContextMenu` is not read by anything either).
+   - Notifications per type (`[ui] notify_*`) and "start tray and agent separately" (`[agent] start_at_logon`): only
+     the single `[ui] notify` and the tray Run key are parsed.
+   - Linked connections status and "Change..." (8.7): needs a system query helper and an elevated change path.
+   - Credential roaming is not locked by any policy (none is defined); the control is always editable.
+   To add one of these, give `sd_settings` the field (parse and save in `src/sd_config/profile.c`), make the agent or
+   `sd_log` read it, then add a field to `ui_settings_model` with its lock bit.
 4. **Changed key and wrong key type notifications do not lead to the host key manager.** Spec 5.2 and 5.4: the
    `host_key_mismatch` details dialog (old and new fingerprint, store and line of the old key, **Manage host
    keys...**, **Open file location**, "Stop using keys from this source") and the `host_key_type_unavailable`

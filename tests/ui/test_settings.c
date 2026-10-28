@@ -203,3 +203,121 @@ SD_TEST(settings_language_index_and_run_command)
   SD_CHECK(ui_settings_run_command(L"C:\\x\"y.exe", cmd, SD_COUNTOF(cmd)) == SD_E_INVALID_PARAM);
   SD_CHECK(ui_settings_run_command(L"C:\\x.exe", cmd, 4) == SD_E_NAME_TOO_LONG);
 }
+
+SD_TEST(settings_model_security_fields_map_and_diff)
+{
+  sd_settings s;
+  ui_settings_model m, m2;
+  unsigned d;
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &m);
+  SD_CHECK_EQ_INT(m.openssh_source, 1);
+  SD_CHECK_EQ_INT(m.putty_source, 1);
+  SD_CHECK_EQ_INT(m.roam_credentials, 0);
+
+  s.openssh_source = 0;
+  s.persist_enterprise = 1;
+  ui_settings_from_sd(&s, &m);
+  SD_CHECK_EQ_INT(m.openssh_source, 0);
+  SD_CHECK_EQ_INT(m.putty_source, 1);
+  SD_CHECK_EQ_INT(m.roam_credentials, 1);
+
+  m2 = m;
+  SD_CHECK_EQ_INT((int)ui_settings_changed(&m, &m2), 0);
+  m2.putty_source = 0;
+  m2.roam_credentials = 0;
+  d = ui_settings_changed(&m, &m2);
+  SD_CHECK(d == (UI_SET_F_PUTTY | UI_SET_F_ROAMING));
+  m2 = m;
+  m2.notify = !m.notify;
+  m2.cache_mb = 64;
+  SD_CHECK(ui_settings_changed(&m, &m2) == (UI_SET_F_NOTIFY | UI_SET_F_CACHE));
+
+  ui_settings_to_sd(&m2, &s);
+  SD_CHECK_EQ_INT(s.openssh_source, 0);
+  SD_CHECK_EQ_INT(s.persist_enterprise, 1);
+}
+
+SD_TEST(settings_policy_locks_force_values_and_are_never_written)
+{
+  sd_settings s;
+  ui_settings_model m;
+  ui_set_policy pol;
+  unsigned locked;
+  memset(&pol, 0, sizeof(pol));
+  SD_CHECK_EQ_INT((int)ui_settings_locked(&pol), 0);
+  SD_CHECK_EQ_INT((int)ui_settings_locked(NULL), 0);
+
+  sd_settings_defaults(&s);
+  strcpy_s(s.ui_language, sizeof(s.ui_language), "es");
+  ui_settings_from_sd(&s, &m);
+
+  pol.language_set = 1;                                       /* an empty policy language does not lock */
+  SD_CHECK_EQ_INT((int)ui_settings_locked(&pol), 0);
+  strcpy_s(pol.language, sizeof(pol.language), "fr");
+  pol.sources_disabled = 1;
+  locked = ui_settings_apply_policy(&m, &pol);
+  SD_CHECK(locked == (UI_SET_F_LANGUAGE | UI_SET_F_OPENSSH | UI_SET_F_PUTTY));
+  SD_CHECK_STR(m.language, "fr");
+  SD_CHECK_EQ_INT(m.openssh_source, 0);
+  SD_CHECK_EQ_INT(m.putty_source, 0);
+
+  /* saving with the locked fields: the file keeps its own values, the unlocked ones are written */
+  m.notify = 0;
+  m.roam_credentials = 1;
+  ui_settings_to_sd_masked(&m, locked, &s);
+  SD_CHECK_STR(s.ui_language, "es");
+  SD_CHECK_EQ_INT(s.openssh_source, 1);
+  SD_CHECK_EQ_INT(s.putty_source, 1);
+  SD_CHECK_EQ_INT(s.notify, 0);
+  SD_CHECK_EQ_INT(s.persist_enterprise, 1);
+
+  /* only the sources locked */
+  memset(&pol, 0, sizeof(pol));
+  pol.sources_disabled = 1;
+  SD_CHECK(ui_settings_locked(&pol) == (UI_SET_F_OPENSSH | UI_SET_F_PUTTY));
+}
+
+SD_TEST(settings_source_note_and_webclient_wording)
+{
+  SD_CHECK(ui_settings_source_note(1, 1, 3) == UI_SET_NOTE_MANAGED);       /* policy wins */
+  SD_CHECK(ui_settings_source_note(0, 1, 0) == UI_SET_NOTE_MANAGED);
+  SD_CHECK(ui_settings_source_note(1, 0, 3) == UI_SET_NOTE_INSECURE);      /* TM-R06 */
+  SD_CHECK(ui_settings_source_note(0, 0, 3) == UI_SET_NOTE_NONE);          /* switched off: nothing is ignored */
+  SD_CHECK(ui_settings_source_note(1, 0, 0) == UI_SET_NOTE_NONE);
+  SD_CHECK(ui_settings_source_note(1, 0, 1) == UI_SET_NOTE_NONE);
+
+  SD_CHECK(ui_settings_webclient_kind(0) == UI_SET_WC_UNKNOWN);
+  SD_CHECK(ui_settings_webclient_kind(1) == UI_SET_WC_RUNNING);
+  SD_CHECK(ui_settings_webclient_kind(2) == UI_SET_WC_STOPPED);
+  SD_CHECK(ui_settings_webclient_kind(3) == UI_SET_WC_DISABLED);
+  SD_CHECK(ui_settings_webclient_kind(4) == UI_SET_WC_MISSING);
+  SD_CHECK(ui_settings_webclient_kind(99) == UI_SET_WC_UNKNOWN);
+  SD_CHECK(ui_settings_webclient_kind(-1) == UI_SET_WC_UNKNOWN);
+}
+
+SD_TEST(settings_security_fields_survive_a_save_load_round_trip)
+{
+  wchar_t root[MAX_PATH];
+  sd_settings s, back;
+  ui_settings_model m, m2;
+  temp_root(root, SD_COUNTOF(root));
+  SD_REQUIRE(root[0] != L'\0');
+  remove_tree(root);
+  sd_config_set_root_override(root);
+  SD_REQUIRE(sd_config_ensure_dirs() == SD_OK);
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &m);
+  m.putty_source = 0;
+  m.roam_credentials = 1;
+  ui_settings_to_sd(&m, &s);
+  SD_CHECK(sd_settings_save(&s) == SD_OK);
+  sd_settings_defaults(&back);
+  SD_CHECK(sd_settings_load(&back) == SD_OK);
+  ui_settings_from_sd(&back, &m2);
+  SD_CHECK_EQ_INT(m2.openssh_source, 1);
+  SD_CHECK_EQ_INT(m2.putty_source, 0);
+  SD_CHECK_EQ_INT(m2.roam_credentials, 1);
+  sd_config_set_root_override(NULL);
+  remove_tree(root);
+}

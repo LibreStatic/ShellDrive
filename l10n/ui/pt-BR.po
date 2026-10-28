@@ -1892,3 +1892,68 @@ msgstr "Conexão menos protegida"
 msgctxt "ui.prompt.btn.token_continue"
 msgid "Contin&ue"
 msgstr "Con&tinuar"
+
+#. Settings: tab label of the host key and password settings.
+msgctxt "ui.settings.tab_security"
+msgid "Security"
+msgstr "Segurança"
+
+#. Settings: checkbox, read the host keys PuTTY has accepted (5.1).
+msgctxt "ui.settings.trust_putty"
+msgid "Trust host keys accepted in PuTTY"
+msgstr "Confiar nas chaves de host aceitas no PuTTY"
+
+#. Settings: checkbox, read the host keys OpenSSH has accepted (5.1).
+msgctxt "ui.settings.trust_openssh"
+msgid "Trust host keys accepted in OpenSSH"
+msgstr "Confiar nas chaves de host aceitas no OpenSSH"
+
+#. Settings: a host key source file is ignored because other users can change it (TM-R06).
+msgctxt "ui.settings.src_insecure"
+msgid "Ignored: other users can change this file."
+msgstr "Ignorado: outros usuários podem alterar este arquivo."
+
+#. Settings: checkbox, store saved passwords so they roam with the Windows profile (3.4).
+msgctxt "ui.settings.roam"
+msgid "Roam saved passwords with my profile"
+msgstr "Itinerar as senhas salvas com o meu perfil"
+
+#. Settings: warning under the roaming checkbox.
+msgctxt "ui.settings.roam_hint"
+msgid "Saved SSH passwords then exist on every computer your roaming profile is used on."
+msgstr "As senhas SSH salvas passam a existir em todos os computadores em que o seu perfil móvel for usado."
+
+#. Settings: tab label of the general settings.
+msgctxt "ui.settings.tab_general"
+msgid "General"
+msgstr "Geral"
+
+#. Settings: label of the WebClient service state (read-only).
+msgctxt "ui.settings.webclient"
+msgid "WebClient service:"
+msgstr "Serviço WebClient:"
+
+#. Settings: the WebClient service is running.
+msgctxt "ui.settings.webclient_running"
+msgid "Running"
+msgstr "Em execução"
+
+#. Settings: the WebClient service is stopped; ShellDrive starts it when a WebDAV drive needs it.
+msgctxt "ui.settings.webclient_stopped"
+msgid "Stopped (ShellDrive starts it when a drive needs it)"
+msgstr "Parado (o ShellDrive o inicia quando uma unidade precisa dele)"
+
+#. Settings: the WebClient service is disabled and only an administrator can enable it.
+msgctxt "ui.settings.webclient_disabled"
+msgid "Disabled (an administrator must enable it to use the WebDAV backend)"
+msgstr "Desabilitado (um administrador precisa habilitá-lo para usar o mecanismo WebDAV)"
+
+#. Settings: the WebClient service is not installed.
+msgctxt "ui.settings.webclient_missing"
+msgid "Not installed (the WebDAV backend is not available)"
+msgstr "Não instalado (o mecanismo WebDAV não está disponível)"
+
+#. Settings: the WebClient service state could not be read.
+msgctxt "ui.settings.webclient_unknown"
+msgid "Unknown"
+msgstr "Desconhecido"

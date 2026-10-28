@@ -86,6 +86,10 @@ SD_TEST_DECL(settings_model_round_trip_keeps_other_fields);
 SD_TEST_DECL(settings_save_load_round_trip_in_a_temp_root);
 SD_TEST_DECL(settings_cache_budget_parsing);
 SD_TEST_DECL(settings_language_index_and_run_command);
+SD_TEST_DECL(settings_model_security_fields_map_and_diff);
+SD_TEST_DECL(settings_policy_locks_force_values_and_are_never_written);
+SD_TEST_DECL(settings_source_note_and_webclient_wording);
+SD_TEST_DECL(settings_security_fields_survive_a_save_load_round_trip);
 
 /* test_notify.c, test_dark.c and test_wizard.c: the balloon rate limit, the dark mode decision and the wizard's
    should-show logic. */
@@ -189,6 +193,10 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),
   SD_TEST_ENTRY(settings_cache_budget_parsing),
   SD_TEST_ENTRY(settings_language_index_and_run_command),
+  SD_TEST_ENTRY(settings_model_security_fields_map_and_diff),
+  SD_TEST_ENTRY(settings_policy_locks_force_values_and_are_never_written),
+  SD_TEST_ENTRY(settings_source_note_and_webclient_wording),
+  SD_TEST_ENTRY(settings_security_fields_survive_a_save_load_round_trip),
   SD_TEST_ENTRY(notify_limit_one_per_subject_and_kind),
   SD_TEST_ENTRY(notify_limit_is_per_subject_and_kind),
   SD_TEST_ENTRY(notify_clock_going_back_is_not_a_burst),

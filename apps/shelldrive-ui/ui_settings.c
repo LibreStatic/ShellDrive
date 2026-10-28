@@ -6,6 +6,7 @@
  * so a language change is reported as needing a restart. The update group stays disabled until the agent reports
  * the update.check feature (decision 10). */
 #include <windows.h>
+#include <commctrl.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -15,6 +16,9 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
+#include "sd_policy/sd_policy.h"
+#include "sd_ssh/sd_known_hosts.h"
+#include "sd_webdav/sd_webdav.h"
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_settings_model.h"
@@ -46,7 +50,17 @@
 #define ST_ID_UPD_STATUS 4423
 #define ST_ID_UPD_STALE  4424
 #define ST_CLIENT_W      640
-#define ST_CLIENT_H      600
+#define ST_ID_TAB        4425
+#define ST_ID_CHK_OPENSSH 4426
+#define ST_ID_CHK_PUTTY  4427
+#define ST_ID_NOTE_OPENSSH 4428
+#define ST_ID_NOTE_PUTTY 4429
+#define ST_ID_CHK_ROAM   4430
+#define ST_ID_HINT_ROAM  4431
+#define ST_ID_LBL_WC     4433
+#define ST_ID_VAL_WC     4434
+#define ST_ID_NOTE_LANG  4435
+#define ST_CLIENT_H      800
 
 #define ST_RUN_KEY   L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define ST_RUN_VALUE L"ShellDriveTray"
@@ -61,6 +75,10 @@ static struct {
   HWND wnd, lang, notify, logon, backend, cache, status;
   HWND lbl_lang, lbl_back, lbl_cache, hint_cache, note_upd, note_rest, grp_upd, btn_save, btn_cancel;
   HWND channel, lbl_channel, note_policy, upd_status, upd_stale, btn_check, btn_install, btn_notes;
+  HWND tab, chk_openssh, chk_putty, note_openssh, note_putty, chk_roam, hint_roam, lbl_wc, val_wc;
+  HWND note_lang;
+  ui_set_policy policy;               /* the Group Policy values read when the window opened (03 §3.5) */
+  unsigned locked;                    /* UI_SET_F_* fields the policies lock */
   HFONT font;
   unsigned dpi;
   ui_settings_model model;            /* as loaded */
@@ -121,16 +139,103 @@ static sd_err run_key_set(int on)
   return r == ERROR_SUCCESS ? SD_OK : SD_E_FAILURE;
 }
 
+/* ---- policies and read-only status ---- */
+
+/* Reads the policies that lock a setting through sd_policy (never the registry directly). */
+static void policy_read(ui_set_policy *p)
+{
+  DWORD dw = 0;
+  wchar_t w[UI_SET_LANG_MAX];
+  memset(p, 0, sizeof(*p));
+  if (sd_policy_get_sz(SD_POLICY_UILANGUAGE, w, SD_COUNTOF(w)) && w[0] != L'\0') {
+    char code[UI_SET_LANG_MAX];
+    size_t i;
+    for (i = 0; w[i] != L'\0' && i + 1 < sizeof(code); i++)
+      code[i] = w[i] < 0x80 ? (char)w[i] : '?';
+    code[i] = '\0';
+    if (ui_settings_lang_index(code) > 0) {
+      p->language_set = 1;
+      strcpy_s(p->language, sizeof(p->language), g_ui_set_lang_codes[ui_settings_lang_index(code)]);
+    }
+  }
+  if (sd_policy_get_dword(SD_POLICY_DISABLEKNOWNHOSTSSOURCES, &dw) && dw == 1)
+    p->sources_disabled = 1;
+}
+
+/* State of a live host key source (TM-R06), read-only: a file that other users can write reads as INSECURE. */
+static int source_state(sd_kh_store_kind kind)
+{
+  sd_kh_store st;
+  sd_known_hosts *kh = NULL;
+  sd_kh_src_state state = SD_KH_SRC_ABSENT;
+  memset(&st, 0, sizeof(st));
+  st.kind = kind;
+  if (sd_known_hosts_open(&st, 1, &kh) != SD_OK)
+    return (int)SD_KH_SRC_ABSENT;
+  if (sd_known_hosts_source_state(kh, kind, &state, NULL, 0) != SD_OK)
+    state = SD_KH_SRC_ABSENT;
+  sd_known_hosts_close(kh);
+  return (int)state;
+}
+
+static const wchar_t *note_text(ui_set_note n)
+{
+  if (n == UI_SET_NOTE_MANAGED)
+    return sd_l10n_get(SD_MSG_UI_SETTINGS_UPDATE_MANAGED);
+  if (n == UI_SET_NOTE_INSECURE)
+    return sd_l10n_get(SD_MSG_UI_SETTINGS_SRC_INSECURE);
+  return L"";
+}
+
+/* Read-only: the WebClient service state (never starts or changes the service, 02 7.2, TM-R21). */
+static void webclient_refresh(void)
+{
+  sd_webdav_client_info ci;
+  sd_msg_id id;
+  memset(&ci, 0, sizeof(ci));
+  (void)sd_webdav_query_client(&ci);
+  switch (ui_settings_webclient_kind((int)ci.state)) {
+  case UI_SET_WC_RUNNING:  id = SD_MSG_UI_SETTINGS_WEBCLIENT_RUNNING; break;
+  case UI_SET_WC_STOPPED:  id = SD_MSG_UI_SETTINGS_WEBCLIENT_STOPPED; break;
+  case UI_SET_WC_DISABLED: id = SD_MSG_UI_SETTINGS_WEBCLIENT_DISABLED; break;
+  case UI_SET_WC_MISSING:  id = SD_MSG_UI_SETTINGS_WEBCLIENT_MISSING; break;
+  default:                 id = SD_MSG_UI_SETTINGS_WEBCLIENT_UNKNOWN; break;
+  }
+  SetWindowTextW(g_st.val_wc, sd_l10n_get(id));
+}
+
 /* ---- controls ---- */
 
-static void populate(void)
+/* Shows m in the controls and disables the locked ones (a policy value is read-only). */
+static void show_model(const ui_settings_model *m, unsigned locked, int openssh_state, int putty_state)
+{
+  SendMessageW(g_st.lang, CB_SETCURSEL, ui_settings_lang_index(m->language), 0);
+  EnableWindow(g_st.lang, (locked & UI_SET_F_LANGUAGE) ? FALSE : TRUE);
+  SetWindowTextW(g_st.note_lang, (locked & UI_SET_F_LANGUAGE) ? note_text(UI_SET_NOTE_MANAGED) : L"");
+  SendMessageW(g_st.chk_openssh, BM_SETCHECK, m->openssh_source ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_st.chk_putty, BM_SETCHECK, m->putty_source ? BST_CHECKED : BST_UNCHECKED, 0);
+  EnableWindow(g_st.chk_openssh, (locked & UI_SET_F_OPENSSH) ? FALSE : TRUE);
+  EnableWindow(g_st.chk_putty, (locked & UI_SET_F_PUTTY) ? FALSE : TRUE);
+  SetWindowTextW(g_st.note_openssh,
+                 note_text(ui_settings_source_note(m->openssh_source, (locked & UI_SET_F_OPENSSH) != 0, openssh_state)));
+  SetWindowTextW(g_st.note_putty,
+                 note_text(ui_settings_source_note(m->putty_source, (locked & UI_SET_F_PUTTY) != 0, putty_state)));
+  SendMessageW(g_st.chk_roam, BM_SETCHECK, m->roam_credentials ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+
+static void fill_lang(void)
 {
   int i;
   SendMessageW(g_st.lang, CB_RESETCONTENT, 0, 0);
   SendMessageW(g_st.lang, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_LANG_SYSTEM));
   for (i = 1; i < UI_SET_LANG_COUNT; i++)
     SendMessageW(g_st.lang, CB_ADDSTRING, 0, (LPARAM)k_lang_names[i]);
-  SendMessageW(g_st.lang, CB_SETCURSEL, ui_settings_lang_index(g_st.model.language), 0);
+}
+
+static void populate(void)
+{
+  fill_lang();
 
   SendMessageW(g_st.notify, BM_SETCHECK, g_st.model.notify ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_st.logon, BM_SETCHECK, g_st.model.start_at_logon ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -156,6 +261,8 @@ static void populate(void)
     ui_update_channel_now(g_st.loaded.update_channel, ch, sizeof(ch));
     SendMessageW(g_st.channel, CB_SETCURSEL, strcmp(ch, "beta") == 0 ? 1 : 0, 0);
   }
+  show_model(&g_st.model, g_st.locked, source_state(SD_KH_SRC_OPENSSH), source_state(SD_KH_SRC_PUTTY));
+  webclient_refresh();
   ui_settings_update_refresh();
 }
 
@@ -167,6 +274,8 @@ static void load(void)
     SD_LOGW("ui", "settings.ini has invalid values; the valid ones are shown");
   g_st.loaded = s;
   ui_settings_from_sd(&s, &g_st.model);
+  policy_read(&g_st.policy);
+  g_st.locked = ui_settings_apply_policy(&g_st.model, &g_st.policy);
   g_st.model.start_at_logon = run_key_on() ? 1 : 0;
   g_st.logon_before = g_st.model.start_at_logon;
   populate();
@@ -179,8 +288,9 @@ static void on_save(void)
   wchar_t cache[32];
   unsigned mb = 0;
   sd_err e;
-  int lang_changed;
+  unsigned changed;
   int lang_index;
+  int chan_changed = 0;
 
   GetWindowTextW(g_st.cache, cache, SD_COUNTOF(cache));
   if (ui_settings_parse_cache(cache, &mb) != SD_OK) {
@@ -199,23 +309,32 @@ static void on_save(void)
   if (m.default_backend < 0 || m.default_backend > 2)
     m.default_backend = 0;
   m.cache_mb = mb;
+  m.openssh_source = SendMessageW(g_st.chk_openssh, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  m.putty_source = SendMessageW(g_st.chk_putty, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  m.roam_credentials = SendMessageW(g_st.chk_roam, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
 
   s = g_st.loaded;
-  ui_settings_to_sd(&m, &s);
+  ui_settings_to_sd_masked(&m, g_st.locked, &s);
   /* the channel is saved unless a policy sets it (the list is then disabled, 03 §3.5) */
   {
     ui_upd_policy pol;
     int ci = (int)SendMessageW(g_st.channel, CB_GETCURSEL, 0, 0);
     ui_update_policy_now(&pol);
-    if (!pol.channel_set)
+    if (!pol.channel_set) {
+      chan_changed = (ci == 1) != (strcmp(g_st.loaded.update_channel, "beta") == 0);
       strcpy_s(s.update_channel, sizeof(s.update_channel), ci == 1 ? "beta" : "stable");
+    }
   }
-  e = sd_settings_save(&s);
-  if (e != SD_OK) {
-    ui_win_error(g_st.wnd, SD_MSG_UI_SETTINGS_SAVE_FAILED, e);
-    return;
+  /* write only what changed: nothing changed in settings.ini means no write and no reload */
+  changed = ui_settings_changed(&g_st.model, &m) & ~UI_SET_F_LOGON;
+  if (changed != 0 || chan_changed) {
+    e = sd_settings_save(&s);
+    if (e != SD_OK) {
+      ui_win_error(g_st.wnd, SD_MSG_UI_SETTINGS_SAVE_FAILED, e);
+      return;
+    }
+    g_app.notify_on = s.notify ? 1 : 0;
   }
-  g_app.notify_on = s.notify ? 1 : 0;
   if (m.start_at_logon != g_st.logon_before) {
     e = run_key_set(m.start_at_logon);
     if (e != SD_OK) {
@@ -224,13 +343,12 @@ static void on_save(void)
     }
   }
   /* the agent applies the file to new mounts and connections (config.reload, 2.4) */
-  if (g_app.agent_up && (g_app.agent_features & UI_FEAT_RELOAD))
+  if ((changed != 0 || chan_changed) && g_app.agent_up && (g_app.agent_features & UI_FEAT_RELOAD))
     (void)ui_ipc_call(UI_IPC_RELOAD, "config.reload", NULL);
 
-  lang_changed = strcmp(m.language, g_st.model.language) != 0;
   g_st.model = m;
   g_st.loaded = s;
-  if (lang_changed)
+  if (changed & UI_SET_F_LANGUAGE)
     ui_win_message(g_st.wnd, sd_l10n_get(SD_MSG_UI_SETTINGS_RESTART_NOTE), MB_OK | MB_ICONINFORMATION);
   DestroyWindow(g_st.wnd);
 }
@@ -271,6 +389,47 @@ int ui_settings_update_controls_ok(void)
          g_st.btn_install && g_st.btn_notes && g_st.note_upd;
 }
 
+/* --test-windows: the security controls exist, and a policy lock disables them and shows the policy value. The
+   controls are driven with a synthetic model and policy; nothing is read from or written to the machine. */
+int ui_settings_security_smoke(void)
+{
+  ui_settings_model m;
+  ui_set_policy pol;
+  unsigned locked;
+  int ok;
+  if (!(g_st.tab && g_st.chk_openssh && g_st.chk_putty && g_st.note_openssh && g_st.note_putty && g_st.chk_roam &&
+        g_st.hint_roam && g_st.lbl_wc && g_st.val_wc && g_st.note_lang))
+    return 0;
+  memset(&m, 0, sizeof(m));
+  memset(&pol, 0, sizeof(pol));
+  fill_lang();
+  m.openssh_source = 1;
+  m.putty_source = 1;
+  m.roam_credentials = 1;
+  strcpy_s(m.language, sizeof(m.language), "de");
+  show_model(&m, 0, 0, 0);
+  ok = IsWindowEnabled(g_st.chk_openssh) && IsWindowEnabled(g_st.chk_putty) && IsWindowEnabled(g_st.lang) &&
+       SendMessageW(g_st.chk_roam, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+       SendMessageW(g_st.lang, CB_GETCURSEL, 0, 0) == ui_settings_lang_index("de") &&
+       GetWindowTextLengthW(g_st.note_openssh) == 0;
+  /* an insecure source file shows its note; a locked control is disabled, read-only and unchecked */
+  show_model(&m, 0, 3, 3);
+  ok = ok && GetWindowTextLengthW(g_st.note_openssh) > 0 && GetWindowTextLengthW(g_st.note_putty) > 0;
+  pol.language_set = 1;
+  strcpy_s(pol.language, sizeof(pol.language), "fr");
+  pol.sources_disabled = 1;
+  locked = ui_settings_apply_policy(&m, &pol);
+  show_model(&m, locked, 3, 3);
+  ok = ok && !IsWindowEnabled(g_st.chk_openssh) && !IsWindowEnabled(g_st.chk_putty) && !IsWindowEnabled(g_st.lang) &&
+       SendMessageW(g_st.chk_openssh, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+       SendMessageW(g_st.lang, CB_GETCURSEL, 0, 0) == ui_settings_lang_index("fr") &&
+       GetWindowTextLengthW(g_st.note_lang) > 0;
+  /* the read-only WebClient status text */
+  webclient_refresh();
+  ok = ok && GetWindowTextLengthW(g_st.val_wc) > 0;
+  return ok ? 1 : 0;
+}
+
 void ui_settings_on_reply(int kind, sd_err err, const sd_json *result)
 {
   (void)kind;
@@ -287,11 +446,38 @@ static void place(HWND c, int x, int y, int w, int h)
     MoveWindow(c, x, y, w > 0 ? w : 0, h > 0 ? h : 0, TRUE);
 }
 
+/* The pages of the tab control (General, Security, Updates). The controls are siblings of the tab; a page shows
+   its own controls and hides the others. */
+enum { ST_PAGE_GENERAL = 0, ST_PAGE_SECURITY, ST_PAGE_UPDATES, ST_PAGE_COUNT };
+
+static void show_page(int page)
+{
+  HWND general[12], security[6], updates[10];
+  const size_t ng = SD_COUNTOF(general), ns = SD_COUNTOF(security), nu = SD_COUNTOF(updates);
+  size_t i;
+  general[0] = g_st.lbl_lang;   general[1] = g_st.lang;       general[2] = g_st.note_lang;
+  general[3] = g_st.notify;     general[4] = g_st.logon;      general[5] = g_st.lbl_back;
+  general[6] = g_st.backend;    general[7] = g_st.lbl_cache;  general[8] = g_st.cache;
+  general[9] = g_st.hint_cache; general[10] = g_st.lbl_wc;    general[11] = g_st.val_wc;
+  security[0] = g_st.chk_openssh; security[1] = g_st.note_openssh; security[2] = g_st.chk_putty;
+  security[3] = g_st.note_putty;  security[4] = g_st.chk_roam;     security[5] = g_st.hint_roam;
+  updates[0] = g_st.grp_upd;      updates[1] = g_st.lbl_channel;   updates[2] = g_st.channel;
+  updates[3] = g_st.note_policy;  updates[4] = g_st.upd_status;    updates[5] = g_st.upd_stale;
+  updates[6] = g_st.btn_check;    updates[7] = g_st.btn_install;   updates[8] = g_st.btn_notes;
+  updates[9] = g_st.note_upd;
+  for (i = 0; i < ng; i++)
+    if (general[i]) ShowWindow(general[i], page == ST_PAGE_GENERAL ? SW_SHOW : SW_HIDE);
+  for (i = 0; i < ns; i++)
+    if (security[i]) ShowWindow(security[i], page == ST_PAGE_SECURITY ? SW_SHOW : SW_HIDE);
+  for (i = 0; i < nu; i++)
+    if (updates[i]) ShowWindow(updates[i], page == ST_PAGE_UPDATES ? SW_SHOW : SW_HIDE);
+}
+
 static void layout(HWND hwnd)
 {
-  RECT rc;
-  int m, rh, gap, W, H, y, lw, cw, x, bw1, bw2, by, sh, note_h, bw, xp;
-  int lw_a, lw_b, lw_c;
+  RECT rc, ir;
+  int m, rh, gap, W, H, y, lw, cw, x, bw1, bw2, by, sh, note_h, bw, xp, x0, pw, nh, tabh;
+  int lw_a, lw_b, lw_c, lw_d;
   if (!g_st.lang)
     return;
   GetClientRect(hwnd, &rc);
@@ -306,49 +492,81 @@ static void layout(HWND hwnd)
   lw_a = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_LANGUAGE));
   lw_b = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_BACKEND));
   lw_c = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_CACHE));
+  lw_d = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_WEBCLIENT));
   lw = lw_a;
   if (lw_b > lw) lw = lw_b;
   if (lw_c > lw) lw = lw_c;
+  if (lw_d > lw) lw = lw_d;
   lw += dpx(12);
   cw = dpx(260);
 
-  y = m;
-  place(g_st.lbl_lang, m, y + dpx(4), lw, rh);
-  place(g_st.lang, m + lw, y, cw, dpx(200));
+  /* bottom: status line, buttons, the live/restart note; the tab control takes the rest */
+  by = H - m - sh - gap - dpx(26);
+  nh = note_h;
+  tabh = by - gap - nh - gap - m;
+  place(g_st.tab, m, m, W - 2 * m, tabh);
+  ir.left = 0; ir.top = 0; ir.right = W - 2 * m; ir.bottom = tabh;
+  TabCtrl_AdjustRect(g_st.tab, FALSE, &ir);
+  x0 = m + ir.left + gap;
+  pw = ir.right - ir.left - 2 * gap;
+  y = m + ir.top + gap;
+
+  /* General */
+  place(g_st.lbl_lang, x0, y + dpx(4), lw, rh);
+  place(g_st.lang, x0 + lw, y, cw, dpx(200));
+  xp = x0 + lw + cw + gap;
+  place(g_st.note_lang, xp, y + dpx(4), x0 + pw - xp, rh);
   y += rh + gap;
-  place(g_st.notify, m, y, W - 2 * m, rh);
+  place(g_st.notify, x0, y, pw, rh);
   y += rh + gap / 2;
-  place(g_st.logon, m, y, W - 2 * m, rh);
+  place(g_st.logon, x0, y, pw, rh);
   y += rh + gap;
-  place(g_st.lbl_back, m, y + dpx(4), lw, rh);
-  place(g_st.backend, m + lw, y, cw, dpx(200));
+  place(g_st.lbl_back, x0, y + dpx(4), lw, rh);
+  place(g_st.backend, x0 + lw, y, cw, dpx(200));
   y += rh + gap;
-  place(g_st.lbl_cache, m, y + dpx(4), lw, rh);
-  place(g_st.cache, m + lw, y, dpx(100), rh);
-  x = m + lw + dpx(100) + gap;
-  place(g_st.hint_cache, x, y + dpx(4), W - x - m, rh);
-  y += rh + gap * 2;
-  place(g_st.grp_upd, m, y, W - 2 * m, rh);
+  place(g_st.lbl_cache, x0, y + dpx(4), lw, rh);
+  place(g_st.cache, x0 + lw, y, dpx(100), rh);
+  x = x0 + lw + dpx(100) + gap;
+  place(g_st.hint_cache, x, y + dpx(4), x0 + pw - x, rh);
+  y += rh + gap;
+  place(g_st.lbl_wc, x0, y + dpx(4), lw, rh);
+  place(g_st.val_wc, x0 + lw, y + dpx(4), pw - lw, note_h);
+
+  /* Security */
+  y = m + ir.top + gap;
+  place(g_st.chk_openssh, x0, y, pw, rh);
+  y += rh;
+  place(g_st.note_openssh, x0 + dpx(20), y, pw - dpx(20), sh);
+  y += sh + gap;
+  place(g_st.chk_putty, x0, y, pw, rh);
+  y += rh;
+  place(g_st.note_putty, x0 + dpx(20), y, pw - dpx(20), sh);
+  y += sh + gap;
+  place(g_st.chk_roam, x0, y, pw, rh);
+  y += rh;
+  place(g_st.hint_roam, x0 + dpx(20), y, pw - dpx(20), note_h);
+
+  /* Updates */
+  y = m + ir.top + gap;
+  place(g_st.grp_upd, x0, y, pw, rh);
   y += rh + gap / 2;
-  place(g_st.lbl_channel, m, y + dpx(4), lw, rh);
-  place(g_st.channel, m + lw, y, cw, dpx(200));
-  xp = m + lw + cw + gap;
-  place(g_st.note_policy, xp, y + dpx(4), W - xp - m, rh);
+  place(g_st.lbl_channel, x0, y + dpx(4), lw, rh);
+  place(g_st.channel, x0 + lw, y, cw, dpx(200));
+  xp = x0 + lw + cw + gap;
+  place(g_st.note_policy, xp, y + dpx(4), x0 + pw - xp, rh);
   y += rh + gap / 2;
-  place(g_st.upd_status, m, y, W - 2 * m, note_h);
+  place(g_st.upd_status, x0, y, pw, note_h);
   y += note_h;
-  place(g_st.upd_stale, m, y, W - 2 * m, rh);
+  place(g_st.upd_stale, x0, y, pw, rh);
   y += rh + gap / 2;
   bw = dpx(140);
-  place(g_st.btn_check, m, y, bw, dpx(26));
-  place(g_st.btn_install, m + bw + gap, y, bw + dpx(40), dpx(26));
-  place(g_st.btn_notes, m + bw + gap + bw + dpx(40) + gap, y, bw + dpx(20), dpx(26));
+  place(g_st.btn_check, x0, y, bw, dpx(26));
+  place(g_st.btn_install, x0 + bw + gap, y, bw + dpx(40), dpx(26));
+  place(g_st.btn_notes, x0 + bw + gap + bw + dpx(40) + gap, y, bw + dpx(20), dpx(26));
   y += dpx(26) + gap / 2;
-  place(g_st.note_upd, m, y, W - 2 * m, note_h);
-  y += note_h + gap;
-  place(g_st.note_rest, m, y, W - 2 * m, note_h);
+  place(g_st.note_upd, x0, y, pw, note_h);
 
-  by = H - m - sh - gap - dpx(26);
+  place(g_st.note_rest, m, by - gap - nh, W - 2 * m, nh);
   place(g_st.status, m, H - m - sh, W - 2 * m, sh);
   bw1 = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_BTN_SAVE)) + dpx(32);
   bw2 = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_BTN_CANCEL)) + dpx(32);
@@ -380,6 +598,32 @@ static HWND make_child(const wchar_t *cls, const wchar_t *text, DWORD style, int
 
 static void create_children(HWND hwnd)
 {
+  TCITEMW ti;
+  static const sd_msg_id tabs[ST_PAGE_COUNT] = { SD_MSG_UI_SETTINGS_TAB_GENERAL, SD_MSG_UI_SETTINGS_TAB_SECURITY,
+                                                 SD_MSG_UI_SETTINGS_GROUP_UPDATES };
+  int i;
+  g_st.tab = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS, 0, 0, 10,
+                             10, hwnd, (HMENU)(UINT_PTR)ST_ID_TAB, g_app.inst, NULL);
+  for (i = 0; i < ST_PAGE_COUNT && g_st.tab; i++) {
+    memset(&ti, 0, sizeof(ti));
+    ti.mask = TCIF_TEXT;
+    ti.pszText = (LPWSTR)sd_l10n_get(tabs[i]);
+    (void)SendMessageW(g_st.tab, TCM_INSERTITEMW, (WPARAM)i, (LPARAM)&ti);
+  }
+  g_st.note_lang = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_LANG, hwnd);
+  g_st.chk_openssh = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_TRUST_OPENSSH),
+                                WS_TABSTOP | BS_AUTOCHECKBOX, ST_ID_CHK_OPENSSH, hwnd);
+  g_st.note_openssh = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_OPENSSH, hwnd);
+  g_st.chk_putty = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_TRUST_PUTTY), WS_TABSTOP | BS_AUTOCHECKBOX,
+                              ST_ID_CHK_PUTTY, hwnd);
+  g_st.note_putty = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_PUTTY, hwnd);
+  g_st.chk_roam = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_ROAM), WS_TABSTOP | BS_AUTOCHECKBOX,
+                             ST_ID_CHK_ROAM, hwnd);
+  g_st.hint_roam = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_ROAM_HINT), SS_LEFT | SS_NOPREFIX,
+                              ST_ID_HINT_ROAM, hwnd);
+  g_st.lbl_wc = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_WEBCLIENT), SS_LEFT | SS_NOPREFIX,
+                           ST_ID_LBL_WC, hwnd);
+  g_st.val_wc = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_VAL_WC, hwnd);
   g_st.lbl_lang = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_LANGUAGE), SS_LEFT | SS_NOPREFIX,
                              ST_ID_LBL_LANG, hwnd);
   g_st.lang = make_child(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, ST_ID_LANG, hwnd);
@@ -421,6 +665,7 @@ static void create_children(HWND hwnd)
                                ST_ID_CANCEL, hwnd);
   SendMessageW(g_st.cache, EM_SETLIMITTEXT, 8, 0);
   ui_win_apply_font(hwnd, g_st.font);
+  show_page(ST_PAGE_GENERAL);
 }
 
 static void on_dpi(HWND hwnd, unsigned dpi, const RECT *suggested)
@@ -455,6 +700,12 @@ static LRESULT CALLBACK st_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   case WM_COMMAND:
     on_command(LOWORD(wp), HIWORD(wp));
     return 0;
+  case WM_NOTIFY:
+    if (lp != 0 && ((const NMHDR *)lp)->idFrom == ST_ID_TAB && ((const NMHDR *)lp)->code == TCN_SELCHANGE) {
+      show_page((int)SendMessageW(g_st.tab, TCM_GETCURSEL, 0, 0));
+      return 0;
+    }
+    break;
   case WM_CLOSE:
     DestroyWindow(hwnd);
     return 0;
