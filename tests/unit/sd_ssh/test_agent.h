@@ -22,12 +22,26 @@ typedef struct ta_agent {
 sd_err ta_agent_init(ta_agent *a, const char *const *keys, uint32_t n);
 void   ta_agent_free(ta_agent *a);
 
+#define TA_PIPE_CONNS 32
+
+struct ta_pipe_agent;
+typedef struct ta_pipe_conn {
+  struct ta_pipe_agent *pa;
+  sd_thread thread;
+  HANDLE h;
+  int started;
+  volatile LONG done;
+} ta_pipe_conn;
+
 typedef struct ta_pipe_agent {
   ta_agent agent;
   wchar_t name[128];
   sd_thread thread;
   HANDLE ready;
+  HANDLE stopev;
+  int ready_set;
   volatile int stop;
+  ta_pipe_conn conns[TA_PIPE_CONNS];
 } ta_pipe_agent;
 
 /* Serves the agent on a fresh pipe and points SSH_AUTH_SOCK (process environment) at it. */

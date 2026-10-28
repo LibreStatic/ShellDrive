@@ -110,63 +110,152 @@ static void agent_answer(ta_agent *a, const uint8_t *req, size_t n, sd_wr *out)
   sd_wr_u8(out, SSH_AGENT_FAILURE);
 }
 
-/* ---- fake pipe agent ---- */
+/* ---- fake pipe agent ----
+   Like a real agent the fake always keeps several unconnected instances listening (overlapped
+   ConnectNamedPipe on TA_PIPE_LISTEN instances), so a client that reconnects right away never sees
+   ERROR_PIPE_BUSY however slowly this process is scheduled. Each connection is served on its own
+   thread; the stop event unblocks the accept loop and every server thread. */
 
-static unsigned __stdcall pipe_main(void *arg)
+#define TA_PIPE_LISTEN 3
+
+static HANDLE ta_pipe_create(const wchar_t *name)
 {
-  ta_pipe_agent *pa = (ta_pipe_agent *)arg;
-  HANDLE listen = INVALID_HANDLE_VALUE;
-  for (;;) {
-    HANDLE h;
-    uint8_t hdr[4], *body;
-    DWORD got, len;
-    if (listen == INVALID_HANDLE_VALUE) {
-      if (pa->stop) break;
-      /* a client that connected and left before ConnectNamedPipe fails with ERROR_NO_DATA: retry */
-      listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
-                                65536, 0, NULL);
-      if (listen == INVALID_HANDLE_VALUE || listen == NULL) break;
-      SetEvent(pa->ready);
+  return CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                          PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, NULL);
+}
+
+/* One overlapped read or write that gives up when stop is signaled. Returns the byte count or -1. */
+static int ta_pipe_io(HANDLE h, HANDLE ev, HANDLE stop, void *buf, DWORD n, int write)
+{
+  OVERLAPPED o;
+  DWORD got = 0;
+  BOOL ok;
+  memset(&o, 0, sizeof(o));
+  o.hEvent = ev;
+  ResetEvent(ev);
+  ok = write ? WriteFile(h, buf, n, &got, &o) : ReadFile(h, buf, n, &got, &o);
+  if (!ok) {
+    HANDLE hs[2];
+    if (GetLastError() != ERROR_IO_PENDING) return -1;
+    hs[0] = ev;
+    hs[1] = stop;
+    if (WaitForMultipleObjects(2, hs, FALSE, INFINITE) != WAIT_OBJECT_0) {
+      CancelIo(h);
+      GetOverlappedResult(h, &o, &got, TRUE);
+      return -1;
     }
-    if (!ConnectNamedPipe(listen, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
-      CloseHandle(listen);
-      listen = INVALID_HANDLE_VALUE;
-      continue;
-    }
-    h = listen;
-    listen = INVALID_HANDLE_VALUE;
-    if (pa->stop) { CloseHandle(h); break; }
-    /* A real agent always has a listening instance: create the next one before serving this
-       connection, so a client that reconnects right away never sees the pipe gone. */
-    listen = CreateNamedPipeW(pa->name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 4, 65536,
-                              65536, 0, NULL);
-    if (listen == INVALID_HANDLE_VALUE || listen == NULL) { CloseHandle(h); break; }
+    if (!GetOverlappedResult(h, &o, &got, FALSE)) return -1;
+  }
+  return (int)got;
+}
+
+static int ta_pipe_io_all(HANDLE h, HANDLE ev, HANDLE stop, uint8_t *buf, DWORD n, int write)
+{
+  DWORD off = 0;
+  while (off < n) {
+    int r = ta_pipe_io(h, ev, stop, buf + off, n - off, write);
+    if (r <= 0) return 0;
+    off += (DWORD)r;
+  }
+  return 1;
+}
+
+static unsigned __stdcall pipe_conn_main(void *arg)
+{
+  ta_pipe_conn *c = (ta_pipe_conn *)arg;
+  ta_pipe_agent *pa = c->pa;
+  HANDLE h = c->h;
+  HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (ev) {
     for (;;) {
       sd_wr w;
-      uint8_t lb[4];
-      if (!ReadFile(h, hdr, 4, &got, NULL) || got != 4) break;
+      uint8_t hdr[4], lb[4], *body;
+      DWORD len;
+      int okw;
+      if (!ta_pipe_io_all(h, ev, pa->stopev, hdr, 4, 0)) break;
       len = sd_load_be32(hdr);
       if (len == 0 || len > (1u << 20)) break;
       body = (uint8_t *)sd_alloc(len);
       if (!body) break;
-      {
-        DWORD off = 0;
-        while (off < len && ReadFile(h, body + off, len - off, &got, NULL) && got) off += got;
-        if (off != len) { sd_free(body); break; }
-      }
+      if (!ta_pipe_io_all(h, ev, pa->stopev, body, len, 0)) { sd_free(body); break; }
       sd_wr_init(&w, 1u << 20);
       agent_answer(&pa->agent, body, len, &w);
       sd_free(body);
       sd_store_be32(lb, (uint32_t)w.len);
-      WriteFile(h, lb, 4, &got, NULL);
-      WriteFile(h, w.p, (DWORD)w.len, &got, NULL);
+      okw = ta_pipe_io_all(h, ev, pa->stopev, lb, 4, 1) && ta_pipe_io_all(h, ev, pa->stopev, w.p, (DWORD)w.len, 1);
       sd_wr_free(&w);
+      if (!okw) break;
     }
-    DisconnectNamedPipe(h);
-    CloseHandle(h);
-    if (listen == INVALID_HANDLE_VALUE && pa->stop) break;
+    CloseHandle(ev);
   }
-  if (listen != INVALID_HANDLE_VALUE && listen != NULL) CloseHandle(listen);
+  DisconnectNamedPipe(h);
+  CloseHandle(h);
+  InterlockedExchange(&c->done, 1);
+  return 0;
+}
+
+/* Hands a connected instance to a server thread, reusing a finished slot. Returns 0 when none is free. */
+static int pipe_spawn(ta_pipe_agent *pa, HANDLE h)
+{
+  int i;
+  for (i = 0; i < TA_PIPE_CONNS; i++) {
+    ta_pipe_conn *c = &pa->conns[i];
+    if (c->started && !c->done) continue;
+    if (c->started) sd_thread_join(&c->thread, SD_WAIT_INFINITE, NULL);
+    c->started = 0;
+    c->pa = pa;
+    c->h = h;
+    c->done = 0;
+    if (sd_thread_create(&c->thread, pipe_conn_main, c, 256u * 1024, L"fake agent conn") != SD_OK) return 0;
+    c->started = 1;
+    return 1;
+  }
+  return 0;
+}
+
+static unsigned __stdcall pipe_main(void *arg)
+{
+  ta_pipe_agent *pa = (ta_pipe_agent *)arg;
+  HANDLE inst[TA_PIPE_LISTEN];
+  HANDLE evs[TA_PIPE_LISTEN + 1];
+  OVERLAPPED ov[TA_PIPE_LISTEN];
+  int i, alive = 1;
+  evs[0] = pa->stopev;
+  for (i = 0; i < TA_PIPE_LISTEN; i++) {
+    inst[i] = INVALID_HANDLE_VALUE;
+    evs[i + 1] = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!evs[i + 1]) alive = 0;
+  }
+  while (alive) {
+    DWORD r, got;
+    /* arm: create an instance and start an overlapped connect; a client that is already waiting
+       completes at once (ERROR_PIPE_CONNECTED) and is signaled through the event */
+    for (i = 0; i < TA_PIPE_LISTEN && alive; i++) {
+      if (inst[i] != INVALID_HANDLE_VALUE) continue;
+      inst[i] = ta_pipe_create(pa->name);
+      if (inst[i] == INVALID_HANDLE_VALUE || inst[i] == NULL) { inst[i] = INVALID_HANDLE_VALUE; alive = 0; break; }
+      memset(&ov[i], 0, sizeof(ov[i]));
+      ov[i].hEvent = evs[i + 1];
+      ResetEvent(evs[i + 1]);
+      if (!ConnectNamedPipe(inst[i], &ov[i])) {
+        DWORD e = GetLastError();
+        if (e == ERROR_PIPE_CONNECTED) SetEvent(evs[i + 1]);
+        else if (e != ERROR_IO_PENDING) { CloseHandle(inst[i]); inst[i] = INVALID_HANDLE_VALUE; alive = 0; break; }
+      }
+    }
+    if (!pa->ready_set) { pa->ready_set = 1; SetEvent(pa->ready); }
+    if (!alive) break;
+    r = WaitForMultipleObjects(TA_PIPE_LISTEN + 1, evs, FALSE, INFINITE);
+    if (r < WAIT_OBJECT_0 + 1 || r > WAIT_OBJECT_0 + TA_PIPE_LISTEN) break;   /* stop (or failure) */
+    i = (int)(r - WAIT_OBJECT_0) - 1;
+    if (!GetOverlappedResult(inst[i], &ov[i], &got, FALSE) || !pipe_spawn(pa, inst[i])) CloseHandle(inst[i]);
+    inst[i] = INVALID_HANDLE_VALUE;
+  }
+  for (i = 0; i < TA_PIPE_LISTEN; i++) {
+    if (inst[i] != INVALID_HANDLE_VALUE) CloseHandle(inst[i]);
+    if (evs[i + 1]) CloseHandle(evs[i + 1]);
+  }
+  SetEvent(pa->ready);
   return 0;
 }
 
@@ -174,9 +263,12 @@ sd_err ta_pipe_start(ta_pipe_agent *pa)
 {
   _snwprintf_s(pa->name, SD_COUNTOF(pa->name), _TRUNCATE, L"\\\\.\\pipe\\sd-test-agent-%lu-%p",
                (unsigned long)GetCurrentProcessId(), (void *)pa);
+  memset(pa->conns, 0, sizeof(pa->conns));
+  pa->ready_set = 0;
   pa->ready = CreateEventW(NULL, FALSE, FALSE, NULL);
+  pa->stopev = CreateEventW(NULL, TRUE, FALSE, NULL);
   pa->stop = 0;
-  if (!pa->ready) return SD_E_INTERNAL;
+  if (!pa->ready || !pa->stopev) return SD_E_INTERNAL;
   if (sd_thread_create(&pa->thread, pipe_main, pa, 256u * 1024, L"fake agent") != SD_OK) return SD_E_INTERNAL;
   WaitForSingleObject(pa->ready, 5000);
   SetEnvironmentVariableW(L"SSH_AUTH_SOCK", pa->name);
@@ -185,12 +277,14 @@ sd_err ta_pipe_start(ta_pipe_agent *pa)
 
 void ta_pipe_stop(ta_pipe_agent *pa)
 {
-  HANDLE h;
+  int i;
   pa->stop = 1;
-  h = CreateFileW(pa->name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);   /* unblock */
-  if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+  SetEvent(pa->stopev);
   sd_thread_join(&pa->thread, SD_WAIT_INFINITE, NULL);
+  for (i = 0; i < TA_PIPE_CONNS; i++)
+    if (pa->conns[i].started) sd_thread_join(&pa->conns[i].thread, SD_WAIT_INFINITE, NULL);
   CloseHandle(pa->ready);
+  CloseHandle(pa->stopev);
   SetEnvironmentVariableW(L"SSH_AUTH_SOCK", NULL);
 }
 
