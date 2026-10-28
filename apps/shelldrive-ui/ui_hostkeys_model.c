@@ -118,6 +118,38 @@ void ui_hk_row_cells(const ui_hk_row *row, const wchar_t *hashed_text, const wch
   put_wide(cells[4], UI_HK_CELL_MAX, row->store == UI_HK_STORE_MACHINE ? machine_text : user_text);
 }
 
+void ui_hk_row_details(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
+                       const wchar_t *user_text, wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX])
+{
+  wchar_t cells[UI_HK_CELLS][UI_HK_CELL_MAX];
+  memset(values, 0, sizeof(wchar_t) * UI_HK_DETAILS * UI_HK_CELL_MAX);
+  ui_hk_row_cells(row, hashed_text, machine_text, user_text, cells);
+  memcpy(values[UI_HK_DET_HOST], cells[0], sizeof(cells[0]));
+  memcpy(values[UI_HK_DET_PORT], cells[1], sizeof(cells[1]));
+  memcpy(values[UI_HK_DET_TYPE], cells[2], sizeof(cells[2]));
+  memcpy(values[UI_HK_DET_FP], cells[3], sizeof(cells[3]));
+  memcpy(values[UI_HK_DET_STORE], cells[4], sizeof(cells[4]));
+  swprintf_s(values[UI_HK_DET_LINE], UI_HK_CELL_MAX, L"%lu", (unsigned long)row->line);
+}
+
+sd_err ui_hk_reject_params(const char *id, char *out, size_t cap)
+{
+  int n;
+  if (out == NULL || cap == 0)
+    return SD_E_INVALID_PARAM;
+  out[0] = '\0';
+  if (!ui_hk_id_ok(id))
+    return SD_E_INVALID_PARAM;
+  if (cap < strlen(id) + sizeof("{\"id\":\"\"}"))   /* sprintf_s would abort on a short buffer */
+    return SD_E_INVALID_PARAM;
+  n = sprintf_s(out, cap, "{\"id\":\"%s\"}", id);
+  if (n < 0) {
+    out[0] = '\0';
+    return SD_E_INVALID_PARAM;
+  }
+  return SD_OK;
+}
+
 void ui_hk_announce_cells(const char *host, int action, const char *type, const char *fp,
                           const wchar_t *add_text, const wchar_t *remove_text,
                           wchar_t cells[4][UI_HK_CELL_MAX])

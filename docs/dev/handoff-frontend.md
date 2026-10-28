@@ -238,3 +238,38 @@ new dialogs in the lab, XP behaviour of anything (no lab).
   bar shows the text only.
 - Still open: the event list of 7.7 (item 6), the other host key manager details (item 7), Logs viewer extras (item 8).
 
+## Round 17 (branch `wip/r17-uiev`): event list, reject and host key details
+
+- **Decline = reject (item 1).** "Don't add" in the review of **Add key from server...** now sends `hostkey.announced.reject {id}`
+  (`UI_IPC_HK_REJECT`, request built by `ui_hk_reject_params`), so a declined offer leaves the Announced keys tab; the tab also has
+  a **Dismiss offer** button for the selected announcement (7.5 does not name it, it follows the CLI answer "no" of 6.1). The
+  status line says whether the offer was dropped; an agent without the method leaves the offer listed and the status line shows the
+  error name.
+- **Event list (item 6, 7.7).** Tools menu and tray menu **Events...** open `ui_events.c`: a list (time, drive or server, kind, text),
+  a search box, **Copy list** (tab separated, the rows that match) and **Clear list**. The record is kept for the life of the
+  process (`ui_events_model.c`: ring of 200, oldest dropped first; sequence numbers never reused) and does not depend on the
+  window being open. What is recorded: every change of state of a drive and every failed mount with its error code (`mount.state`,
+  `main.c`), and every notification of the tray (`ui_tray.c`: warnings, host key changed, wrong key type, new keys offered, prompt
+  timeout, update available), also when the notifications switch is off. Kinds: Drive, Host key, Warning, Error, Information.
+  It is its own window (the main window has no room left; 7.7 only says "the main window's event list").
+- **Host key details (item 7).** Under the Known keys list a read-only pane shows the selected key: host, port, key type, SHA256
+  fingerprint, store and line in its file (`ui_hk_row_details`); **Copy fingerprint** copies the fingerprint.
+- **Logs viewer (item 8).** Level filter, search, Copy selection and Open log folder were already in. Not built: the privacy note
+  (no `[log] privacy` setting yet) and **Create diagnostic bundle...** (no `diag.collect` in `features`).
+- Strings: 33 new entries in all six locales (`ui.events.*`, `ui.menu.events`, `ui.hostkeys.*`; one plural,
+  `ui.events.status_count`). `ui.hostkeys.add.declined` lost its sentence about the Announced keys tab (the offer is dropped now).
+  The new windows use no mnemonics.
+- Tests: `tests/ui/test_events.c` (5), `hk_reject_params_json` and `hk_row_details_follow_the_row` in `test_hostkeys.c`; the
+  `ui_events` window is created, filled, searched and cleared in `--test-windows`.
+
+### Backend missing (round 17)
+
+- Host key manager: the source wording of 7.5 ("Copied from PuTTY", "Copied from OpenSSH", "Updated by server") and the details
+  "comment" and "added date" need `sd_known_hosts_list_all` to return the line's trailing comment (`# updated-by=... added=...`) and
+  its origin; the MD5 fingerprint needs an MD5 in `sd_crypto`. "Edit machine keys..." (elevated relaunch) needs the machine writes
+  of the CLI (`hostkey add --machine`), which are still "not part of this build".
+- `hostkey.announced.reject` is on the agent and the service; the UI uses the agent only.
+- Event list: the agent has no event history; the list starts when the UI starts. A `mount.state` event does not say why a drive
+  reconnected, so the text is the new state.
+- Logs viewer: `[log] privacy` and `diag.collect`.
+

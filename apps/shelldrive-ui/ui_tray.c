@@ -284,9 +284,29 @@ void ui_tray_flush(void)
     stop_timer();
 }
 
+/* The kind an event list entry (7.7) gets from the message of its balloon. */
+static ui_ev_kind event_kind_of(sd_msg_id msg)
+{
+  if (msg == SD_MSG_UI_HKI_NOTIFY_CHANGED || msg == SD_MSG_UI_HKI_NOTIFY_TYPE ||
+      msg == SD_MSG_UI_HKI_NOTIFY_TYPE_STORED || msg == SD_MSG_UI_NOTIFY_HOSTKEYS)
+    return UI_EV_HOSTKEY;
+  if (msg == SD_MSG_UI_WARN_WRITE_FAILED)
+    return UI_EV_ERROR;
+  if (msg == SD_MSG_UI_WARN_LEGACY || msg == SD_MSG_UI_WARN_TERRAPIN || msg == SD_MSG_UI_WARN_GENERIC)
+    return UI_EV_WARNING;
+  return UI_EV_INFO;
+}
+
+/* Every notification is also recorded in the event list (7.7), shown as a balloon or not. */
+static void record_notice(sd_msg_id msg, const wchar_t *subject, const wchar_t *text)
+{
+  ui_events_record(event_kind_of(msg), subject != NULL ? subject : L"", text != NULL ? text : L"");
+}
+
 /* A balloon whose text the caller formatted (more than one placeholder); msg identifies the kind for the click. */
 void ui_tray_notify_text(sd_msg_id msg, const wchar_t *subject, const wchar_t *text)
 {
+  record_notice(msg, subject, text);
   post_balloon(msg, subject != NULL ? subject : L"", text);
 }
 
@@ -295,6 +315,7 @@ void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
   wchar_t *text = ui_format1(msg, name, arg ? arg : L"");
   if (text == NULL)
     return;
+  record_notice(msg, arg, text);
   post_balloon(msg, arg ? arg : L"", text);
   sd_free(text);
 }
@@ -303,8 +324,7 @@ void ui_tray_balloon(const char *code, const wchar_t *drive)
 {
   sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
   /* write_failed is always shown (03 §7.7); the others follow the notifications setting */
-  if (!g_app.notify_on && !(code && strcmp(code, "write_failed") == 0))
-    return;
+  int shown = g_app.notify_on || (code && strcmp(code, "write_failed") == 0);
   if (code && strcmp(code, "legacy_algorithms") == 0)
     msg = SD_MSG_UI_WARN_LEGACY;
   else if (code && strcmp(code, "terrapin_exposed") == 0)
@@ -313,7 +333,16 @@ void ui_tray_balloon(const char *code, const wchar_t *drive)
     msg = SD_MSG_UI_WARN_WRITE_FAILED;
   if (msg == SD_MSG_UI_WARN_LEGACY || msg == SD_MSG_UI_WARN_TERRAPIN)
     wcsncpy_s(g_last_drive, SD_COUNTOF(g_last_drive), drive ? drive : L"", _TRUNCATE);
-  ui_tray_notify_msg(msg, "drive", drive);
+  if (shown) {
+    ui_tray_notify_msg(msg, "drive", drive);
+  } else {
+    /* no balloon, but the event list still has it (7.7) */
+    wchar_t *text = ui_format1(msg, "drive", drive ? drive : L"");
+    if (text != NULL) {
+      record_notice(msg, drive, text);
+      sd_free(text);
+    }
+  }
 }
 
 static void notify_hostkeys(const wchar_t *host)
@@ -321,7 +350,9 @@ static void notify_hostkeys(const wchar_t *host)
   wchar_t *text = ui_format1(SD_MSG_UI_NOTIFY_HOSTKEYS, "host", host);
   if (text == NULL)
     return;
-  post_balloon(SD_MSG_UI_NOTIFY_HOSTKEYS, host, text);
+  record_notice(SD_MSG_UI_NOTIFY_HOSTKEYS, host, text);
+  if (g_app.notify_on)
+    post_balloon(SD_MSG_UI_NOTIFY_HOSTKEYS, host, text);
   sd_free(text);
 }
 
@@ -334,8 +365,6 @@ void ui_tray_on_hostkeys_announced(const sd_json *data)
   wchar_t w[UI_NOTIFY_SUBJECT_MAX + 1];
   ui_mount *m;
 
-  if (!g_app.notify_on)
-    return;
   if (host != NULL && host[0] != '\0') {
     ui_text_utf8(host, w, SD_COUNTOF(w));
     notify_hostkeys(w);
@@ -393,6 +422,7 @@ static void show_menu(void)
   AppendMenuW(menu, MF_STRING, UI_CMD_OPEN, sd_l10n_get(SD_MSG_UI_TRAY_OPEN));
   AppendMenuW(menu, MF_STRING, UI_CMD_HOSTKEYS, sd_l10n_get(SD_MSG_UI_MENU_HOSTKEYS));
   AppendMenuW(menu, MF_STRING, UI_CMD_LOGS, sd_l10n_get(SD_MSG_UI_MENU_LOGS));
+  AppendMenuW(menu, MF_STRING, UI_CMD_EVENTS, sd_l10n_get(SD_MSG_UI_MENU_EVENTS));
   AppendMenuW(menu, MF_STRING, UI_CMD_SERVICE, sd_l10n_get(SD_MSG_UI_MENU_SERVICE));
   AppendMenuW(menu, MF_STRING, UI_CMD_SETTINGS, sd_l10n_get(SD_MSG_UI_MENU_SETTINGS));
   AppendMenuW(menu, MF_STRING, UI_CMD_ABOUT, sd_l10n_get(SD_MSG_UI_MENU_ABOUT));
@@ -409,7 +439,7 @@ static void show_menu(void)
 
   if (cmd == UI_CMD_OPEN) {
     ui_main_show();
-  } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_SERVICE ||
+  } else if (cmd == UI_CMD_HOSTKEYS || cmd == UI_CMD_LOGS || cmd == UI_CMD_SETTINGS || cmd == UI_CMD_SERVICE || cmd == UI_CMD_EVENTS ||
              cmd == UI_CMD_ABOUT) {
     ui_windows_command(cmd);
   } else if (cmd == UI_CMD_ADMIN) {

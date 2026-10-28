@@ -1334,8 +1334,8 @@ msgstr "&Não adicionar"
 
 #. Host key manager status line: the user did not add the offered keys.
 msgctxt "ui.hostkeys.add.declined"
-msgid "No key was added. The offer stays on the Announced keys tab."
-msgstr "Nenhuma chave foi adicionada. A oferta continua na aba de chaves anunciadas."
+msgid "No key was added."
+msgstr "Nenhuma chave foi adicionada."
 
 #. Host key manager: this build of the agent cannot connect to a server to collect its host keys yet.
 msgctxt "ui.hostkeys.add.err_unsupported"
@@ -2519,3 +2519,147 @@ msgstr "O ShellDrive não avisará mais sobre estes algoritmos neste servidor. O
 msgctxt "ui.secdlg.refuse_ask"
 msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
 msgstr "A partir de agora, os algoritmos obsoletos são recusados neste servidor. Reconectar {drive} agora?"
+
+#. Host key manager button: copies the SHA256 fingerprint of the selected key.
+msgctxt "ui.hostkeys.btn_copy_fp"
+msgid "Copy fingerprint"
+msgstr "Copiar impressão digital"
+
+#. Host key manager status line: the fingerprint is on the clipboard.
+msgctxt "ui.hostkeys.fp_copied"
+msgid "Fingerprint copied."
+msgstr "A impressão digital foi copiada."
+
+#. Announced keys button: drops the selected offer without changing any stored key.
+msgctxt "ui.hostkeys.btn_reject"
+msgid "Dismiss offer"
+msgstr "Descartar oferta"
+
+#. Host key manager status line after an offer was dismissed. {host} is the server.
+msgctxt "ui.hostkeys.rejected"
+msgid "The offer from {host} was dismissed. No key was changed."
+msgstr "A oferta de {host} foi descartada. Nenhuma chave foi alterada."
+
+#. Host key manager status line: the agent did not drop the offer. {code} is the error name.
+msgctxt "ui.hostkeys.reject_failed"
+msgid "The offer could not be dismissed ({code})."
+msgstr "Não foi possível descartar a oferta ({code})."
+
+#. Host key manager details pane when no key is selected.
+msgctxt "ui.hostkeys.det_none"
+msgid "Select a key to see its details."
+msgstr "Selecione uma chave para ver os detalhes."
+
+#. Host key details line. {value} is the host name.
+msgctxt "ui.hostkeys.det_host"
+msgid "Host: {value}"
+msgstr "Host: {value}"
+
+#. Host key details line. {value} is the TCP port.
+msgctxt "ui.hostkeys.det_port"
+msgid "Port: {value}"
+msgstr "Porta: {value}"
+
+#. Host key details line. {value} is the key type, such as ssh-ed25519.
+msgctxt "ui.hostkeys.det_type"
+msgid "Key type: {value}"
+msgstr "Tipo de chave: {value}"
+
+#. Host key details line. {value} is the SHA256 fingerprint.
+msgctxt "ui.hostkeys.det_fp"
+msgid "SHA256 fingerprint: {value}"
+msgstr "Impressão digital SHA256: {value}"
+
+#. Host key details line. {value} says which store holds the key.
+msgctxt "ui.hostkeys.det_store"
+msgid "Stored in: {value}"
+msgstr "Armazenada em: {value}"
+
+#. Host key details line. {value} is the line number of the key in its known_hosts file.
+msgctxt "ui.hostkeys.det_line"
+msgid "Line in the file: {value}"
+msgstr "Linha no arquivo: {value}"
+
+#. Host key details: note for a key of the machine store.
+msgctxt "ui.hostkeys.det_readonly"
+msgid "Machine keys can only be changed by an administrator."
+msgstr "Somente um administrador pode alterar as chaves da máquina."
+
+#. Tools menu and tray menu: opens the list of recent events.
+msgctxt "ui.menu.events"
+msgid "Events…"
+msgstr "Eventos…"
+
+#. Title of the event list window.
+msgctxt "ui.events.title"
+msgid "ShellDrive events"
+msgstr "Eventos do ShellDrive"
+
+#. Event list column: when the event happened.
+msgctxt "ui.events.col_time"
+msgid "Time"
+msgstr "Hora"
+
+#. Event list column: the drive letter or server the event is about.
+msgctxt "ui.events.col_subject"
+msgid "Drive or server"
+msgstr "Unidade ou servidor"
+
+#. Event list column: the kind of event.
+msgctxt "ui.events.col_kind"
+msgid "Kind"
+msgstr "Tipo"
+
+#. Event list column: what happened.
+msgctxt "ui.events.col_text"
+msgid "Event"
+msgstr "Evento"
+
+#. Event kind: a drive changed state.
+msgctxt "ui.events.kind_drive"
+msgid "Drive"
+msgstr "Unidade"
+
+#. Event kind: a host key problem or offer.
+msgctxt "ui.events.kind_hostkey"
+msgid "Host key"
+msgstr "Chave do host"
+
+#. Event kind: a warning.
+msgctxt "ui.events.kind_warning"
+msgid "Warning"
+msgstr "Aviso"
+
+#. Event kind: something failed.
+msgctxt "ui.events.kind_error"
+msgid "Error"
+msgstr "Erro"
+
+#. Event kind: information, such as an update.
+msgctxt "ui.events.kind_info"
+msgid "Information"
+msgstr "Informação"
+
+#. Event list button: copies the listed events to the clipboard.
+msgctxt "ui.events.btn_copy"
+msgid "Copy list"
+msgstr "Copiar lista"
+
+#. Event list button: forgets the recorded events.
+msgctxt "ui.events.btn_clear"
+msgid "Clear list"
+msgstr "Limpar lista"
+
+#. Event text: a mount failed. {code} is the error name.
+msgctxt "ui.events.text_failed"
+msgid "Failed ({code})."
+msgstr "Falhou ({code})."
+
+#. Event list status line: number of events shown.
+#, plural-arg=count
+msgctxt "ui.events.status_count"
+msgid "{count} event."
+msgid_plural "{count} events."
+msgstr[0] "{count} evento."
+msgstr[1] "{count} de eventos."
+msgstr[2] "{count} eventos."

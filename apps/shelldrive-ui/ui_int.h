@@ -16,6 +16,7 @@
 #include "sd_base/sd_json.h"
 #include "sd_config/sd_config.h"
 #include "sd_l10n/sd_l10n_catalog.h"
+#include "ui_events_model.h"
 #include "ui_wire.h"
 
 /* Messages posted to the control window (WM_APP range). */
@@ -63,7 +64,8 @@ typedef enum ui_ipc_kind {
   UI_IPC_LOG,         /* log.tail (ui_logs.c) */
   UI_IPC_UPDATE_CHECK, /* update.check (ui_update.c) */
   UI_IPC_UPDATE_APPLY, /* update.apply, consent true (ui_update.c) */
-  UI_IPC_HK_ADD        /* hostkey.add (ui_hostkeys.c): the agent connects to the server, which can take a while */
+  UI_IPC_HK_ADD,       /* hostkey.add (ui_hostkeys.c): the agent connects to the server, which can take a while */
+  UI_IPC_HK_REJECT     /* hostkey.announced.reject (ui_hostkeys.c): a declined offer leaves the announcements */
 } ui_ipc_kind;
 
 typedef struct ui_ipc_reply {
@@ -260,5 +262,10 @@ int    ui_secdlg_smoke(void);
 typedef enum ui_icon_kind { UI_ICON_IDLE = 0, UI_ICON_CONNECTED, UI_ICON_WARNING, UI_ICON_COUNT } ui_icon_kind;
 HICON  ui_icon_get(ui_icon_kind kind, int size);
 void   ui_icon_free_all(void);
+
+/* ---- ui_events.c: the event list (03 §7.7) ---- */
+/* Records one event (a notification, shown or not) in the list of the Events window; the time is now. */
+void   ui_events_record(ui_ev_kind kind, const wchar_t *subject, const wchar_t *text);
+size_t ui_events_count(void);
 
 #endif /* SD_UI_INT_H */

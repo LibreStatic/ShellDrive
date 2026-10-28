@@ -910,8 +910,8 @@ for its 30 raw instances and its administrator, since an unelevated test process
   list the host.
 
 **Open items**
-- The UI's "Don't add" (`ui_hostkeys.c`) does not call `hostkey.announced.reject` yet: its refused offer stays listed until
-  the agent or the service restarts. The CLI path is done.
+- The UI's "Don't add" (`ui_hostkeys.c`) calls `hostkey.announced.reject` since round 17 (agent pipe only; the UI does not use the
+  service's announcements).
 - `settings.ini` has no read in the service, so the file check is not applied to it (see above).
 - Between the handle check and the mount's own open of the machine known_hosts, the file can change. Closing it needs the
   mount to take the bytes, or to keep the checked handle. Not done. (Profiles are parsed from the checked bytes: no gap.)

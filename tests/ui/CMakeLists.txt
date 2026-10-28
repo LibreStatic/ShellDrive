@@ -11,7 +11,7 @@ set(_ui_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-ui")
 
 sd_add_unit_test(ui
   SOURCES main.c test_wire.c test_dpi.c test_dlg.c test_prompt.c test_profile.c test_logs.c test_hostkeys.c
-          test_settings.c test_notify.c test_dark.c test_wizard.c test_update.c test_admin.c test_service.c test_hkissue.c test_mainview.c
+          test_settings.c test_notify.c test_dark.c test_wizard.c test_update.c test_admin.c test_service.c test_hkissue.c test_mainview.c test_events.c
           ${SD_UI_PURE_SOURCES}
   DEPS sd_config sd_crypto sd_ssh sd_platform sd_base)
 target_include_directories(sd-test-ui PRIVATE "${_ui_dir}")

@@ -166,6 +166,9 @@ void ui_windows_command(UINT cmd)
   case UI_CMD_SERVICE:
     ui_service_open();
     break;
+  case UI_CMD_EVENTS:
+    ui_events_open();
+    break;
   case UI_CMD_ABOUT:
     ui_about_open();
     break;
@@ -180,6 +183,7 @@ void ui_windows_on_reply(int kind, sd_err err, const sd_json *result)
   case UI_IPC_ANNOUNCED:
   case UI_IPC_ACCEPT:
   case UI_IPC_HK_ADD:
+  case UI_IPC_HK_REJECT:
     ui_hostkeys_on_reply(kind, err, result);
     break;
   case UI_IPC_LOG:
@@ -216,6 +220,7 @@ void ui_windows_close_all(void)
 {
   ui_hostkeys_close();
   ui_logs_close();
+  ui_events_close();
   ui_settings_close();
   ui_service_close();
   ui_about_close();
@@ -237,6 +242,12 @@ int ui_windows_smoke_test(void)
 
   w = ui_logs_create_hidden();
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
+  if (w)
+    DestroyWindow(w);
+
+  w = ui_events_create_hidden();
+  ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
+  ok = ok && ui_events_controls_ok();
   if (w)
     DestroyWindow(w);
 

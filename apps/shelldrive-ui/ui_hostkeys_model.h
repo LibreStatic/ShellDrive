@@ -46,6 +46,19 @@ sd_err ui_hk_row_init(ui_hk_row *row, ui_hk_store store, const char *pattern, in
 void ui_hk_row_cells(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
                      const wchar_t *user_text, wchar_t cells[UI_HK_CELLS][UI_HK_CELL_MAX]);
 
+/* Details of the selected key (the pane under the Known keys list): host, port, key type, SHA256 fingerprint, store and
+   line in its file. A hashed entry shows hashed_text as the host and no port. The agent's known_hosts reader gives no
+   comment, added date or MD5 fingerprint (backend missing), so the pane does not show them. */
+#define UI_HK_DETAILS 6
+typedef enum ui_hk_detail { UI_HK_DET_HOST = 0, UI_HK_DET_PORT, UI_HK_DET_TYPE, UI_HK_DET_FP, UI_HK_DET_STORE,
+                            UI_HK_DET_LINE } ui_hk_detail;
+void ui_hk_row_details(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
+                       const wchar_t *user_text, wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX]);
+
+/* The hostkey.announced.reject request {"id": ...} for an announcement the user declined (03 2.4). Fails with
+   SD_E_INVALID_PARAM for an id that ui_hk_id_ok refuses or when cap is too small. */
+sd_err ui_hk_reject_params(const char *id, char *out, size_t cap);
+
 /* Announcement row (the "Announced keys" tab): one key to add or to remove. action: 1 = add, 0 = remove. */
 void ui_hk_announce_cells(const char *host, int action, const char *type, const char *fp,
                           const wchar_t *add_text, const wchar_t *remove_text,
