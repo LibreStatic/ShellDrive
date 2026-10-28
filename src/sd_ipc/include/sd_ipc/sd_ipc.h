@@ -151,6 +151,13 @@ typedef struct sd_ipc_server_cfg {
   /* M5: a client refused at hello or by the rate limit, on the pipe thread. reason: "token", "per_sid", "reserved"
      or "rate". Not called by the agent, which has no quotas. */
   void (*on_refused)(void *ctx, sd_ipc_client *client, const char *reason);
+  /* M5 (service, 2.2, TM-R25): the admin class of a connection is decided when it connects, from its token (before hello),
+     and the reserved instances apply then. A client of the other class that has not sent hello within this many ms of
+     connecting is closed. 0 = no deadline (the agent). Used only together with reserved_admin_instances or this. */
+  uint32_t hello_timeout_ms;
+  /* M5 (service, tests only in practice): returns 1 when a new connection counts as an admin at connect, whatever its
+     token says. NULL, or 0, = the token decides. */
+  int (*admin_at_connect)(void *ctx);
 } sd_ipc_server_cfg;
 
 /* TEST HOOK (M5): the service pipe is created with this owner SID string instead of SYSTEM (an unelevated test

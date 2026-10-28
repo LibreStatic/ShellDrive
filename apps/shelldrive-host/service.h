@@ -54,4 +54,14 @@ int  svc_dispatch(void);
 /* Console mode for `shelldrive-host.exe service-debug`: the same core, Ctrl+C stops it. */
 int  svc_console_run(void);
 
+#ifdef SD_SVC_TEST_HOOKS
+/* SD_SVC_TEST_HOOKS builds only. forced = 0 reads the UpdateHostKeys policy from the registry (default); forced = 1 uses
+   value (2 = accept proven keys, 1 = ask, 0 = never) for every announcement from now on. */
+void svc_test_hk_policy(int forced, DWORD value);
+/* SD_SVC_TEST_HOOKS builds only. on = 1: every new pipe connection counts as an elevated administrator at connect (the
+   class of the reserved-instance rule, 2.2); the token class is used again when on = 0. Tests of the reserved instances
+   use it for their raw instances, which an unelevated test process could not hold otherwise. */
+void svc_test_connect_admin(int on);
+#endif
+
 #endif /* SERVICE_H */

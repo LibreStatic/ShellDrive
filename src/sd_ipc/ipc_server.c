@@ -60,6 +60,8 @@ struct sd_ipc_client {
   char kind[16];                      /* hello "client" */
   PSID sid;
   int elevated, admin;
+  int conn_admin;                     /* 2.2: admin class decided at connect, from the token (before hello) */
+  uint64_t connect_ms;                /* when the instance connected: the hello deadline counts from here */
   DWORD pid;
   uint64_t last_activity;
   uint64_t rate_window;
@@ -89,6 +91,8 @@ struct sd_ipc_server {
 static void client_close(sd_ipc_client *c);
 static void client_start_read(sd_ipc_client *c);
 static void client_pump_write(sd_ipc_client *c);
+static void classify_at_connect(sd_ipc_client *c);
+static void reply_error_code(sd_ipc_client *c, int64_t id, sd_err e, const char *code, const char *detail);
 
 /* Admin state for the service rules (caps, reserved instances, rate limit): the server's callback when it has one. */
 static int client_is_admin(sd_ipc_client *c)
@@ -221,9 +225,33 @@ static void on_connected(sd_ipc_server *s)
   s->clients = c;
   sd_mutex_unlock(&s->lock);
   SD_LOGD("ipc", "client %llu connected", (unsigned long long)c->id);
+  /* 2.2 (TM-R25): the class of the instance is decided here, from the token, not at hello. The reserved instances and
+     the hello deadline of the service depend on it, so a connection that never says hello is counted correctly. */
+  c->connect_ms = sd_tick_ms();
+  if (s->cfg.reserved_admin_instances || s->cfg.hello_timeout_ms)
+    classify_at_connect(c);
+  if (s->cfg.admin_at_connect && s->cfg.admin_at_connect(s->cfg.ctx))
+    c->conn_admin = 1;
   /* Listen again BEFORE the read: if this client is already gone, closing its instance must not
      leave the pipe name without any instance (clients would see ERROR_FILE_NOT_FOUND). */
   listen_next(s);
+  if (s->cfg.reserved_admin_instances && s->cfg.max_instances > s->cfg.reserved_admin_instances && !c->conn_admin) {
+    sd_ipc_client *o;
+    uint32_t others = 0;
+    sd_mutex_lock(&s->lock);
+    for (o = s->clients; o; o = o->next)
+      if (o != c && !o->closing)
+        others++;
+    sd_mutex_unlock(&s->lock);
+    if (others >= s->cfg.max_instances - s->cfg.reserved_admin_instances) {
+      /* the instances left are held for administrators: the client gets the refusal and the instance is closed
+         after it is written; nothing is read from it (the hello deadline does not apply to a closing instance) */
+      refused(c, "reserved");
+      c->close_after_write = 1;
+      reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "instances reserved for administrators");
+      return;
+    }
+  }
   client_start_read(c);
 }
 
@@ -372,12 +400,32 @@ static void reply_error_code(sd_ipc_client *c, int64_t id, sd_err e, const char 
 
 /* ---- hello ---- */
 
+/* Admin class of a token (2.2, TM-R25): a member of BUILTIN\Administrators that is elevated (Vista+; on XP any member).
+   *elevated is set from TokenElevation when the query works. Fail closed: a token that cannot be checked is not admin. */
+static int token_admin_class(HANDLE tok, int *elevated)
+{
+  SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+  PSID admins = NULL;
+  BOOL member = FALSE;
+  DWORD elev = 0, len = 0;
+  int admin = 0;
+  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elev, sizeof(elev), &len))
+    *elevated = elev ? 1 : 0;
+  if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)) {
+    if (CheckTokenMembership(tok, admins, &member) && member)
+      admin = (*elevated || !sd_os_at_least(6, 0, 0)) ? 1 : 0;
+    FreeSid(admins);
+  }
+  return admin;
+}
+
 static int token_checks(sd_ipc_client *c, HANDLE tok, const char **code)
 {
   sd_ipc_server *s = c->srv;
-  DWORD rid = 0, len = 0, appc = 0, elevated = 0;
+  DWORD rid = 0, len = 0, appc = 0;
+  int elevated_flag = 0;
   *code = "access_denied";
-  if (ipc_token_user_sid(tok, &c->sid) != SD_OK)
+  if (c->sid == NULL && ipc_token_user_sid(tok, &c->sid) != SD_OK)      /* the connect check may have read it */
     return 0;
   if (s->ep == SD_IPC_AGENT && !EqualSid(c->sid, s->own_sid))
     return 0;
@@ -386,20 +434,32 @@ static int token_checks(sd_ipc_client *c, HANDLE tok, const char **code)
   if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)29 /* TokenIsAppContainer */, &appc, sizeof(appc), &len) &&
       appc)
     return 0;
-  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elevated, sizeof(elevated), &len))
-    c->elevated = elevated ? 1 : 0;
-  {
-    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
-    PSID admins = NULL;
-    BOOL member = FALSE;
-    if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
-                                 &admins)) {
-      if (CheckTokenMembership(tok, admins, &member) && member)
-        c->admin = (c->elevated || !sd_os_at_least(6, 0, 0)) ? 1 : 0;
-      FreeSid(admins);
-    }
-  }
+  c->admin = token_admin_class(tok, &elevated_flag) ? 1 : 0;
+  c->elevated = elevated_flag;
   return 1;
+}
+
+/* The class of a connecting instance, read from its token before hello (2.2, TM-R25): the user SID (for the per-SID
+   quota and Event 3101) and whether the client is an elevated admin. Only the service configures the rules that use it
+   (reserved instances, hello deadline), so the agent never impersonates here. Fail closed: no token = not admin. */
+static void classify_at_connect(sd_ipc_client *c)
+{
+  HANDLE tok = NULL;
+  int elevated = 0;
+  if (!ImpersonateNamedPipeClient(c->pipe))
+    return;
+  if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &tok))
+    tok = NULL;
+  if (!RevertToSelf()) {
+    /* Continuing under the client's identity is never acceptable. */
+    ExitProcess(1);
+  }
+  if (tok == NULL)
+    return;
+  if (c->sid == NULL && ipc_token_user_sid(tok, &c->sid) != SD_OK)
+    c->sid = NULL;
+  c->conn_admin = token_admin_class(tok, &elevated);
+  CloseHandle(tok);
 }
 
 static int check_client_token(sd_ipc_client *c, const char **code)
@@ -484,19 +544,6 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     const char *kind = sd_json_get_str(msg, "client");
     if (kind && strlen(kind) < sizeof(c->kind))
       memcpy(c->kind, kind, strlen(kind) + 1);
-  }
-  /* TM-R25: the last instances are held back for administrators. The other connected instances (the pending
-     listener excluded) are counted against the instances that are not held back. */
-  if (s->cfg.reserved_admin_instances && s->cfg.max_instances > s->cfg.reserved_admin_instances &&
-      !client_is_admin(c)) {
-    uint32_t connected = s->ninstances - (s->pending_pipe != NULL ? 1u : 0u);
-    uint32_t others = connected > 0 ? connected - 1u : 0u;
-    if (others >= s->cfg.max_instances - s->cfg.reserved_admin_instances) {
-      refused(c, "reserved");
-      c->close_after_write = 1;
-      reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "instances reserved for administrators");
-      return;
-    }
   }
   {
     sd_wr w;
@@ -1013,6 +1060,11 @@ static void idle_sweep(sd_ipc_server *s)
   for (c = s->clients; c; c = next) {
     next = c->next;
     if (!c->closing && c->ntopics == 0 && now - c->last_activity > s->cfg.idle_timeout_ms)
+      client_close(c);
+    /* 2.2 (TM-R25): a client that is not an admin must say hello within hello_timeout_ms of connecting, so an instance
+       that never sends hello is not held for the whole idle timeout */
+    else if (!c->closing && !c->hello_done && !c->conn_admin && s->cfg.hello_timeout_ms &&
+             now - c->connect_ms > s->cfg.hello_timeout_ms)
       client_close(c);
   }
 }

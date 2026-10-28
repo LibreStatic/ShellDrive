@@ -32,6 +32,7 @@
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
 #include "sd_config/sd_config.h"
+#include "sd_config/sd_ini.h"
 #include "sd_ipc/sd_ipc.h"
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_svc_ids.h"
@@ -39,6 +40,7 @@
 #include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
+#include "sd_policy/sd_policy.h"
 #include "sd_secret/sd_secret.h"
 #include "sd_ssh/sd_ssh.h"
 
@@ -63,6 +65,7 @@
 #define SVC_MAX_MESSAGE_NONADMIN 65536u   /* 2.2, TM-R25: request cap of clients that are not elevated admins (admins: 1 MiB) */
 #define SVC_RESERVED_ADMIN_INSTANCES 2u   /* 2.2, TM-R25: of the 32 pipe instances, these are kept for elevated admins */
 #define SVC_IDLE_MS      60000u           /* 2.2: idle timeout of a non-subscribed client */
+#define SVC_HELLO_MS      5000u           /* 2.2 (not given in 03 §2.2): a non-admin must send hello within 5 s of connecting */
 #define SVC_SHUTDOWN_MS  15000u
 #define SVC_MAX_HK        2u              /* hostkey.add connections at once (each holds one sd_ssh connection) */
 #define SVC_MAX_ANNOUNCE  32u             /* kept announcements (hostkey.announced.list); the oldest goes when full */
@@ -157,6 +160,11 @@ static struct svc_state {
   const wchar_t *repair_base;
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
+#ifdef SD_SVC_TEST_HOOKS
+  int test_hk_policy_forced;        /* SD_SVC_TEST_HOOKS only: svc_test_hk_policy replaces the registry value */
+  DWORD test_hk_policy;
+  int test_connect_admin;           /* SD_SVC_TEST_HOOKS only: every new connection counts as admin at connect */
+#endif
   svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
   void *event_ctx;
   svc_prof *profs[SVC_MAX_PROFILES];
@@ -488,6 +496,37 @@ static void svc_free_profiles_locked(void)
   g.nprofs = 0;
 }
 
+/* A machine profile is read through a checked handle (2.6 rule 1, TM-R27): every folder from the machine root to the file
+   and the file itself are checked (reparse point, owner, DACL) by svc_file_read_trusted, and only then parsed. A refused
+   or unreadable file is not loaded; the other profiles still load. */
+static sd_err svc_profile_read(const wchar_t *path, sd_profile *p, const char **bad)
+{
+  unsigned char *buf = NULL;
+  DWORD len = 0, e;
+  svc_folder_reason why = SVC_FOLDER_OK;
+  sd_ini *ini = NULL;
+  uint32_t flags = 0;
+  sd_err r;
+  e = svc_file_read_trusted(g.root, path, g.owner_trusted, NULL, &buf, &len, &why);
+  if (e != 0) {
+    *bad = "unreadable";
+    return SD_E_NOT_FOUND;
+  }
+  if (why != SVC_FOLDER_OK) {
+    *bad = "refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
+    return SD_E_ACCESS_DENIED;
+  }
+  r = sd_ini_parse((const char *)buf, len, &ini, &flags);
+  sd_secure_free(buf, len);
+  if (r != SD_OK) {
+    *bad = "not INI";
+    return r;
+  }
+  r = sd_profile_from_ini(ini, p, bad);
+  sd_ini_free(ini);
+  return r;
+}
+
 /* Loads every machine profile of scope service. A profile that fails validation or name resolution is logged and not
    loaded (2.6 rule 1: a profile is refused, the others still load). */
 static uint32_t svc_load_profiles(void)
@@ -514,7 +553,7 @@ static uint32_t svc_load_profiles(void)
       x = (svc_prof *)sd_calloc(1, sizeof(*x));
       if (x == NULL)
         break;
-      if (sd_profile_load_file(path, &x->p, &bad) != SD_OK) {
+      if (svc_profile_read(path, &x->p, &bad) != SD_OK) {
         SD_LOGW("svc", "machine profile %ls not loaded: %s", fd.cFileName, bad ? bad : "unreadable");
         sd_free(x);
         continue;
@@ -1111,8 +1150,10 @@ static void write_keys_json(sd_json_writer *jw, const char *key, const sd_mount_
   sd_jw_arr_end(jw);
 }
 
-/* One announcement as hostkey.announced.list and the hostkeys.announced event show it (5.6). */
-static void write_ann_obj(sd_json_writer *jw, const char *id, const char *mount_id, const sd_mount_announcement *a)
+/* One announcement as hostkey.announced.list and the hostkeys.announced event show it (5.6). drop_adds: the additions
+   were already written to the machine store, so only the removals are shown (no copy of the record is made). */
+static void write_ann_obj(sd_json_writer *jw, const char *id, const char *mount_id, const sd_mount_announcement *a,
+                          int drop_adds)
 {
   sd_jw_obj_begin(jw);
   sd_jw_key(jw, "id"); sd_jw_cstr(jw, id);
@@ -1120,20 +1161,23 @@ static void write_ann_obj(sd_json_writer *jw, const char *id, const char *mount_
   sd_jw_key(jw, "host"); sd_jw_cstr(jw, a->host);
   sd_jw_key(jw, "lookup_name"); sd_jw_cstr(jw, a->lookup_name);
   sd_jw_key(jw, "hop"); sd_jw_int(jw, (int64_t)a->hop_index + 1);
-  write_keys_json(jw, "add", a->add, a->add_count);
+  write_keys_json(jw, "add", a->add, drop_adds ? 0u : a->add_count);
   write_keys_json(jw, "remove", a->remove, a->remove_count);
   sd_jw_obj_end(jw);
 }
 
 /* Keeps an announcement for review, newest first. When SVC_MAX_ANNOUNCE are kept the oldest is dropped. The id is copied
-   to id_out under g.lock. Returns 0 only when the record cannot be allocated. */
-static int ann_keep(const char *mount_id, const sd_mount_announcement *a, char *id_out, size_t cap)
+   to id_out under g.lock. drop_adds keeps the removals only (the additions were stored). Returns 0 only when the record
+   cannot be allocated. */
+static int ann_keep(const char *mount_id, const sd_mount_announcement *a, int drop_adds, char *id_out, size_t cap)
 {
   svc_ann *x = (svc_ann *)sd_calloc(1, sizeof(*x));
   svc_ann *last, *prev = NULL;
   if (x == NULL)
     return 0;
   x->a = *a;
+  if (drop_adds)
+    x->a.add_count = 0;
   strcpy_s(x->mount_id, sizeof(x->mount_id), mount_id ? mount_id : "");
   sd_mutex_lock(&g.lock);
   g.next_ann++;
@@ -1172,12 +1216,12 @@ static void join_fps(const sd_mount_hostkey *k, uint32_t n, wchar_t *out, size_t
 }
 
 /* Event 2300 (10.3): %1 host, %2 the new fingerprints, %3 the ones no longer offered. */
-static void svc_event_announced(const sd_mount_announcement *a)
+static void svc_event_announced(const sd_mount_announcement *a, int drop_adds)
 {
   wchar_t host[256], added[512], removed[512];
   const wchar_t *args[3];
   wide_from_utf8(a->host, host, SD_COUNTOF(host));
-  join_fps(a->add, a->add_count, added, SD_COUNTOF(added));
+  join_fps(a->add, drop_adds ? 0u : a->add_count, added, SD_COUNTOF(added));
   join_fps(a->remove, a->remove_count, removed, SD_COUNTOF(removed));
   args[0] = host;
   args[1] = added;
@@ -1185,35 +1229,97 @@ static void svc_event_announced(const sd_mount_announcement *a)
   svc_event(SVC_MSG_HOSTKEYS_ANNOUNCED, args, 3);
 }
 
+static sd_err svc_machine_apply(const sd_mount_announcement *a, int add_only);
+
+/* The machine known_hosts is read by the service's mounts and hostkey connections (5.1): it is checked on its handle
+   before the read, as a write is (svc_store_check, TM-R27), so a file an untrusted principal can change is never the
+   source of the trusted keys. A missing file is not a refusal (no stored key). Returns NULL, or the refusal text. Only
+   the check on the handle: the mount opens the file again, so a change between the two is not excluded (open item). */
+static const char *svc_kh_read_check(void)
+{
+  svc_folder_reason why = SVC_FOLDER_OK;
+  DWORD e;
+  if (g.kh[0] == 0)
+    return "machine known_hosts path is not set";
+  e = svc_store_check(g.kh, g.owner_trusted, NULL, &why);
+  if (e != 0 || why != SVC_FOLDER_OK) {
+    SD_LOGW("svc", "the machine known_hosts is refused for reading (win32 %lu, reason %d) (TM-R27)", (unsigned long)e,
+            (int)why);
+    return "machine known_hosts refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
+  }
+  return NULL;
+}
+
+/* The UpdateHostKeys policy of the machine (03 §3.5): 2 lets the service add the proven keys of an announcement to the
+   machine store by itself (5.6). HKLM wins over HKCU, as for every policy. Read at each announcement, so a change
+   applies to the next one. Tests force the value (svc_test_hk_policy). */
+static int svc_policy_hk_accept(void)
+{
+#ifdef SD_SVC_TEST_HOOKS
+  if (g.test_hk_policy_forced)
+    return g.test_hk_policy == 2;
+#endif
+  {
+    DWORD v = 0;
+    return sd_policy_get_dword(SD_POLICY_UPDATEHOSTKEYS, &v) && v == 2;
+  }
+}
+
+#ifdef SD_SVC_TEST_HOOKS
+void svc_test_hk_policy(int forced, DWORD value)
+{
+  g.test_hk_policy_forced = forced;
+  g.test_hk_policy = value;
+}
+
+void svc_test_connect_admin(int on)
+{
+  g.test_connect_admin = on;
+}
+#endif
+
 /* UpdateHostKeys (5.6) of a global mount, policy ask: the announcement is kept for an administrator and announced
-   (Event 2300, topic hostkeys). The machine store is not changed here. */
+   (Event 2300, topic hostkeys). Under policy 2 (svc_policy_hk_accept) the proven new keys are written to the machine
+   store first, with the same checks as an accept; the removals always wait for an administrator (as in the agent).
+   A failed write keeps the whole announcement for review. */
 static void svc_on_hostkeys(void *ctx, sd_mount *m, const sd_mount_announcement *a, int applied, sd_err err)
 {
   char mid[16] = "", id[16] = "";
+  int drop_adds = 0;
   svc_mount *r;
   sd_wr d;
   sd_json_writer jw;
   (void)ctx;
   (void)err;
   if (applied) {
-    /* only UpdateHostKeys = 2 (not in this build) applies an announcement by itself */
+    /* a service mount never applies an announcement itself (its hop is ask), so this is a fault: nothing is changed */
     SD_LOGW("svc", "an applied host key announcement was reported for a service mount; nothing is changed");
     return;
+  }
+  if (a->add_count != 0 && svc_policy_hk_accept()) {
+    sd_err ae = svc_machine_apply(a, 1);                /* add only: removals need the review (5.6) */
+    SD_LOGI("svc", "UpdateHostKeys policy 2: %u new key(s) for %s saved to the machine store (%s)",
+            (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
+    if (ae == SD_OK) {
+      if (a->remove_count == 0)
+        return;
+      drop_adds = 1;                                    /* what is left to review: the removals */
+    }
   }
   sd_mutex_lock(&g.lock);
   r = find_by_m_locked(m);
   if (r != NULL)
     strcpy_s(mid, sizeof(mid), r->id);
   sd_mutex_unlock(&g.lock);
-  if (!ann_keep(mid, a, id, sizeof(id))) {
+  if (!ann_keep(mid, a, drop_adds, id, sizeof(id))) {
     SD_LOGW("svc", "host keys announced for %s were not kept (out of memory)", a->lookup_name);
     return;
   }
   SD_LOGI("svc", "host keys announced for %s kept for review (%s)", a->lookup_name, id);
-  svc_event_announced(a);
+  svc_event_announced(a, drop_adds);
   sd_wr_init(&d, 4096);
   sd_jw_init(&jw, &d);
-  write_ann_obj(&jw, id, mid, a);
+  write_ann_obj(&jw, id, mid, a, drop_adds);
   if (sd_jw_finish(&jw) == SD_OK)
     broadcast_event("hostkeys", "hostkeys.announced", &d);
   sd_wr_free(&d);
@@ -1366,7 +1472,7 @@ static sd_err svc_hk_complete(sd_json_writer *jw, const svc_hk *hk, sd_mount_hk_
     a->add_count = n;
     strcpy_s(a->host, sizeof(a->host), hk->host);
     strcpy_s(a->lookup_name, sizeof(a->lookup_name), hk->lookup);
-    if (!ann_keep("", a, id, sizeof(id))) {
+    if (!ann_keep("", a, 0, id, sizeof(id))) {
       sd_free(a);
       *code = NULL;
       strcpy_s(detail, cap, "out of memory");
@@ -1499,6 +1605,8 @@ static void job_hk_start(void *arg)
       pr.hop_count = 1;
     }
   }
+  if (why == NULL)
+    why = svc_kh_read_check();
   if (why == NULL) {
     /* the machine store is read here (the stored types decide what the server offers); writes are the accept's (5.6) */
     memset(&store, 0, sizeof(store));
@@ -1652,7 +1760,9 @@ static void job_start(void *arg)
     pr.tuning.identity_probe_exec = p->identity_probe_exec;
     wide_from_utf8(p->fs_name, fsw, SD_COUNTOF(fsw));
     wcsncpy_s(pr.tuning.fs_name, SD_COUNTOF(pr.tuning.fs_name), fsw, _TRUNCATE);
-    /* known_hosts: the machine store only, read-only for the service (5.1, 5.6) */
+    /* known_hosts: the machine store only, read-only for the service (5.1, 5.6); checked like a write before it is read */
+    if (why == NULL)
+      why = svc_kh_read_check();
     memset(&store, 0, sizeof(store));
     store.kind = SD_KH_STORE_MACHINE;
     store.path = g.kh;
@@ -2452,9 +2562,38 @@ static sd_err handle_hk_list(sd_ipc_client *c, sd_json_writer *res, sd_ipc_error
   sd_jw_arr_begin(res);
   sd_mutex_lock(&g.lock);
   for (x = g.anns; x != NULL; x = x->next)
-    write_ann_obj(res, x->id, x->mount_id, &x->a);
+    write_ann_obj(res, x->id, x->mount_id, &x->a, 0);
   sd_mutex_unlock(&g.lock);
   sd_jw_arr_end(res);
+  return SD_OK;
+}
+
+/* hostkey.announced.reject {id} (5.6, 03 §2.4, elevated administrators): drops a kept announcement; no store is changed.
+   The CLI sends it when the administrator answers no, so a refused offer leaves the list at once. */
+static sd_err handle_hk_reject(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *id = sd_json_get_str(params, "id");
+  svc_ann **pp, *x = NULL;
+  sd_err e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  if (id == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "id required");
+  sd_mutex_lock(&g.lock);
+  for (pp = &g.anns; *pp != NULL; pp = &(*pp)->next)
+    if (strcmp((*pp)->id, id) == 0) {
+      x = *pp;
+      *pp = x->next;
+      g.nann--;
+      break;
+    }
+  sd_mutex_unlock(&g.lock);
+  if (x == NULL)
+    return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
+  SD_LOGI("svc", "host keys of %s not added (%s rejected)", x->a.lookup_name, x->id);
+  sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
+  sd_jw_key(res, "rejected"); sd_jw_bool(res, 1);
+  sd_free(x);
   return SD_OK;
 }
 
@@ -2646,6 +2785,7 @@ static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *meth
   if (strcmp(method, "hostkey.add") == 0) return handle_hk_add(client, params, res, err);
   if (strcmp(method, "hostkey.announced.list") == 0) return handle_hk_list(client, res, err);
   if (strcmp(method, "hostkey.announced.accept") == 0) return handle_hk_accept(client, params, res, err);
+  if (strcmp(method, "hostkey.announced.reject") == 0) return handle_hk_reject(client, params, res, err);
   if (strcmp(method, "status") == 0) return handle_status(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(client, params, res, err);
@@ -2673,6 +2813,17 @@ static int svc_ipc_is_admin(void *ctx, sd_ipc_client *client)
 {
   (void)ctx;
   return caller_is_admin(client);
+}
+
+/* The class of a new connection, before hello (2.2): the token decides (the server), unless a test forces admin. */
+static int svc_admin_at_connect(void *ctx)
+{
+  (void)ctx;
+#ifdef SD_SVC_TEST_HOOKS
+  return g.test_connect_admin ? 1 : 0;
+#else
+  return 0;
+#endif
 }
 
 /* Event 3101 (10.3, TM-R25): a client refused at hello or over the rate limit. %1 is the SID (not written when the
@@ -2712,7 +2863,7 @@ static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 static const char *const k_service_features[] = {
   "list", "status", "mount", "unmount", "selftest", "secret.set", "secret.delete", "prompt.list",
   "prompt.answer", "config.reload", "prompt.routing", "hostkey.add", "hostkey.announced.list",
-  "hostkey.announced.accept", "service.status", "service.repair_data", NULL
+  "hostkey.announced.accept", "hostkey.announced.reject", "service.status", "service.repair_data", NULL
 };
 
 /* ---- the core ---- */
@@ -2787,6 +2938,8 @@ int svc_run(const svc_opts *o)
   cfg.max_per_sid = 4;                    /* TM-R25 */
   cfg.max_requests_per_sec = 10;          /* TM-R25; admins are exempt in the server */
   cfg.reserved_admin_instances = SVC_RESERVED_ADMIN_INSTANCES;
+  cfg.hello_timeout_ms = SVC_HELLO_MS;    /* 2.2: a non-admin that does not say hello in time is closed */
+  cfg.admin_at_connect = svc_admin_at_connect;
   cfg.is_admin = svc_ipc_is_admin;
   cfg.on_refused = svc_on_refused;
   cfg.features = k_service_features;

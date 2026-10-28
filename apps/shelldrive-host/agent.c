@@ -2884,6 +2884,27 @@ static sd_err handle_announced_accept(const sd_json *params, sd_json_writer *res
   return SD_OK;
 }
 
+/* hostkey.announced.reject {id} (03 §2.4, 5.6): drops a kept announcement without changing any store. The CLI sends it
+   when the user answers no to a hostkey add offer, so a refused offer leaves the list at once. */
+static sd_err handle_announced_reject(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *id = sd_json_get_str(params, "id");
+  host_announce **pp, *x = NULL;
+  if (id == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "id required");
+  sd_mutex_lock(&g.lock);
+  for (pp = &g.announces; *pp; pp = &(*pp)->next)
+    if (strcmp((*pp)->id, id) == 0) { x = *pp; *pp = x->next; break; }
+  sd_mutex_unlock(&g.lock);
+  if (x == NULL)
+    return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
+  SD_LOGI("agent", "host keys of %s not added (%s rejected)", x->a.lookup_name, x->id);
+  sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
+  sd_jw_key(res, "rejected"); sd_jw_bool(res, 1);
+  sd_free(x);
+  return SD_OK;
+}
+
 /* ---- hostkey add (03 §6.1, 5.2, TM-R04) ----
    hostkey.add {host, port, lookup, type?, expect?}: the profile whose host and port match is used (its
    authentication, jump hosts and proxies), else the host-only defaults of `mount --host`. The connection is a
@@ -3171,6 +3192,7 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   SD_UNUSED(ctx);
   if (strcmp(method, "hostkey.announced.list") == 0) return handle_announced_list(res);
   if (strcmp(method, "hostkey.announced.accept") == 0) return handle_announced_accept(params, res, err);
+  if (strcmp(method, "hostkey.announced.reject") == 0) return handle_announced_reject(params, res, err);
   if (strcmp(method, "hostkey.add") == 0) return handle_hostkey_add(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(params, res, err);

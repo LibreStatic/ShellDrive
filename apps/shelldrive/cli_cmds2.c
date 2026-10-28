@@ -1030,6 +1030,40 @@ static int hk_accept_offer(const cli_args *a, const char *id, int machine)
   return 0;
 }
 
+/* hostkey.announced.reject {id} for an offer the user refused (03 §2.4): the offer leaves the agent's or the service's
+   list now, instead of staying until the next restart. Nothing is stored. The caller keeps its exit code (5): a failure
+   here only leaves the offer listed, so it is not reported. */
+static void hk_reject_offer(const cli_args *a, const char *id, int machine)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_json *res = NULL;
+  sd_wr w;
+  sd_json_writer jw;
+  sd_err e;
+  int rc;
+  if (machine) {
+    if (!connect_service(&c))
+      return;
+  } else {
+    rc = connect_agent(a, 1, &c, NULL);
+    if (rc != 0)
+      return;
+  }
+  sd_wr_init(&w, 256);
+  sd_jw_init(&jw, &w);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "id"); sd_jw_cstr(&jw, id);
+  sd_jw_obj_end(&jw);
+  e = sd_jw_finish(&jw) == SD_OK
+      ? sd_ipc_call_raw(c, "hostkey.announced.reject", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err)
+      : SD_E_INTERNAL;
+  sd_wr_free(&w);
+  sd_ipc_close(c);
+  (void)e;
+  sd_json_free(res);
+}
+
 /* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] (03 §6.1, 5.2, TM-R04). Without --machine the
    agent connects offering only the stored key types of the host and collects the other keys inside that connection
    (hostkey.add). With --machine (03 §2.6 rule 2) the service does the same with the machine profile of that host and
@@ -1181,10 +1215,12 @@ static int hk_add_user(const cli_args *a, int machine)
   sd_json_free(res);
   res = NULL;
   if (cli_read_line(line, sizeof(line), 1, a->use_stdin) &&
-      answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES))
+      answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES)) {
     rc = hk_accept_offer(a, idc, machine);
-  else
+  } else {
+    hk_reject_offer(a, idc, machine);                     /* a refused offer leaves the list (03 §2.4) */
     rc = fail_code(a, "host_key_rejected", "the offered keys were not added", &ec);
+  }
   sd_free(idc);
   sd_free(wh);
   return rc;
