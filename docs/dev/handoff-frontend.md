@@ -115,18 +115,26 @@ Priority 2: spec features with a backend, larger.
 
 Priority 3: Explorer integration (8).
 
-11. **Shell extension.** PARTLY DONE (round 16, branch `wip/r16-shellext`). Done: **Copy remote path** on drive roots
+11. **Shell extension.** PARTLY DONE (round 16, branch `wip/r16-shellext`; round 17, branch `wip/r17-menucache`: the
+    backend items below are done). Done: **Copy remote path** on drive roots
     and on files and folders inside a ShellDrive drive (state entry `remote_url`, percent-encoded relative path, copied
     to the clipboard in process), the This PC class (`SHX_CLSID_COMPUTER_MENU`: **Mount with ShellDrive** submenu from
     `menu.cache` and **Open ShellDrive**), and the Directory, `*` and This PC registrations (per-user path in
     `DllRegisterServer`). Pure helpers and tests: `shellext_model.c`, `tests/shellext/test_shellext_model.c`. The format of
-    `menu.cache` is specified in 03 8.2.2. **Backend missing:**
-    - The writer of `menu.cache` (agent or UI): nothing creates the file yet, so the submenu shows the disabled "No
-      connections set up" item. Write it atomically, in the 8.2.2 format, on every profile add, rename and delete.
+    `menu.cache` is specified in 03 8.2.2. **Backend, done in round 17:**
+    - The writer of `menu.cache` is `src/sd_config/menucache.c` (format and sanitizing in `menucache_format.c`). Every
+      `sd_profile_save` and `sd_profile_delete` rewrites the file under `config.lock` (CLI, UI and agent alike; an
+      import rewrites it once after its saves), it is replaced atomically through a temporary file in the same folder,
+      and the agent refreshes it at start. Tests: `tests/unit/sd_config/test_config_menucache.c` and the round trip
+      through the shell extension's parser in `tests/shellext/test_shellext_model.c`.
     - `state_producer.c` already copies `remote_url` and the codec sets `HAS_REMOTE_URL`; Copy remote path appears only
       for entries that carry it (global drives of callers outside `service_access` do not).
-    - The installer must register the new class (`{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}`) under the This PC CLSID
-      key and the Approved list, and the path class under Directory and `*` (HKLM), like the per-user code does.
+    - The installer registers the This PC class, the Drive, Directory and `*` handlers and the Approved entries
+      (`packaging/registration.txt`, feature `shellext`, in the MSI's ShellExt feature and in the per-user setup). Checked
+      by `tests/msi` (`sd-test-msi tables`). **Open:** the x64 package registers only the 64-bit view, so 32-bit
+      applications do not get the menu there (03 8.5 wants both views; the x86 DLL is not in the x64 package).
+    - **Open:** per-user removal does not delete the empty CLSID and `InprocServer32` parents (the table removes only
+      keys whose name contains ShellDrive); the MSI does not have this problem.
     Still missing: drive labels and icons (8.3), Windows 11 modern menu (8.6, needs the certificate), network
     locations (8.7). The UI verbs used are `--action mount <profile id>`, `show`, `open|unmount|reconnect X:`, all
     existing in `ui_wire.c`; no new IPC method was needed (the DLL never opens the pipe, 8.2).

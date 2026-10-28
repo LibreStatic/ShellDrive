@@ -259,6 +259,8 @@
       </Feature>
       <Feature Id="ShellExt" Title="!(loc.FeatureShellextTitle)" Description="!(loc.FeatureShellextDesc)" Level="1" AllowAdvertise="no">
         <ComponentRef Id="C_ShellExt" />
+        <!-- CLSIDs, handlers (Drive, Directory, *, This PC) and Approved entries of the shell extension (03 §8.5). -->
+        <ComponentGroupRef Id="SD_RegShellExt" />
       </Feature>
       <Feature Id="StartMenu" Title="!(loc.FeatureStartmenuTitle)" Description="!(loc.FeatureStartmenuDesc)" Level="1" AllowAdvertise="no">
         <ComponentRef Id="C_StartMenu" />

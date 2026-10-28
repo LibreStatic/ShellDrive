@@ -8,6 +8,8 @@ sd_add_module(sd_config
     profile_m2.c
     import.c
     profile_m3.c
+    menucache.c
+    menucache_format.c
   DEPS
     sd_base
     sd_platform

@@ -9,6 +9,7 @@
 #include "sd_test.h"
 #include "shellext_model.h"
 #include "shellext_snapshot.h"
+#include "sd_config/sd_config.h"
 
 #define PID_A "0123456789abcdef0123456789abcdef"
 #define PID_B "fedcba9876543210fedcba9876543210"
@@ -328,4 +329,58 @@ SD_TEST(model_menu_label_is_safe_for_a_menu)
   SD_CHECK(wcsncmp(tiny, L"abcdefghij", wcslen(tiny)) == 0);
   shx_menu_label(L"&&&&&&", tiny, SD_COUNTOF(tiny));
   SD_CHECK(wcslen(tiny) < SD_COUNTOF(tiny) && (wcslen(tiny) % 2) == 0);   /* never half of a doubled & */
+}
+
+/* The writer's text (src/sd_config/menucache_format.c, linked from sd_config) read back by the parser: the names a
+   profile can carry come out as the sanitizer made them, duplicates and bad ids are gone, and the order is the
+   writer's sort. */
+SD_TEST(model_menucache_round_trip_writer)
+{
+  static sd_profile p[3];
+  static sd_menu_entry e[3];
+  static char text[4096];
+  static shx_profile got[8];
+  size_t n = 0, len, parsed, i;
+
+  memset(p, 0, sizeof(p));
+  strcpy_s(p[0].id, sizeof(p[0].id), PID_A);
+  strcpy_s(p[0].name, sizeof(p[0].name), "  Web\tServer\x01 \xC3\xA9t\xC3\xA9 \xE2\x80\x8B ");
+  strcpy_s(p[1].id, sizeof(p[1].id), PID_B);
+  strcpy_s(p[1].name, sizeof(p[1].name), "Zeta");
+  strcpy_s(p[2].id, sizeof(p[2].id), PID_B);            /* same id as Zeta: the writer keeps the first */
+  strcpy_s(p[2].name, sizeof(p[2].name), "Dup");
+  for (i = 0; i < SD_COUNTOF(p); i++) {
+    if (sd_menu_entry_from_profile(&p[i], &e[n]) == SD_OK)
+      n++;
+  }
+  SD_CHECK_EQ_INT((int)n, 3);
+
+  len = sd_menu_format(e, n, text, sizeof(text));
+  SD_REQUIRE(len > 0 && len < sizeof(text));
+  text[len] = '\0';
+  SD_CHECK_STR(text, "SDMENU 1\n" PID_A "\tWebServer \xC3\xA9t\xC3\xA9\n" PID_B "\tZeta\n");
+
+  parsed = shx_menucache_parse((const unsigned char *)text, len, got, SD_COUNTOF(got));
+  SD_CHECK_EQ_INT((int)parsed, 2);
+  if (parsed == 2) {
+    SD_CHECK(wcscmp(got[0].id, L"0123456789abcdef0123456789abcdef") == 0);
+    SD_CHECK(wcscmp(got[0].name, L"WebServer été") == 0);
+    SD_CHECK(wcscmp(got[1].id, L"fedcba9876543210fedcba9876543210") == 0);
+    SD_CHECK(wcscmp(got[1].name, L"Zeta") == 0);
+  }
+
+  /* past the caps: the parser and the writer agree on 256 entries and on the byte cap */
+  {
+    static sd_menu_entry many[SHX_CACHE_MAX_ENTRIES + 40];
+    static char big[SHX_CACHE_MAX_BYTES + 16];
+    static shx_profile back[SHX_CACHE_MAX_ENTRIES + 16];
+    for (i = 0; i < SD_COUNTOF(many); i++) {
+      sprintf_s(many[i].id, sizeof(many[i].id), "%032lx", (unsigned long)(i + 1));
+      sprintf_s(many[i].name, sizeof(many[i].name), "profile %03u", (unsigned)i);
+    }
+    len = sd_menu_format(many, SD_COUNTOF(many), big, sizeof(big));
+    SD_CHECK(len > 0 && len <= SHX_CACHE_MAX_BYTES);
+    parsed = shx_menucache_parse((const unsigned char *)big, len, back, SD_COUNTOF(back));
+    SD_CHECK_EQ_INT((int)parsed, (int)SHX_CACHE_MAX_ENTRIES);
+  }
 }

@@ -8,7 +8,8 @@
  *   sd-msigen registry --in <packaging/registration.txt> --out <Registry.wxi> --flavour <name>
  *                      --family <name> --win64 yes|no
  *       Turns the registry rows into a WiX include. Every row becomes one Component with one RegistryValue
- *       (HKLM); the components are grouped by feature into SD_RegCore (core) and SD_RegAutostart (autostart).
+ *       (HKLM); the components are grouped by feature into SD_RegCore (core), SD_RegAutostart (autostart) and
+ *       SD_RegShellExt (shellext, referenced by the ShellExt feature).
  *       The rows of Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive are skipped: Windows Installer
  *       writes the Add/Remove Programs entry of an MSI itself (04 §6.7). [VERSION] becomes [ProductVersion],
  *       [INSTALLDIR] stays (MSI formats it), [FLAVOUR] becomes the flavour name. [SIZEKB] is an error here.
@@ -241,7 +242,8 @@ static int cmd_registry(int argc, char **argv)
       } else {
         if (strcmp(item.type, "SZ") != 0 && strcmp(item.type, "DWORD") != 0)
           die("registration.txt: unknown type %s", item.type);
-        if (strcmp(item.feature, "core") != 0 && strcmp(item.feature, "autostart") != 0)
+        if (strcmp(item.feature, "core") != 0 && strcmp(item.feature, "autostart") != 0 &&
+            strcmp(item.feature, "shellext") != 0)
           die("registration.txt: unknown feature %s", item.feature);
         if (count == cap) {
           size_t ncap = cap ? cap * 2 : 32;
@@ -298,10 +300,10 @@ static int cmd_registry(int argc, char **argv)
 
   /* Feature groups: components are referenced by the feature tree in Product.wxs. */
   {
-    static const char *groups[2] = { "core", "autostart" };
-    static const char *group_ids[2] = { "SD_RegCore", "SD_RegAutostart" };
+    static const char *groups[3] = { "core", "autostart", "shellext" };
+    static const char *group_ids[3] = { "SD_RegCore", "SD_RegAutostart", "SD_RegShellExt" };
     int g;
-    for (g = 0; g < 2; g++) {
+    for (g = 0; g < 3; g++) {
       fprintf(o, "  <Fragment>\n    <ComponentGroup Id=\"%s\">\n", group_ids[g]);
       first = 1;
       for (i = 0; i < count; i++) {

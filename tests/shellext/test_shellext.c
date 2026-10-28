@@ -36,6 +36,7 @@ SD_TEST_DECL(model_menucache_parses_profiles);
 SD_TEST_DECL(model_menucache_rejects_bad_header);
 SD_TEST_DECL(model_menucache_drops_bad_lines_only);
 SD_TEST_DECL(model_menucache_is_bounded);
+SD_TEST_DECL(model_menucache_round_trip_writer);
 SD_TEST_DECL(model_menu_label_is_safe_for_a_menu);
 
 #define T_SEC_BYTES   262144u
@@ -1369,6 +1370,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(model_menucache_rejects_bad_header),
   SD_TEST_ENTRY(model_menucache_drops_bad_lines_only),
   SD_TEST_ENTRY(model_menucache_is_bounded),
+  SD_TEST_ENTRY(model_menucache_round_trip_writer),
   SD_TEST_ENTRY(model_menu_label_is_safe_for_a_menu),
   SD_TEST_ENTRY(dll_loads_with_the_four_exports),
   SD_TEST_ENTRY(snapshot_valid_entries),

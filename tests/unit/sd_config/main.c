@@ -26,6 +26,10 @@ SD_TEST_DECL(profile_m3_key_values_and_bounds);
 SD_TEST_DECL(profile_m3_values_and_derived_shell_active);
 SD_TEST_DECL(profile_m3_legacy_cache_names);
 SD_TEST_DECL(profile_m3_round_trip);
+SD_TEST_DECL(menu_entry_sanitizing);
+SD_TEST_DECL(menu_format_layout);
+SD_TEST_DECL(menu_format_caps);
+SD_TEST_DECL(menu_writer_through_profile_store);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ini_parses_grammar),
@@ -54,6 +58,10 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(profile_m3_values_and_derived_shell_active),
   SD_TEST_ENTRY(profile_m3_legacy_cache_names),
   SD_TEST_ENTRY(profile_m3_round_trip),
+  SD_TEST_ENTRY(menu_entry_sanitizing),
+  SD_TEST_ENTRY(menu_format_layout),
+  SD_TEST_ENTRY(menu_format_caps),
+  SD_TEST_ENTRY(menu_writer_through_profile_store),
 };
 
 int main(int argc, char **argv)
