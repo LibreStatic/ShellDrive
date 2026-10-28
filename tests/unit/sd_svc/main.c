@@ -92,6 +92,9 @@ SD_TEST_DECL(identity_file_good_is_read_from_the_checked_handle);
 SD_TEST_DECL(identity_path_that_is_a_folder_is_not_a_file);
 SD_TEST_DECL(machine_folder_dacl_is_reapplied_once_then_left_alone);
 SD_TEST_DECL(chain_hop_and_proxy_leg_rules);
+SD_TEST_DECL(evtmsg_mc_has_six_languages_for_every_id);
+SD_TEST_DECL(evtmsg_module_resolves_every_id_in_every_language);
+SD_TEST_DECL(evtmsg_header_ids_carry_the_severity_bits);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -186,6 +189,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(identity_path_that_is_a_folder_is_not_a_file),
   SD_TEST_ENTRY(machine_folder_dacl_is_reapplied_once_then_left_alone),
   SD_TEST_ENTRY(chain_hop_and_proxy_leg_rules),
+  SD_TEST_ENTRY(evtmsg_mc_has_six_languages_for_every_id),
+  SD_TEST_ENTRY(evtmsg_module_resolves_every_id_in_every_language),
+  SD_TEST_ENTRY(evtmsg_header_ids_carry_the_severity_bits),
 };
 
 int main(int argc, char **argv)

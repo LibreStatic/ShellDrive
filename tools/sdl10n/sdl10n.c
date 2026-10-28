@@ -2,6 +2,7 @@
  *
  *   sdl10n --name <catalog> --out-c <file.c> --out-h <file.h> --domain <dir> [--domain <dir>...]
  *          [--allow-incomplete] [--qps]
+ *   sdl10n --out-mc <file.mc> --domain <dir>
  *   sdl10n --check --domain <dir> [...] [--allow-incomplete]
  *
  * Each domain directory is l10n/<domain>/ and holds en.po (the source of truth) and es/fr/pt-BR/it/de.po.
@@ -26,6 +27,11 @@
  * slots are left NULL in the tables and fall back to English at run time.
  * --qps adds the build-only pseudo-locale qps-ploc, generated from en (03 §9.1); --no-qps (the
  * default, also written by CMake for Release) leaves it out.
+ *
+ * Event Log messages (03 §10.3): "#. sdl10n:event=<id>,<Severity>,<SYMBOL>" on the en entry makes it a message
+ * of the Event Log table. Such an entry is plain (no plural), must exist in every locale without fuzzy or empty
+ * strings (--allow-incomplete does not relax this), and every translation must use the %N placeholders of en
+ * in the same order. --out-mc writes that table as a UTF-16LE .mc source for mc.exe -u.
  *
  * Plural argument: "#, plural-arg=<name>" on the en entry (default "count").
  * Build-time tool, never shipped: plain C with stdio. */
@@ -155,6 +161,9 @@ typedef struct po_entry {
   int register_ok;             /* translator comment sdl10n:register-ok */
   int maxlen;                  /* translator comment sdl10n:maxlen=N, 0 = none */
   char *plural_arg;
+  int event_id;                /* sdl10n:event=<id>,<Severity>,<SYMBOL>; 0 = not an Event Log message */
+  char event_sev[16];
+  char event_sym[64];
 } po_entry;
 
 typedef struct po_file {
@@ -285,6 +294,18 @@ static void po_comment(po_file *f, po_entry *cur, const char *text, int lineno)
     int v = atoi(m + 14);
     if (v <= 0) diag(1, f->path, lineno, "sdl10n:maxlen needs a positive number");
     else cur->maxlen = v;
+  }
+  m = strstr(text, "sdl10n:event=");
+  if (m) {
+    int id = 0;
+    char sev[16], sym[64];
+    if (sscanf(m + 13, "%d,%15[A-Za-z],%63[A-Z0-9_]", &id, sev, sym) != 3 || id < 1 || id > 0xFFFF)
+      diag(1, f->path, lineno, "sdl10n:event needs <id 1-65535>,<Severity>,<SYMBOL>");
+    else {
+      cur->event_id = id;
+      snprintf(cur->event_sev, sizeof(cur->event_sev), "%s", sev);
+      snprintf(cur->event_sym, sizeof(cur->event_sym), "%s", sym);
+    }
   }
 }
 
@@ -688,6 +709,30 @@ static void check_maxlen(const char *path, int line, const char *ctx, const char
          ctx, form, (unsigned long)units, maxlen, maxlen - 1);
 }
 
+/* ---- Event Log placeholders (03 §10.3): %N tokens in order of appearance ---- */
+
+/* Stores the numbers of the %N tokens of s in out (at most max) and returns their count. A bare '%' or a
+   token that is not %<digits> makes it return -1; "%%" is a literal percent sign. */
+static int pct_seq(const char *s, int *out, int max)
+{
+  int n = 0;
+  const char *p;
+  for (p = s; *p; p++) {
+    long v = 0;
+    if (*p != '%') continue;
+    if (p[1] == '%') { p++; continue; }
+    if (p[1] < '0' || p[1] > '9') return -1;
+    for (p++; *p >= '0' && *p <= '9'; p++) {
+      v = v * 10 + (*p - '0');
+      if (v > 100000) return -1;
+    }
+    p--;
+    if (n == max) return -1;
+    out[n++] = (int)v;
+  }
+  return n;
+}
+
 /* ---- qps-ploc pseudo-locale (03 §9.1) ---- */
 
 /* Accented look-alikes of a-z and A-Z (code points, so this file stays ASCII). */
@@ -767,6 +812,9 @@ typedef struct msg {
   char *key;
   char *plural_arg;                 /* NULL = not plural */
   const char *forms[NLANGS][MAX_FORMS];   /* by CLDR category */
+  int event_id;                     /* Event Log message id, 0 = none */
+  char event_sev[16];
+  char event_sym[64];
 } msg;
 
 static msg *g_msgs;
@@ -856,6 +904,16 @@ static void process_domain(const char *dir, int allow_incomplete)
     for (j = 0; j < g_nmsgs; j++)
       if (strcmp(g_msgs[j].key, e->ctx) == 0) diag(1, files[0].path, e->line, "duplicate id '%s'", e->ctx);
     if (e->fuzzy) diag(1, files[0].path, e->line, "fuzzy entry in the en source");
+    if (e->event_id) {
+      int j2, seq[MAX_FORMS * 8];
+      if (e->id_plural) diag(1, files[0].path, e->line, "'%s' is an Event Log message and cannot be plural", e->ctx);
+      if (!e->event_sym[0]) diag(1, files[0].path, e->line, "'%s': sdl10n:event needs a symbol name", e->ctx);
+      for (j2 = 0; j2 < g_nmsgs; j2++)
+        if (g_msgs[j2].event_id && (g_msgs[j2].event_id == e->event_id || strcmp(g_msgs[j2].event_sym, e->event_sym) == 0))
+          diag(1, files[0].path, e->line, "Event Log id %d (%s) is used twice", e->event_id, e->event_sym);
+      if (pct_seq(e->id, seq, sizeof(seq) / sizeof(seq[0])) < 0)
+        diag(1, files[0].path, e->line, "'%s': Event Log placeholders must be %%<digits>", e->ctx);
+    }
     if (g_nmsgs == g_capmsgs) {
       g_capmsgs = g_capmsgs ? g_capmsgs * 2 : 32;
       msg *nm = (msg *)realloc(g_msgs, (size_t)g_capmsgs * sizeof(msg));
@@ -865,6 +923,9 @@ static void process_domain(const char *dir, int allow_incomplete)
     m = &g_msgs[g_nmsgs++];
     memset(m, 0, sizeof(*m));
     m->key = xstrdup(e->ctx);
+    m->event_id = e->event_id;
+    snprintf(m->event_sev, sizeof(m->event_sev), "%s", e->event_sev);
+    snprintf(m->event_sym, sizeof(m->event_sym), "%s", e->event_sym);
     if (e->id_plural) {
       m->plural_arg = xstrdup(e->plural_arg ? e->plural_arg : "count");
       m->forms[0][CAT_ONE] = e->id;
@@ -894,22 +955,27 @@ static void process_domain(const char *dir, int allow_incomplete)
       po_file *f = &files[li];
       int k, missing = 0;
       po_entry *t;
-      if (!f->present) continue;
+      /* Event Log messages are complete in every locale, whatever --allow-incomplete says (03 §10.3). */
+      int strict = e->event_id != 0;
+      if (!f->present) {
+        if (strict) diag(1, f->path, 0, "missing translation for '%s' (Event Log message)", e->ctx);
+        continue;
+      }
       k = find_entry(f, e->ctx);
       if (k < 0) {
-        diag(!allow_incomplete, f->path, 0, "missing translation for '%s'", e->ctx);
+        diag(!allow_incomplete || strict, f->path, 0, "missing translation for '%s'", e->ctx);
         g_complete_mask &= ~(1u << li);
         continue;
       }
       t = &f->e[k];
       if (strcmp(t->id, e->id) != 0 || (e->id_plural == NULL) != (t->id_plural == NULL) ||
           (e->id_plural && strcmp(t->id_plural, e->id_plural) != 0)) {
-        diag(!allow_incomplete, f->path, t->line, "stale translation for '%s': msgid differs from en", e->ctx);
+        diag(!allow_incomplete || strict, f->path, t->line, "stale translation for '%s': msgid differs from en", e->ctx);
         g_complete_mask &= ~(1u << li);
         continue;
       }
       if (t->fuzzy) {
-        diag(!allow_incomplete, f->path, t->line, "fuzzy translation for '%s'", e->ctx);
+        diag(!allow_incomplete || strict, f->path, t->line, "fuzzy translation for '%s'", e->ctx);
         g_complete_mask &= ~(1u << li);
         continue;
       }
@@ -926,7 +992,7 @@ static void process_domain(const char *dir, int allow_incomplete)
       for (j = 0; j < t->nstr; j++)
         if (!t->str[j] || !t->str[j][0]) missing = 1;
       if (missing) {
-        diag(!allow_incomplete, f->path, t->line, "empty translation for '%s'", e->ctx);
+        diag(!allow_incomplete || strict, f->path, t->line, "empty translation for '%s'", e->ctx);
         g_complete_mask &= ~(1u << li);
         continue;
       }
@@ -957,6 +1023,12 @@ static void process_domain(const char *dir, int allow_incomplete)
           diag(1, f->path, t->line, "placeholders of '%s' (form %d) differ from en", e->ctx, j);
         ph_free(&ps);
         m->forms[li][e->id_plural ? g_langs[li].cats[j] : CAT_OTHER] = t->str[j];
+      }
+      if (strict && t->nstr == 1) {
+        int want_seq[MAX_FORMS * 8], got_seq[MAX_FORMS * 8];
+        int nw = pct_seq(e->id, want_seq, MAX_FORMS * 8), ng = pct_seq(t->str[0], got_seq, MAX_FORMS * 8);
+        if (nw < 0 || ng != nw || memcmp(want_seq, got_seq, sizeof(int) * (size_t)nw) != 0)
+          diag(1, f->path, t->line, "'%s' must use the %%N placeholders of en in the same order (Event Log)", e->ctx);
       }
     }
     if (g_qps) qps_forms(m);
@@ -1067,16 +1139,105 @@ static int write_outputs(const char *name, const char *out_c, const char *out_h)
   return 1;
 }
 
+/* Writes s as UTF-16LE code units (surrogate pairs for code points above U+FFFF). The input is valid UTF-8. */
+static void put_unit(FILE *o, unsigned unit)
+{
+  fputc((int)(unit & 0xFF), o);
+  fputc((int)((unit >> 8) & 0xFF), o);
+}
+
+static void w16_utf8(FILE *o, const char *s)
+{
+  const unsigned char *u = (const unsigned char *)s;
+  while (*u) {
+    unsigned cp = *u, len = 1, i;
+    if (cp >= 0xF0) { len = 4; cp &= 0x07; }
+    else if (cp >= 0xE0) { len = 3; cp &= 0x0F; }
+    else if (cp >= 0xC0) { len = 2; cp &= 0x1F; }
+    for (i = 1; i < len; i++) cp = (cp << 6) | (u[i] & 0x3F);
+    u += len;
+    if (cp >= 0x10000) {
+      cp -= 0x10000;
+      put_unit(o, 0xD800 + (cp >> 10));
+      cp = 0xDC00 + (cp & 0x3FF);
+    }
+    put_unit(o, cp);
+  }
+}
+
+static void w16_line(FILE *o, const char *s)
+{
+  w16_utf8(o, s);
+  w16_utf8(o, "\r\n");
+}
+
+/* Writes the Event Log message table of the catalog (03 §10.3) as a UTF-16LE .mc file for "mc -u". The
+   language names and LCIDs are the ones of the Windows message table of shelldrive-host: es is Rioplatense
+   text under es-AR (11274), the LCID the MSI also uses for its Spanish transform. */
+static const struct { const char *name; unsigned lcid; const char *file; int li; } k_mc_langs[] = {
+  { "English",           0x409,  "MSG00409", 0 },
+  { "Spanish",           0x2C0A, "MSG02C0A", 1 },
+  { "French",            0x40C,  "MSG0040C", 2 },
+  { "PortugueseBrazil",  0x416,  "MSG00416", 3 },
+  { "Italian",           0x410,  "MSG00410", 4 },
+  { "German",            0x407,  "MSG00407", 5 },
+};
+
+static int write_mc(const char *out_mc)
+{
+  FILE *o;
+  int i, k;
+  char line[256];
+  o = fopen(out_mc, "wb");
+  if (!o) { diag(1, NULL, 0, "cannot write %s", out_mc); return 0; }
+  put_unit(o, 0xFEFF);
+  w16_line(o, "MessageIdTypedef=DWORD");
+  w16_line(o, "");
+  w16_line(o, "SeverityNames=(Success=0x0:STATUS_SEVERITY_SUCCESS");
+  w16_line(o, "               Informational=0x1:STATUS_SEVERITY_INFORMATIONAL");
+  w16_line(o, "               Warning=0x2:STATUS_SEVERITY_WARNING");
+  w16_line(o, "               Error=0x3:STATUS_SEVERITY_ERROR");
+  w16_line(o, "              )");
+  w16_line(o, "");
+  strcpy(line, "LanguageNames=(");
+  for (k = 0; k < (int)(sizeof(k_mc_langs) / sizeof(k_mc_langs[0])); k++) {
+    char part[128];
+    snprintf(part, sizeof(part), "%s%s=0x%X:%s", k ? " " : "", k_mc_langs[k].name, k_mc_langs[k].lcid, k_mc_langs[k].file);
+    strcat(line, part);
+  }
+  strcat(line, ")");
+  w16_line(o, line);
+  w16_line(o, "");
+  for (i = 0; i < g_nmsgs; i++) {
+    const msg *m = &g_msgs[i];
+    if (!m->event_id) continue;
+    snprintf(line, sizeof(line), "MessageId=%d Severity=%s SymbolicName=%s", m->event_id, m->event_sev, m->event_sym);
+    w16_line(o, line);
+    for (k = 0; k < (int)(sizeof(k_mc_langs) / sizeof(k_mc_langs[0])); k++) {
+      const char *text = m->forms[k_mc_langs[k].li][CAT_OTHER];
+      if (!text) text = m->forms[0][CAT_OTHER];   /* not reached: strict checks fail first */
+      snprintf(line, sizeof(line), "Language=%s", k_mc_langs[k].name);
+      w16_line(o, line);
+      w16_line(o, text);
+      w16_line(o, ".");
+    }
+    w16_line(o, "");
+  }
+  fclose(o);
+  return 1;
+}
+
 static void usage(void)
 {
   fprintf(stderr,
           "usage: sdl10n --name <catalog> --out-c <file.c> --out-h <file.h> --domain <dir>... [--allow-incomplete] [--qps | --no-qps]\n"
+          "       sdl10n --out-mc <file.mc> --domain <dir>...\n"
           "       sdl10n --check --domain <dir>... [--allow-incomplete]\n");
 }
 
 int main(int argc, char **argv)
 {
-  const char *name = NULL, *out_c = NULL, *out_h = NULL;
+  const char *name = NULL, *out_c = NULL, *out_h = NULL, *out_mc = NULL;
   const char *domains[MAX_DOMAINS];
   int ndomains = 0, check = 0, allow = 0, qps = 0, i;
 
@@ -1084,6 +1245,7 @@ int main(int argc, char **argv)
     if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
     else if (strcmp(argv[i], "--out-c") == 0 && i + 1 < argc) out_c = argv[++i];
     else if (strcmp(argv[i], "--out-h") == 0 && i + 1 < argc) out_h = argv[++i];
+    else if (strcmp(argv[i], "--out-mc") == 0 && i + 1 < argc) out_mc = argv[++i];
     else if (strcmp(argv[i], "--domain") == 0 && i + 1 < argc && ndomains < MAX_DOMAINS) domains[ndomains++] = argv[++i];
     else if (strcmp(argv[i], "--check") == 0) check = 1;
     else if (strcmp(argv[i], "--allow-incomplete") == 0) allow = 1;
@@ -1091,7 +1253,8 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--no-qps") == 0) qps = 0;
     else { usage(); return 2; }
   }
-  if (ndomains == 0 || (!check && (!name || !out_c || !out_h))) { usage(); return 2; }
+  if (ndomains == 0 || (!check && !out_mc && !out_c && !out_h)) { usage(); return 2; }
+  if (!check && (out_c || out_h) && (!name || !out_c || !out_h)) { usage(); return 2; }
   g_qps = qps;
   if (qps) g_complete_mask |= 1u << LANG_QPS;
   if (name) {
@@ -1109,7 +1272,9 @@ int main(int argc, char **argv)
                     "only for local development).\n", g_errors, g_warnings);
     return 1;
   }
-  if (!check && !write_outputs(name, out_c, out_h))
+  if (!check && out_c && !write_outputs(name, out_c, out_h))
+    return 1;
+  if (!check && out_mc && !write_mc(out_mc))
     return 1;
   if (g_warnings)
     fprintf(stderr, "sdl10n: %d warning(s); incomplete locales fall back to English.\n", g_warnings);

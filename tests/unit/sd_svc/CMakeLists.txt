@@ -11,6 +11,7 @@ set(_fake_dir "${CMAKE_SOURCE_DIR}/tests/unit/sd_mount")
 # test_repair.c runs the machine data folder repair (svc_repair.c) on a temp folder only: no %ProgramData%, no elevation.
 sd_add_unit_test(svc
   SOURCES main.c test_access.c test_service.c test_scm.c test_gw.c test_repair.c test_identity.c test_svcrepair.c
+          test_evtmsg.c
           "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_scm.c"
           "${_host_dir}/svc_gw.c" "${_host_dir}/svc_gw_attach.c" "${_host_dir}/svc_repair.c"
           "${_host_dir}/svc_folder.c" "${_host_dir}/svc_status.c"
@@ -20,4 +21,9 @@ sd_add_unit_test(svc
 target_include_directories(sd-test-svc PRIVATE "${_host_dir}" "${_fake_dir}" "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
 add_dependencies(sd-test-svc sd_svc_events)
 target_compile_definitions(sd-test-svc PRIVATE SD_SVC_TEST_HOOKS=1)
+# test_evtmsg.c reads the generated Event Log source and resolves every id in the built shelldrive-host.exe (03 §10.3).
+add_dependencies(sd-test-svc shelldrive-host)
+target_compile_definitions(sd-test-svc PRIVATE
+  "SD_SVC_EVENTS_MC=\"${SD_GENERATED_DIR}/svc_events/$<CONFIG>/svc_events.mc\""
+  "SD_SVC_HOST_EXE=\"$<TARGET_FILE:shelldrive-host>\"")
 set_tests_properties(unit.svc PROPERTIES TIMEOUT 600)

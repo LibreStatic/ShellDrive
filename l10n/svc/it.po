@@ -18,3 +18,44 @@ msgstr "Il servizio ShellDrive è stato arrestato."
 msgctxt "svc.not_scm"
 msgid "This program is the ShellDrive service and needs the Service Control Manager. To run it in a console, use: shelldrive-host.exe service-debug"
 msgstr "Questo programma è il servizio ShellDrive e richiede il Gestore di controllo dei servizi. Per eseguirlo in una console, usa: shelldrive-host.exe service-debug"
+
+# Event Log messages (03 §10.3): the same ids, placeholders and placeholder order as en.po.
+msgctxt "evt.started"
+msgid "ShellDrive service started (version %1)."
+msgstr "Il servizio ShellDrive è stato avviato (versione %1)."
+
+msgctxt "evt.stopped"
+msgid "ShellDrive service stopped."
+msgstr "Il servizio ShellDrive è stato arrestato."
+
+msgctxt "evt.mounted"
+msgid "Global drive for profile %1 is mounted at %2."
+msgstr "L'unità globale del profilo %1 è montata su %2."
+
+msgctxt "evt.unmounted"
+msgid "Global drive for profile %1 at %2 was unmounted."
+msgstr "L'unità globale del profilo %1 su %2 è stata smontata."
+
+msgctxt "evt.mount_failed"
+msgid "Global drive for profile %1 failed to mount (%2): %3"
+msgstr "Impossibile montare l'unità globale del profilo %1 (%2): %3"
+
+msgctxt "evt.start_failed"
+msgid "ShellDrive service could not start (%1)."
+msgstr "Impossibile avviare il servizio ShellDrive (%1)."
+
+msgctxt "evt.client_refused"
+msgid "ShellDrive refused a service pipe client of user %1 (%2: token, per_sid, reserved or rate). At most one such event is written per user every 10 minutes."
+msgstr "ShellDrive ha rifiutato un client del canale di servizio dell'utente %1 (%2: token, per_sid, reserved o rate). Al massimo un evento di questo tipo viene scritto per utente ogni 10 minuti."
+
+msgctxt "evt.untrusted_folder"
+msgid "ShellDrive refused the untrusted machine folder or service file %1 (%2). A refused folder keeps the service idle until an elevated shelldrive service repair-data renames it aside; a refused file fails the mount that uses it."
+msgstr "ShellDrive ha rifiutato la cartella della macchina o il file di servizio non attendibile %1 (%2). Una cartella rifiutata mantiene il servizio inattivo finché un comando shelldrive service repair-data eseguito con privilegi elevati non la rinomini; un file rifiutato fa fallire il montaggio che lo usa."
+
+msgctxt "evt.audit"
+msgid "Change through the global drive for profile %1 by %3 (SID %2): %4 %5."
+msgstr "Modifica tramite l'unità globale del profilo %1 da %3 (SID %2): %4 %5."
+
+msgctxt "evt.hostkeys_announced"
+msgid "A server announced host keys for %1 (new: %2; no longer offered: %3). The machine host keys are not changed until an administrator accepts them with shelldrive hostkey list --announced --machine."
+msgstr "Un server ha annunciato chiavi host per %1 (nuove: %2; non più offerte: %3). Le chiavi host della macchina non vengono modificate finché un amministratore non le accetta con shelldrive hostkey list --announced --machine."

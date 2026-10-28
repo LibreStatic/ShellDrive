@@ -28,9 +28,11 @@ else()
   set(_backend_lib "")
 endif()
 
-# Event Log message table (03 §10.3, English only): svc_events.mc is compiled by mc.exe, which ships with the Windows
-# SDK next to the rc.exe of the active toolset. The generated header (message ids) is shared with the unit tests;
-# the generated resource script is linked into shelldrive-host.exe, which is also the event message file.
+# Event Log message table (03 §10.3): sdl10n writes svc_events.mc from the l10n/svc PO catalog (every event id in
+# every locale, or the build fails), and mc.exe compiles it with -u (UTF-16 input) into one message table per
+# language (en, es-AR, fr-FR, pt-BR, it-IT, de-DE). mc.exe ships with the Windows SDK next to the rc.exe of the active
+# toolset. The generated header (message ids) is shared with the unit tests; the generated resource script is linked
+# into shelldrive-host.exe, which is also the event message file.
 set(_svc_mc_hints "$ENV{WindowsSdkVerBinPath}x64" "$ENV{WindowsSdkBinPath}")
 if(CMAKE_RC_COMPILER)
   get_filename_component(_svc_tool_dir "${CMAKE_RC_COMPILER}" DIRECTORY)
@@ -46,14 +48,32 @@ if(NOT SD_MC_EXE)
   message(FATAL_ERROR "mc.exe was not found (Windows SDK): the Event Log message table of shelldrive-host cannot be built")
 endif()
 set(SD_SVC_EVENTS_DIR "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
+set(SD_SVC_EVENTS_MC "${SD_SVC_EVENTS_DIR}/svc_events.mc")
+# One .bin per language, named by mc.exe from the LanguageNames line that sdl10n writes (keep the two in step).
+set(SD_SVC_EVENTS_BINS "")
+foreach(_bin MSG00409 MSG02C0A MSG0040C MSG00416 MSG00410 MSG00407)
+  list(APPEND SD_SVC_EVENTS_BINS "${SD_SVC_EVENTS_DIR}/${_bin}.bin")
+endforeach()
+set(SD_SVC_EVENTS_PO "")
+foreach(_lang IN LISTS SD_LANGS)
+  list(APPEND SD_SVC_EVENTS_PO "${CMAKE_SOURCE_DIR}/l10n/svc/${_lang}.po")
+endforeach()
+sd_tool_depends(sdl10n _sdl10n_dep)
 add_custom_command(
-  OUTPUT "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc" "${SD_SVC_EVENTS_DIR}/MSG00409.bin"
+  OUTPUT "${SD_SVC_EVENTS_MC}"
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${SD_SVC_EVENTS_DIR}"
-  COMMAND "${SD_MC_EXE}" -h "${SD_SVC_EVENTS_DIR}" -r "${SD_SVC_EVENTS_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/svc_events.mc"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/svc_events.mc"
-  COMMENT "mc: Event Log message table of shelldrive-host"
+  COMMAND "$<TARGET_FILE:sdl10n>" --out-mc "${SD_SVC_EVENTS_MC}" --domain "${CMAKE_SOURCE_DIR}/l10n/svc"
+  DEPENDS ${_sdl10n_dep} ${SD_SVC_EVENTS_PO}
+  COMMENT "sdl10n: Event Log messages of shelldrive-host"
   VERBATIM)
-add_custom_target(sd_svc_events DEPENDS "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc")
+add_custom_command(
+  OUTPUT "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc" ${SD_SVC_EVENTS_BINS}
+  COMMAND "${SD_MC_EXE}" -u -h "${SD_SVC_EVENTS_DIR}" -r "${SD_SVC_EVENTS_DIR}" "${SD_SVC_EVENTS_MC}"
+  DEPENDS "${SD_SVC_EVENTS_MC}"
+  COMMENT "mc: Event Log message tables of shelldrive-host (six languages)"
+  VERBATIM)
+add_custom_target(sd_svc_events DEPENDS "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc" "${SD_SVC_EVENTS_MC}")
+sd_add_tool_dependency(sd_svc_events sdl10n)
 set_target_properties(sd_svc_events PROPERTIES FOLDER "apps")
 
 sd_add_app(shelldrive-host

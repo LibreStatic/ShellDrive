@@ -1137,3 +1137,34 @@ Closes the gap noted in parts 9 to 12: no test started the service pipe for the 
 **Not covered.** The real SCM (`install`, `start`, `stop`) and the Event Log are not reached. The core is in the test process
 (as in `unit.svc`), not in a separate host process; the CLI is the separate process, and every CLI request crosses the named
 pipe. An elevated administrator token and the real `--machine` UI prompts are not exercised (lab).
+
+## Event Log messages in six languages (round 21, branch wip/r21-evloc)
+
+Owner decision: the service's Event Log messages are user-visible, so they are localized into en, es (Rioplatense
+voseo), fr (vous), pt-BR, it (informal imperative) and de (informal du), like every other user-facing string. This
+supersedes the English-only rule of 03 10.3 and the reading of AGENTS.md under which event log messages stay English.
+AGENTS.md is not edited in this round; its wording on event log payloads should be revisited by the owner.
+
+- **Source of truth.** The `svc` catalog (`l10n/svc/<lang>.po`) now carries the ten Event Log messages as entries
+  `evt.*` (1000, 1001, 1100, 1101, 2100, 2110, 3101, 3102, 1200, 2300). Each English entry has a
+  `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` translator comment, which gives the MessageId, severity and symbolic name.
+  The insert placeholders `%1`..`%5` keep their numbers and their order in every language. Insert values (paths, SIDs,
+  reason codes such as `owner`, `reparse_point`, `acl`, `not_directory`) are data and are not translated.
+- **Generation.** `tools/sdl10n` gained `--out-mc <file.mc>`: it validates the whole catalog and writes the Event Log
+  table as UTF-16LE with a byte order mark, one `Language=` block per language for every id (LanguageNames:
+  English 0x409, Spanish 0x2C0A (es-AR, the voseo text, the same LCID the MSI uses for its Spanish transform), French
+  0x40C, PortugueseBrazil 0x416, Italian 0x410, German 0x407). `apps/shelldrive-host/CMakeLists.txt` runs it, then
+  `mc.exe -u` compiles the table into `svc_events.h`, `svc_events.rc` and one `MSG*.bin` per language. The same
+  mc.exe serves x86-ia32, x64-modern and x64-xp (v141_xp), so nothing changes per toolset.
+- **Build checks.** An Event Log entry must exist in every locale even under `--allow-incomplete`, and a translation that
+  reorders the `%N` placeholders of en is an error.
+- **Tests.** `l10n.svc_catalogs_complete` (the real `svc` catalog), `l10n.event_placeholder_order_fails` and
+  `l10n.event_missing_locale_fails_when_allowed` (fixtures under `tests/l10n/fixtures/event_*`), and
+  `l10n.svc_event_mc_written`. In `unit.svc`, `tests/unit/sd_svc/test_evtmsg.c` reads the generated `svc_events.mc` and
+  checks six `Language=` blocks for every MessageId, then calls `FormatMessageW` on the built `shelldrive-host.exe`
+  (loaded as a data file) for every id and every LCID and compares the result with the `.mc` text; a third test checks
+  the severity bits of the generated header constants. Nothing writes the Event Log or registers a source.
+- **Known gap.** The table has an es-AR block only. Spanish users with another Spanish LCID (es-ES 0x0C0A, es-MX 0x080A)
+  may get the English text from FormatMessage until more LCIDs are added. This is recorded in 03 10.3.
+- **Not changed.** The message ids and placeholders, the event sources and the registration. The agent still does not
+  write to the Event Log.

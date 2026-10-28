@@ -1,0 +1,12 @@
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. sdl10n:event=7002,Error,TEST_MISSING
+msgctxt "evt.missing"
+msgid "Only %1 here."
+msgstr ""
