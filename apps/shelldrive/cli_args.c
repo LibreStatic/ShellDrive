@@ -126,7 +126,9 @@ static int allowed(cli_cmd cmd, int id)
   switch (id) {
   case OPT_JSON: case OPT_QUIET: case OPT_LANG: case OPT_HELP: case OPT_VERSION:
     return 1;
-  case OPT_PROMPT: case OPT_STDIN: case OPT_HOST: case OPT_LETTER: case OPT_IDENTITY:
+  case OPT_STDIN:                       /* hostkey add: the answer to its question is read from standard input */
+    return cmd == CLI_CMD_MOUNT || cmd == CLI_CMD_HOSTKEY;
+  case OPT_PROMPT: case OPT_HOST: case OPT_LETTER: case OPT_IDENTITY:
   case OPT_REMOTE_PATH: case OPT_READ_ONLY: case OPT_NO_WAIT: case OPT_BACKEND:
   case OPT_JUMP: case OPT_PROXY: case OPT_CONNECTIONS:
     return cmd == CLI_CMD_MOUNT;
@@ -398,12 +400,14 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   if (a->cmd != CLI_CMD_BENCH && (a->bench_scenario || a->bench_size_mib || a->bench_write_mode))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->bench_scenario ? L"--scenario" : a->bench_size_mib ? L"--size" :
                    L"--write-mode", NULL);
+  /* --stdin is also a hostkey add option (the answer to its question) */
   if (a->cmd != CLI_CMD_MOUNT && (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only ||
-                                  a->no_wait || a->use_stdin || a->prompt != CLI_PROMPT_AUTO || a->backend ||
+                                  a->no_wait || (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY) ||
+                                  a->prompt != CLI_PROMPT_AUTO || a->backend ||
                                   a->jump_count || a->proxy || a->connections))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->backend ? L"--backend" : a->host_spec ? L"--host" : a->letter ? L"--letter" :
                    a->identity ? L"--identity" : a->remote_path ? L"--remote-path" : a->read_only ? L"--read-only" :
-                   a->no_wait ? L"--no-wait" : a->use_stdin ? L"--stdin" :
+                   a->no_wait ? L"--no-wait" : (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY) ? L"--stdin" :
                    a->jump_count ? L"--jump" : a->proxy ? L"--proxy" : a->connections ? L"--connections" :
                    L"--prompt", NULL);
   if (a->cmd != CLI_CMD_UNMOUNT && a->cmd != CLI_CMD_CACHE && (a->all || a->force))

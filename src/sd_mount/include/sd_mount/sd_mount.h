@@ -113,6 +113,21 @@ typedef struct sd_mount_attach {
   uint16_t webdav_port;                 /* 0 unless the backend is WebDAV and the export exists */
 } sd_mount_attach;
 
+/* A host key as the host keeps it (UpdateHostKeys announcements and hostkey add). */
+#define SD_MOUNT_ANNOUNCE_MAX 8
+typedef struct sd_mount_hostkey { char type[64]; char fp_sha256[64]; uint8_t blob[2048]; size_t len; } sd_mount_hostkey;
+
+/* hostkey add --from-server (03 §6.1, 5.2): the result of one connect. verified = 1: a stored key of the host
+   verified the connection (known_hosts MATCH), and keys are the server's host keys other than that one (the stored
+   one is never listed again). verified = 0: first contact (TOFU), keys holds the single key the server presented,
+   which the user must accept before anything is stored. count <= SD_MOUNT_ANNOUNCE_MAX. */
+typedef struct sd_mount_hk_fetch {
+  int verified;
+  char lookup_name[300];                /* [host]:port, or host, as known_hosts names it */
+  uint32_t count;
+  sd_mount_hostkey keys[SD_MOUNT_ANNOUNCE_MAX];
+} sd_mount_hk_fetch;
+
 typedef struct sd_mount_backend {
   const char *name;
   sd_err (*ssh_global_init)(void);
@@ -158,6 +173,10 @@ typedef struct sd_mount_backend {
   void   (*vfs_cache_clear)(sd_vfs *v, int disk_too);
   UINT64 (*vfs_write_behind_bytes)(sd_vfs *v);
   uint16_t (*webdav_port)(const sd_webdav_mount *m);
+  /* hostkey add (03 §6.1; added last, NULL in older fakes: the call answers SD_E_UNSUPPORTED). Connects to host:port
+     offering the stored key types of the host (TM-R04), then collects the other host keys (only `type` when given)
+     inside that connection. A blocking call: the caller runs it on a worker. Fills out->verified and out->keys. */
+  sd_err (*hostkeys_fetch)(const char *host, uint16_t port, const char *type, sd_mount_hk_fetch *out);
 } sd_mount_backend;
 
 const char *sd_mount_backend_kind_name(sd_mount_backend_kind k);         /* "auto", "dokany", "webdav" */
@@ -318,8 +337,6 @@ typedef struct sd_mount_prompt {
 } sd_mount_prompt;
 
 /* UpdateHostKeys announcement (5.6), copied for the host. */
-#define SD_MOUNT_ANNOUNCE_MAX 8
-typedef struct sd_mount_hostkey { char type[64]; char fp_sha256[64]; uint8_t blob[2048]; size_t len; } sd_mount_hostkey;
 typedef struct sd_mount_announcement {
   uint32_t hop_index;
   char host[256];                       /* the hop's host (display) */
@@ -334,6 +351,12 @@ typedef struct sd_mount_announcement {
    that may do file I/O. */
 sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
                                const sd_mount_announcement *a, int add_only);
+
+/* hostkey add core (03 §6.1), shared by the per-user agent and, later, the service: validates the host and port,
+   sets out->lookup_name from `lookup` (the caller's canonical name) and calls the backend. Blocking; any thread
+   that may wait for the network. The caller owns *out (large: allocate it). */
+sd_err sd_mount_hostkeys_fetch(const sd_mount_backend *be, const char *host, uint16_t port, const char *lookup,
+                               const char *type, sd_mount_hk_fetch *out);
 
 /* Details kept for the error report of a failed mount. */
 typedef struct sd_mount_failure {

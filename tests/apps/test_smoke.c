@@ -641,12 +641,16 @@ SD_TEST(smoke_hostkey_add_machine)
   EXPECT(RUN(L"hostkey add --from-server smokehk.test --machine --json", NULL) == 9 &&
          strstr(r.out, "access_denied") != NULL, "machine add json is access_denied");
   EXPECT(RUN(L"hostkey accept-announced a-1 --machine", NULL) == 9, "machine accept needs an elevated console");
-  EXPECT(RUN(L"hostkey add --from-server smokehk.test", NULL) == 1 &&
-         strstr(r.err, "not part of this build") != NULL, "user add is not part of this build");
-  EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect SHA256:abcdefgh --json", NULL) == 1 &&
-         strstr(r.out, "not_implemented") != NULL, "user add json");
+  /* without --machine the agent does the connect (smoke_hostkey_add_offers covers the rest; the CLI starts the agent
+     on demand and this test stops it at the end): a first contact that nobody answers is refused, and a fingerprint
+     that matches nothing is refused as well */
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test", NULL) == 5 &&
+         strstr(r.err, "[y]es") != NULL, "user add without an answer is refused");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect SHA256:abcdefgh --json", NULL) == 5 &&
+         strstr(r.out, "host_key_rejected") != NULL, "user add json with a fingerprint that matches nothing");
   EXPECT(RUN(L"hostkey add smokehk.test", NULL) == 2, "add needs --from-server");
   EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect md5:abcdef", NULL) == 2, "bad --expect");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
 }
 
@@ -660,6 +664,7 @@ SD_TEST(smoke_diag_bench)
   WIN32_FIND_DATAW fd;
   HANDLE fh;
   int leftover = 0;
+  LARGE_INTEGER qpc;
   SD_REQUIRE(setup());
   EXPECT(RUN(L"diag bench", NULL) == 2, "diag bench needs a drive");
   EXPECT(RUN(L"diag check Y:", NULL) == 2 && strstr(r.err, "check") != NULL, "only diag bench exists");
@@ -674,7 +679,8 @@ SD_TEST(smoke_diag_bench)
   wcscat_s(root, MAX_PATH, L"sd-bench-");
   wcat_u(root, MAX_PATH, (unsigned)GetCurrentProcessId());
   wcscat_s(root, MAX_PATH, L"-");
-  wcat_u(root, MAX_PATH, (unsigned)GetTickCount());
+  QueryPerformanceCounter(&qpc);
+  wcat_u(root, MAX_PATH, (unsigned)qpc.LowPart);
   SD_REQUIRE(CreateDirectoryW(root, NULL));
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_BENCH_ROOT", root);
   EXPECT(RUN(L"--json diag bench Y: --scenario open --size 1", NULL) == 0 &&
@@ -708,4 +714,91 @@ SD_TEST(smoke_diag_bench)
   EXPECT(leftover == 0, "the bench left nothing in the folder");
   RemoveDirectoryW(root);
   SD_CHECK(!agent_running());
+}
+
+/* hostkey add without --machine (03 §6.1, 5.2, TM-R04) through the agent and the scripted fake (host_fake_backend.c):
+   *.known.test verifies with a stored key and has an ECDSA and an ssh-rsa key besides it; *.changed.test does not
+   match the stored key; any other host is a first contact with one ssh-ed25519 key (TOFU). */
+
+/* copies the text after the first occurrence of key (up to the next quote) into dst */
+static int json_value_after(const char *out, const char *key, char *dst, size_t cap)
+{
+  const char *p = strstr(out, key);
+  size_t n = 0;
+  if (p == NULL)
+    return 0;
+  p += strlen(key);
+  while (p[n] && p[n] != '"' && n + 1 < cap) {
+    dst[n] = p[n];
+    n++;
+  }
+  dst[n] = 0;
+  return n > 0;
+}
+
+static void ascii_to_wide(const char *s, wchar_t *d, size_t cap)
+{
+  size_t i;
+  for (i = 0; s[i] && i + 1 < cap; i++)
+    d[i] = (wchar_t)(unsigned char)s[i];
+  d[i] = 0;
+}
+
+SD_TEST(smoke_hostkey_add_offers)
+{
+  static run_result r;
+  char fp[96], id[32];
+  wchar_t fpw[128], idw[64], args[768];
+  SD_REQUIRE(setup());
+
+  /* first contact: the question, the answer decides; the key is stored only after yes */
+  EXPECT(RUN(L"hostkey add --from-server tofu.test --stdin", "y\n") == 0 && strstr(r.err, "[y]es") != NULL,
+         "first contact asks, yes adds");
+  EXPECT(RUN(L"hostkey list tofu.test --json", NULL) == 0 && strstr(r.out, "ssh-ed25519") != NULL &&
+         strstr(r.out, "\"store\":\"user\"") != NULL, "first contact key stored after yes");
+  EXPECT(RUN(L"hostkey add --from-server refused.test --stdin", "n\n") == 5 && strstr(r.err, "[y]es") != NULL,
+         "first contact refused with no");
+  EXPECT(RUN(L"hostkey list refused.test", NULL) == 0 && strstr(r.out, "No host key is stored") != NULL,
+         "refused key not stored");
+
+  /* the server offers no key of the requested type: nothing to add */
+  EXPECT(RUN(L"hostkey add --from-server tofu.test --type ssh-rsa --json", NULL) == 0 &&
+         strstr(r.out, "\"keys\":[]") != NULL && strstr(r.out, "\"id\"") == NULL, "no key of that type to add");
+
+  /* a verified host: the other keys are offered (JSON only offers; the id is for accept-announced) */
+  EXPECT(RUN(L"hostkey add --from-server pinned.known.test --json", NULL) == 0 && strstr(r.out, "\"verified\":true") != NULL &&
+         strstr(r.out, "ecdsa-sha2-nistp256") != NULL && strstr(r.out, "ssh-rsa") != NULL,
+         "verified host offers its other keys");
+  EXPECT(json_value_after(r.out, "\"id\":\"", id, sizeof(id)), "the offer has an id");
+  ascii_to_wide(id, idw, SD_COUNTOF(idw));
+  wcscpy_s(args, 768, L"hostkey accept-announced ");
+  wcscat_s(args, 768, idw);
+  wcscat_s(args, 768, L" --add-only --json");
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"added\":2") != NULL, "offer accepted with add-only");
+  EXPECT(RUN(L"hostkey list pinned.known.test --json", NULL) == 0 && strstr(r.out, "ecdsa-sha2-nistp256") != NULL &&
+         strstr(r.out, "ssh-rsa") != NULL, "accepted keys stored");
+
+  /* a stored key that does not match the server: the connection fails, nothing is offered */
+  EXPECT(RUN(L"hostkey add --from-server x.changed.test --json", NULL) == 6 &&
+         strstr(r.out, "host_key_mismatch") != NULL, "a stored key that does not match fails");
+
+  /* --expect: the key with that fingerprint is stored with no question (scripts) */
+  EXPECT(RUN(L"hostkey add --from-server expect.test --json", NULL) == 0 &&
+         json_value_after(r.out, "\"fingerprint\":\"", fp, sizeof(fp)), "first contact reports its fingerprint");
+  ascii_to_wide(fp, fpw, SD_COUNTOF(fpw));
+  wcscpy_s(args, 768, L"hostkey add --from-server expect.test --expect ");
+  wcscat_s(args, 768, fpw);
+  EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "Updated the host keys") != NULL, "--expect match stores without a question");
+  EXPECT(RUN(L"hostkey list expect.test --json", NULL) == 0 && strstr(r.out, "ssh-ed25519") != NULL,
+         "--expect key listed");
+
+  /* --expect that matches nothing: refused, nothing stored (first contact exit 5, verified host exit 6) */
+  EXPECT(RUN(L"hostkey add --from-server expect2.test --expect SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --json",
+             NULL) == 5 && strstr(r.out, "host_key_rejected") != NULL, "first contact with a wrong --expect is refused");
+  EXPECT(RUN(L"hostkey list expect2.test", NULL) == 0 && strstr(r.out, "No host key is stored") != NULL,
+         "nothing stored after a wrong --expect");
+  EXPECT(RUN(L"hostkey add --from-server pinned.known.test --expect SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --json",
+             NULL) == 6 && strstr(r.out, "host_key_mismatch") != NULL, "verified host with a wrong --expect is a mismatch");
+
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
 }

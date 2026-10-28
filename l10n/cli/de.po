@@ -1157,3 +1157,26 @@ msgstr "Der temporäre Ordner {path} konnte nicht entfernt werden (Fehler {code}
 msgctxt "cli.bench.failed"
 msgid "The benchmark stopped (error {code})."
 msgstr "Der Test wurde abgebrochen (Fehler {code})."
+
+#. Printed by hostkey add when the server offers no host key that is not stored yet. {host} is the host as typed.
+msgctxt "cli.hk.add_none"
+msgid "{host} has no other host keys to add."
+msgstr "{host} hat keine weiteren Host-Schlüssel zum Hinzufügen."
+
+#. Printed by hostkey add before the question about the keys the server offers besides the stored ones.
+#, plural-arg=count
+msgctxt "cli.hk.add_offer"
+msgid "{host} also has {count} other host key. Add it?"
+msgid_plural "{host} also has {count} other host keys. Add them?"
+msgstr[0] "{host} hat außerdem {count} weiteren Host-Schlüssel. Füge ihn hinzu?"
+msgstr[1] "{host} hat außerdem {count} weitere Host-Schlüssel. Füge sie hinzu?"
+
+#. Question for the key of a first contact (no stored key; 5.2). The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_first_question"
+msgid "Add this key? [y]es, [N]o: "
+msgstr "Diesen Schlüssel hinzufügen? [j]a, [N]ein: "
+
+#. Choices after cli.hk.add_offer. The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_choices"
+msgid "[y]es, [N]o: "
+msgstr "[j]a, [N]ein: "
