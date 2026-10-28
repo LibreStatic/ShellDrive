@@ -119,7 +119,13 @@ int sd_setup_parse_args(int argc, const wchar_t *const *argv, sd_setup_args *out
       goto bad_token;
 
     if (tok[0] != L'/' && tok[0] != L'-') {
-      if (is_property_token(tok)) {
+      if (is_property_token(tok) && wcschr(tok, L'"') == NULL) {
+        /* Kept quoted for the msiexec command line (04 §8.4); the elevated stages receive them the same way. */
+        size_t used = wcslen(out->props);
+        size_t need = wcslen(tok) + 4;
+        if (used + need >= SD_SETUP_COUNTOF(out->props))
+          goto bad_token;
+        StringCchPrintfW(out->props + used, SD_SETUP_COUNTOF(out->props) - used, L"\"%s\" ", tok);
         out->properties++;
         continue;
       }
@@ -159,6 +165,15 @@ int sd_setup_parse_args(int argc, const wchar_t *const *argv, sd_setup_args *out
       out->help = 1;
     } else if (arg_is(tok + 1, L"test-pages")) {
       out->test_pages = 1;
+    } else if (arg_is(tok + 1, L"elevated-stage1") || arg_is(tok + 1, L"elevated-child")) {
+      /* Internal: the two elevated stages (setup_elevate.c). Only one of them per command line. */
+      int stage = arg_is(tok + 1, L"elevated-stage1") ? 1 : 2;
+      if (out->elevate_stage != 0 && out->elevate_stage != stage)
+        goto bad_token;
+      out->elevate_stage = stage;
+    } else if ((v = arg_value(tok, L"pipe")) != NULL) {
+      if (!copy_path_arg(out->pipe_name, SD_SETUP_COUNTOF(out->pipe_name), v))
+        goto bad_token;
     } else if ((v = arg_value(tok, L"portable")) != NULL) {
       if (mode_given && out->mode != SD_SETUP_MODE_PORTABLE)
         goto bad_token;

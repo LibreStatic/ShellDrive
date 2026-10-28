@@ -446,3 +446,23 @@ msgstr ""
 msgctxt "msi.options.linked.hint"
 msgid "Sets the Windows EnableLinkedConnections setting, so that programs run as administrator can see the drives that ShellDrive maps. Unchecked by default."
 msgstr ""
+
+#. Shown when administrator rights for the all-users install were refused or the stages could not start.
+msgctxt "installer.error.elevation"
+msgid "Administrator rights were not granted for the installation for all users. Nothing was installed."
+msgstr ""
+
+#. Shown when the setup folder in ProgramData failed the owner or link check (TM-R34).
+msgctxt "installer.error.stage_untrusted"
+msgid "The setup folder in ProgramData could not be secured, so setup stopped. Nothing was installed."
+msgstr ""
+
+#. Shown when the setup program carries no MSI for the all-users install.
+msgctxt "installer.error.msi_missing"
+msgid "This setup program does not contain the package for all users. Nothing was installed."
+msgstr ""
+
+#. Shown when msiexec failed for the all-users install. {code} is the Windows Installer exit code.
+msgctxt "installer.error.msi_failed"
+msgid "The installation for all users failed with Windows Installer code {code}."
+msgstr ""

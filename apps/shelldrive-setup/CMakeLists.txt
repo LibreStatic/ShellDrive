@@ -31,6 +31,7 @@ add_library(sd_setup_core STATIC
   setup_flow.c
   setup_install.c
   setup_trust.c
+  setup_elevate.c
   setup_dokany.c
   "${_sd_setup_host_dir}/svc_folder.c"
   "${_sd_setup_host_dir}/svc_repair.c"

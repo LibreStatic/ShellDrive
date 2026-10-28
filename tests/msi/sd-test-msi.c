@@ -396,6 +396,33 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
     check(ok, "options: registry read, init, then effective state, before CostInitialize (04 §8.7)");
   }
 
+  /* ProgramData before any write (TM-R34, TM-R35): the programdata-secure hook runs before InstallFiles, from the Binary
+     table (the installed copy does not exist yet), and MoveFiles, which writes profiles, runs after it. */
+  {
+    int cs = seq_of(db, L"InstallExecuteSequence", L"CA_ProgramDataSecure");
+    int inst = seq_of(db, L"InstallExecuteSequence", L"InstallFiles");
+    int mf = seq_of(db, L"InstallExecuteSequence", L"MoveFiles");
+    int found = 0;
+    int type = ca_type(db, L"CA_ProgramDataSecure", &found);
+    check(found && cs > 0 && inst > 0 && cs < inst && cs < mf,
+          "programdata-secure hook is scheduled before MoveFiles and InstallFiles (TM-R34, 04 §8.3)");
+    check(query_first(db, L"SELECT `Source` FROM `CustomAction` WHERE `Action` = 'CA_ProgramDataSecure'"
+                          L" AND `Source` = 'BIN_ShellDriveHost'", buf, 2048) && (type & CA_TYPE_DEFERRED),
+          "programdata-secure hook runs from the Binary table (BinaryKey), deferred");
+    check(query_first(db, L"SELECT `Name` FROM `Binary` WHERE `Name` = 'BIN_ShellDriveHost'", buf, 2048),
+          "Binary table holds shelldrive-host.exe for the hook");
+    check(mf > 0 && cs < mf, "MoveFiles (DEFAULTPROFILES) after the ProgramData check");
+  }
+
+  /* DEFAULTPROFILES (C9, 04 §8.4): the native MoveFile row copies *.ini from the property folder into the profiles folder,
+     and its component exists with the Core feature. */
+  check(count_rows(db, L"SELECT `FileKey` FROM `MoveFile` WHERE `FileKey` = 'SD_MF_DEFAULTPROFILES'"
+                       L" AND `SourceFolder` = 'DEFAULTPROFILES' AND `SourceName` = '*.ini'"
+                       L" AND `DestFolder` = 'SD_CAD_PROFILES' AND `Options` = 0 AND `Component_` = 'C_DefaultProfiles'") == 1,
+        "DEFAULTPROFILES: MoveFile row copies *.ini from the property into the profiles folder (04 §8.4)");
+  check(count_rows(db, L"SELECT `Component` FROM `Component` WHERE `Component` = 'C_DefaultProfiles'") == 1,
+        "DEFAULTPROFILES: component C_DefaultProfiles present");
+
   MsiCloseHandle(db);
   return g_failures == 0;
 }

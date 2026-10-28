@@ -17,7 +17,9 @@
 #include <string.h>
 
 #include "sd_l10n/sd_l10n.h"
+#include "setup_elevate.h"
 #include "setup_flow.h"
+#include "setup_trust.h"
 #include "setup_ui.h"
 
 #ifndef SD_VERSION_STRING_W
@@ -384,6 +386,103 @@ static int run_install(HINSTANCE inst, const sd_setup_args *args, sd_setup_resul
   return rc;
 }
 
+/* The payload of the flavour this host runs, and its SHA-256 from the PAYLOAD_TABLE resource (04 §6.1). Returns 0, or 1
+   with *msg set. Nothing is unpacked here. */
+static int load_payload(HINSTANCE inst, sd_setup_flavour flavour, sd_setup_payload *payload, unsigned char expected[32],
+                        sd_msg_id *msg)
+{
+  HRSRC hres;
+  HGLOBAL hglob;
+  HRSRC htab;
+  HGLOBAL htglob;
+
+  hres = FindResourceW(inst, sd_setup_payload_resource(flavour), RT_RCDATA);
+  hglob = hres != NULL ? LoadResource(inst, hres) : NULL;
+  if (hglob == NULL) {
+    *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_MISSING;
+    return 1;
+  }
+  payload->data = (const unsigned char *)LockResource(hglob);
+  payload->size = SizeofResource(inst, hres);
+
+  /* Without the table there is no verified hash: the stub refuses (TM-R38 until the signature exists). */
+  htab = FindResourceW(inst, L"PAYLOAD_TABLE", RT_RCDATA);
+  htglob = htab != NULL ? LoadResource(inst, htab) : NULL;
+  if (htglob == NULL ||
+      sd_setup_payload_table_lookup((const char *)LockResource(htglob), SizeofResource(inst, htab),
+                                    sd_setup_flavour_name(flavour), expected) != 0) {
+    *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED;
+    return 1;
+  }
+  return 0;
+}
+
+/* The flavour of this host, the same choice in every stage (the forwarded switches carry /flavour= when it was forced). */
+static int host_flavour(sd_setup_flavour *flavour, sd_msg_id *reason, const sd_setup_args *args)
+{
+  sd_setup_host host;
+  sd_setup_detect_host(&host);
+  return sd_setup_select_flavour(&host, args->flavour_forced ? args->flavour : SD_SETUP_FL_NONE, flavour, reason);
+}
+
+/* Per-machine install (04 §6.3): the unelevated parent. Shows no UI of its own: the UAC prompt is the consent step. */
+static int run_machine(HINSTANCE inst, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
+{
+  sd_setup_flavour flavour = SD_SETUP_FL_NONE;
+  sd_msg_id reason = 0;
+  sd_setup_payload payload;
+  unsigned char expected[32];
+  sd_setup_elev_ops ops;
+  wchar_t base[MAX_PATH];
+
+  if (args->extract_dir[0] != L'\0') {
+    /* /extract= (admin deployment copy) is not in this build (04 §6.5). */
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (host_flavour(&flavour, &reason, args) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  /* The flavour is checked before UAC, so a host that cannot run it is refused without a prompt. */
+  if (load_payload(inst, flavour, &payload, expected, &reason) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (sd_setup_common_appdata(base, SD_SETUP_COUNTOF(base)) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  sd_setup_elev_real_ops(&ops);
+  return sd_setup_elev_parent(&ops, base, self, args, res);
+}
+
+/* The elevated stages (--elevated-stage1 and --elevated-child, 04 §6.4). Stage 1 needs no payload; stage 2 checks the
+   payload table of its own image before it extracts anything. */
+static int run_elevated_stage(HINSTANCE inst, const sd_setup_args *args, const wchar_t *self)
+{
+  sd_setup_flavour flavour = SD_SETUP_FL_NONE;
+  sd_msg_id reason = 0;
+  sd_setup_payload payload;
+  unsigned char expected[32];
+  sd_setup_elev_ops ops;
+  wchar_t base[MAX_PATH];
+  DWORD rc;
+
+  if (sd_setup_common_appdata(base, SD_SETUP_COUNTOF(base)) != 0)
+    return SD_SETUP_EXIT_FATAL;
+  sd_setup_elev_real_ops(&ops);
+  if (args->elevate_stage == 1) {
+    DWORD child = 0;
+    rc = sd_setup_elev_stage1(&ops, base, self, args, &child);
+    return rc == 0 ? SD_SETUP_EXIT_OK : SD_SETUP_EXIT_FATAL;
+  }
+  if (host_flavour(&flavour, &reason, args) != 0 || load_payload(inst, flavour, &payload, expected, &reason) != 0)
+    return SD_SETUP_EXIT_FATAL;
+  rc = sd_setup_elev_stage2(&ops, base, self, args, &payload, expected);
+  return (int)rc;
+}
+
 /* /test-pages: builds every page of the flow for the command line, writes the page names to the log and returns.
    Nothing is installed, no registry value is written and no file is touched. */
 static int run_test_pages(HINSTANCE inst, const sd_setup_args *args)
@@ -462,15 +561,23 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show)
     return rc;
   }
 
-  if (args.mode == SD_SETUP_MODE_MACHINE) {
-    /* Per-machine installs go through the MSI and the elevation stages (04 §6.3-§6.4), not in this build. */
-    fail_result(&res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MACHINE_UNSUPPORTED);
-    show_result(&res, 0);
+  GetModuleFileNameW(NULL, self, SD_SETUP_COUNTOF(self));
+
+  /* The two elevated stages (04 §6.4): no window, no UI, nothing printed. */
+  if (args.elevate_stage != 0) {
+    rc = run_elevated_stage(inst, &args, self);
     LocalFree(argv);
-    return SD_SETUP_EXIT_FATAL;
+    return rc;
   }
 
-  GetModuleFileNameW(NULL, self, SD_SETUP_COUNTOF(self));
+  if (args.mode == SD_SETUP_MODE_MACHINE) {
+    /* Per-machine: the unelevated parent starts the stages and reads their result (setup_elevate.c). */
+    rc = run_machine(inst, &args, self, &res);
+    show_result(&res, 0);
+    LocalFree(argv);
+    return rc;
+  }
+
   if (args.mode == SD_SETUP_MODE_UNINSTALL)
     rc = run_uninstall(inst, &args, self, &res);
   else
