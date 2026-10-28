@@ -526,8 +526,7 @@ static DWORD WINAPI elev_job_main(LPVOID param)
   } else if (sd_setup_elev_forward(&j->args, fwd, SD_SETUP_COUNTOF(fwd)) != 0) {
     j->rc = ERROR_BUFFER_OVERFLOW;
   } else {
-    /* No path goes to the elevated stages: the /log= path is written by the unelevated parent, never by an elevated
-       process (TM-R33, TM-R34). The stage log stays in the protected stage folder. */
+    /* No path goes to the elevated stages (TM-R33, TM-R34): the /log= copy is written by the parent from the pipe. */
     StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s", j->self, j->args.pipe_name,
                      fwd);
     j->rc = j->ops->run(j->ops->ctx, j->self, cmd, NULL, 1, &j->child);
@@ -535,7 +534,166 @@ static DWORD WINAPI elev_job_main(LPVOID param)
   return 0;
 }
 
-/* The last "P <n>" line of the collected text: 1 with *value set when there is one. */
+/* The result channel, read by the parent (04 §6.4). Lines are UTF-16: "P <n>", "M <id> <code>" and "R <n>" are control text
+   (kept in text). The log block is "G" (opens it), then "L <hex>" lines of 1 to 64 bytes of msi.log, then "T" when the log
+   was cut at SD_ELEV_LOG_CAP, and the block ends with the "R" line. The parent treats the block as bytes only: it never
+   reads a path or a command from it. Anything malformed or oversized sets bad, and nothing is written. */
+#define SD_ELEV_LOG_CAP ((size_t)4 * 1024 * 1024)
+#define SD_ELEV_LINE_CCH 256
+#define SD_ELEV_TEXT_CCH 2048
+
+typedef struct elev_rx {
+  wchar_t line[SD_ELEV_LINE_CCH];
+  size_t nline;
+  int discard;                  /* the current line is too long: skip to its end */
+  int have_odd;                 /* a read ended on half a UTF-16 unit */
+  unsigned char odd;
+  wchar_t text[SD_ELEV_TEXT_CCH];
+  size_t ntext;
+  int block;                    /* 1 after "G" */
+  int truncated;                /* 1 after "T" */
+  int bad;                      /* malformed or oversized: nothing is written */
+  unsigned char *log;
+  size_t nlog;
+} elev_rx;
+
+static int hex_nibble(wchar_t c)
+{
+  if (c >= L'0' && c <= L'9')
+    return c - L'0';
+  if (c >= L'a' && c <= L'f')
+    return c - L'a' + 10;
+  if (c >= L'A' && c <= L'F')
+    return c - L'A' + 10;
+  return -1;
+}
+
+static void rx_hex_line(elev_rx *rx, const wchar_t *hex, size_t m)
+{
+  size_t i;
+  size_t nb;
+
+  if (!rx->block || m == 0 || (m % 2) != 0 || m > 2 * 64 || rx->log == NULL) {
+    rx->bad = 1;
+    return;
+  }
+  nb = m / 2;
+  if (rx->nlog + nb > SD_ELEV_LOG_CAP) {
+    rx->bad = 1;
+    return;
+  }
+  for (i = 0; i < nb; i++) {
+    int hi = hex_nibble(hex[2 * i]);
+    int lo = hex_nibble(hex[2 * i + 1]);
+    if (hi < 0 || lo < 0) {
+      rx->bad = 1;
+      return;
+    }
+    rx->log[rx->nlog++] = (unsigned char)((hi << 4) | lo);
+  }
+}
+
+static void rx_line(elev_rx *rx)
+{
+  const wchar_t *l = rx->line;
+  size_t n = rx->nline;
+
+  if (rx->bad)
+    return;
+  if (n == 1 && l[0] == L'G') {
+    if (rx->block) {
+      rx->bad = 1;
+      return;
+    }
+    rx->block = 1;
+    rx->log = (unsigned char *)HeapAlloc(GetProcessHeap(), 0, SD_ELEV_LOG_CAP);
+    if (rx->log == NULL)
+      rx->bad = 1;
+    return;
+  }
+  if (n == 1 && l[0] == L'T') {
+    if (!rx->block)
+      rx->bad = 1;
+    else
+      rx->truncated = 1;
+    return;
+  }
+  if (n >= 2 && l[0] == L'L' && l[1] == L' ') {
+    rx_hex_line(rx, l + 2, n - 2);
+    return;
+  }
+  /* Control text: appended with its line break, so that the line-start tests of last_progress and the result parsers hold. */
+  if (rx->ntext + n + 2 > SD_ELEV_TEXT_CCH) {
+    rx->bad = 1;
+    return;
+  }
+  memcpy(rx->text + rx->ntext, l, n * sizeof(wchar_t));
+  rx->ntext += n;
+  rx->text[rx->ntext++] = L'\n';
+  rx->text[rx->ntext] = L'\0';
+}
+
+static void rx_char(elev_rx *rx, wchar_t c)
+{
+  if (c == L'\n') {
+    if (!rx->discard)
+      rx_line(rx);
+    rx->nline = 0;
+    rx->discard = 0;
+    return;
+  }
+  if (rx->discard)
+    return;
+  if (rx->nline + 1 >= SD_ELEV_LINE_CCH) {
+    rx->bad = 1;
+    rx->discard = 1;
+    return;
+  }
+  rx->line[rx->nline++] = c;
+}
+
+/* Feeds n bytes of the pipe to the line reader (UTF-16LE). */
+static void rx_bytes(elev_rx *rx, const unsigned char *p, DWORD n)
+{
+  DWORD i = 0;
+
+  if (rx->have_odd && n > 0) {
+    rx_char(rx, (wchar_t)(rx->odd | ((unsigned)p[0] << 8)));
+    rx->have_odd = 0;
+    i = 1;
+  }
+  for (; i + 1 < n; i += 2)
+    rx_char(rx, (wchar_t)(p[i] | ((unsigned)p[i + 1] << 8)));
+  if (i < n) {
+    rx->odd = p[i];
+    rx->have_odd = 1;
+  }
+}
+
+/* Reads everything the stage has written so far (the server end is nonblocking). Returns the number of bytes read. */
+static DWORD rx_read(HANDLE server, elev_rx *rx)
+{
+  unsigned char buf[1024];
+  DWORD got = 0;
+  DWORD total = 0;
+  DWORD e;
+
+  if (!ConnectNamedPipe(server, NULL)) {
+    e = GetLastError();
+    if (e != ERROR_PIPE_CONNECTED && e != ERROR_PIPE_LISTENING && e != ERROR_NO_DATA)
+      return 0;
+  }
+  for (;;) {
+    got = 0;
+    if (!ReadFile(server, buf, sizeof(buf), &got, NULL) || got == 0)
+      break;
+    rx_bytes(rx, buf, got);
+    total += got;
+  }
+  return total;
+}
+
+/* The last "P <n>" line of the control text: 1 with *value set when there is one. */
 static int last_progress(const wchar_t *text, unsigned *value)
 {
   const wchar_t *p;
@@ -557,22 +715,79 @@ static int last_progress(const wchar_t *text, unsigned *value)
   return found;
 }
 
-/* Reads what the stage has written since the last call into acc (appended), and reports a new percentage. */
-static void relay_poll(HANDLE server, wchar_t *acc, size_t cch, unsigned *last, sd_setup_elev_progress_fn progress,
-                       void *ctx)
+/* Drains the pipe and reports a new percentage. Returns 1 when any byte was read. */
+static int relay_read(HANDLE server, elev_rx *rx, sd_setup_elev_progress_fn progress, void *ctx, unsigned *last)
 {
-  wchar_t chunk[1024];
   unsigned value = 0;
-  size_t used = wcslen(acc);
+  int got = rx_read(server, rx) != 0;
 
-  if (sd_setup_elev_pipe_collect(server, chunk, SD_SETUP_COUNTOF(chunk)) == 0 && chunk[0] != L'\0' &&
-      used + wcslen(chunk) + 1 < cch)
-    StringCchCatW(acc, cch, chunk);
-  if (last_progress(acc, &value) && value != *last) {
+  if (last_progress(rx->text, &value) && value != *last) {
     *last = value;
     if (progress != NULL)
       progress(ctx, value);
   }
+  return got;
+}
+
+/* 1 when path may take the log copy: an absolute drive path of a .log file, no parent-folder component, in a folder that
+   exists and is not a reparse point. An existing target must be a plain file (it is replaced). */
+static int log_target_ok(const wchar_t *path)
+{
+  wchar_t dir[MAX_PATH];
+  size_t n = wcslen(path);
+  size_t i;
+  DWORD a;
+
+  if (n < 8 || n >= MAX_PATH || path[1] != L':' || path[2] != L'\\' || wcschr(path, L'"') != NULL)
+    return 0;
+  for (i = 0; i + 1 < n; i++) {
+    if (path[i] == L'.' && path[i + 1] == L'.')
+      return 0;
+  }
+  if (_wcsicmp(path + n - 4, L".log") != 0 || parent_of(path, dir, MAX_PATH) != 0)
+    return 0;
+  a = GetFileAttributesW(dir);
+  if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_DIRECTORY) == 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    return 0;
+  a = GetFileAttributesW(path);
+  if (a != INVALID_FILE_ATTRIBUTES && ((a & FILE_ATTRIBUTE_DIRECTORY) != 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0))
+    return 0;
+  return 1;
+}
+
+/* Writes the bytes to path with the parent's own token (CREATE_ALWAYS). 0 or 1. */
+static int write_log_file(const wchar_t *path, const unsigned char *data, size_t n)
+{
+  HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD put = 0;
+  int ok = 1;
+
+  if (h == INVALID_HANDLE_VALUE)
+    return 1;
+  if (n > 0 && (!WriteFile(h, data, (DWORD)n, &put, NULL) || put != (DWORD)n))
+    ok = 0;
+  CloseHandle(h);
+  return ok ? 0 : 1;
+}
+
+/* After the stage has finished: writes the relayed log block to log_path, or logs why it did not. Frees the block. */
+static void elev_finish_log(elev_rx *rx, const wchar_t *log_path)
+{
+  if (rx->block && !rx->bad && log_path != NULL && log_path[0] != L'\0') {
+    if (!log_target_ok(log_path)) {
+      sd_setup_log("elevate.log_refused", L"the log path is not a usable .log file; nothing was written");
+    } else if (write_log_file(log_path, rx->log, rx->nlog) == 0) {
+      sd_setup_log(rx->truncated ? "elevate.log_truncated" : "elevate.log_written",
+                   rx->truncated ? L"the stage log was cut at the size cap" : L"the stage log was written to the log path");
+    } else {
+      sd_setup_log("elevate.log_failed", L"the stage log could not be written");
+    }
+  } else if (rx->block && rx->bad) {
+    sd_setup_log("elevate.log_malformed", L"the stage log block was malformed or too large; nothing was written");
+  }
+  if (rx->log != NULL)
+    HeapFree(GetProcessHeap(), 0, rx->log);
+  rx->log = NULL;
 }
 
 int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
@@ -580,12 +795,13 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
                             void *ctx)
 {
   elev_job job;
-  wchar_t text[2048];
+  elev_rx rx;
   HANDLE server = INVALID_HANDLE_VALUE;
   HANDLE thread = NULL;
   sd_msg_id msg = 0;
   long mcode = 0;
   unsigned last = (unsigned)-1;
+  int drained = 0;
   DWORD rc;
 
   if (r == NULL)
@@ -595,6 +811,7 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC, 0);
 
   memset(&job, 0, sizeof(job));
+  memset(&rx, 0, sizeof(rx));
   job.ops = ops;
   job.base = base;
   job.self = self;
@@ -611,11 +828,11 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
     CloseHandle(server);
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)GetLastError());
   }
-  /* Wait for the stage, relaying its "P" lines every 100 ms; the tick lets the caller pump its window. */
-  text[0] = L'\0';
+  /* Drain the pipe while the stage runs: a busy pipe blocks the stage, so the wait is short while data keeps coming.
+     The tick lets the caller pump its window. */
   for (;;) {
-    DWORD w = WaitForSingleObject(thread, 100);
-    relay_poll(server, text, SD_SETUP_COUNTOF(text), &last, progress, ctx);
+    DWORD w = WaitForSingleObject(thread, drained ? 0 : 20);
+    drained = relay_read(server, &rx, progress, ctx, &last);
     if (progress != NULL)
       progress(ctx, SD_SETUP_ELEV_TICK);
     if (w != WAIT_TIMEOUT)
@@ -624,23 +841,22 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
   CloseHandle(thread);
   rc = job.rc;
 
-  if (rc == ERROR_CANCELLED) {
-    CloseHandle(server);
+  /* The stage has finished: read the rest, then write the log block (if any) with the parent's token. */
+  relay_read(server, &rx, progress, ctx, &last);
+  CloseHandle(server);
+  elev_finish_log(&rx, args->log_path);
+
+  if (rc == ERROR_CANCELLED)
     return fail_result(r, SD_SETUP_EXIT_CANCEL, 0, 0);
-  }
   if (rc != 0) {
     sd_setup_log("elevate.failed", L"the elevated stage did not run");
-    CloseHandle(server);
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)rc);
   }
 
-  /* The stage has finished: read the rest of what it reported, and relay its last progress. */
-  relay_poll(server, text, SD_SETUP_COUNTOF(text), &last, progress, ctx);
-  CloseHandle(server);
-  if (sd_setup_elev_result_line(text, &job.child) != 0)
+  if (sd_setup_elev_result_line(rx.text, &job.child) != 0)
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)job.child);
 
-  if (message_line(text, &msg, &mcode)) {
+  if (message_line(rx.text, &msg, &mcode)) {
     r->msg = msg;
     r->code = mcode;
   }
@@ -648,10 +864,6 @@ int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, c
   if (job.child != SD_SETUP_EXIT_OK && job.child != SD_SETUP_EXIT_REBOOT && r->msg == 0)
     r->msg = SD_MSG_INSTALLER_ERROR_ELEVATION;
   sd_setup_log("elevate.result", L"the parent received the stage result");
-  /* The stage log stays in the protected stage folder, which the unelevated parent cannot read (04 section 6.4): the
-     /log= copy is not made. This line says so in the setup log. */
-  if (args->log_path[0] != L'\0')
-    sd_setup_log("elevate.log_not_copied", L"the stage log is in the protected stage folder; /log= was not written");
   return r->exit_code;
 }
 
@@ -747,6 +959,57 @@ static void progress(HANDLE pipe, unsigned percent)
   sd_setup_elev_pipe_write(pipe, line);
 }
 
+/* Sends msi.log of the stage folder over the pipe: "G", then "L <hex>" lines of up to 64 bytes, then "T" when the file is
+   larger than SD_ELEV_LOG_CAP (only the first SD_ELEV_LOG_CAP bytes are sent). Nothing is sent when the file is not a
+   plain file. Stage 2 never writes outside its folder; the path to the user's /log= is not known here. */
+static void send_stage_log(HANDLE pipe, const wchar_t *dir)
+{
+  static const wchar_t digits[] = L"0123456789abcdef";
+  wchar_t path[MAX_PATH];
+  wchar_t line[SD_ELEV_LINE_CCH];
+  unsigned char buf[64];
+  HANDLE f;
+  DWORD got = 0;
+  size_t sent = 0;
+  size_t i;
+  int truncated = 0;
+
+  sd_setup_elev_pipe_write(pipe, L"G");
+  if (sd_setup_path_join(path, MAX_PATH, dir, SD_ELEV_MSI_LOG) != 0 || !plain_file(path))
+    return;
+  f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (f == INVALID_HANDLE_VALUE)
+    return;
+  for (;;) {
+    size_t want = sizeof(buf);
+    if (sent == SD_ELEV_LOG_CAP) {
+      /* At the cap: one more byte means the log is cut. */
+      unsigned char probe;
+      DWORD pg = 0;
+      if (ReadFile(f, &probe, 1, &pg, NULL) && pg == 1)
+        truncated = 1;
+      break;
+    }
+    if (SD_ELEV_LOG_CAP - sent < want)
+      want = SD_ELEV_LOG_CAP - sent;
+    if (!ReadFile(f, buf, (DWORD)want, &got, NULL) || got == 0)
+      break;
+    line[0] = L'L';
+    line[1] = L' ';
+    for (i = 0; i < got; i++) {
+      line[2 + 2 * i] = digits[buf[i] >> 4];
+      line[3 + 2 * i] = digits[buf[i] & 15];
+    }
+    line[2 + 2 * got] = L'\0';
+    if (sd_setup_elev_pipe_write(pipe, line) != 0)
+      break;
+    sent += got;
+  }
+  CloseHandle(f);
+  if (truncated)
+    sd_setup_elev_pipe_write(pipe, L"T");
+}
+
 DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
                            const sd_setup_args *args, const sd_setup_payload *payload,
                            const unsigned char expected[32])
@@ -813,6 +1076,8 @@ DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, co
 
   progress(pipe, 60);
   rc = ops->run(ops->ctx, exe, cmd, dir, 0, &mcode);
+  /* The msiexec log goes back over the pipe, before the result line (the parent writes the /log= copy). */
+  send_stage_log(pipe, dir);
   sd_setup_remove_tree(pdir, NULL);
   if (rc != 0)
     return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MSI_FAILED, (long)rc);

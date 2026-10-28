@@ -572,3 +572,25 @@ r16 section that the gate misses `unit.engine` is superseded by this note.
 6. Lab checks (04 section 11.4): UAC and XP Run As, progress relay under runas, msiexec install, Change, Repair and Remove.
 7. No test yet for the MSI exclusion in per-user installs or for `/extract`.
 8. The Dokany chain still does not run (unchanged).
+
+### /log= for all-users installs (r17, option c; supersedes the stage 1 copy above)
+
+- No path reaches an elevated stage: the parent does not pass /log= on the stage 1 command line, and stage 1 copies nothing.
+  The stage folder keeps its protected DACL (SYSTEM and Administrators), so the unelevated parent cannot read msi.log there.
+- The log travels over the result pipe, whose DACL is the current user only. Stage 2 sends after msiexec, before the R line:
+  `G` (opens the block), then `L <hex>` lines of 1 to 64 bytes of msi.log (lowercase hex, 130 UTF-16 units at most), an
+  optional `T` (the log was cut at SD_ELEV_LOG_CAP = 4 MiB, only the first 4 MiB are sent), and the R line that ends the stage.
+- The parent drains the pipe as bytes (UTF-16LE lines), and treats the block as data only: it never reads a path or a command
+  from it. Control lines (P, M, R) keep their meaning. A second G, an L line outside a block, bad hex, an odd length, a line
+  over the buffer, or more than the cap sets "bad": nothing is written and the event elevate.log_malformed is logged. The
+  install result is not changed by the log.
+- With a good block the parent writes the bytes to /log= itself, with its own token, CREATE_ALWAYS, after the same target
+  checks as before (absolute drive path, .log, no parent-folder component, existing folder not a reparse point, existing
+  target a plain file). Events: elevate.log_written, elevate.log_truncated (block had T), elevate.log_refused,
+  elevate.log_failed, elevate.log_absent (no block: the stage failed before msiexec, or an older stage).
+- elevate.log_not_copied is gone. Tests (tests/setup/test_elevate.c): setup_elev_parent_writes_the_relayed_log,
+  setup_elev_parent_truncated_block_is_written, setup_elev_parent_malformed_block_writes_nothing,
+  setup_elev_parent_oversized_block_writes_nothing (4 MiB + 64 bytes), setup_elev_stage2_sends_the_stage_log,
+  setup_elev_stage1_keeps_the_stage_log_in_the_stage.
+- Open: the cap is 4 MiB of raw log; a longer msi.log is truncated, not refused. Throughput is limited by pipe round trips
+  (the parent drains without waiting while data keeps coming).
