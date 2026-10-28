@@ -1,6 +1,6 @@
 # 01 - SSH, SFTP and crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`)
 
-Status: design (M7: `zlib@openssh.com` implemented, section 4.7, docs/dev/m7-notes.md), updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
+Status: design (M7: `zlib@openssh.com` implemented, section 4.7; adaptive channel windows implemented, section 4.8; docs/dev/m7-notes.md), updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
 where they differ) and to the resolutions of `00-integration-review.md` that concern this module. Threat-model
 integration 2026-10-24: the recommendations of `05-threat-model.md` §8 that target this module (`TM-Rxx`, as
 accepted by decisions.md D33-D39) are applied in place; each change cites its `TM-R` and threat (`T-xx`) ids, the

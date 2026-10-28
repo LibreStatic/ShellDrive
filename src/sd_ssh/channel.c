@@ -72,7 +72,7 @@ static int open_now(sd_ssh_conn *c, sd_ssh_channel *ch)
   }
   c->ch[i] = ch;
   ch->local_id = i;
-  ch->local_window = SSH_CH_WINDOW;
+  ssh_win_init(&ch->win, SSH_CH_ADAPTIVE);
   ch->state = SSH_CH_OPENING;
   ch->deadline = ssh_now() + c->connect_timeout_ms;
   sd_wr_init(&w, 512);
@@ -228,21 +228,46 @@ sd_err sd_ssh_channel_write(sd_ssh_channel *ch, const uint8_t *p, size_t n, size
   return SD_OK;
 }
 
+/* Sends WINDOW_ADJUST for `add` bytes. The caller has already added them to ch->win.allow. */
+static void send_adjust(sd_ssh_conn *c, sd_ssh_channel *ch, uint32_t add)
+{
+  uint8_t b[9];
+  b[0] = SSH_MSG_CHANNEL_WINDOW_ADJUST;
+  sd_store_be32(b + 1, ch->remote_id);
+  sd_store_be32(b + 5, add);
+  ssh_send(c, b, 9);
+}
+
+/* Sum of the receive targets of every channel of this connection (the session budget, channel_window.h). */
+static uint64_t session_win_total(const sd_ssh_conn *c)
+{
+  uint64_t total = 0;
+  uint32_t i;
+  for (i = 0; i < SSH_MAX_CHANNELS; i++)
+    if (c->ch[i]) total += c->ch[i]->win.target;
+  return total;
+}
+
+/* Accounts n bytes of peer data (checked against the allowance by the caller). A growth decision is sent as
+ * WINDOW_ADJUST only while the channel can still send. */
+static void win_received(sd_ssh_conn *c, sd_ssh_channel *ch, size_t n)
+{
+  uint32_t rtt = c->have_rtt ? c->srtt : SSH_WIN_RTT_DEFAULT_MS;
+  uint32_t grow;
+  if (!n) return;
+  grow = ssh_win_on_data(&ch->win, (uint32_t)n, ssh_now(), rtt, session_win_total(c));
+  if (grow && ch->state == SSH_CH_OPEN && !ch->close_sent) send_adjust(c, ch, grow);
+}
+
 void sd_ssh_channel_consumed(sd_ssh_channel *ch, size_t n)
 {
   sd_ssh_conn *c;
+  uint32_t add;
   if (!ch || ch->state == SSH_CH_DEAD) return;
   c = ch->c;
-  ch->consumed_unacked += (uint32_t)n;
-  if (ch->consumed_unacked >= SSH_CH_WINDOW / 2 && ch->state == SSH_CH_OPEN && !ch->close_sent) {
-    uint8_t b[12];
-    b[0] = SSH_MSG_CHANNEL_WINDOW_ADJUST;
-    sd_store_be32(b + 1, ch->remote_id);
-    sd_store_be32(b + 5, ch->consumed_unacked);
-    ch->local_window += ch->consumed_unacked;
-    ch->consumed_unacked = 0;
-    ssh_send(c, b, 9);
-  }
+  if (ch->state != SSH_CH_OPEN || ch->close_sent) return;
+  add = ssh_win_on_consumed(&ch->win, (uint32_t)n);
+  if (add) send_adjust(c, ch, add);
 }
 
 void sd_ssh_channel_close(sd_ssh_channel *ch)
@@ -364,8 +389,8 @@ void ssh_channel_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
   case SSH_MSG_CHANNEL_DATA: {
     sd_span d = sd_rd_string(&r, SSH_MAX_PACKET_LEN);
     if (!sd_rd_ok(&r)) break;
-    if (d.n > ch->local_window) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "channel window exceeded"); return; }
-    ch->local_window -= (uint32_t)d.n;
+    if (d.n > ch->win.allow) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "channel window exceeded"); return; }
+    win_received(c, ch, d.n);
     if (ch->state == SSH_CH_OPEN && ch->sink.on_data && d.n) ch->sink.on_data(ch->ctx, d.p, d.n);
     else sd_ssh_channel_consumed(ch, d.n);
     return;
@@ -374,8 +399,8 @@ void ssh_channel_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
     uint32_t type = sd_rd_u32(&r);
     sd_span d = sd_rd_string(&r, SSH_MAX_PACKET_LEN);
     if (!sd_rd_ok(&r)) break;
-    if (d.n > ch->local_window) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "channel window exceeded"); return; }
-    ch->local_window -= (uint32_t)d.n;
+    if (d.n > ch->win.allow) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "channel window exceeded"); return; }
+    win_received(c, ch, d.n);
     if (ch->stderr_logged < 4096) {
       char txt[1024];
       size_t take = SD_MIN(d.n, (size_t)(4096 - ch->stderr_logged));

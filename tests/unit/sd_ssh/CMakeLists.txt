@@ -84,3 +84,10 @@ target_include_directories(sd-test-zlib PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_ssh"
 add_test(NAME interop.zlib COMMAND sd-test-ssh-interop --filter interop_zlib_delayed)
 set_tests_properties(interop.zlib PROPERTIES LABELS interop TIMEOUT 300 SKIP_RETURN_CODE 77
   RESOURCE_LOCK wsl_sshd_fixture)
+
+# M7 adaptive channel windows (01 section 4.8): a simulated link with a virtual clock (test_window.c). No network.
+#   unit.ssh_window        sd-test-ssh_window.exe
+sd_add_unit_test(ssh_window
+  SOURCES test_window.c
+  DEPS sd_ssh sd_crypto sd_base sd_platform)
+target_include_directories(sd-test-ssh_window PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_ssh")
