@@ -27,23 +27,66 @@
 #define EC_MAXL 17
 #endif
 
+/* Field representation per curve and limb size (chosen at compile time; see the M7 notes in docs/dev/m7-notes.md).
+   1: normal form, NIST reduction (fe_mul_nist). 0: Montgomery form, CIOS (fe_mul_mont), the previous path.
+   Both paths are compiled into every build and tested on every curve. */
+#if SD_LIMB_BITS == 64
+#define EC_NIST_P256 0
+#define EC_NIST_P384 0
+#define EC_NIST_P521 1
+#else
+#define EC_NIST_P256 0
+#define EC_NIST_P384 0
+#define EC_NIST_P521 1
+#endif
+
+#if EC_NIST_P256
+#define P256_B k_p256_b
+#define P256_GX k_p256_gx
+#define P256_GY k_p256_gy
+#else
+#define P256_B k_p256_b_m
+#define P256_GX k_p256_gx_m
+#define P256_GY k_p256_gy_m
+#endif
+#if EC_NIST_P384
+#define P384_B k_p384_b
+#define P384_GX k_p384_gx
+#define P384_GY k_p384_gy
+#else
+#define P384_B k_p384_b_m
+#define P384_GX k_p384_gx_m
+#define P384_GY k_p384_gy_m
+#endif
+#if EC_NIST_P521
+#define P521_B k_p521_b
+#define P521_GX k_p521_gx
+#define P521_GY k_p521_gy
+#else
+#define P521_B k_p521_b_m
+#define P521_GX k_p521_gx_m
+#define P521_GY k_p521_gy_m
+#endif
+
 typedef struct ec_curve {
   sd_curve id;
   size_t nl, flen;
   uint32_t bits;             /* bits of p and of n */
   sd_hash_alg hash;
-  /* p, p_r2 and p_m0i serve the Montgomery reference path (tests only); b, gx, gy are normal form. */
+  int nist;                  /* 1: normal form and fe_mul_nist; 0: Montgomery form and fe_mul_mont */
+  /* p, p_r2, p_one and p_m0i: Montgomery constants (p_r2, p_one, p_m0i are also used by the Montgomery path
+     and the tests). b, gx, gy: in the curve's field representation. */
   const sd_limb *p, *p_r2, *p_one, *n, *n_r2, *n_one, *b, *gx, *gy;
   sd_limb p_m0i, n_m0i;
 } ec_curve;
 
 static const ec_curve k_curves[3] = {
-  { SD_CURVE_P256, K_P256_LIMBS, 32, 256, SD_HASH_SHA256, k_p256_p, k_p256_p_r2, k_p256_p_one, k_p256_n,
-    k_p256_n_r2, k_p256_n_one, k_p256_b, k_p256_gx, k_p256_gy, K_P256_P_M0I, K_P256_N_M0I },
-  { SD_CURVE_P384, K_P384_LIMBS, 48, 384, SD_HASH_SHA384, k_p384_p, k_p384_p_r2, k_p384_p_one, k_p384_n,
-    k_p384_n_r2, k_p384_n_one, k_p384_b, k_p384_gx, k_p384_gy, K_P384_P_M0I, K_P384_N_M0I },
-  { SD_CURVE_P521, K_P521_LIMBS, 66, 521, SD_HASH_SHA512, k_p521_p, k_p521_p_r2, k_p521_p_one, k_p521_n,
-    k_p521_n_r2, k_p521_n_one, k_p521_b, k_p521_gx, k_p521_gy, K_P521_P_M0I, K_P521_N_M0I },
+  { SD_CURVE_P256, K_P256_LIMBS, 32, 256, SD_HASH_SHA256, EC_NIST_P256, k_p256_p, k_p256_p_r2, k_p256_p_one,
+    k_p256_n, k_p256_n_r2, k_p256_n_one, P256_B, P256_GX, P256_GY, K_P256_P_M0I, K_P256_N_M0I },
+  { SD_CURVE_P384, K_P384_LIMBS, 48, 384, SD_HASH_SHA384, EC_NIST_P384, k_p384_p, k_p384_p_r2, k_p384_p_one,
+    k_p384_n, k_p384_n_r2, k_p384_n_one, P384_B, P384_GX, P384_GY, K_P384_P_M0I, K_P384_N_M0I },
+  { SD_CURVE_P521, K_P521_LIMBS, 66, 521, SD_HASH_SHA512, EC_NIST_P521, k_p521_p, k_p521_p_r2, k_p521_p_one,
+    k_p521_n, k_p521_n_r2, k_p521_n_one, P521_B, P521_GX, P521_GY, K_P521_P_M0I, K_P521_N_M0I },
 };
 
 static const ec_curve *curve_get(sd_curve c)
@@ -288,7 +331,7 @@ static void red_p521(uint32_t *r, const uint32_t *t)
 }
 
 /* r = a * b mod p, normal form. r may alias a or b. */
-static void fe_mul(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+static void fe_mul_nist(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
 {
   sd_limb prod[2 * EC_MAXL];
   uint32_t t[EC_PROD_W32], w[EC_PROD_W32];
@@ -302,6 +345,44 @@ static void fe_mul(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_lim
   w32_to_limbs(r, w, c->nl);
 }
 
+/* Montgomery product: r = a * b * R^-1 mod p (operands below p). */
+static void fe_mul_mont(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+{
+  sd_mp_montmul(r, a, b, c->p, c->p_m0i, c->nl);
+}
+
+/* Field product in the curve's representation. c->nist is a public table entry, not secret data. */
+static void fe_mul(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+{
+  if (c->nist)
+    fe_mul_nist(c, r, a, b);
+  else
+    fe_mul_mont(c, r, a, b);
+}
+
+/* Plain value -> field representation, and back. */
+static void fe_to_rep(const ec_curve *c, sd_limb *r, const sd_limb *a)
+{
+  if (c->nist) {
+    memcpy(r, a, c->nl * sizeof(sd_limb));
+  } else {
+    sd_mp_montmul(r, a, c->p_r2, c->p, c->p_m0i, c->nl);   /* a R^2 R^-1 = a R */
+  }
+}
+
+static void fe_from_rep(const ec_curve *c, sd_limb *r, const sd_limb *a)
+{
+  if (c->nist) {
+    memcpy(r, a, c->nl * sizeof(sd_limb));
+  } else {
+    sd_limb one[EC_MAXL];
+    memset(one, 0, sizeof(one));
+    one[0] = 1;
+    sd_mp_montmul(r, a, one, c->p, c->p_m0i, c->nl);       /* a R R^-1 = a */
+    sd_secure_zero(one, sizeof(one));
+  }
+}
+
 #define MUL(r, a, b) fe_mul(c, (r), (a), (b))
 #define ADD(r, a, b) sd_mp_modadd((r), (a), (b), c->p, c->nl)
 #define SUB(r, a, b) sd_mp_modsub((r), (a), (b), c->p, c->nl)
@@ -310,8 +391,12 @@ static void fe_mul(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_lim
 
 static void fe_one(const ec_curve *c, sd_limb *r)
 {
-  memset(r, 0, c->nl * sizeof(sd_limb));
-  r[0] = 1;
+  if (c->nist) {
+    memset(r, 0, c->nl * sizeof(sd_limb));
+    r[0] = 1;
+  } else {
+    memcpy(r, c->p_one, c->nl * sizeof(sd_limb));
+  }
 }
 
 static void pt_set_inf(const ec_curve *c, ec_pt *r)
@@ -463,13 +548,15 @@ static void pt_mul(const ec_curve *c, ec_pt *r, const sd_limb *k, const ec_pt *p
 /* Affine coordinates (normal form). Returns an all-ones mask unless p is infinity. */
 static sd_limb pt_affine(const ec_curve *c, sd_limb *x, sd_limb *y, const ec_pt *p)
 {
-  sd_limb zi[EC_MAXL], work[SD_MP_MODINV_WORK(EC_MAXL)], ok;
+  sd_limb zn[EC_MAXL], zi[EC_MAXL], work[SD_MP_MODINV_WORK(EC_MAXL)], ok;
   size_t nl = c->nl;
-  ok = ~sd_mp_is_zero(p->z, nl);
-  (void)sd_mp_modinv_ct(zi, p->z, c->p, nl, work);
-  MUL(x, p->x, zi);          /* X * Z^-1 */
+  fe_from_rep(c, zn, p->z);  /* Z as a plain value */
+  ok = ~sd_mp_is_zero(zn, nl);
+  (void)sd_mp_modinv_ct(zi, zn, c->p, nl, work);
+  MUL(x, p->x, zi);          /* X * Z^-1 (Montgomery: (X R) * Z^-1 * R^-1) */
   if (y)
     MUL(y, p->y, zi);
+  sd_secure_zero(zn, sizeof(zn));
   sd_secure_zero(zi, sizeof(zi));
   sd_secure_zero(work, sizeof(work));
   return ok;
@@ -494,8 +581,8 @@ static sd_err decode_point(const ec_curve *c, ec_pt *r, const uint8_t *in, size_
   if (sd_mp_vt_cmp(x, nl, c->p, nl) >= 0 || sd_mp_vt_cmp(y, nl, c->p, nl) >= 0)
     return SD_E_CRYPTO;
   memset(r, 0, sizeof(*r));
-  memcpy(r->x, x, nl * sizeof(sd_limb));
-  memcpy(r->y, y, nl * sizeof(sd_limb));
+  fe_to_rep(c, r->x, x);
+  fe_to_rep(c, r->y, y);
   fe_one(c, r->z);
   /* y^2 == x^3 - 3x + b */
   MUL(lhs, r->y, r->y);
@@ -953,7 +1040,14 @@ static sd_err fe_test_io(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8
   sd_mp_from_be(x, c->nl, a, c->flen);
   sd_mp_from_be(y, c->nl, b, c->flen);
   if (mode == 0) {
-    fe_mul(c, r, x, y);
+    fe_mul_nist(c, r, x, y);
+  } else if (mode == 3) {
+    /* the selected path as the point code uses it: operands into the representation, product, back */
+    sd_limb xr[EC_MAXL], yr[EC_MAXL], rr[EC_MAXL];
+    fe_to_rep(c, xr, x);
+    fe_to_rep(c, yr, y);
+    fe_mul(c, rr, xr, yr);
+    fe_from_rep(c, r, rr);
   } else if (mode == 1) {
     sd_mp_mul(prod, x, c->nl, y, c->nl);
     sd_mp_mod(r, prod, 2 * c->nl, c->p, c->nl);
@@ -965,9 +1059,14 @@ static sd_err fe_test_io(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8
   return SD_OK;
 }
 
-sd_err sd_ec_test_fe_mul(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+sd_err sd_ec_test_fe_nist(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
 {
   return fe_test_io(cid, a, b, out, 0);
+}
+
+sd_err sd_ec_test_fe_sel(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+  return fe_test_io(cid, a, b, out, 3);
 }
 
 sd_err sd_ec_test_fe_ref(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)

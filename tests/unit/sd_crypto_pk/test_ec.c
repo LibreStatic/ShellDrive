@@ -341,7 +341,7 @@ SD_TEST(ec_sign_verify_and_rules)
   sd_ec_free(NULL);
 }
 
-/* ---- NIST field reductions (ec_p.c fe_mul: FIPS 186-4 D.2 for P-256/P-384, Mersenne-type for P-521) ----
+/* ---- field products (ec_p.c: NIST reductions fe_mul_nist, FIPS 186-4 D.2 for P-256/P-384, Mersenne-type for P-521; Montgomery fe_mul_mont; per-curve selection) ----
  * Each product is checked against the bit-serial reference (sd_mp_mod of the schoolbook product) on edge
  * operands (0, 1, 2, p-1, p, p+1, all ones, one all-ones word, boundary words 0 / 1 / 2^31 / 2^32-2 / 2^32-1,
  * random words), and against the previous Montgomery path where both operands are below p. P-521 operands
@@ -445,9 +445,11 @@ SD_TEST(ec_field_reduction_differential)
       for (j = 0; j < n; j++) {
         SD_CHECK(sd_ec_test_fe_ref(c, ops[i], ops[j], ref) == SD_OK);
         SD_CHECK(memcmp(ref, pb, fl) < 0);                       /* the reference is reduced */
-        SD_CHECK(sd_ec_test_fe_mul(c, ops[i], ops[j], got) == SD_OK && memcmp(got, ref, fl) == 0);
+        SD_CHECK(sd_ec_test_fe_nist(c, ops[i], ops[j], got) == SD_OK && memcmp(got, ref, fl) == 0);
         if (memcmp(ops[i], pb, fl) < 0 && memcmp(ops[j], pb, fl) < 0) {
+          /* the Montgomery path needs operands below p; the selected path is the one the point code uses */
           SD_CHECK(sd_ec_test_fe_mont(c, ops[i], ops[j], mont) == SD_OK && memcmp(mont, ref, fl) == 0);
+          SD_CHECK(sd_ec_test_fe_sel(c, ops[i], ops[j], got) == SD_OK && memcmp(got, ref, fl) == 0);
         }
         total++;
       }

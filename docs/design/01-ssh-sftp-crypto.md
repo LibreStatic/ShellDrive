@@ -480,12 +480,13 @@ count is a compile-time constant per field or a fixed maximum for the bignum.
 
 #### 2.8.2 NIST P-256 / P-384 / P-521 (ECDH, ECDSA)
 
-- **Field arithmetic** (M7): elements in normal form with a fixed limb count per curve. A product is a schoolbook
-  multiplication followed by a curve-specific reduction (FIPS 186-4 D.2 for P-256 and P-384, Solinas-type folds of
-  2^256 and 2^384; the Mersenne-type fold 2^521 = 1 for P-521), run on 32-bit words so that 32-bit and 64-bit limb
-  builds share the code. Signed 64-bit column sums, constant shifts and masked conditional subtractions only: no
-  secret-dependent branch, index or division. The earlier generic Montgomery path (CIOS, `sd_mp_montmul`) remains
-  as the test reference. The scalar field (group order n) stays on the Montgomery engine.
+- **Field arithmetic** (M7): a fixed limb count per curve. Per curve and limb size, chosen at compile time, the field
+  uses either the NIST reduction (normal form: schoolbook product, then FIPS 186-4 D.2 folds for P-256 and P-384 or
+  the Mersenne-type fold 2^521 = 1 for P-521, run on 32-bit words so both limb sizes share the code) or the
+  Montgomery CIOS path (`sd_mp_montmul`). Measured selection: P-521 NIST, P-256 and P-384 Montgomery (docs/dev/
+  m7-notes.md). Signed 64-bit column sums, constant shifts and masked conditional subtractions only in the NIST
+  reduction: no secret-dependent branch, index or division. Both paths are tested on every curve. The scalar field
+  (group order n) stays on the Montgomery engine.
 - The scalar field (group order n) uses the same engine, for ECDSA nonce inversion (Fermat) and signature
   arithmetic.
 - Points: projective coordinates with the complete addition and doubling formulas of Renes-Costello-Batina for
