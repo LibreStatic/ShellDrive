@@ -110,7 +110,15 @@ static sd_err verify_window(HWND hwnd)
   return e;
 }
 
-static HWND find_pageant(void) { return FindWindowW(L"Pageant", L"Pageant"); }
+/* The protocol name, unless a unit test points the client at its own fake (ssh_pageant_test_set_window_name). */
+static const wchar_t *g_pageant_window = L"Pageant";
+
+void ssh_pageant_test_set_window_name(const wchar_t *name)
+{
+  g_pageant_window = name ? name : L"Pageant";
+}
+
+static HWND find_pageant(void) { return FindWindowW(g_pageant_window, g_pageant_window); }
 
 sd_err ssh_pageant_probe(void)
 {

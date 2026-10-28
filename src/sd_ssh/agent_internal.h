@@ -18,6 +18,10 @@ enum {
    authenticity check failed (TM-R08); SD_E_TIMEOUT; SD_E_PROTOCOL: malformed or oversized reply. */
 sd_err ssh_pageant_transact(const uint8_t *req, size_t n, uint8_t **resp, size_t *resp_len);
 sd_err ssh_pageant_probe(void);
+/* Unit-test seam only (tests/unit/sd_ssh): the window class and title the Pageant client looks for. NULL
+   restores the protocol name "Pageant". Nothing in the product calls it. Pageant's name is a machine-global
+   FindWindow key, so a test fake must use its own unique name. */
+void ssh_pageant_test_set_window_name(const wchar_t *name);
 sd_err ssh_agent_pipe_transact(const uint8_t *req, size_t n, uint8_t **resp, size_t *resp_len);
 sd_err ssh_agent_pipe_probe(void);
 
