@@ -646,3 +646,63 @@ SD_TEST(smoke_hostkey_add_machine)
   EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect md5:abcdef", NULL) == 2, "bad --expect");
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
 }
+
+/* diag bench (03 §6.1, 02 §11) through the real CLI: usage errors, a drive that is not there, and short runs into a
+   folder of the test (SHELLDRIVE_TEST_BENCH_ROOT, test builds only). Timings are never asserted: the reports must carry
+   the structure and the numbers, and the folder must be empty again afterwards. */
+SD_TEST(smoke_diag_bench)
+{
+  static run_result r;
+  wchar_t root[MAX_PATH], pat[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE fh;
+  int leftover = 0;
+  SD_REQUIRE(setup());
+  EXPECT(RUN(L"diag bench", NULL) == 2, "diag bench needs a drive");
+  EXPECT(RUN(L"diag check Y:", NULL) == 2 && strstr(r.err, "check") != NULL, "only diag bench exists");
+  EXPECT(RUN(L"bench Y: --size 0", NULL) == 2, "size 0 refused");
+  EXPECT(RUN(L"bench Y: --write-mode sync", NULL) == 2, "unknown write mode refused");
+  EXPECT(RUN(L"--json bench Y: --scenario nope", NULL) == 2 && strstr(r.out, "\"code\":\"usage\"") != NULL, "bad scenario json");
+  if (GetFileAttributesW(L"Y:\\") == INVALID_FILE_ATTRIBUTES)
+    EXPECT(RUN(L"--json bench Y:", NULL) == 3 && strstr(r.out, "\"code\":\"mount_not_found\"") != NULL, "no drive Y:");
+
+  /* a folder of the test stands in for the drive */
+  SD_REQUIRE(GetTempPathW(MAX_PATH, root) != 0);
+  wcscat_s(root, MAX_PATH, L"sd-bench-");
+  wcat_u(root, MAX_PATH, (unsigned)GetCurrentProcessId());
+  wcscat_s(root, MAX_PATH, L"-");
+  wcat_u(root, MAX_PATH, (unsigned)GetTickCount());
+  SD_REQUIRE(CreateDirectoryW(root, NULL));
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_BENCH_ROOT", root);
+  EXPECT(RUN(L"--json diag bench Y: --scenario open --size 1", NULL) == 0 &&
+         strstr(r.out, "\"ok\":true") != NULL && strstr(r.out, "\"name\":\"open\"") != NULL &&
+         strstr(r.out, "\"read_p95_ms\":") != NULL && strstr(r.out, "\"write_mode\":\"through\"") != NULL &&
+         strstr(r.out, "\"pool\":null") != NULL && strstr(r.out, "\"cleaned\":true") != NULL, "open json");
+  EXPECT(RUN(L"--json bench Y: --scenario seq-write --size 1 --write-mode behind", NULL) == 0 &&
+         strstr(r.out, "\"name\":\"seq-write\"") != NULL && strstr(r.out, "\"block_bytes\":1048576") != NULL &&
+         strstr(r.out, "\"mb_per_s\":") != NULL && strstr(r.out, "\"write_mode\":\"behind\"") != NULL, "seq write json");
+  EXPECT(RUN(L"--json bench Y: --scenario seq-write-64k --size 1", NULL) == 0 &&
+         strstr(r.out, "\"block_bytes\":65536") != NULL, "64 KiB write json");
+  EXPECT(RUN(L"--json bench Y: --scenario seq-read --size 1", NULL) == 0 &&
+         strstr(r.out, "\"name\":\"seq-read\"") != NULL, "seq read json (prepares its own file)");
+  EXPECT(RUN(L"--json bench Y: --scenario small-files --size 1", NULL) == 0 &&
+         strstr(r.out, "\"files\":1000") != NULL && strstr(r.out, "\"ms_per_file\":") != NULL, "small files json");
+  EXPECT(RUN(L"bench Y: --scenario open --size 1", NULL) == 0 && strstr(r.out, "Benchmark of Y:") != NULL &&
+         strstr(r.out, "Open of an existing file") != NULL && strstr(r.out, "Temporary folder removed.") != NULL,
+         "human report");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_BENCH_ROOT", NULL);
+
+  /* every file of the runs went with the run: the folder is empty */
+  wcscpy_s(pat, MAX_PATH, root);
+  wcscat_s(pat, MAX_PATH, L"\\*");
+  fh = FindFirstFileW(pat, &fd);
+  if (fh != INVALID_HANDLE_VALUE) {
+    do {
+      if (wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) leftover++;
+    } while (FindNextFileW(fh, &fd));
+    FindClose(fh);
+  }
+  EXPECT(leftover == 0, "the bench left nothing in the folder");
+  RemoveDirectoryW(root);
+  SD_CHECK(!agent_running());
+}

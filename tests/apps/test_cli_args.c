@@ -209,3 +209,43 @@ SD_TEST(cli_parse_hostkey_add_machine)
   SD_CHECK(parse_line(L"sd status --from-server h", &a) == CLI_E_UNKNOWN_OPTION);
   SD_CHECK(parse_line(L"sd --machine hostkey add --from-server h", &a) == CLI_OK && a.machine);
 }
+
+/* diag bench <X:> and the bench alias (03 §6.1, 02 §11): the defaults, the options and the parser's errors. */
+SD_TEST(cli_parse_diag_bench)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd diag bench X:", &a) == CLI_OK && a.cmd == CLI_CMD_BENCH);
+  SD_CHECK(wcscmp(a.positional, L"X:") == 0 && a.arg2 == NULL && a.bench_scenario == NULL);
+  SD_CHECK(a.bench_size_mib == 0 && a.bench_write_mode == NULL && !a.json);
+  SD_CHECK(parse_line(L"sd bench x:\\ --scenario seq-read --size 1024 --write-mode behind --json", &a) == CLI_OK);
+  SD_CHECK(a.cmd == CLI_CMD_BENCH && wcscmp(a.positional, L"x:\\") == 0 && a.json);
+  SD_CHECK(wcscmp(a.bench_scenario, L"seq-read") == 0 && a.bench_size_mib == 1024);
+  SD_CHECK(wcscmp(a.bench_write_mode, L"behind") == 0);
+  SD_CHECK(parse_line(L"sd diag --scenario all bench Z:", &a) == CLI_OK && a.cmd == CLI_CMD_BENCH);
+  SD_CHECK(wcscmp(a.positional, L"Z:") == 0 && wcscmp(a.bench_scenario, L"all") == 0);
+  SD_CHECK(parse_line(L"sd diag bench X: --size 4096 --scenario small-files --write-mode through", &a) == CLI_OK);
+  SD_CHECK(a.bench_size_mib == 4096 && wcscmp(a.bench_scenario, L"small-files") == 0);
+  /* options before the command word are checked against the command too */
+  SD_CHECK(parse_line(L"sd --size 4 bench X:", &a) == CLI_OK && a.bench_size_mib == 4);
+  SD_CHECK(parse_line(L"sd --size 4 list", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--size") == 0);
+  SD_CHECK(parse_line(L"sd status --scenario open", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd mount web --write-mode behind", &a) == CLI_E_UNKNOWN_OPTION);
+  /* help is accepted without the drive */
+  SD_CHECK(parse_line(L"sd diag --help", &a) == CLI_OK && a.help && a.cmd == CLI_CMD_DIAG);
+  SD_CHECK(parse_line(L"sd bench --help", &a) == CLI_OK && a.help && a.cmd == CLI_CMD_BENCH);
+  /* errors */
+  SD_CHECK(parse_line(L"sd diag", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd diag check X:", &a) == CLI_E_UNKNOWN_COMMAND && wcscmp(a.bad, L"check") == 0);
+  SD_CHECK(parse_line(L"sd diag bench", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd bench", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd bench X: Y:", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd diag bench X: extra", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd bench 1:", &a) == CLI_E_LETTER);
+  SD_CHECK(parse_line(L"sd bench X:\\sub", &a) == CLI_E_LETTER);
+  SD_CHECK(parse_line(L"sd bench X: --scenario nope", &a) == CLI_E_BAD_VALUE && wcscmp(a.bad, L"--scenario") == 0);
+  SD_CHECK(parse_line(L"sd bench X: --size 0", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd bench X: --size 4097", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd bench X: --size 12k", &a) == CLI_E_BAD_VALUE);
+  SD_CHECK(parse_line(L"sd bench X: --write-mode sync", &a) == CLI_E_BAD_VALUE && wcscmp(a.bad, L"--write-mode") == 0);
+  SD_CHECK(parse_line(L"sd bench X: --size", &a) == CLI_E_MISSING_VALUE);
+}

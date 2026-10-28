@@ -840,6 +840,13 @@ void cli_print_help(const wchar_t *topic)
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--all", SD_MSG_CLI_HELP_OPT_ALL);
     help_line(L"--force", SD_MSG_CLI_HELP_OPT_FORCE);
+  } else if (topic && (wcscmp(topic, L"bench") == 0 || wcscmp(topic, L"diag") == 0)) {
+    help_line(L"diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind] [--json]", SD_MSG_CLI_HELP_BENCH);
+    cli_print(L"");
+    cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
+    help_line(L"--scenario all|seq-write|seq-write-64k|seq-read|small-files|open", SD_MSG_CLI_HELP_OPT_SCENARIO);
+    help_line(L"--size MIB", SD_MSG_CLI_HELP_OPT_SIZE);
+    help_line(L"--write-mode through|behind", SD_MSG_CLI_HELP_OPT_WRITE_MODE);
   } else if (topic && wcscmp(topic, L"service") == 0) {
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
   } else if (topic && wcscmp(topic, L"profile") == 0) {
@@ -875,6 +882,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
     help_line(L"cache clear [<profile>|X:] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
+    help_line(L"diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind]", SD_MSG_CLI_HELP_BENCH);
     help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
     help_line(L"hostkey list | add | import | remove | accept-announced", SD_MSG_CLI_HELP_HOSTKEY);
@@ -925,6 +933,7 @@ int cli_run(const cli_args *a)
   case CLI_CMD_REFRESH:    return cli_run_refresh(a);
   case CLI_CMD_CACHE:      return cli_run_cache(a);
   case CLI_CMD_SERVICE:    return cli_run_service(a);
+  case CLI_CMD_BENCH:      return cli_run_bench(a);
   default:
     cli_print_help(NULL);
     return 2;

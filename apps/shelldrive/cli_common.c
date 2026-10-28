@@ -175,6 +175,7 @@ void print_error(const cli_args *a, const char *code, const char *detail, int ex
   else if (is(code, "proto_unsupported")) say(SD_MSG_CLI_ERROR_PROTO_UNSUPPORTED, NULL, 0, 1);
   else if (is(code, "profile_not_found")) say1w(SD_MSG_CLI_ERROR_PROFILE_NOT_FOUND, "name", ec ? ec->name : NULL, 1);
   else if (is(code, "mount_not_found")) say1w(SD_MSG_CLI_ERROR_MOUNT_NOT_FOUND, "name", ec ? ec->name : NULL, 1);
+  else if (is(code, "read_only_mount")) say1w(SD_MSG_CLI_BENCH_READ_ONLY, "target", ec ? ec->target : NULL, 1);
   else if (is(code, "host_key_not_found"))
     say1w(SD_MSG_CLI_ERROR_HOST_KEY_NOT_FOUND, "host", ec ? ec->name : NULL, 1);
   else if (is(code, "announcement_not_found")) say(SD_MSG_CLI_ERROR_ANNOUNCEMENT_NOT_FOUND, NULL, 0, 1);

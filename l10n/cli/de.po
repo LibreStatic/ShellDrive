@@ -1071,3 +1071,89 @@ msgstr "Das Ändern der Host-Schlüssel des Rechners erfordert eine erhöhte Kon
 msgctxt "cli.hk.not_built"
 msgid "Adding host keys from a server is not part of this build yet."
 msgstr "Das Hinzufügen von Host-Schlüsseln von einem Server ist in dieser Version noch nicht enthalten."
+
+#. Summary of the diag bench command (and of the bench alias), in --help. Literal syntax stays as it is.
+msgctxt "cli.help.bench"
+msgid "Measure a mounted drive: sequential transfers, small files and the latency of opening a file. The run uses a new folder on the drive and removes it afterwards."
+msgstr "Miss ein eingebundenes Laufwerk: sequenzielle Übertragungen, kleine Dateien und die Latenz beim Öffnen einer Datei. Der Test legt auf dem Laufwerk einen neuen Ordner an und entfernt ihn danach."
+
+#. Help for diag bench --scenario. The names are literal.
+msgctxt "cli.help.opt_scenario"
+msgid "Run one scenario: all (the default), seq-write, seq-write-64k, seq-read, small-files or open."
+msgstr "Führt ein Szenario aus: all (Standard), seq-write, seq-write-64k, seq-read, small-files oder open."
+
+#. Help for diag bench --size. MiB is a unit name.
+msgctxt "cli.help.opt_size"
+msgid "Size of each sequential transfer in MiB, from 1 to 4096. The default is 256; the targets of 02 section 11 use 1024."
+msgstr "Größe jeder sequenziellen Übertragung in MiB, von 1 bis 4096. Standard ist 256; die Ziele aus 02 Abschnitt 11 nutzen 1024."
+
+#. Help for diag bench --write-mode. through and behind are literal values.
+msgctxt "cli.help.opt_write_mode"
+msgid "The write mode to state in the report: through (the default) or behind. It is declared, not set: the mount keeps the setting of its profile."
+msgstr "Der Schreibmodus, der im Bericht angegeben wird: through (Standard) oder behind. Er wird angegeben, nicht gesetzt: das Laufwerk behält die Einstellung seines Profils."
+
+#. Printed by diag bench when the drive is read-only (exit 1). {target} is the drive letter, such as X:.
+msgctxt "cli.bench.read_only"
+msgid "{target} is read-only, so the benchmark did not run."
+msgstr "{target} ist schreibgeschützt, daher wurde der Test nicht ausgeführt."
+
+#. First line of the benchmark report. {size} is in MiB.
+msgctxt "cli.bench.header"
+msgid "Benchmark of {target}: {size} MiB per sequential transfer."
+msgstr "Test von {target}: {size} MiB pro sequenzieller Übertragung."
+
+#. Pool size line of the benchmark report, shown when an agent reports the mount.
+#, plural-arg=count
+msgctxt "cli.bench.pool"
+msgid "{count} connection in the pool."
+msgid_plural "{count} connections in the pool."
+msgstr[0] "{count} Verbindung im Pool."
+msgstr[1] "{count} Verbindungen im Pool."
+
+#. Write mode line of the benchmark report. {mode} is through or behind, as given with --write-mode.
+msgctxt "cli.bench.write_mode"
+msgid "Write mode {mode}, as given with --write-mode. The agent does not report the mount's own setting."
+msgstr "Schreibmodus {mode}, wie mit --write-mode angegeben. Der Agent meldet die eigene Einstellung des Laufwerks nicht."
+
+#. Sequential write result. {block} is the block size (1 MiB or 64 KiB); {mbps} and {seconds} are numbers.
+msgctxt "cli.bench.seq_write"
+msgid "Sequential write, {block} blocks: {mbps} MB/s in {seconds} s."
+msgstr "Sequenzielles Schreiben, Blöcke zu {block}: {mbps} MB/s in {seconds} s."
+
+#. Sequential read result. {block} is the block size; {mbps} and {seconds} are numbers.
+msgctxt "cli.bench.seq_read"
+msgid "Sequential read, {block} blocks: {mbps} MB/s in {seconds} s."
+msgstr "Sequenzielles Lesen, Blöcke zu {block}: {mbps} MB/s in {seconds} s."
+
+#. Small-file result. {count} is the number of 4 KiB files; {seconds} is the total time and {ms} the time per file.
+#, plural-arg=count
+msgctxt "cli.bench.small_files"
+msgid "{count} file of 4 KiB: {seconds} s in total, {ms} ms per file."
+msgid_plural "{count} files of 4 KiB: {seconds} s in total, {ms} ms per file."
+msgstr[0] "{count} Datei mit 4 KiB: {seconds} s insgesamt, {ms} ms pro Datei."
+msgstr[1] "{count} Dateien mit 4 KiB: {seconds} s insgesamt, {ms} ms pro Datei."
+
+#. Open-latency result. The four timings are medians and 95th percentiles in milliseconds; {samples} is the sample count.
+msgctxt "cli.bench.open"
+msgid "Open of an existing file: attributes median {attr_median} ms, p95 {attr_p95} ms. Open and read of 4 KiB: median {read_median} ms, p95 {read_p95} ms ({samples} samples)."
+msgstr "Öffnen einer vorhandenen Datei: Attribute Median {attr_median} ms, p95 {attr_p95} ms. Öffnen und Lesen von 4 KiB: Median {read_median} ms, p95 {read_p95} ms ({samples} Messungen)."
+
+#. Printed after the benchmark results: reads may come from the memory cache, which the run does not clear.
+msgctxt "cli.bench.cache_note"
+msgid "Reads can come from the memory cache, which the run does not clear. Compare runs made in the same cache state."
+msgstr "Lesevorgänge können aus dem Speicher-Cache stammen, den der Test nicht leert. Vergleiche Läufe mit demselben Cache-Zustand."
+
+#. Printed after a benchmark run whose temporary folder was removed.
+msgctxt "cli.bench.cleaned"
+msgid "Temporary folder removed."
+msgstr "Temporärer Ordner entfernt."
+
+#. Printed (exit 1) when the temporary folder could not be removed. {path} is the folder; {code} the Win32 error number.
+msgctxt "cli.bench.cleanup_failed"
+msgid "The temporary folder {path} could not be removed (error {code}). Delete it by hand."
+msgstr "Der temporäre Ordner {path} konnte nicht entfernt werden (Fehler {code}). Lösche ihn von Hand."
+
+#. Printed (exit 1) when a benchmark step failed. {code} is the Win32 error number.
+msgctxt "cli.bench.failed"
+msgid "The benchmark stopped (error {code})."
+msgstr "Der Test wurde abgebrochen (Fehler {code})."
