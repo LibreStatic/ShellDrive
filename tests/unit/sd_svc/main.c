@@ -58,6 +58,13 @@ SD_TEST_DECL(repair_refuses_a_link_as_the_base);
 SD_TEST_DECL(repair_reports_a_missing_base);
 SD_TEST_DECL(repair_owner_rule_trusts_only_system_and_administrators);
 SD_TEST_DECL(folder_check_reports_reparse_kind_and_owner);
+SD_TEST_DECL(identity_file_through_a_junction_is_refused);
+SD_TEST_DECL(identity_file_symlink_or_link_tag_is_refused);
+SD_TEST_DECL(identity_file_with_a_foreign_owner_is_refused);
+SD_TEST_DECL(identity_file_with_a_user_writable_acl_is_refused);
+SD_TEST_DECL(identity_file_good_is_read_from_the_checked_handle);
+SD_TEST_DECL(identity_path_that_is_a_folder_is_not_a_file);
+SD_TEST_DECL(machine_folder_dacl_is_reapplied_once_then_left_alone);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -118,6 +125,13 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(repair_reports_a_missing_base),
   SD_TEST_ENTRY(repair_owner_rule_trusts_only_system_and_administrators),
   SD_TEST_ENTRY(folder_check_reports_reparse_kind_and_owner),
+  SD_TEST_ENTRY(identity_file_through_a_junction_is_refused),
+  SD_TEST_ENTRY(identity_file_symlink_or_link_tag_is_refused),
+  SD_TEST_ENTRY(identity_file_with_a_foreign_owner_is_refused),
+  SD_TEST_ENTRY(identity_file_with_a_user_writable_acl_is_refused),
+  SD_TEST_ENTRY(identity_file_good_is_read_from_the_checked_handle),
+  SD_TEST_ENTRY(identity_path_that_is_a_folder_is_not_a_file),
+  SD_TEST_ENTRY(machine_folder_dacl_is_reapplied_once_then_left_alone),
 };
 
 int main(int argc, char **argv)

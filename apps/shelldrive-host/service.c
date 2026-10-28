@@ -110,7 +110,8 @@ static struct svc_state {
   wchar_t root[MAX_PATH], profiles[MAX_PATH], service_dir[MAX_PATH], kh[MAX_PATH], logfile[MAX_PATH];
   wchar_t vendor[MAX_PATH];         /* %ProgramData%\LibreStatic, default location only (D45, 3.2) */
   svc_owner_fn owner_trusted;       /* NULL = the shipping owner rule (3.2); tests replace it */
-  int idle;                         /* layout refused (owner, reparse point, no rights): nothing is loaded */
+  const wchar_t *dacl_extra;        /* SD_SVC_TEST_HOOKS only: an ACE appended to every machine DACL (svc_opts) */
+  int idle;                        /* layout refused (owner, reparse point, no rights): nothing is loaded */
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
   svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
@@ -259,6 +260,12 @@ static sd_err svc_compute_paths(const wchar_t *override_root)
   return SD_OK;
 }
 
+/* The 3.2 DACLs of the machine folders (SDDL with inheritance), set when a folder is created and re-applied at start
+   when it is wrong (svc_check_existing). */
+static const wchar_t k_svc_dacl_admin_read[] = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+static const wchar_t k_svc_dacl_admin[] = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+static const wchar_t k_svc_dacl_system[] = L"D:PAI(A;OICI;FA;;;SY)";
+
 /* The first machine folder refused at start (3.2, TM-R34) and why: Event 3102 names both. */
 typedef struct svc_refusal {
   wchar_t path[MAX_PATH];
@@ -273,19 +280,38 @@ static void svc_refuse(svc_refusal *w, const wchar_t *path, svc_folder_reason wh
   w->why = why;
 }
 
+/* The DACL text of a machine folder: the 3.2 SDDL, plus the test seam's extra ACE (SD_SVC_TEST_HOOKS builds only; the
+   shipping build has no extra ACE). */
+static void svc_dacl_text(const wchar_t *sddl, wchar_t *out, size_t cch)
+{
+  _snwprintf_s(out, cch, _TRUNCATE, L"%s%s", sddl, g.dacl_extra != NULL ? g.dacl_extra : L"");
+}
+
 /* An existing machine folder is used only when it is a folder, not a reparse point, and its owner is trusted (3.2).
    A refused folder is never fixed here: repair-data does that. Every check runs on a handle that does not follow links. */
-static sd_err svc_check_existing(const wchar_t *path, svc_refusal *w)
+static sd_err svc_check_existing(const wchar_t *path, const wchar_t *sddl, svc_refusal *w)
 {
   HANDLE h = NULL;
   svc_folder_reason why = SVC_FOLDER_NO_RIGHTS;
-  DWORD e = svc_folder_open(path, READ_CONTROL | FILE_READ_ATTRIBUTES, &h);
+  wchar_t dtext[512];
+  DWORD e = svc_folder_open(path, READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES, &h);
+  if (e != 0)   /* WRITE_DAC is only needed when the DACL is wrong: the checks themselves need READ_CONTROL */
+    e = svc_folder_open(path, READ_CONTROL | FILE_READ_ATTRIBUTES, &h);
   if (e == 0) {
-    why = SVC_FOLDER_OK;
+    int changed = 0;
     e = svc_folder_inspect(h, 1, g.owner_trusted, NULL, &why);
-    CloseHandle(h);
-    if (e != 0)
+    if (e != 0) {
       why = SVC_FOLDER_NO_RIGHTS;
+    } else if (why == SVC_FOLDER_OK) {
+      /* 3.2: the start re-applies the machine DACL of a trusted folder when it is wrong (repair-data is still the way
+         to fix an untrusted one) */
+      svc_dacl_text(sddl, dtext, SD_COUNTOF(dtext));
+      if (svc_folder_apply_dacl(h, dtext, &changed) != 0)
+        why = SVC_FOLDER_ACL;
+      else if (changed)
+        SD_LOGI("svc", "the 3.2 DACL of a machine folder was re-applied at start");
+    }
+    CloseHandle(h);
   }
   if (why != SVC_FOLDER_OK) {
     svc_refuse(w, path, why);
@@ -302,15 +328,17 @@ static sd_err svc_mkdir(const wchar_t *path, const wchar_t *sddl, svc_refusal *w
   DWORD e = svc_folder_open(path, FILE_READ_ATTRIBUTES, &h);
   PSECURITY_DESCRIPTOR sd = NULL;
   SECURITY_ATTRIBUTES sa;
+  wchar_t dtext[512];
   if (e == 0) {
     CloseHandle(h);
-    return svc_check_existing(path, w);
+    return svc_check_existing(path, sddl, w);
   }
   if (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND) {
     svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
     return SD_E_ACCESS_DENIED;
   }
-  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sd, NULL)) {
+  svc_dacl_text(sddl, dtext, SD_COUNTOF(dtext));
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(dtext, SDDL_REVISION_1, &sd, NULL)) {
     svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
     return SD_E_INTERNAL;
   }
@@ -321,7 +349,7 @@ static sd_err svc_mkdir(const wchar_t *path, const wchar_t *sddl, svc_refusal *w
     e = GetLastError();
     LocalFree(sd);
     if (e == ERROR_ALREADY_EXISTS)
-      return svc_check_existing(path, w);
+      return svc_check_existing(path, sddl, w);
     svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
     return SD_E_ACCESS_DENIED;
   }
@@ -342,26 +370,23 @@ static sd_err svc_check_vendor(svc_refusal *w)
     return SD_OK;
   if (e == 0)
     CloseHandle(h);
-  return svc_check_existing(g.vendor, w);
+  return svc_check_existing(g.vendor, k_svc_dacl_admin_read, w);
 }
 
 static sd_err svc_ensure_layout(svc_refusal *w)
 {
-  static const wchar_t *const k_admin_read = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
-  static const wchar_t *const k_admin = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
-  static const wchar_t *const k_system = L"D:PAI(A;OICI;FA;;;SY)";
   wchar_t path[MAX_PATH];
   sd_err e;
   if ((e = svc_check_vendor(w)) != SD_OK) return e;
-  if ((e = svc_mkdir(g.root, k_admin_read, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.root, k_svc_dacl_admin_read, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\logs", g.root);
-  if ((e = svc_mkdir(path, k_admin, w)) != SD_OK) return e;
-  if ((e = svc_mkdir(g.profiles, k_admin_read, w)) != SD_OK) return e;
-  if ((e = svc_mkdir(g.service_dir, k_admin, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(path, k_svc_dacl_admin, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.profiles, k_svc_dacl_admin_read, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.service_dir, k_svc_dacl_admin, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\secrets", g.service_dir);
-  if ((e = svc_mkdir(path, k_system, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(path, k_svc_dacl_system, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\keys", g.service_dir);
-  return svc_mkdir(path, k_system, w);
+  return svc_mkdir(path, k_svc_dacl_system, w);
 }
 
 /* ---- profiles ---- */
@@ -683,6 +708,16 @@ static void svc_event_untrusted(const svc_refusal *w)
   svc_event(SVC_MSG_UNTRUSTED_FOLDER, args, 2);
 }
 
+/* A key file of a service profile refused by the trust rules (TM-R27): the same Event 3102 with the file as %1. The
+   mount then fails with the usage error; the service stays up. */
+static void svc_event_key_refused(const wchar_t *path, svc_folder_reason why)
+{
+  const wchar_t *args[2];
+  args[0] = path;
+  args[1] = svc_folder_reason_text(why);
+  svc_event(SVC_MSG_UNTRUSTED_FOLDER, args, 2);
+}
+
 /* The SCM sink: ReportEventW under source ShellDrive (registered by `shelldrive service install`). The message file
    is shelldrive-host.exe itself, so the ids of svc_events.mc resolve in the Application log. */
 static void svc_eventlog_write(void *ctx, DWORD id, const wchar_t **args, size_t nargs)
@@ -957,6 +992,10 @@ static void job_start(void *arg)
   char sddl[1024];
   PSECURITY_DESCRIPTOR sd_bytes = NULL;
   ULONG sd_len = 0;
+  unsigned char *keybuf = NULL;     /* identity file bytes, read through a checked handle (TM-R27); wiped after use */
+  DWORD keylen = 0;
+  sd_mount_hop hop;
+  char keylabel[MAX_PATH * 3];
   sd_kh_store store;
   sd_err e;
   const char *why = NULL;
@@ -990,7 +1029,30 @@ static void job_start(void *arg)
           !svc_path_under(identw, g.service_dir)) {
         why = "identity file outside the service folder (TM-R27)";
       } else {
-        pr.identity_path = identw;
+        /* 2.6 rule 1, TM-R27: the file is checked and read through one handle (svc_file_read_trusted); the bytes go to
+           sd_mount as a key blob (the hop path), so the mount never opens the path again */
+        svc_folder_reason fr = SVC_FOLDER_OK;
+        DWORD fe = svc_file_read_trusted(g.service_dir, identw, g.owner_trusted, NULL, &keybuf, &keylen, &fr);
+        if (fe != 0) {
+          why = "identity file cannot be read (TM-R27)";
+        } else if (fr != SVC_FOLDER_OK) {
+          svc_event_key_refused(identw, fr);
+          why = "identity file refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
+        } else {
+          memset(&hop, 0, sizeof(hop));
+          utf8_from_wide(identw, keylabel, sizeof(keylabel));
+          hop.host = hostw;
+          hop.port = pr.port;
+          hop.user = p->user;
+          hop.key_blob = keybuf;
+          hop.key_blob_len = keylen;
+          hop.key_label = keylabel;
+          hop.identities_only = 1;                 /* D37: the key given is the only one offered */
+          hop.auth_methods = pr.auth_methods;
+          hop.update_host_keys = SD_HKU_ASK;
+          pr.hops = &hop;
+          pr.hop_count = 1;
+        }
       }
     }
     pr.remote_path = p->remote_path;
@@ -1055,6 +1117,7 @@ static void job_start(void *arg)
     strcpy_s(r->err_detail, sizeof(r->err_detail), why);
     sd_mutex_unlock(&g.lock);
     SD_LOGW("svc", "mount %s refused: %s", j->id, why);
+    sd_secure_free(keybuf, keylen);
     announce_state(j->id, r->letter, "failed");
     sd_free(j);
     return;
@@ -1070,6 +1133,7 @@ static void job_start(void *arg)
   cb.on_warning = svc_on_warning;
   cb.on_hostkeys_announced = svc_on_hostkeys;
   e = sd_mount_create(g.be, &pr, &cb, &m);
+  sd_secure_free(keybuf, keylen);   /* sd_mount_create copied the key bytes */
   if (sd_bytes) LocalFree(sd_bytes);
   if (e != SD_OK) {
     sd_mutex_lock(&g.lock);
@@ -1740,6 +1804,7 @@ int svc_run(const svc_opts *o)
   g.owner_trusted = o ? o->owner_trusted : NULL;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
+  g.dacl_extra = o ? o->dacl_extra_ace : NULL;
 #endif
   if (svc_compute_paths(o ? o->machine_root : NULL) != SD_OK) {
     rc = 1;

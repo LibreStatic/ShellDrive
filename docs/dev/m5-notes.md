@@ -336,10 +336,12 @@ The elevated path is not exercised by any test.
   surface and the elevation rule are in part 5; the connect, the store write and the service side are not.
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).
-- Identity files: only the path rule (under `<machine root>\service\`). The ACL and handle-based checks of TM-R27 are not
-  done. Passphrase secrets and `identity_store` keys for service profiles are not wired.
-- Re-applying the 3.2 DACLs of existing machine folders at service start (3.2). The start check (part 4) only refuses;
-  `service repair-data` (part 3) is still the one that fixes folders.
+- Identity files: the path rule and the handle checks (owner, reparse point, DACL) are done in part 6 for the identity
+  file of a service profile. Still open: certificate files (no service profile loads one yet), file-level checks of
+  machine profiles, `known_hosts` and `settings.ini` (only the folder rule covers them), passphrase secrets and
+  `identity_store` keys for service profiles.
+- Re-applying the 3.2 DACLs of existing machine folders at service start (3.2): done in part 6 for trusted folders.
+  Untrusted folders are still only refused at start; `service repair-data` (part 3) moves them aside.
 - Non-admin 64 KiB cap separate from the admin cap, and the two reserved administrator slots of the service pipe
   (2.2, TM-R25). One 64 KiB cap applies to every client; the 4-per-SID and 10-per-second limits are in place.
 - Per-request access check in `sd_vfs` (`access_sids` / `write_sids` are passed in the options but not enforced); the
@@ -356,3 +358,71 @@ The elevated path is not exercised by any test.
 - Secret types other than `password`; `secret.set` for passphrases needs the key fingerprint target.
 - Lab items: a real Dokany global mount (visible to a second session, before logon), LocalSystem decryption of the
   service secrets, and the SYSTEM-owned service pipe as a non-test client.
+
+## Part 6: key file trust (TM-R27) and the start re-apply of the 3.2 DACLs
+
+Closes the two "Left" items on identity files and on the start re-apply (both above).
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/svc_folder.c`, `svc_folder.h` | `svc_file_read_trusted` (checked read of a key file), `svc_folder_apply_dacl` (3.2 DACL compare and set), the DACL check (`dacl_untrusted_write`), reasons `acl` and `not_file` |
+| `apps/shelldrive-host/service.c` | identity file read in `job_start` (the bytes go to `sd_mount` as a hop `key_blob`, label = the path); `svc_check_existing` re-applies the DACL of a trusted folder; `svc_event_key_refused` (Event 3102 with the file as `%1`); the 3.2 SDDL constants are file-scope |
+| `apps/shelldrive-host/service.h` | `svc_opts.dacl_extra_ace` (test seam, honoured only in `SD_SVC_TEST_HOOKS` builds) |
+| `tests/unit/sd_svc/test_identity.c` (new), `main.c`, `CMakeLists.txt` | the seven identity and DACL cases below |
+| `tests/unit/sd_svc/test_service.c` | the fixture writes `service\keys\key1.ppk` (the identity profiles name it) and sets `dacl_extra_ace` |
+
+**Behaviour (2.6 rule 1, TM-R27, T-51)**
+
+- The identity file path must be under `<machine root>\service\` (unchanged rule, `svc_path_under`).
+- Every folder between the service folder and the file is opened with `FILE_FLAG_OPEN_REPARSE_POINT` and checked on its
+  handle: not a reparse point, a folder, owner SYSTEM or Administrators (the owner rule), and a DACL that grants no write
+  to an untrusted principal.
+- The file is opened without following a link (`FILE_FLAG_OPEN_REPARSE_POINT`), checked on that handle: not a reparse
+  point, a plain file of 1 B to 256 KiB, owner trusted, DACL with no write, modify, delete, WRITE_DAC or WRITE_OWNER for a
+  principal other than SYSTEM, Administrators, the owner, CREATOR OWNER and OWNER RIGHTS. A NULL DACL and an ACE type the
+  check does not understand (object or callback ACEs) are refused. Deny ACEs are not counted.
+- The bytes are read from that same handle, which is opened with `FILE_SHARE_READ` only, so no writer can open the file
+  while it is read. The mount then receives the bytes (`sd_mount_hop.key_blob`, the `SD_ID_BLOB` path of sd_ssh), not the
+  path: there is no second open. The bytes are wiped after `sd_mount_create`.
+- A refused file: Event 3102 (`%1` = the file, `%2` = `owner`, `reparse_point`, `not_directory`, `acl` or `not_file`)
+  and the mount fails with `usage` ("identity file refused ... (TM-R27)"). A file that cannot be opened or read fails the
+  mount with `usage` and no event. The service itself stays up. The 3102 text says "Machine folder ... stays idle",
+  which is not what happens for a key file; the message text is not changed here (open).
+- Start, for a trusted folder (owner and no reparse point, 3.2): the DACL is compared with the 3.2 SDDL (protected, the
+  same ACEs in order) and set back when it differs. The folder is opened with `WRITE_DAC` when the service can; without
+  it, the check still runs and a wrong DACL is refused with `acl`. An untrusted folder is still not fixed here
+  (`repair-data` moves it aside, part 3).
+
+**Test seam**
+
+`svc_opts.dacl_extra_ace` appends an ACE to every machine DACL the start sets or checks (tests only). The test process is
+the owner of its folders, so the tests pass `(A;OICI;FA;;;OW)`, as `svc_repair` does. The shipping build never reads it.
+
+**Tests (`unit.svc`, new cases)**
+
+- `identity_file_through_a_junction_is_refused`: a junction for the `keys` folder into a sentinel folder: `reparse_point`.
+- `identity_file_symlink_or_link_tag_is_refused`: a file symbolic link when the process may create one; otherwise a file
+  with a user-defined reparse tag (same refusal).
+- `identity_file_with_a_foreign_owner_is_refused`: `owner`.
+- `identity_file_with_a_user_writable_acl_is_refused`: a key file, then a keys folder, that Everyone may write: `acl`.
+- `identity_file_good_is_read_from_the_checked_handle`: accepted, bytes equal.
+- `identity_path_that_is_a_folder_is_not_a_file`: `not_directory`.
+- `machine_folder_dacl_is_reapplied_once_then_left_alone`: first set changes the DACL, the second call writes nothing.
+- The existing service cases (`svc_admin_mounts_reports_and_unmounts` and the others that use `key1.ppk`) now go through
+  the handle read and the blob hop; they pass the fixture key file.
+- Every test uses a fresh folder under `%TEMP%` named with the PID and a QueryPerformanceCounter value, removed at the
+  end of the test. Nothing touches `%ProgramData%`, the registry, the Event Log or the SCM.
+
+**Not done (open)**
+
+- Certificate files (`auth.certificate` for service profiles): no service profile loads one; the same helper applies when
+  one is wired.
+- File-level checks of machine profiles, `known_hosts` and `settings.ini` (03 §2.6 names them): only the folder rule
+  covers them today.
+- The Event 3102 text is written for machine folders ("stays idle"); a key file refusal reuses it.
+- The mount-level refusal is not tested end to end through the core (the helper and the blob hop are tested on their
+  own and through the existing core cases that read the fixture key).
+- The DACL re-apply is tested on a folder with the helper directly, not through a full core start on a folder with a
+  wrong DACL.

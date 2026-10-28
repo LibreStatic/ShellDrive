@@ -152,6 +152,9 @@ static int make_fixture(void)
   if (!CreateDirectoryW(d, NULL)) return 0;
   _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\service\\keys", g_root);
   if (!CreateDirectoryW(d, NULL)) return 0;
+  /* the key file the identity profiles name: the start reads it through a checked handle (TM-R27) */
+  _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\service\\keys\\key1.ppk", g_root);
+  if (!write_file(d, "fixture-key", 11)) return 0;
   _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\service\\secrets", g_root);
   if (!CreateDirectoryW(d, NULL)) return 0;
   _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\logs", g_root);
@@ -225,6 +228,7 @@ static int ensure_core(void)
   o.on_running = on_running;
   o.test_all_admin = 1;
   o.owner_trusted = owner_trust_all;
+  o.dacl_extra_ace = L"(A;OICI;FA;;;OW)";   /* the test process is only the owner of its folders (see svc_opts) */
   o.event = test_event;
   o.event_ctx = NULL;
   g_running = CreateEventW(NULL, TRUE, FALSE, NULL);
