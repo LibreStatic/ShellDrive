@@ -144,6 +144,15 @@ struct sd_mount {
   int readers;                    /* stats / refresh / cache calls in progress (under lock) */
   uint16_t wport;                 /* WebDAV export port while the export exists (under lock) */
   int legacy_seen;                /* an outdated algorithm was negotiated on some hop */
+  /* security state of the latest negotiation of each hop (sd_mount_get_security; under lock). Slots of
+     names: 0 kex, 1 hostkey, 2-3 cipher (c2s, s2c), 4-5 mac (c2s, s2c), as in ssh_on_negotiated. */
+  struct {
+    int seen;                     /* the hop negotiated at least once */
+    int mask_legacy;              /* legacy_mask has a bit other than MAC_NON_ETM and TERRAPIN_EXPOSED */
+    int terrapin;                 /* SD_LEGACY_TERRAPIN_EXPOSED */
+    int legacy[6];                /* slot names an outdated algorithm */
+    char name[6][64];
+  } sec_hop[SD_MOUNT_MAX_HOPS];
   int probe_ok;                   /* probe holds the profile.test result */
   sd_mount_probe probe;
   /* M5 hostkey mount (params.hostkey_fetch): no sftp session; the connection is hk_conn */
@@ -1448,6 +1457,18 @@ static void ssh_on_negotiated(void *ctx, const sd_ssh_negotiated *n)
   names[4] = n->mac_c2s; names[5] = n->mac_s2c; names[6] = NULL; names[7] = NULL;
   for (i = 0; i < 6; i++)
     if (legacy_name(names[i])) legacy[k++] = names[i];
+  if (hop < SD_MOUNT_MAX_HOPS) {         /* the current state (sd_mount_get_security), before any early return */
+    sd_mutex_lock(&m->lock);
+    memset(&m->sec_hop[hop], 0, sizeof(m->sec_hop[hop]));
+    m->sec_hop[hop].seen = 1;
+    m->sec_hop[hop].mask_legacy = (n->legacy_mask & ~(SD_LEGACY_MAC_NON_ETM | SD_LEGACY_TERRAPIN_EXPOSED)) != 0;
+    m->sec_hop[hop].terrapin = (n->legacy_mask & SD_LEGACY_TERRAPIN_EXPOSED) != 0;
+    for (i = 0; i < 6; i++) {
+      if (names[i]) scopy(m->sec_hop[hop].name[i], sizeof(m->sec_hop[hop].name[i]), names[i]);
+      m->sec_hop[hop].legacy[i] = legacy_name(names[i]);
+    }
+    sd_mutex_unlock(&m->lock);
+  }
   if (k == 0 && n->legacy_mask == 0)
     return;
   sd_mutex_lock(&m->lock);
@@ -1600,9 +1621,20 @@ static void ssh_on_hostkey_event(void *ctx, const sd_hostkey_event *e)
     m->cb.post(m->cb.ctx, run_item, it);
     return;
   }
-  if (e->kind != SD_HKEV_MISMATCH)
+  if (e->kind != SD_HKEV_MISMATCH && e->kind != SD_HKEV_TYPE_UNAVAILABLE)
     return;
   sd_mutex_lock(&m->lock);
+  scopy(m->fail.lookup_name, sizeof(m->fail.lookup_name), e->lookup_name ? e->lookup_name : "");
+  if (e->kind == SD_HKEV_TYPE_UNAVAILABLE) {
+    scopy(m->fail.stored_types, sizeof(m->fail.stored_types), e->stored_types ? e->stored_types : "");
+    scopy(m->fail.offered_types, sizeof(m->fail.offered_types), e->offered_types ? e->offered_types : "");
+    if (e->new_key) {
+      scopy(m->fail.offered_type, sizeof(m->fail.offered_type), e->new_key->type);
+      scopy(m->fail.offered_fp, sizeof(m->fail.offered_fp), e->new_key->fp_sha256);
+    }
+    sd_mutex_unlock(&m->lock);
+    return;
+  }
   if (e->old_key) {
     scopy(m->fail.stored_type, sizeof(m->fail.stored_type), e->old_key->type);
     scopy(m->fail.stored_fp, sizeof(m->fail.stored_fp), e->old_key->fp_sha256);
@@ -1618,7 +1650,49 @@ static void ssh_on_hostkey_event(void *ctx, const sd_hostkey_event *e)
       memcpy(m->fail.store_path, e->path, (n + 1) * sizeof(wchar_t));
   }
   m->fail.store_line = e->line;
+  m->fail.has_store_kind = 1;
+  m->fail.store_kind = e->store;
   sd_mutex_unlock(&m->lock);
+}
+
+/* sd_mount_get_security: the slots of every hop's latest negotiation, de-duplicated by (category, name). */
+static const char *sec_category(uint32_t slot)
+{
+  static const char *const cat[6] = { "kex", "hostkey", "cipher", "cipher", "mac", "mac" };
+  return cat[slot];
+}
+
+int sd_mount_get_security(const sd_mount *cm, sd_mount_security *out)
+{
+  sd_mount *m = (sd_mount *)cm;
+  uint32_t h, i, j;
+  if (out == NULL || m == NULL)
+    return 0;
+  memset(out, 0, sizeof(*out));
+  sd_mutex_lock(&m->lock);
+  for (h = 0; h < SD_MOUNT_MAX_HOPS; h++) {
+    if (!m->sec_hop[h].seen)
+      continue;
+    if (m->sec_hop[h].mask_legacy) out->legacy = 1;
+    if (m->sec_hop[h].terrapin) out->terrapin_exposed = 1;
+    for (i = 0; i < 6; i++) {
+      const char *cat;
+      if (!m->sec_hop[h].legacy[i])
+        continue;
+      out->legacy = 1;
+      cat = sec_category(i);
+      for (j = 0; j < out->legacy_count; j++)
+        if (strcmp(out->legacy_algs[j].category, cat) == 0 && strcmp(out->legacy_algs[j].name, m->sec_hop[h].name[i]) == 0)
+          break;
+      if (j == out->legacy_count && out->legacy_count < SD_MOUNT_LEGACY_MAX) {
+        scopy(out->legacy_algs[j].category, sizeof(out->legacy_algs[j].category), cat);
+        scopy(out->legacy_algs[j].name, sizeof(out->legacy_algs[j].name), m->sec_hop[h].name[i]);
+        out->legacy_count++;
+      }
+    }
+  }
+  sd_mutex_unlock(&m->lock);
+  return 1;
 }
 
 static void sftp_on_event(void *ctx, const sd_sftp_event *ev)

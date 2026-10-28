@@ -52,6 +52,46 @@ static sd_err send_kexinit(sd_ssh_conn *c, const ssh_lists *l)
 
 static void start_method(sd_ssh_conn *c);
 
+/* Appends one name to a comma list (dropped when it does not fit). */
+static void list_append(char *buf, size_t cap, const char *item)
+{
+  size_t n = strlen(buf), k = strlen(item);
+  if (n) {
+    if (n + 1 >= cap) return;
+    buf[n++] = ',';
+  }
+  if (n + k >= cap) return;
+  memcpy(buf + n, item, k + 1);
+}
+
+/* The host key algorithms the server offered (KEXINIT), as a comma list; "" when unknown. */
+static void offered_hostkeys(const sd_ssh_conn *c, char *buf, size_t cap)
+{
+  buf[0] = '\0';
+  if (cap && !ssh_span_copy(c->kex.server.hostkey, buf, cap)) buf[0] = '\0';
+}
+
+/* SD_HKEV_TYPE_UNAVAILABLE (5.2): the stored key types of the name and what the server offered. presented is
+   NULL when the failure came during negotiation. The caller fails the connection with
+   SD_E_HOSTKEY_TYPE_UNAVAILABLE right after. */
+static void report_type_unavailable(sd_ssh_conn *c, const char *offered, const sd_hk_key *presented)
+{
+  char stored[256];
+  sd_hostkey_event ev;
+  uint32_t i;
+  stored[0] = '\0';
+  for (i = 0; i < c->stored_types.count && i < 8; i++) list_append(stored, sizeof(stored), c->stored_types.type[i]);
+  if (!c->cb.on_hostkey_event) return;
+  memset(&ev, 0, sizeof(ev));
+  ev.kind = SD_HKEV_TYPE_UNAVAILABLE;
+  ev.hop_index = c->hop_index;
+  ev.lookup_name = c->lookup_name;
+  ev.new_key = presented;
+  ev.stored_types = stored;
+  ev.offered_types = offered;
+  c->cb.on_hostkey_event(c->cb.ctx, &ev);
+}
+
 static void negotiate(sd_ssh_conn *c)
 {
   ssh_kex_state *k = &c->kex;
@@ -72,8 +112,12 @@ static void negotiate(sd_ssh_conn *c)
   if (e != SD_OK) {
     int restricted = c->stored_types.count > 0 || c->stored_types.has_ca;
     ssh_log(c, SD_LOG_WARN, "no common %s algorithm", cat ? cat : "?");
-    if (cat && strcmp(cat, "hostkey") == 0 && (restricted || k->fetch))
+    if (cat && strcmp(cat, "hostkey") == 0 && (restricted || k->fetch)) {
+      char offered[512];
+      offered_hostkeys(c, offered, sizeof(offered));
+      report_type_unavailable(c, offered, NULL);
       ssh_fail(c, SD_E_HOSTKEY_TYPE_UNAVAILABLE, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "host_key_type_unavailable");
+    }
     else
       ssh_fail(c, SD_E_KEX_FAILED, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "no common algorithm");
     return;
@@ -573,10 +617,17 @@ static void hk_done(sd_ssh_conn *c, ssh_cmd *cmd)
     if (accept_pinned(c)) return;
     raise_hostkey_prompt(c);
     return;
-  case SD_HK_NEW_TYPE:
+  case SD_HK_NEW_TYPE: {
+    char offered[512];
+    sd_hk_key presented;
+    offered_hostkeys(c, offered, sizeof(offered));
+    presented.blob = c->hostkey; presented.len = c->hostkey_len;
+    presented.type = c->kex.algs.hostkey; presented.fp_sha256 = c->hostkey_fp;
     sd_free(h);
+    report_type_unavailable(c, offered, &presented);
     ssh_fail(c, SD_E_HOSTKEY_TYPE_UNAVAILABLE, SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE, "host_key_type_unavailable");
     return;
+  }
   case SD_HK_MISMATCH:
   case SD_HK_REVOKED: {
     sd_hostkey_event ev;

@@ -169,6 +169,23 @@ typedef struct sd_ssh_config {
   uint32_t flags;                       /* SD_SSH_CFG_* */
 } sd_ssh_config;
 
+/* legacy_mask bits (01 §4.3). The UI warns for every bit except SD_LEGACY_MAC_NON_ETM (D33). Public so that
+   sd_mount can tell the Terrapin state of a negotiated connection (03 §7.6) from the other bits. */
+enum {
+  SD_LEGACY_KEX_SHA1         = 1u << 0,   /* group1 / group14-sha1 / gex-sha1 */
+  SD_LEGACY_DH_1024          = 1u << 1,   /* group1 */
+  SD_LEGACY_DH_SMALL         = 1u << 2,   /* GEX group < 2048 bits */
+  SD_LEGACY_CIPHER_CBC       = 1u << 3,
+  SD_LEGACY_CIPHER_3DES      = 1u << 4,
+  SD_LEGACY_MAC_SHA1         = 1u << 5,
+  SD_LEGACY_MAC_NON_ETM      = 1u << 6,   /* informational only */
+  SD_LEGACY_HOSTKEY_SHA1     = 1u << 7,   /* ssh-rsa host key signature */
+  SD_LEGACY_USERAUTH_SHA1    = 1u << 8,   /* we signed with ssh-rsa (auth) */
+  SD_LEGACY_RSA_SHORT        = 1u << 9,   /* RSA key < 2048 bits (host or user) */
+  SD_LEGACY_NO_STRICT_KEX    = 1u << 10,
+  SD_LEGACY_TERRAPIN_EXPOSED = 1u << 11
+};
+
 typedef struct sd_ssh_negotiated {
   uint32_t hop_index;
   const char *kex, *hostkey, *cipher_c2s, *cipher_s2c, *mac_c2s, *mac_s2c, *comp_c2s, *comp_s2c;
@@ -178,13 +195,19 @@ typedef struct sd_ssh_negotiated {
   uint32_t legacy_mask;
 } sd_ssh_negotiated;
 
-typedef enum sd_hkev_kind { SD_HKEV_MISMATCH, SD_HKEV_REVOKED, SD_HKEV_ANNOUNCED } sd_hkev_kind;
+/* SD_HKEV_TYPE_UNAVAILABLE (5.2, TM-R04): the connection failed because no host key algorithm of the server
+   matches the stored key types of lookup_name. stored_types: comma list of the stored types ("" when none);
+   offered_types: comma list of the server's host key algorithms ("" when unknown); new_key: the key the
+   server presented, or NULL when the failure came during negotiation. store, path and line are unused. */
+typedef enum sd_hkev_kind { SD_HKEV_MISMATCH, SD_HKEV_REVOKED, SD_HKEV_ANNOUNCED, SD_HKEV_TYPE_UNAVAILABLE } sd_hkev_kind;
 typedef struct sd_hostkey_event {
   sd_hkev_kind kind; uint32_t hop_index; const char *lookup_name;
-  sd_kh_store_kind store; const wchar_t *path; uint32_t line;
-  const sd_hk_key *old_key, *new_key;                 /* MISMATCH */
+  sd_kh_store_kind store; const wchar_t *path; uint32_t line;   /* path "" and line 0 for the PuTTY registry */
+  const sd_hk_key *old_key, *new_key;                 /* MISMATCH; TYPE_UNAVAILABLE: new_key only */
   const sd_hk_key *add; uint32_t add_count;           /* ANNOUNCED: proven keys */
   const sd_hk_key *remove; uint32_t remove_count;     /* ANNOUNCED: removal candidates */
+  const char *stored_types;                           /* TYPE_UNAVAILABLE */
+  const char *offered_types;                          /* TYPE_UNAVAILABLE */
 } sd_hostkey_event;
 
 typedef struct sd_ssh_callbacks {

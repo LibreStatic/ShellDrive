@@ -694,3 +694,8 @@ sd_err sd_ipc_connect(sd_ipc_endpoint ep, const sd_ipc_hello *hello, int start_i
     Sleep(10);
   }
 }
+
+sd_err sd_ipc_connect_agent_or_start(const sd_ipc_hello *hello, sd_ipc_conn **out)
+{
+  return sd_ipc_connect(SD_IPC_AGENT, hello, 1, SD_IPC_AGENT_START_TIMEOUT_MS, out);
+}

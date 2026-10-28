@@ -1247,6 +1247,105 @@ SD_TEST(m3_webdav_token_only_question_routes_to_ui)
   sd_ipc_close(c);
 }
 
+/* 03 §2.4, §5.2, §5.4, §7.6: the host key failure fields of mount.state and the security fields of list, with the
+   scripted fake backend. Hosts: typeunavail.test (no stored key type offered: host_key_type_unavailable with the
+   stored and offered types), mismatch.test (changed key: the old key's store kind and location), legacy.test
+   (outdated ciphers and MACs: legacy and legacy_algorithms with categories), terrapin.test (Terrapin-exposed). */
+static int arr_str_is(const sd_json *arr, size_t i, const char *want)
+{
+  size_t len = 0;
+  const char *s = sd_json_str(sd_json_at(arr, i), &len);
+  return s && len == strlen(want) && memcmp(s, want, len) == 0;
+}
+
+static const sd_json *find_mount(const sd_json *res, const char *host)
+{
+  const sd_json *arr = sd_json_get(res, "mounts");
+  size_t i;
+  for (i = 0; arr && i < sd_json_count(arr); i++) {
+    const sd_json *m = sd_json_at(arr, i);
+    const char *h = sd_json_get_str(m, "host");
+    if (h && strcmp(h, host) == 0)
+      return m;
+  }
+  return NULL;
+}
+
+SD_TEST(m5_hostkey_failure_and_security_fields)
+{
+  sd_ipc_conn *c = NULL, *u = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  const sd_json *ev, *e, *m;
+  char params[160];
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"hkfields", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("cli", 0, &c) == SD_OK);
+  subscribe(c, "\"mount\"");
+
+  /* host_key_type_unavailable: no prompt, the failure carries the lookup name and both type lists */
+  strcpy_s(params, sizeof(params), "{\"adhoc\":{\"host\":\"typeunavail.test\",\"user\":\"alice\"}}");
+  SD_REQUIRE(call(c, "mount", params, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "failed", 1, 15000));
+  ev = nth_ev(&l, "mount.state", "failed", 0);
+  e = sd_json_get(ev_data(ev), "error");
+  SD_CHECK_STR(sd_json_get_str(e, "code"), "host_key_type_unavailable");
+  SD_CHECK_STR(sd_json_get_str(e, "host"), "typeunavail.test");
+  SD_CHECK_STR(sd_json_get_str(e, "lookup_name"), "typeunavail.test");
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(e, "stored_types")), 2);
+  SD_CHECK(arr_str_is(sd_json_get(e, "stored_types"), 0, "ssh-rsa"));
+  SD_CHECK(arr_str_is(sd_json_get(e, "stored_types"), 1, "ecdsa-sha2-nistp256"));
+  SD_CHECK_STR(sd_json_get_str(e, "stored_type"), "ssh-rsa,ecdsa-sha2-nistp256");
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(e, "offered_types")), 1);
+  SD_CHECK(arr_str_is(sd_json_get(e, "offered_types"), 0, "ssh-ed25519"));
+  SD_CHECK_STR(sd_json_get_str(e, "offered_type"), "ssh-ed25519");
+  SD_CHECK(sd_json_get_str(e, "store_kind") == NULL);   /* no old key, so no store (5.2) */
+
+  /* host_key_mismatch: the store kind next to store_path and store_line */
+  strcpy_s(params, sizeof(params), "{\"adhoc\":{\"host\":\"mismatch.test\",\"user\":\"alice\"}}");
+  SD_REQUIRE(call(c, "mount", params, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(c, &l, "mount.state", "failed", 2, 15000));
+  ev = nth_ev(&l, "mount.state", "failed", 1);
+  e = sd_json_get(ev_data(ev), "error");
+  SD_CHECK_STR(sd_json_get_str(e, "code"), "host_key_mismatch");
+  SD_CHECK_STR(sd_json_get_str(e, "lookup_name"), "mismatch.test");
+  SD_CHECK_STR(sd_json_get_str(e, "store_kind"), "user");
+  SD_CHECK_STR(sd_json_get_str(e, "store_path"), "C:\\fake\\known_hosts");
+  SD_CHECK_EQ_INT(jint3(e, "store_line", NULL), 3);
+
+  /* list: the security state and the scope of connected mounts (their TOFU and password prompts go to a UI) */
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &u) == SD_OK);
+  subscribe(u, "\"prompt\",\"mount\"");
+  SD_REQUIRE(mount_stat_host(u, &l, "legacy.test"));
+  SD_REQUIRE(mount_stat_host(u, &l, "terrapin.test"));
+  SD_REQUIRE(call(c, "list", "{}", &res, &err) == SD_OK);
+  m = find_mount(res, "legacy.test");
+  SD_REQUIRE(m != NULL);
+  SD_CHECK_STR(sd_json_get_str(m, "scope"), "user");
+  SD_CHECK(jbool3(m, "legacy", NULL) == 1);
+  SD_CHECK(jbool3(m, "terrapin_exposed", NULL) == 0);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(m, "legacy_algorithms")), 2);
+  SD_CHECK_STR(sd_json_get_str(sd_json_at(sd_json_get(m, "legacy_algorithms"), 0), "category"), "cipher");
+  SD_CHECK_STR(sd_json_get_str(sd_json_at(sd_json_get(m, "legacy_algorithms"), 0), "name"), "3des-cbc");
+  SD_CHECK_STR(sd_json_get_str(sd_json_at(sd_json_get(m, "legacy_algorithms"), 1), "category"), "mac");
+  m = find_mount(res, "terrapin.test");
+  SD_REQUIRE(m != NULL);
+  SD_CHECK(jbool3(m, "terrapin_exposed", NULL) == 1);
+  SD_CHECK(jbool3(m, "legacy", NULL) == 0);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(m, "legacy_algorithms")), 0);
+  sd_json_free(res);
+  res = NULL;
+  free_log(&l);
+  shutdown_agent(c);
+  sd_ipc_close(u);
+  sd_ipc_close(c);
+}
+
 SD_TEST(agent_shutdown_event_stops_agent)
 {
   sd_ipc_conn *c = NULL;

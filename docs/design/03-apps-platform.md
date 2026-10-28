@@ -519,7 +519,7 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `subscribe {topics}` | x | x | topic names must match `[a-z0-9._-]`, at most 23 bytes; invalid names are dropped from the reply, valid unknown names are kept. `prompt` needs cap `prompts.ui` to receive `prompt.request` (2.5). On the service `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
 | `mount {profile \| adhoc:{...}, target?, backend?, prompt_mode?}` | x | x (admin, M5) | returns `mount_id` at once; completion through `mount.state`. `wait` is not implemented |
 | `unmount {mount_id \| target \| profile \| all, force?}` | x | x (admin, M5) | `force` (M3, first unmount of the mount): the write-behind drain gets no budget, data still queued is reported as `write_failed` (02 §4.4). Test mounts (`profile.test`) are never unmounted |
-| `list` | x | x | `mounts` (write_mount_json) and `warnings`: the recent warning codes of this agent, oldest first, at most 32, `{code, mount_id?}`. Service: filtered for non-admins (2.2) |
+| `list` | x | x | `mounts` (write_mount_json) and `warnings`: the recent warning codes of this agent, oldest first, at most 32, `{code, mount_id?}`. Each mount also has `scope` (`user`, `machine_template` for scope = users, `global` for scope = service), `legacy` (bool: an outdated algorithm is negotiated now), `legacy_algorithms` (`[{category: kex\|hostkey\|cipher\|mac, name}]`, current connection, one entry per name), and `terrapin_exposed` (bool, current connection). The warnings of a mount leave the ring when the mount is gone. Service: filtered for non-admins (2.2) |
 | `status {mount_id \| target, stats?}` | x | x (admin, M5) | the list object of the mount, `last_error {code, detail}` when failed or offline, and `proxy_legs` (`[{hop, kind, host, port}]`, no credentials). `stats: true` (M3) adds `stats`: `session` (srtt, rttvar, rx/tx rates and totals, inflight, queued, channels, generation, reconnect attempts), `pool` (`ready`, `wanted`, `members[]` with one entry per SFTP connection), `cache` (hits, misses, bytes, write_failed, `write_behind_bytes`, reconnects). Pool limits are still M4 |
 | `refresh {mount_id \| target, path}` | x | x (admin, M5) | M3 (agent): drops the attribute and listing caches under `path` (`""` or `"/"` = the whole mount). `not_mounted` (exit 3) before MOUNTED |
 | `profile.test {profile_id \| adhoc}` | x | x (admin, M5) | M3 (agent): connect, authenticate and realpath of `remote_path`, no drive, no vfs. The prompts go through the normal broker. The reply is deferred until the test ends (`sd_ipc_defer`). Result: `{profile, host, port, user, remote_path, hostkey_fingerprint, server_version, algorithms{kex, hostkey, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c}, legacy, hops}` |
@@ -549,7 +549,15 @@ Events (`{"type":"evt","event":<name>,"data":{...}}`, after `subscribe`; the top
 
 | Event | Topic | Data | When |
 |---|---|---|---|
-| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?}, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, lookup_name?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?, store_kind?, stored_types?, offered_types?}, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+
+Host key error members (5.2, 5.4). `host`, `lookup_name` (the name the key was looked up under: `host`, `[host]:port` or the alias) and
+`offered_type`/`offered_fp` are sent for `host_key_mismatch` and `host_key_type_unavailable`. A mismatch adds `stored_type`,
+`stored_fp`, `store_path` (the file of the old key; `""` for the PuTTY registry), `store_line` (0 when not applicable) and
+`store_kind` (`machine`, `user`, `openssh` or `putty`: the store of the old key). A type-unavailable failure adds
+`stored_types` (array of the stored key types of the name) and `offered_types` (array of the server's host key algorithms);
+`stored_type` repeats the stored types as one comma-joined string for clients that show one value. No fingerprint of a stored
+key is sent for type-unavailable (the known_hosts type list has none).
 | `prompt.request` | [prompt] | `prompt_id, mount_id, profile_id, profile_name, kind, host, port, user, hop, hops, via_host?, is_reconnect, hostkey_just_accepted, can_save, queued, deadline_ms`, and the kind-specific objects of 2.5 | a prompt is routed (2.5); again, with `queued: true`, when a UI subscribes and drains the queue |
 | `prompt.closed` | [prompt] (and the initiator) | `prompt_id, mount_id, reason: answered\|cancelled\|timeout\|superseded, answered_by?: cli\|ui` | the prompt leaves the open or queued state (2.5); once per recipient |
 | `warning` | [warning], and [mount] (proto 1) | `code, mount_id?, data` (codes of 2.4 and 7.6) | a warning is raised. The copy on [mount] stays through proto 1 (2.8) |
@@ -1700,7 +1708,9 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
 - ListView (report view, groups "My connections" / "Provided by your organization" / "Global drives" using
   ListView groups, v6 XP+): columns Name, Server, Drive/Folder, Backend, Status, Security. Status and Security show
   icon **and** text ("Connected", "Reconnecting (3)", "Legacy encryption").
-- Status bar: agent state ("ShellDrive is running", "Agent not running — Start").
+- Status bar: agent state ("ShellDrive is running", "Agent not running — Start"). **Start** calls
+  `sd_ipc_connect_agent_or_start` (`src/sd_ipc`): the same spawn and 10 s timeout as the CLI's `connect_agent`, with no UI code
+  in it. The status bar shows the result (the agent's `hello` on success; `agent_unavailable`, `agent_untrusted` otherwise).
 - Double-click/Enter: mount, or open in Explorer if mounted. Delete key: delete with confirmation.
 - Profile editor: property sheet with pages General (name, host, port, user, remote path), Authentication (methods,
   key file with "Browse…", "Keep a protected copy", certificate, agent, saved password management), Connection

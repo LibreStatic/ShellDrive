@@ -381,9 +381,33 @@ typedef struct sd_mount_failure {
   char detail[256];                     /* English, for logs */
   /* SD_E_HOSTKEY_MISMATCH: stored vs offered key (from on_hostkey_event) */
   char stored_type[48], stored_fp[64], offered_type[48], offered_fp[64];
-  wchar_t store_path[260];
-  uint32_t store_line;
+  wchar_t store_path[260];              /* "" for the PuTTY registry (03 §5.4, sd_hk_result) */
+  uint32_t store_line;                  /* 0 when not applicable (PuTTY) */
+  /* SD_E_HOSTKEY_MISMATCH and SD_E_HOSTKEY_TYPE_UNAVAILABLE: the name the key was looked up under, and the
+     store of the old key (has_store_kind = 1 for a MISMATCH). */
+  char lookup_name[300];
+  int has_store_kind;
+  sd_kh_store_kind store_kind;
+  /* SD_E_HOSTKEY_TYPE_UNAVAILABLE: comma lists of the stored key types and of the server's host key algorithms */
+  char stored_types[160], offered_types[160];
 } sd_mount_failure;
+
+/* Security state of the current connection of a mount (03 §7.6, 2.4): the outdated algorithms negotiated on
+   any hop (category kex, hostkey, cipher or mac; one entry per distinct name) and the Terrapin state. Both
+   follow the latest negotiation of each hop; they are not the warnings of the agent's ring. */
+#define SD_MOUNT_LEGACY_MAX (SD_MOUNT_MAX_HOPS * 6)
+typedef struct sd_mount_legacy_alg {
+  char category[12];                    /* "kex", "hostkey", "cipher" or "mac" */
+  char name[64];
+} sd_mount_legacy_alg;
+typedef struct sd_mount_security {
+  int legacy;                           /* an outdated algorithm, or an outdated legacy_mask bit, is negotiated */
+  uint32_t legacy_count;
+  sd_mount_legacy_alg legacy_algs[SD_MOUNT_LEGACY_MAX];
+  int terrapin_exposed;                 /* SD_LEGACY_TERRAPIN_EXPOSED on some hop of the current connection */
+} sd_mount_security;
+/* Any thread; copies the state under the mount's lock. Returns 0 when out or m is NULL. */
+int sd_mount_get_security(const sd_mount *m, sd_mount_security *out);
 
 typedef struct sd_mount_callbacks {
   void *ctx;

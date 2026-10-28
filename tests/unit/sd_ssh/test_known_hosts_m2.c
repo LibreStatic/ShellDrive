@@ -391,6 +391,8 @@ SD_TEST(tr_kh_putty_registry_source)
     SD_CHECK_EQ_INT(sd_known_hosts_check(kh, "host.example", w.p, w.len, 0, &r), SD_OK);
     SD_CHECK_EQ_INT(r.status, SD_HK_MATCH);
     SD_CHECK_EQ_INT(r.store, SD_KH_SRC_PUTTY);
+    SD_CHECK_EQ_INT(r.path[0], 0);                /* PuTTY: path "" (the registry is not a file), sd_hk_result */
+    SD_CHECK_EQ_INT(r.line, 0);
     txt = read_text(user);
     SD_CHECK(txt && strstr(txt, "# imported-from=putty added="));
     sd_free(txt);
