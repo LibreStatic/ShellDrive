@@ -1,2 +1,3 @@
-# Every path is owned by the LibreStatic maintainers team; reviews from it are required where branch protection asks for them.
-* @LibreStatic/maintainers
+# Every path is owned by the maintainer; 04 section 6 (TM-R39) requires this review at least for .github/,
+# installer/, cmake/SdSign.cmake and tools/sd-release/.
+* @FacuM
