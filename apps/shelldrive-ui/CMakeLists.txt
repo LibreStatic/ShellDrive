@@ -78,4 +78,4 @@ sd_add_app(shelldrive-ui
     ui_admin_model.h
     ${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc
     ${SD_UI_PURE_SOURCES}
-  DEPS sd_ipc sd_config sd_crypto sd_ssh sd_l10n sd_l10n_catalog_ui sd_platform sd_base comctl32 comdlg32 shell32)
+  DEPS sd_ipc sd_config sd_crypto sd_ssh sd_webdav sd_policy sd_l10n sd_l10n_catalog_ui sd_platform sd_base comctl32 comdlg32 shell32)

@@ -463,6 +463,8 @@ user32.dll!GetWindowThreadProcessId
 user32.dll!InvalidateRect
 user32.dll!IsIconic
 user32.dll!IsWindow
+# All Windows versions (the Settings window disables policy-locked controls)
+user32.dll!IsWindowEnabled
 user32.dll!IsWindowVisible
 user32.dll!LoadCursorW
 user32.dll!MonitorFromWindow

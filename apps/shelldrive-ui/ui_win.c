@@ -238,6 +238,7 @@ int ui_windows_smoke_test(void)
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);
   /* the update group of Settings: channel list, status, Check now, Install update, Release notes */
   ok = ok && ui_settings_update_controls_ok();
+  ok = ok && ui_settings_security_smoke();
   if (w)
     DestroyWindow(w);
 

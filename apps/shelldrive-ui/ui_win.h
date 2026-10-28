@@ -81,6 +81,7 @@ void   ui_settings_close(void);
 void   ui_settings_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_settings_update_refresh(void);     /* the update group: status, enabled controls (ui_update.c) */
 int    ui_settings_update_controls_ok(void); /* --test-windows: the update group controls exist */
+int    ui_settings_security_smoke(void);    /* --test-windows: security controls, policy locks, WebClient text */
 HWND   ui_settings_create_hidden(void);
 
 /* ---- ui_about.c: the About window ---- */

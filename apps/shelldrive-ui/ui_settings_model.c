@@ -29,6 +29,9 @@ void ui_settings_from_sd(const sd_settings *s, ui_settings_model *m)
   m->default_backend = s->default_backend;
   /* the budget is stored in bytes and shown in whole MiB (rounded down) */
   m->cache_mb = (unsigned)(s->cache_memory / ((UINT64)1 << 20));
+  m->openssh_source = s->openssh_source ? 1 : 0;
+  m->putty_source = s->putty_source ? 1 : 0;
+  m->roam_credentials = s->persist_enterprise ? 1 : 0;
 }
 
 void ui_settings_to_sd(const ui_settings_model *m, sd_settings *s)
@@ -37,6 +40,79 @@ void ui_settings_to_sd(const ui_settings_model *m, sd_settings *s)
   s->notify = m->notify ? 1 : 0;
   s->default_backend = m->default_backend;
   s->cache_memory = (UINT64)m->cache_mb << 20;
+  s->openssh_source = m->openssh_source ? 1 : 0;
+  s->putty_source = m->putty_source ? 1 : 0;
+  s->persist_enterprise = m->roam_credentials ? 1 : 0;
+}
+
+unsigned ui_settings_locked(const ui_set_policy *p)
+{
+  unsigned mask = 0;
+  if (p == NULL)
+    return 0;
+  if (p->language_set && p->language[0] != '\0')
+    mask |= UI_SET_F_LANGUAGE;
+  if (p->sources_disabled)
+    mask |= UI_SET_F_OPENSSH | UI_SET_F_PUTTY;
+  return mask;
+}
+
+unsigned ui_settings_apply_policy(ui_settings_model *m, const ui_set_policy *p)
+{
+  unsigned mask = ui_settings_locked(p);
+  if (mask & UI_SET_F_LANGUAGE)
+    strcpy_s(m->language, sizeof(m->language), p->language);
+  if (mask & UI_SET_F_OPENSSH)
+    m->openssh_source = 0;
+  if (mask & UI_SET_F_PUTTY)
+    m->putty_source = 0;
+  return mask;
+}
+
+unsigned ui_settings_changed(const ui_settings_model *a, const ui_settings_model *b)
+{
+  unsigned d = 0;
+  if (strcmp(a->language, b->language) != 0) d |= UI_SET_F_LANGUAGE;
+  if ((a->notify != 0) != (b->notify != 0)) d |= UI_SET_F_NOTIFY;
+  if (a->default_backend != b->default_backend) d |= UI_SET_F_BACKEND;
+  if (a->cache_mb != b->cache_mb) d |= UI_SET_F_CACHE;
+  if ((a->start_at_logon != 0) != (b->start_at_logon != 0)) d |= UI_SET_F_LOGON;
+  if ((a->openssh_source != 0) != (b->openssh_source != 0)) d |= UI_SET_F_OPENSSH;
+  if ((a->putty_source != 0) != (b->putty_source != 0)) d |= UI_SET_F_PUTTY;
+  if ((a->roam_credentials != 0) != (b->roam_credentials != 0)) d |= UI_SET_F_ROAMING;
+  return d;
+}
+
+void ui_settings_to_sd_masked(const ui_settings_model *m, unsigned locked, sd_settings *s)
+{
+  sd_settings keep = *s;
+  ui_settings_to_sd(m, s);
+  if (locked & UI_SET_F_LANGUAGE)
+    strcpy_s(s->ui_language, sizeof(s->ui_language), keep.ui_language);
+  if (locked & UI_SET_F_OPENSSH)
+    s->openssh_source = keep.openssh_source;
+  if (locked & UI_SET_F_PUTTY)
+    s->putty_source = keep.putty_source;
+}
+
+ui_set_note ui_settings_source_note(int enabled, int locked, int src_state)
+{
+  if (locked)
+    return UI_SET_NOTE_MANAGED;
+  if (enabled && src_state == 3)
+    return UI_SET_NOTE_INSECURE;
+  return UI_SET_NOTE_NONE;
+}
+
+ui_set_webclient ui_settings_webclient_kind(int state)
+{
+  switch (state) {
+  case 1: return UI_SET_WC_RUNNING;
+  case 2: return UI_SET_WC_STOPPED;
+  case 3: return UI_SET_WC_DISABLED;
+  case 4: return UI_SET_WC_MISSING;
+  default: return UI_SET_WC_UNKNOWN;
+  }
 }
 
 sd_err ui_settings_parse_cache(const wchar_t *text, unsigned *mb)
