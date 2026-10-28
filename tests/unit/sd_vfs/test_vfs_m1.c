@@ -666,6 +666,118 @@ SD_TEST(vfs_write_through_disconnect_fails_the_call)
   fx_done(&f);
 }
 
+/* ---- offline waits (02 §5.2) and negative entries while offline (02 §7.6) ---- */
+
+typedef struct ow_arg {
+  sd_vfs_handle *h;
+  sd_vfs_status st;
+  UINT32 got;
+  uint8_t buf[4096];
+  uint64_t t_end;
+} ow_arg;
+
+static unsigned __stdcall ow_reader(void *p)
+{
+  ow_arg *a = (ow_arg *)p;
+  a->st = sd_vfs_read(a->h, 3u << 20, a->buf, sizeof(a->buf), &a->got);
+  a->t_end = sd_tick_ms();
+  return 0;
+}
+
+/* A 4 MiB file with one handle open and nothing cached past the first block, then the link goes down
+   and a reader starts on an uncached block. */
+/* Returns FALSE (and no thread) if the mount or the open failed; the caller checks it with SD_REQUIRE. */
+static BOOL ow_setup_reader(fixture *f, const sd_vfs_options *o, sd_vfs_handle **h, ow_arg *a,
+                            const uint8_t *data, HANDLE *th_out)
+{
+  *th_out = NULL;
+  if (!fx_start(f, NULL, o))
+    return FALSE;
+  fake_put(f->s, "/home/user/w.bin", data, 4u << 20, 0644);
+  fake_set_mtime(f->s, "/home/user/w.bin", OLD_MTIME);
+  if (vopen(f, L"\\w.bin", GENERIC_READ, SD_VFS_FILE_OPEN, SD_VFS_FILE_RANDOM_ACCESS, h) != SD_VFS_OK)
+    return FALSE;
+  fake_disconnect(f->s);
+  memset(a, 0, sizeof(*a));
+  a->h = *h;
+  a->st = SD_VFS_OK;
+  *th_out = (HANDLE)_beginthreadex(NULL, 0, ow_reader, a, 0, NULL);
+  return *th_out != NULL;
+}
+
+SD_TEST(vfs_offline_wait_completes_on_reconnect)
+{
+  fixture f;
+  sd_vfs_options o;
+  sd_vfs_handle *h = NULL;
+  uint8_t *data = pattern(4u << 20, 31);
+  ow_arg a;
+  HANDLE th;
+  uint64_t t_reconnect;
+  SD_REQUIRE(data);
+  opts(&o);
+  o.offline_wait_ms = 5000;             /* the wait must end at the reconnect, not at this deadline */
+  SD_REQUIRE(ow_setup_reader(&f, &o, &h, &a, data, &th));
+  SD_REQUIRE(th != NULL);
+  Sleep(300);
+  SD_CHECK(WaitForSingleObject(th, 0) == WAIT_TIMEOUT);   /* still waiting for the link */
+  t_reconnect = sd_tick_ms();
+  fake_reconnect(f.s);
+  SD_REQUIRE(WaitForSingleObject(th, 3000) == WAIT_OBJECT_0);
+  CloseHandle(th);
+  SD_CHECK_EQ_INT(a.st, SD_VFS_OK);
+  SD_CHECK_EQ_INT(a.got, 4096);
+  SD_CHECK_MEM(a.buf, data + (3u << 20), 4096);
+  SD_CHECK(a.t_end - t_reconnect < 2000);  /* served right after the READY, well before offline_wait */
+  vclose(h);
+  fx_done(&f);
+  sd_free(data);
+}
+
+SD_TEST(vfs_offline_wait_cancel_returns_promptly)
+{
+  fixture f;
+  sd_vfs_options o;
+  sd_vfs_handle *h = NULL;
+  uint8_t *data = pattern(4u << 20, 32);
+  ow_arg a;
+  HANDLE th;
+  uint64_t t0;
+  SD_REQUIRE(data);
+  opts(&o);
+  o.offline_wait_ms = 10000;            /* only the cancel can end the wait within the test bound */
+  SD_REQUIRE(ow_setup_reader(&f, &o, &h, &a, data, &th));
+  SD_REQUIRE(th != NULL);
+  Sleep(300);
+  SD_CHECK(WaitForSingleObject(th, 0) == WAIT_TIMEOUT);
+  t0 = sd_tick_ms();
+  sd_vfs_quiesce(f.v, 2000);            /* quiesce and unmount cancel the offline waiters */
+  SD_REQUIRE(WaitForSingleObject(th, 2000) == WAIT_OBJECT_0);
+  CloseHandle(th);
+  SD_CHECK(a.t_end - t0 < 2000);
+  SD_CHECK_EQ_INT(a.st, SD_VFS_E_DISCONNECTED);
+  vclose(h);
+  fx_done(&f);
+  sd_free(data);
+}
+
+SD_TEST(vfs_offline_negative_lookup_is_disconnected)
+{
+  fixture f;
+  sd_vfs_info info;
+  SD_REQUIRE(fx_start(&f, NULL, NULL));
+  fake_put(f.s, "/home/user/present.txt", "x", 1, 0644);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\present.txt", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\gone.txt", &info), SD_VFS_E_NOT_FOUND);   /* verified miss */
+  fake_disconnect(f.s);
+  /* A cached miss while the link is down is DISCONNECTED (WebDAV 503), never NOT_FOUND (02 §7.6). */
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\gone.txt", &info), SD_VFS_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\present.txt", &info), SD_VFS_OK);
+  fake_reconnect(f.s);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\gone.txt", &info), SD_VFS_E_NOT_FOUND);   /* online again */
+  fx_done(&f);
+}
+
 /* ---- identity without exec (D10, 02 §3.4) ---- */
 
 SD_TEST(vfs_identity_home_owner_then_first_create)

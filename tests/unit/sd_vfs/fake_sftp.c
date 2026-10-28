@@ -62,6 +62,12 @@ typedef struct freq {
   sd_sftp_file *f;
   uint64_t off; void *buf; const void *cbuf; uint32_t len;
   uint64_t due;                     /* tick at which the "server" executes it */
+  /* SD_SFTP_REQ_WAIT_READY (as sd_sftp): held on the wait list while the session is not READY, queued in
+     submission order once it is; completes with SD_E_TIMEOUT at its deadline or SD_E_CANCELLED. */
+  struct sd_sftp_session *s;
+  uint64_t deadline;
+  struct freq *wnext, *out_next;
+  sd_err expire_err;
 } freq;
 
 struct sd_sftp_session {
@@ -82,6 +88,7 @@ struct sd_sftp_session {
   int hold;
   freq *held_head, *held_tail;
   uint32_t nheld;
+  freq *wait_head, *wait_tail;        /* WAIT_READY requests held while not READY */
   sd_sftp_file *files;
 };
 
@@ -367,11 +374,18 @@ static sd_err submit(sd_sftp_session *s, freq *r, const sd_sftp_reqopt *o)
     return SD_E_STALE_HANDLE;
   }
   r->due = sd_tick_ms() + s->cfg.latency_ms;
+  r->s = s;
   if (o && o->token_out)
     *o->token_out = (sd_sftp_req *)r;
   EnterCriticalSection(&s->lock);
-  if (s->tail) s->tail->next = r; else s->head = r;
-  s->tail = r;
+  if (o && (o->flags & SD_SFTP_REQ_WAIT_READY) && o->timeout_ms > 0 && s->state != SD_SFTP_ST_READY) {
+    r->deadline = sd_tick_ms() + o->timeout_ms;
+    if (s->wait_tail) s->wait_tail->wnext = r; else s->wait_head = r;
+    s->wait_tail = r;
+  } else {
+    if (s->tail) s->tail->next = r; else s->head = r;
+    s->tail = r;
+  }
   LeaveCriticalSection(&s->lock);
   SetEvent(s->ev);
   return SD_OK;
@@ -676,17 +690,69 @@ static void execute(sd_sftp_session *s, freq *r)
     sd_sftp_file_release(r->f);           /* the request's own reference */
 }
 
+/* s->lock held. Once READY, WAIT_READY requests join the queue in submission order (their latency starts
+   now). Otherwise the ones cancelled or past their deadline are unlinked and returned (out_next) to be
+   completed outside the lock; *wait is lowered to the next deadline. */
+static freq *wait_scan(sd_sftp_session *s, uint64_t now, DWORD *wait)
+{
+  freq *r, *out = NULL, **pp;
+  if (!s->wait_head)
+    return NULL;
+  if (s->state == SD_SFTP_ST_READY) {
+    while ((r = s->wait_head) != NULL) {
+      s->wait_head = r->wnext;
+      r->wnext = NULL;
+      r->due = now + s->cfg.latency_ms;
+      if (s->tail) s->tail->next = r; else s->head = r;
+      s->tail = r;
+    }
+    s->wait_tail = NULL;
+    return NULL;
+  }
+  for (pp = &s->wait_head; (r = *pp) != NULL;) {
+    if (r->cancelled || now >= r->deadline) {
+      *pp = r->wnext;
+      r->wnext = NULL;
+      r->expire_err = r->cancelled ? SD_E_CANCELLED : SD_E_TIMEOUT;
+      r->out_next = out;
+      out = r;
+      continue;
+    }
+    if (r->deadline - now < *wait)
+      *wait = (DWORD)(r->deadline - now);
+    pp = &r->wnext;
+  }
+  for (r = s->wait_head; r && r->wnext; r = r->wnext)
+    ;
+  s->wait_tail = r;
+  return out;
+}
+
+/* Completes a request that never reached the queue (outside s->lock). */
+static void complete_waiting(freq *r)
+{
+  sd_sftp_completion c;
+  memset(&c, 0, sizeof(c));
+  c.sftp_status = UINT32_MAX;
+  c.server_message = "";
+  c.err = r->expire_err;
+  r->cb(r->ctx, &c);
+  req_free(r);
+}
+
 static unsigned __stdcall worker(void *arg)
 {
   sd_sftp_session *s = (sd_sftp_session *)arg;
   while (!s->stop) {
-    freq *r;
+    freq *r, *expired;
     DWORD wait = 100;
     uint64_t now = sd_tick_ms();
     EnterCriticalSection(&s->lock);
+    expired = wait_scan(s, now, &wait);
     r = s->head;
     if (r && r->due > now) {
-      wait = (DWORD)(r->due - now);         /* FIFO with a constant latency: the head is the earliest */
+      if ((DWORD)(r->due - now) < wait)
+        wait = (DWORD)(r->due - now);       /* FIFO with a constant latency: the head is the earliest */
       r = NULL;
     } else if (r) {
       s->head = r->next;
@@ -701,6 +767,11 @@ static unsigned __stdcall worker(void *arg)
       }
     }
     LeaveCriticalSection(&s->lock);
+    while (expired) {
+      freq *x = expired;
+      expired = x->out_next;
+      complete_waiting(x);
+    }
     if (!r) {
       if (wait) WaitForSingleObject(s->ev, wait);
       continue;
@@ -777,6 +848,11 @@ void fake_session_destroy(sd_sftp_session *s)
   while (s->held_head) {
     freq *r = s->held_head;
     s->held_head = r->next;
+    req_free(r);
+  }
+  while (s->wait_head) {
+    freq *r = s->wait_head;
+    s->wait_head = r->wnext;
     req_free(r);
   }
   while ((in = s->injected) != NULL) {
@@ -963,7 +1039,11 @@ sd_err sd_sftp_statvfs_path(sd_sftp_session *s, const char *path, const sd_sftp_
 
 sd_err sd_sftp_cancel(sd_sftp_req *r)
 {
-  if (r) InterlockedExchange(&((freq *)r)->cancelled, 1);
+  if (r) {
+    freq *q = (freq *)r;
+    InterlockedExchange(&q->cancelled, 1);
+    SetEvent(q->s->ev);                   /* a waiter is woken to complete it */
+  }
   return SD_OK;
 }
 

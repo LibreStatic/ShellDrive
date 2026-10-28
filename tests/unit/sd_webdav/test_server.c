@@ -697,3 +697,31 @@ SD_TEST(webdav_server_link_down_miss_is_503_not_404)
   conn_free(c);
   fx_down(&f);
 }
+
+/* The vfs keeps a negative entry for a name it verified missing (02 §4.1). While the link is down that entry
+   must still report DISCONNECTED: a 404 here would reach the redirector, which caches it for ~60 s (02 §7.6). */
+SD_TEST(webdav_server_cached_miss_is_503_while_link_down)
+{
+  fixture f;
+  tc_conn *c;
+  tc_resp r;
+  char v[64];
+  SD_REQUIRE(fx_up(&f, NULL, FALSE) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_REQUIRE(tc_authenticate(c, f.port, f.prefix) == 207);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 404);            /* online: a verified miss, now in the vfs cache */
+  tc_resp_free(&r);
+  fake_disconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 503);
+  SD_CHECK(tc_header(&r, "Retry-After", v, sizeof(v)));
+  tc_resp_free(&r);
+  fake_reconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 404);
+  tc_resp_free(&r);
+  conn_free(c);
+  fx_down(&f);
+}

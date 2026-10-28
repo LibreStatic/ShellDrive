@@ -37,6 +37,9 @@ SD_TEST_DECL(vfs_write_behind_conflict_after_reconnect);
 SD_TEST_DECL(vfs_reconnect_serves_cache_and_reopens);
 SD_TEST_DECL(vfs_reconnect_detects_remote_change);
 SD_TEST_DECL(vfs_write_through_disconnect_fails_the_call);
+SD_TEST_DECL(vfs_offline_wait_completes_on_reconnect);
+SD_TEST_DECL(vfs_offline_wait_cancel_returns_promptly);
+SD_TEST_DECL(vfs_offline_negative_lookup_is_disconnected);
 SD_TEST_DECL(vfs_identity_home_owner_then_first_create);
 SD_TEST_DECL(vfs_disk_cache_persists_across_mounts);
 SD_TEST_DECL(vfs_disk_cache_refused_unsafe_directories);
@@ -94,6 +97,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_reconnect_serves_cache_and_reopens),
   SD_TEST_ENTRY(vfs_reconnect_detects_remote_change),
   SD_TEST_ENTRY(vfs_write_through_disconnect_fails_the_call),
+  SD_TEST_ENTRY(vfs_offline_wait_completes_on_reconnect),
+  SD_TEST_ENTRY(vfs_offline_wait_cancel_returns_promptly),
+  SD_TEST_ENTRY(vfs_offline_negative_lookup_is_disconnected),
   SD_TEST_ENTRY(vfs_identity_home_owner_then_first_create),
   SD_TEST_ENTRY(vfs_disk_cache_persists_across_mounts),
   SD_TEST_ENTRY(vfs_disk_cache_refused_unsafe_directories),

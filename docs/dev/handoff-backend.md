@@ -465,10 +465,13 @@ reconnect, meta/bulk channels, caches and read-ahead, write-behind opt-in, `sd_w
 - [done, r13 `wip/r13-davmove`] Replacing MOVE drops the destination lock (final UNLOCK gets 409): the destination
   URL keeps its lock across a replacing MOVE, decided in 02 §7.5; tests `webdav_server_office_save_sequence` and
   `webdav_server_replacing_move_drops_replaced_children_locks`. Lab re-check with Office is open (`m1-notes`).
-- [partly done, r13] Document/mitigate the redirector's ~60 s negative cache after a failed lookup: a link-down miss
-  is 503 (test `webdav_server_link_down_miss_is_503_not_404`); the vfs-served 404 while the link is down needs
-  session state in `sd_webdav_export_cfg` (open, sd_mount); the rest is documented in 02 §7.6 and `m1-notes`.
-- sd_vfs offline waits: switch from 50 ms polling to `SD_SFTP_REQ_WAIT_READY` (needs a cancel path).
+- [done, r14 `wip/r14-offwait`] Negative cache while the link is down: a cached miss (and a name absent from a
+  cached listing) reports `SD_VFS_E_DISCONNECTED`, so WebDAV answers 503 + `Retry-After` (tests
+  `vfs_offline_negative_lookup_is_disconnected`, `webdav_server_cached_miss_is_503_while_link_down`). No
+  `sd_mount` change was needed (`m1-notes`, r14).
+- [done, r14] sd_vfs offline waits: `SD_SFTP_REQ_WAIT_READY` request instead of 50 ms polling; quiesce and
+  unmount cancel the waiters (tests `vfs_offline_wait_completes_on_reconnect`, `vfs_offline_wait_cancel_returns_promptly`).
+  Open: lookups still fail at once while offline, not after `offline_wait` (`m1-notes`, r14).
 - TM-R17 watchers for long-running clients (crash filter and stop cleanup already done).
 
 ### M2 — all of it (in progress, uncommitted state committed on this branch)

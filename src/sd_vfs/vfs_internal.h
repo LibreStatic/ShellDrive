@@ -212,6 +212,8 @@ struct sd_vfs {
   uint64_t next_file_id;
   volatile LONG busy;                   /* requests in progress */
   volatile LONG quiescing;
+  sd_mutex wait_lock;                   /* the offline waiters (vfs_data.c), never held across a wait */
+  struct vfs_online_wait *waits;        /* offline waiters in flight, under wait_lock */
   /* options (resolved defaults) */
   BOOL read_only, hide_dotfiles, map_readonly, case_view_sensitive, show_special, allow_system;
   BOOL block_shell_active, remote_insensitive, fsync_on_flush;
@@ -387,8 +389,11 @@ void      vfs_node_set_attr(sd_vfs *v, vfs_node *n, const vfs_attr *a);
 void      vfs_node_invalidate(sd_vfs *v, vfs_node *n);
 /* Re-reads server_info after a reconnect (limits, identity; 02 §5.1). Any vfs thread, no lock. */
 void      vfs_sync_generation(sd_vfs *v);
-/* Waits up to offline_wait for the session to come back (02 §5.2). */
+/* Waits up to offline_wait for the session to come back (02 §5.2): one WAIT_READY request, completed by
+   the session when it is READY again. FALSE on timeout, failure, or quiescing (vfs_cancel_waits). */
 BOOL      vfs_wait_online(sd_vfs *v);
+/* Cancels every offline waiter in flight so it returns FALSE now (quiesce and unmount). Any thread. */
+void      vfs_cancel_waits(sd_vfs *v);
 
 /* v->lock held: waits on n->waiters until woken or dl (FALSE on timeout), releasing the lock
    meanwhile. */
