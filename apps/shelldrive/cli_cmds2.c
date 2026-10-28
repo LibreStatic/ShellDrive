@@ -966,11 +966,213 @@ static int hk_not_built(const cli_args *a)
 
 /* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] [--machine] (03 §6.1). The parser has
    checked the options; --machine is refused unless the console is elevated. */
+/* Prints "Updated the host keys of ..." from a hostkey.announced.accept or hostkey.add (--expect) reply. */
+static void print_applied(const sd_json *res)
+{
+  const char *host = sd_json_get_str(res, "host");
+  int64_t added = 0, removed = 0;
+  wchar_t *wh = wide(host);
+  wchar_t abuf[24], rbuf[24];
+  sd_arg args[3];
+  sd_json_get_int64(res, "added", &added);
+  sd_json_get_int64(res, "removed", &removed);
+  args[0].name = "host"; args[0].type = SD_ARG_STR; args[0].v.s = wh ? wh : L"";
+  args[1].name = "added"; args[1].type = SD_ARG_STR; args[1].v.s = decimal(abuf, SD_COUNTOF(abuf), added);
+  args[2].name = "removed"; args[2].type = SD_ARG_STR; args[2].v.s = decimal(rbuf, SD_COUNTOF(rbuf), removed);
+  say(SD_MSG_CLI_HK_ANNOUNCED_APPLIED, args, 3, 0);
+  sd_free(wh);
+}
+
+/* hostkey.announced.accept {id, add_only: true} for an offer of hostkey add: stores the offered keys. */
+static int hk_accept_offer(const cli_args *a, const char *id)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_json *res = NULL;
+  sd_wr w;
+  sd_json_writer jw;
+  sd_err e;
+  int rc;
+  rc = connect_agent(a, 1, &c, NULL);
+  if (rc != 0)
+    return rc;
+  sd_wr_init(&w, 1024);
+  sd_jw_init(&jw, &w);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "id"); sd_jw_cstr(&jw, id);
+  sd_jw_key(&jw, "add_only"); sd_jw_bool(&jw, 1);
+  sd_jw_obj_end(&jw);
+  e = sd_jw_finish(&jw) == SD_OK
+      ? sd_ipc_call_raw(c, "hostkey.announced.accept", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err)
+      : SD_E_INTERNAL;
+  sd_wr_free(&w);
+  sd_ipc_close(c);
+  if (e != SD_OK) {
+    rc = fail_ipc(a, &err, NULL);
+    sd_json_free(res);
+    return rc;
+  }
+  if (a->json)
+    json_ok(res);
+  else
+    print_applied(res);
+  sd_json_free(res);
+  return 0;
+}
+
+/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] (03 §6.1, 5.2, TM-R04) without --machine.
+   The agent connects offering only the stored key types of the host and collects the other keys inside that
+   connection (hostkey.add). --expect stores the one key with that fingerprint, with no question (scripts). Otherwise
+   the keys are offered: a first contact asks about the one key the server presented (5.2); a host with stored keys
+   asks about the others. "yes" stores them (hostkey.announced.accept, add only); anything else exits 5. JSON only
+   offers: the id is for "hostkey accept-announced <id> --add-only". */
+static int hk_add_user(const cli_args *a)
+{
+  char lookup[320], user[128], host[256];
+  uint16_t port = 22;
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_json *res = NULL;
+  sd_wr w;
+  sd_json_writer jw;
+  char *type8 = NULL, *expect8 = NULL, *idc = NULL;
+  const sd_json *keys;
+  const char *id;
+  wchar_t *wh;
+  err_ctx ec;
+  char line[16];
+  int verified = 0, rc = 0;
+  size_t i, n;
+  sd_err e;
+
+  if (!lookup_name_of(a->from_server, lookup, sizeof(lookup)) ||
+      sd_parse_host_spec(a->from_server, user, sizeof(user), host, sizeof(host), &port) != SD_OK)
+    return fail_code(a, "usage", "invalid host", NULL);
+  if ((a->hk_type && sd_wide_to_utf8_alloc(a->hk_type, (size_t)-1, SD_UTF_STRICT, &type8) != SD_OK) ||
+      (a->expect && sd_wide_to_utf8_alloc(a->expect, (size_t)-1, SD_UTF_STRICT, &expect8) != SD_OK)) {
+    sd_free(type8);
+    return fail_code(a, "usage", "invalid key type or fingerprint", NULL);
+  }
+  memset(&ec, 0, sizeof(ec));
+  ec.host = host;                                         /* UTF-8, for {host} */
+  rc = connect_agent(a, 1, &c, &ec);
+  if (rc != 0) {
+    sd_free(type8);
+    sd_free(expect8);
+    return rc;
+  }
+  sd_wr_init(&w, 2048);
+  sd_jw_init(&jw, &w);
+  sd_jw_obj_begin(&jw);
+  sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, host);
+  sd_jw_key(&jw, "port"); sd_jw_int(&jw, port);
+  sd_jw_key(&jw, "lookup"); sd_jw_cstr(&jw, lookup);
+  if (type8) { sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, type8); }
+  if (expect8) { sd_jw_key(&jw, "expect"); sd_jw_cstr(&jw, expect8); }
+  sd_jw_obj_end(&jw);
+  e = sd_jw_finish(&jw) == SD_OK
+      ? sd_ipc_call_raw(c, "hostkey.add", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err)
+      : SD_E_INTERNAL;
+  sd_wr_free(&w);
+  sd_ipc_close(c);
+  sd_free(type8);
+  sd_free(expect8);
+  wh = wide(host);
+  memset(&ec, 0, sizeof(ec));
+  ec.host = host;                                         /* UTF-8, for {host} */
+  if (e != SD_OK) {
+    if (!a->json && strcmp(err.code, "not_implemented") == 0)
+      rc = hk_not_built(a);
+    else
+      rc = fail_ipc(a, &err, &ec);
+    sd_json_free(res);
+    sd_free(wh);
+    return rc;
+  }
+  if (a->json) {
+    json_ok(res);
+    sd_json_free(res);
+    sd_free(wh);
+    return 0;
+  }
+  if (sd_json_get(res, "added") != NULL) {                 /* --expect: stored without a question */
+    print_applied(res);
+    sd_json_free(res);
+    sd_free(wh);
+    return 0;
+  }
+  keys = sd_json_get(res, "keys");
+  n = sd_json_count(keys);
+  id = sd_json_get_str(res, "id");
+  if (id == NULL || n == 0) {
+    sd_arg arg;
+    arg.name = "host"; arg.type = SD_ARG_STR; arg.v.s = wh ? wh : L"";
+    say(SD_MSG_CLI_HK_ADD_NONE, &arg, 1, 0);
+    sd_json_free(res);
+    sd_free(wh);
+    return 0;
+  }
+  sd_json_get_bool(res, "verified", &verified);
+  if (!verified) {
+    /* first contact (5.2): the one key the server presented, shown like the TOFU question */
+    sd_arg args[2];
+    wchar_t pbuf[16];
+    wchar_t *wt = wide(sd_json_get_str(sd_json_at(keys, 0), "type"));
+    wchar_t *wf = wide(sd_json_get_str(sd_json_at(keys, 0), "fingerprint"));
+    args[0].name = "host"; args[0].type = SD_ARG_STR; args[0].v.s = wh ? wh : L"";
+    args[1].name = "port"; args[1].type = SD_ARG_STR; args[1].v.s = decimal(pbuf, SD_COUNTOF(pbuf), port);
+    say(SD_MSG_CLI_HK_UNKNOWN, args, 2, 1);
+    args[0].name = "type"; args[0].type = SD_ARG_STR; args[0].v.s = wt ? wt : L"";
+    args[1].name = "fingerprint"; args[1].type = SD_ARG_STR; args[1].v.s = wf ? wf : L"";
+    say(SD_MSG_CLI_HK_FINGERPRINT, args, 2, 1);
+    say(SD_MSG_CLI_HK_CHECK_HINT, NULL, 0, 1);
+    cli_eprint_raw(sd_l10n_get(SD_MSG_CLI_HK_ADD_FIRST_QUESTION));
+    sd_free(wt);
+    sd_free(wf);
+  } else {
+    sd_arg args[2];
+    sd_arg oargs[2];
+    for (i = 0; i < n; i++) {
+      wchar_t *wt = wide(sd_json_get_str(sd_json_at(keys, i), "type"));
+      wchar_t *wf = wide(sd_json_get_str(sd_json_at(keys, i), "fingerprint"));
+      args[0].name = "type"; args[0].type = SD_ARG_STR; args[0].v.s = wt ? wt : L"";
+      args[1].name = "fingerprint"; args[1].type = SD_ARG_STR; args[1].v.s = wf ? wf : L"";
+      say(SD_MSG_CLI_HK_ANNOUNCED_ADD, args, 2, 1);
+      sd_free(wt);
+      sd_free(wf);
+    }
+    oargs[0].name = "host"; oargs[0].type = SD_ARG_STR; oargs[0].v.s = wh ? wh : L"";
+    oargs[1].name = "count"; oargs[1].type = SD_ARG_INT; oargs[1].v.i = (long long)n;
+    say(SD_MSG_CLI_HK_ADD_OFFER, oargs, 2, 1);
+    cli_eprint_raw(sd_l10n_get(SD_MSG_CLI_HK_ADD_CHOICES));
+  }
+  /* the offer stays in the agent until it is accepted; the answer is read before anything is stored */
+  idc = (char *)sd_alloc(strlen(id) + 1);
+  if (idc == NULL) {
+    sd_json_free(res);
+    sd_free(wh);
+    return fail_code(a, "io_error", "out of memory", NULL);
+  }
+  memcpy(idc, id, strlen(id) + 1);
+  sd_json_free(res);
+  res = NULL;
+  if (cli_read_line(line, sizeof(line), 1, a->use_stdin) &&
+      answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES))
+    rc = hk_accept_offer(a, idc);
+  else
+    rc = fail_code(a, "host_key_rejected", "the offered keys were not added", &ec);
+  sd_free(idc);
+  sd_free(wh);
+  return rc;
+}
+
+/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] [--machine] (03 §6.1). The parser has
+   checked the options; --machine is refused unless the console is elevated. */
 static int hk_add(const cli_args *a)
 {
-  if (a->machine && !cli_is_elevated())
-    return hk_machine_denied(a);
-  return hk_not_built(a);
+  if (a->machine)
+    return cli_is_elevated() ? hk_not_built(a) : hk_machine_denied(a);
+  return hk_add_user(a);
 }
 
 int cli_run_hostkey(const cli_args *a)

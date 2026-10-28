@@ -79,6 +79,17 @@ static void real_vfs_stats(sd_vfs *v, sd_mount_stats *out)
   out->reconnects = vs.reconnects;
 }
 
+/* hostkey add (03 §6.1): not built. sd_ssh reports SSH_ST_CONNECTED only after user authentication, and the
+   hostkey add command has no credentials yet (docs/dev/m5-notes.md, Part 6, open items). Until that exists the
+   connect answers SD_E_UNSUPPORTED and nothing is read or stored. */
+static sd_err real_hostkeys_fetch(const char *host, uint16_t port, const char *type, sd_mount_hk_fetch *out)
+{
+  SD_UNUSED(host); SD_UNUSED(port); SD_UNUSED(type);
+  out->verified = 0;
+  out->count = 0;
+  return SD_E_UNSUPPORTED;
+}
+
 static const sd_mount_backend k_real = {
   "real",
   sd_ssh_global_init,
@@ -116,6 +127,7 @@ static const sd_mount_backend k_real = {
   sd_vfs_cache_clear,
   sd_vfs_write_behind_bytes,
   sd_webdav_mount_port,
+  real_hostkeys_fetch,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

@@ -1081,3 +1081,27 @@ msgstr "Alterar as chaves de host da máquina exige um console elevado. Execute 
 msgctxt "cli.hk.not_built"
 msgid "Adding host keys from a server is not part of this build yet."
 msgstr "Adicionar chaves de host de um servidor ainda não faz parte desta versão."
+
+#. Printed by hostkey add when the server offers no host key that is not stored yet. {host} is the host as typed.
+msgctxt "cli.hk.add_none"
+msgid "{host} has no other host keys to add."
+msgstr "{host} não tem outras chaves de host para adicionar."
+
+#. Printed by hostkey add before the question about the keys the server offers besides the stored ones.
+#, plural-arg=count
+msgctxt "cli.hk.add_offer"
+msgid "{host} also has {count} other host key. Add it?"
+msgid_plural "{host} also has {count} other host keys. Add them?"
+msgstr[0] "{host} também tem {count} outra chave de host. Quer adicioná-la?"
+msgstr[1] "{host} também tem {count} de outras chaves de host. Quer adicioná-las?"
+msgstr[2] "{host} também tem {count} outras chaves de host. Quer adicioná-las?"
+
+#. Question for the key of a first contact (no stored key; 5.2). The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_first_question"
+msgid "Add this key? [y]es, [N]o: "
+msgstr "Adicionar esta chave? [s]im, [N]ão: "
+
+#. Choices after cli.hk.add_offer. The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_choices"
+msgid "[y]es, [N]o: "
+msgstr "[s]im, [N]ão: "

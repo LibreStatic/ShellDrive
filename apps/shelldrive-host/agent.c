@@ -2857,12 +2857,146 @@ static sd_err handle_announced_accept(const sd_json *params, sd_json_writer *res
   return SD_OK;
 }
 
+/* ---- hostkey add (03 §6.1, 5.2, TM-R04) ----
+   hostkey.add {host, port, lookup, type?, expect?}: the backend connects offering only the stored key types of the
+   host and collects the other host keys inside that connection (sd_mount_hostkeys_fetch). expect: only the key with
+   that SHA-256 fingerprint is stored, with no prompt (scripts); no match fails. Without expect the keys are kept as
+   an announcement for review: the CLI asks, then calls hostkey.announced.accept {id, add_only: true}. A first
+   contact (no stored key) offers the one key the server presented (5.2); accepting it is the trust decision.
+   Reply: {host, lookup_name, verified, keys[{type, fingerprint}], id? (pending), added?, removed? (expect)}. */
+static int hk_type_ok(const char *t)
+{
+  size_t i, n = strlen(t);
+  if (n == 0 || n >= 64) return 0;
+  for (i = 0; i < n; i++)
+    if (!((t[i] >= 'a' && t[i] <= 'z') || (t[i] >= '0' && t[i] <= '9') || t[i] == '-' || t[i] == '@' || t[i] == '.'))
+      return 0;
+  return 1;
+}
+
+static sd_err hk_fetch_error(sd_err e, sd_ipc_error *err)
+{
+  if (e == SD_E_UNSUPPORTED)
+    return fail(err, e, "not_implemented", "hostkey add is not part of this build yet");
+  if (e == SD_E_HOSTKEY_MISMATCH)
+    return fail(err, e, "host_key_mismatch", "the server's host key does not match the stored one");
+  if (e == SD_E_INVALID_PARAM)
+    return fail(err, e, "usage", "invalid host");
+  return fail(err, e, "connect_failed", "cannot get the host keys of the server");
+}
+
+static sd_err handle_hostkey_add(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *host = sd_json_get_str(params, "host");
+  const char *lookup = sd_json_get_str(params, "lookup");
+  const char *type = sd_json_get_str(params, "type");
+  const char *expect = sd_json_get_str(params, "expect");
+  int64_t port = 22;
+  sd_mount_hk_fetch *f;
+  host_announce *x;
+  sd_kh_store st;
+  sd_err e;
+  uint32_t i, n = 0;
+  int verified, found = -1;
+
+  sd_json_get_int64(params, "port", &port);
+  if (host == NULL || host[0] == 0 || lookup == NULL || lookup[0] == 0 || port < 1 || port > 65535)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "host, port and lookup required");
+  if (type != NULL && !hk_type_ok(type))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid key type");
+  f = (sd_mount_hk_fetch *)sd_calloc(1, sizeof(*f));
+  if (f == NULL)
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  e = sd_mount_hostkeys_fetch(host_backend(), host, (uint16_t)port, lookup, type, f);
+  if (e != SD_OK) {
+    sd_free(f);
+    return hk_fetch_error(e, err);
+  }
+  verified = f->verified != 0;
+  /* the fingerprints are computed here from the blobs, and only the requested type is kept */
+  for (i = 0; i < f->count; i++) {
+    if (type != NULL && strcmp(f->keys[i].type, type) != 0)
+      continue;
+    if (sd_hostkey_fingerprint_sha256(f->keys[i].blob, f->keys[i].len, f->keys[i].fp_sha256) != SD_OK)
+      continue;
+    if (n != i)
+      f->keys[n] = f->keys[i];
+    n++;
+  }
+  f->count = n;
+  if (expect != NULL && expect[0] != 0) {
+    for (i = 0; i < n; i++)
+      if (strcmp(f->keys[i].fp_sha256, expect) == 0) { found = (int)i; break; }
+    if (found < 0) {
+      sd_free(f);
+      if (verified)
+        return fail(err, SD_E_HOSTKEY_MISMATCH, "host_key_mismatch", "no key of the server has that fingerprint");
+      return fail(err, SD_E_HOSTKEY_REJECTED, "host_key_rejected", "no key of the server has that fingerprint");
+    }
+    x = (host_announce *)sd_calloc(1, sizeof(*x));
+    if (x == NULL) {
+      sd_free(f);
+      return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    }
+    x->a.add[0] = f->keys[found];
+    x->a.add_count = 1;
+    scopy(x->a.host, sizeof(x->a.host), host);
+    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), f->lookup_name);
+    memset(&st, 0, sizeof(st));
+    st.kind = SD_KH_STORE_USER;                  /* the user store only, as hostkey.announced.accept */
+    st.path = g.user_kh[0] ? g.user_kh : NULL;
+    st.writable = 1;
+    e = sd_mount_apply_hostkeys(host_backend(), &st, 1, &x->a, 1);
+    sd_free(x);
+    if (e != SD_OK) {
+      sd_free(f);
+      return fail(err, e, NULL, "cannot update known_hosts");
+    }
+    SD_LOGI("agent", "hostkey add: stored one key of %s (%s)", f->lookup_name, verified ? "verified" : "first contact");
+    sd_jw_key(res, "host"); sd_jw_cstr(res, host);
+    sd_jw_key(res, "lookup_name"); sd_jw_cstr(res, f->lookup_name);
+    sd_jw_key(res, "verified"); sd_jw_bool(res, verified);
+    sd_jw_key(res, "added"); sd_jw_int(res, 1);
+    sd_jw_key(res, "removed"); sd_jw_int(res, 0);
+    write_keys_json(res, "keys", f->keys, n);
+    sd_free(f);
+    return SD_OK;
+  }
+  sd_jw_key(res, "host"); sd_jw_cstr(res, host);
+  sd_jw_key(res, "lookup_name"); sd_jw_cstr(res, f->lookup_name);
+  sd_jw_key(res, "verified"); sd_jw_bool(res, verified);
+  write_keys_json(res, "keys", f->keys, n);
+  if (n > 0) {
+    unsigned long v;
+    x = (host_announce *)sd_calloc(1, sizeof(*x));
+    if (x == NULL) {
+      sd_free(f);
+      return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    }
+    memcpy(x->a.add, f->keys, n * sizeof(f->keys[0]));
+    x->a.add_count = n;
+    scopy(x->a.host, sizeof(x->a.host), host);
+    scopy(x->a.lookup_name, sizeof(x->a.lookup_name), f->lookup_name);
+    sd_mutex_lock(&g.lock);
+    v = ++g.next_announce;
+    _snprintf_s(x->id, sizeof(x->id), _TRUNCATE, "a-%lu", v);
+    x->next = g.announces;
+    g.announces = x;
+    sd_mutex_unlock(&g.lock);
+    sd_jw_key(res, "id"); sd_jw_cstr(res, x->id);
+    SD_LOGI("agent", "hostkey add: %s offers %u key(s), kept for review (%s)", f->lookup_name, (unsigned)n, x->id);
+  }
+  sd_free(f);
+  return SD_OK;
+}
+
 static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                           sd_json_writer *res, sd_ipc_error *err)
 {
   SD_UNUSED(ctx);
   if (strcmp(method, "hostkey.announced.list") == 0) return handle_announced_list(res);
   if (strcmp(method, "hostkey.announced.accept") == 0) return handle_announced_accept(params, res, err);
+  if (strcmp(method, "hostkey.add") == 0) return handle_hostkey_add(params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(params, res, err);
   if (strcmp(method, "list") == 0) return handle_list(res);

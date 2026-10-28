@@ -326,6 +326,91 @@ The elevated path is not exercised by any test.
 - `hostkey list --announced --machine`; the service's announcement store (`service.c` only logs, Event 2300 is not written).
 - Per-user `hostkey add --from-server` (the same connect path without `--machine`).
 
+## Part 6: per-user hostkey add (`wip/r13-hkuser`)
+
+Part 5 left `hostkey add --from-server` without `--machine` as "not part of this build". This part builds the
+per-user path: the agent connects, the CLI asks. The machine store (`--machine`) is unchanged: still exit 1 when
+elevated, exit 9 when not.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `src/sd_mount/include/sd_mount/sd_mount.h` | `sd_mount_hk_fetch` (verified, lookup name, keys), `sd_mount_hostkey` moved above the backend table, the new backend member `hostkeys_fetch` (last, NULL in old fakes), `sd_mount_hostkeys_fetch()` |
+| `src/sd_mount/mount.c` | `sd_mount_hostkeys_fetch()`: the core shared by the agent and, later, the service. Validates the host, sets the lookup name, calls the backend, rejects more than 8 keys |
+| `src/sd_mount/mount_real.c` | `real_hostkeys_fetch`: returns `SD_E_UNSUPPORTED` (see "Not done") |
+| `apps/shelldrive-host/agent.c` | `hostkey.add` (`handle_hostkey_add`, dispatched in `ipc_handler`) |
+| `apps/shelldrive/cli_cmds2.c` | `hk_add_user` (the question and the answer; the agent is started on demand through `connect_agent`), `hk_accept_offer`, `print_applied`; `hk_add` routes `--machine` as before |
+| `apps/shelldrive/cli_args.c`, `cli_cmds.c` | `--stdin` is accepted by `hostkey add` (answers the question from standard input, as for mount); help line |
+| `tests/apps/host_fake_backend.c` | `hostkeys_fetch` scripted by the host name (below); `kh_apply_hostkeys` writes the real user store under the test root |
+| `tests/apps/test_smoke.c`, `main.c` | `smoke_hostkey_add_offers` (new, at the end of the file); `smoke_hostkey_add_machine` checks the user-add exit codes too (the agent is started on demand and stopped at the end) |
+| `l10n/cli/*.po` | 4 entries per locale: `cli.hk.add_none`, `cli.hk.add_offer` (plural), `cli.hk.add_first_question`, `cli.hk.add_choices` |
+
+**IPC method `hostkey.add {host, port, lookup, type?, expect?}`** (user agent pipe, no capability, like
+`hostkey.announced.*`; not on the service pipe yet). `lookup` is the known_hosts name the CLI computed (`host`, or
+`[host]:port`). The agent:
+
+1. connects through the backend (`sd_mount_hostkeys_fetch`): offering only the stored key types of the host (TM-R04),
+   the other host keys inside that connection (or only `type`). The agent recomputes every fingerprint from the blob
+   and drops keys of other types than `type`;
+2. with `expect`: stores only the key whose SHA-256 fingerprint is `expect` (user store, add only), no question. No
+   match: `host_key_mismatch` (exit 6) when the host is verified by a stored key, `host_key_rejected` (exit 5) on first
+   contact. Reply `{host, lookup_name, verified, added: 1, removed: 0, keys[]}`;
+3. without `expect`: keeps the keys as an announcement (`a-<n>`, the same list as `hostkey.announced.list`) and replies
+   `{host, lookup_name, verified, keys[{type, fingerprint}], id}`. No keys: no `id`.
+
+The CLI then asks and, on yes, calls the existing `hostkey.announced.accept {id, add_only: true}`. So the store write,
+the removal rule and the `# updated-by` comment are the ones of 5.6. A refused offer is not deleted: it stays in
+`hostkey list --announced` like an announcement left at "Not now" (there is no reject method).
+
+**Behaviour (CLI, `hostkey add --from-server host[:port] [--type T] [--expect SHA256:...]`)**
+
+- `--expect` given: stored with no question, the "Updated the host keys" line, exit 0.
+- Verified host (a stored key matched): "<host> also has N other host key(s). Add it?" with each key listed, then
+  `[y]es, [N]o:`. Yes stores them; anything else exits 5 (`host_key_rejected`).
+- First contact (no stored key, 5.2): the "authenticity can't be established" text with the presented key and its
+  fingerprint, `Add this key? [y]es, [N]o:`. Yes stores it (the trust decision); no exits 5.
+- `--json` only offers (no question): the reply holds the `id` for `hostkey accept-announced <id> --add-only`.
+- The server offers nothing new (or nothing of `--type`): "has no other host keys to add", exit 0.
+- `--stdin` reads the answer from standard input (as mount does). Without it and without a console the question gets
+  no answer and the offer is refused (exit 5).
+- No agent running: the CLI starts it, as mount does; if that fails, `agent_unavailable` (exit 8).
+- `--machine`: unchanged (exit 9 without elevation, exit 1 with it).
+
+**Test seam**
+
+`sd-test-host-fake` scripts `hostkeys_fetch` by host name: `*.known.test` verified (ECDSA and ssh-rsa besides the
+stored key), `*.changed.test` a mismatch, any other name a first contact with one ssh-ed25519 key. The keys are
+synthetic blobs (the fingerprints are real SHA-256 of those blobs). The fake is wrapped in `host_fake_backend.c`,
+so `tests/unit/sd_mount` is unchanged. Its own `kh_apply_hostkeys` only counts, so the wrapper writes the user store
+through `sd_known_hosts` under the test configuration root; the tests read the keys back with `hostkey list`.
+
+Result of the last run (`ci-local -Presets x64-modern -ReleaseOnly -TestRegex unit.apps|unit.ssh|unit.ipc`): all five
+groups pass. `smoke_hostkey_add_offers` is new; `smoke_hostkey_add_machine` now also checks the user-add exit codes.
+
+**Finding that blocks the real connect**
+
+`sd_ssh` reaches `SSH_ST_CONNECTED` only after user authentication (`ssh_on_authenticated`, conn.c). `fetch_hostkeys`
+requires that state (hostkey_update.c, `fetch_run`), and `hostkeys-prove-00` is sent only after authentication too. So
+a connect that offers only the stored key types can still not collect the other keys without credentials, and
+`hostkey add --from-server host[:port]` has none. The spec's flow (01 §4.3, 03 §6.1) assumes a connection that is
+verified but not yet authenticated. That needs a decision: an auth method for this command (the user's agent keys, a
+profile, or a password prompt), or an sd_ssh "post-KEX" connect mode that stops before `ssh-userauth`.
+
+**Not done (open)**
+
+- The real connect (`real_hostkeys_fetch` answers `SD_E_UNSUPPORTED`, which the CLI reports as "not part of this build
+  yet"). Blocked by the authentication question above. Also still to do with it: run the blocking connect on a worker
+  (the handler runs on the IPC thread), route its host-key prompt (TOFU) through the prompt broker instead of the
+  two-step offer, and use `sd_ssh_conn_fetch_hostkeys` for the re-key path.
+- The first-contact flow in the real backend: 5.2 wants the TOFU prompt from the connect itself. The offer model here
+  gives the same question, but the other keys of a first contact are only learned after a second, verified connect
+  (not built).
+- Service side: `hostkey.add` on the service pipe and the machine store (`--machine`), as before.
+- Refused offers stay in the announcement list until the agent restarts.
+- Spec text: 03 §2 lists the method; 03 §6.1 is unchanged (the offer model is an implementation detail of this part).
+  01 (~lines 759 and 2589) and TM-R04 are unchanged.
+
 ## Left (not in this part)
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
@@ -333,7 +418,8 @@ The elevated path is not exercised by any test.
   first start (1.3); the Event Log 3100 and 3101 and the other 2xxx/3xxx ids of 10.3 that depend on features not in
   this part. Event 3102 is written (part 4).
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store): the command
-  surface and the elevation rule are in part 5; the connect, the store write and the service side are not.
+  surface and the elevation rule are in part 5; the connect, the store write and the service side are not (the
+  per-user connect of part 6 is blocked on authentication, see there).
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).
 - Identity files: only the path rule (under `<machine root>\service\`). The ACL and handle-based checks of TM-R27 are not

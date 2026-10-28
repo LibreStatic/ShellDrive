@@ -1948,6 +1948,28 @@ sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *st
   return e;
 }
 
+sd_err sd_mount_hostkeys_fetch(const sd_mount_backend *be, const char *host, uint16_t port, const char *lookup,
+                               const char *type, sd_mount_hk_fetch *out)
+{
+  sd_err e;
+  size_t n;
+  if (be == NULL || host == NULL || host[0] == 0 || lookup == NULL || out == NULL || port == 0)
+    return SD_E_INVALID_PARAM;
+  n = strlen(lookup);
+  if (n >= sizeof(out->lookup_name))
+    return SD_E_INVALID_PARAM;
+  memset(out, 0, sizeof(*out));
+  memcpy(out->lookup_name, lookup, n + 1);
+  if (be->hostkeys_fetch == NULL)
+    return SD_E_UNSUPPORTED;
+  e = be->hostkeys_fetch(host, port, type, out);
+  if (e != SD_OK)
+    return e;
+  if (out->count > SD_MOUNT_ANNOUNCE_MAX)
+    return SD_E_PROTOCOL;
+  return SD_OK;
+}
+
 uint32_t sd_mount_cancel_prompts(sd_mount *m)
 {
   uint32_t count = 0;

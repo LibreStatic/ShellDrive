@@ -8,6 +8,7 @@ SD_TEST_DECL(cli_parse_mount_m2_options);
 SD_TEST_DECL(cli_parse_profile_hostkey_status);
 SD_TEST_DECL(cli_parse_hostkey_add_machine);
 SD_TEST_DECL(smoke_hostkey_add_machine);
+SD_TEST_DECL(smoke_hostkey_add_offers);
 SD_TEST_DECL(smoke_version_help_usage);
 SD_TEST_DECL(smoke_mount_prompts_and_errors);
 SD_TEST_DECL(smoke_mount_m2_flags_and_prompts);
@@ -70,6 +71,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_parse_m3_commands),
   SD_TEST_ENTRY(agent_shutdown_event_stops_agent),
   SD_TEST_ENTRY(m3_webdav_token_only_question_routes_to_ui),
+  SD_TEST_ENTRY(smoke_hostkey_add_offers),
 };
 
 int main(int argc, char **argv)

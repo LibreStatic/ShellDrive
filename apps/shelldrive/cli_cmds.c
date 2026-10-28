@@ -863,6 +863,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--add-only", SD_MSG_CLI_HELP_OPT_ADD_ONLY);
     help_line(L"--from-server <host[:port]>", SD_MSG_CLI_HELP_OPT_FROM_SERVER);
     help_line(L"--expect SHA256:...", SD_MSG_CLI_HELP_OPT_EXPECT);
+    help_line(L"--stdin", SD_MSG_CLI_HELP_OPT_STDIN);
     help_line(L"--machine", SD_MSG_CLI_HELP_OPT_MACHINE);
   } else if (topic && wcscmp(topic, L"agent") == 0) {
     help_line(L"agent stop", SD_MSG_CLI_HELP_AGENT_STOP);
