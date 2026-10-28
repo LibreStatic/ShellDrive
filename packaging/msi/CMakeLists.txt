@@ -56,6 +56,23 @@ else()
   message(FATAL_ERROR "SD_BUILD_MSI: no MSI for the flavour ${SD_FLAVOUR} (04 §8.2)")
 endif()
 
+# The 32-bit shell extension (04 §6.2, §8.3; 03 §8.5). An x64 package also carries the x86-sse2 copy of the DLL in
+# INSTALLDIR and registers it in the 32-bit registry view (32-bit apps' file dialogs load it). The copy comes from
+# a nested x86 configure (cmake/SdShellExtX86.cmake). The x86 packages have no 32-bit view to add: their DLL is the
+# 32-bit one already.
+set(SD_MSI_SHELLEXT32 0)
+set(SD_MSI_BIN32 "$<TARGET_FILE_DIR:shelldrive-shellext>")
+set(_msi_x86_deps "")
+set(SD_MSI_TEST_X86_DLL "")
+if(_arch STREQUAL "x64")
+  include(SdShellExtX86)
+  sd_add_x86_shellext(_sd_x86_shellext_target)
+  set(SD_MSI_SHELLEXT32 1)
+  set(SD_MSI_BIN32 "$<TARGET_FILE_DIR:sd_shellext_x86_dll>")
+  set(_msi_x86_deps "$<TARGET_FILE:sd_shellext_x86_dll>")
+  set(SD_MSI_TEST_X86_DLL "$<TARGET_FILE:sd_shellext_x86_dll>")
+endif()
+
 # The service (M5, D6) is not there yet: its ServiceInstall stays behind this define (ShellDrive.wxs).
 set(SD_MSI_WITH_SERVICE 0 CACHE STRING "1 once the service binary exists (M5): ServiceInstall/ServiceControl on")
 
@@ -80,6 +97,8 @@ add_custom_command(
           "-DSD_MSI_WITH_SERVICE=${SD_MSI_WITH_SERVICE}"
           "-DSD_MSI_UPGRADE_CODE=${_upgrade}"
           "-DSD_MSI_BIN=$<TARGET_FILE_DIR:shelldrive>"
+          "-DSD_MSI_SHELLEXT32=${SD_MSI_SHELLEXT32}"
+          "-DSD_MSI_BIN32=${SD_MSI_BIN32}"
           "-DSD_MSI_ICON=${CMAKE_SOURCE_DIR}/res/icons/shelldrive.ico"
           "-DSD_MSI_SRC=${CMAKE_CURRENT_SOURCE_DIR}"
           "-DSD_MSI_GEN=${_msi_gen}"
@@ -91,7 +110,7 @@ add_custom_command(
           "-DSD_MSIGEN=$<TARGET_FILE:sd-msigen>"
           "-DSD_MSIEMBED=$<TARGET_FILE:sd-msiembed>"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake"
-  DEPENDS sd-msigen sd-msiembed shelldrive shelldrive-host shelldrive-ui shelldrive-shellext
+  DEPENDS sd-msigen sd-msiembed shelldrive shelldrive-host shelldrive-ui shelldrive-shellext ${_msi_x86_deps}
           "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake" "${CMAKE_CURRENT_SOURCE_DIR}/ShellDrive.wxs"
           "${CMAKE_SOURCE_DIR}/packaging/registration.txt" "${CMAKE_SOURCE_DIR}/LICENSE" ${_msi_po} ${_msi_wixui}
   COMMENT "msi: ShellDrive ${SD_FLAVOUR} ${_msi_version}"
@@ -99,6 +118,9 @@ add_custom_command(
 
 add_custom_target(msi DEPENDS "${_msi_out}")
 set_target_properties(msi PROPERTIES FOLDER "packaging")
+if(SD_MSI_SHELLEXT32)
+  add_dependencies(msi sd_shellext_x86)
+endif()
 
 # Parameters of the CTest checks in tests/msi (the root scope sees them: packaging/msi is added first).
 if(_arch STREQUAL "x86")
@@ -117,3 +139,5 @@ set(SD_MSI_TEST_UPGRADE "${_upgrade}" PARENT_SCOPE)
 set(SD_MSI_TEST_PLATFORM "${_platform}" PARENT_SCOPE)
 set(SD_MSI_TEST_INSTALLER "${_installer}" PARENT_SCOPE)
 set(SD_MSI_TEST_LAUNCH_COUNT "${_launch_count}" PARENT_SCOPE)
+set(SD_MSI_TEST_SHELLEXT32 "${SD_MSI_SHELLEXT32}" PARENT_SCOPE)
+set(SD_MSI_TEST_X86_DLL "${SD_MSI_TEST_X86_DLL}" PARENT_SCOPE)

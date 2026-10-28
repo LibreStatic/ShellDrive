@@ -316,7 +316,7 @@ The strings of the options page are `msi.options.*` in all six catalogs of `l10n
 `OptionsDokanyCheckbox`, ...); the WixUI ids of the set are in the overrides, and `dialog-set.txt` lists them.
 
 Open items: DEFAULTPROFILES (no MSI MoveFile authoring in WiX 3.14), `programdata-secure` runs after InstallFiles, hook
-rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extension registration rows, timestamps in the summary
+rollbacks not authored, SERVICE/SERVICESTART with the service (M5), timestamps in the summary
 information (12.2). Lab checks of the installed behaviour (11.4): the Installer key on install, Change, repair and uninstall; the
 ownership rules with a pre-existing `EnableLinkedConnections` value; the options page. The Dokany driver is not installed or
 removed by the MSI (setup does that).
@@ -636,14 +636,32 @@ install; the 32-bit shell registration; empty keys left by the per-user removal)
   user started the stub with "Run as administrator".
 - The finish page's Launch checkbox is now honoured for all-users installs (before, it was ignored for them).
 
-### 32-bit shell registration (item 3): not done, nothing to register
+### 32-bit shell extension in the x64 MSI (item 3): done, lab pending
 
-- 03 8.5 and 04 6.2 want the x86 shell DLL beside the x64 one, with the 32-bit registry view written too. The x64 package does not
-  ship it: `packaging/msi/build-msi.cmake` takes only the `shelldrive-shellext.dll` of the flavour's own build directory, and
-  `cmake/SdPayload.cmake` adds only the flavour's own UI members (no `x86-sse2` DLL is cross-included, despite 04 6.2).
-- So `packaging/registration.txt` keeps the 64-bit rows only, and the x64 MSI registers only what ships, as the task asked.
-  The 32-bit view rows must come with the cross-included DLL. Open (needs a build dependency of the x64 MSI on the x86
-  shell DLL, and `Win64="no"` components for the 32-bit view). Until then menu items are missing in 32-bit apps' file dialogs.
+- The x64 MSI (`SD_BUILD_MSI` on an x64 preset) carries the x86-sse2 `shelldrive-shellext.dll` beside the x64 one (03 8.5,
+  04 6.2). `cmake/SdShellExtX86.cmake` builds it in a nested x86 configure of this tree (`SD_SHELLEXT_ONLY=ON`, Win32,
+  v141_xp, ExternalProject `sd_shellext_x86`, the same pattern as the ARM host tools). The nested tree builds only the DLL
+  and what it links. Its own post-build audits are the x86-sse2 ones (importcheck against `xp-sp3-x86.txt`, ISA check
+  with the sse2 floor). CTest repeats both on the packaged file: `importcheck.shelldrive-shellext.x86-sse2` and
+  `isacheck.shelldrive-shellext.x86-sse2` (`tests/msi/CMakeLists.txt`, when the MSI is configured).
+- Placement: `Program Files (x86)\LibreStatic\ShellDrive\shelldrive-shellext.dll`, component `C_ShellExt32` (`Win64="no"`,
+  directory `SD_INSTALLDIR32`). A subfolder of INSTALLDIR was tried first and light rejects it (ICE80: a 32-bit component
+  cannot use a 64-bit folder), so the Program Files (x86) option of 03 8.5 is the one used.
+- Registration: `packaging/registration.txt` has the rows of feature `shellext32` (the CLSIDs, the InprocServer32 paths as
+  `[INSTALLDIR32]shelldrive-shellext.dll`, the Drive, Directory, `*` and This PC handlers). `sd-msigen registry --shellext32
+  yes` writes them as `Win64="no"` components in `SD_RegShellExt32`, referenced by the ShellExt feature. Their GUID seeds
+  carry `|view32`, so they never collide with the 64-bit rows. `Approved` stays one shared row (it is not under
+  `Software\Classes`, so it is not redirected). `cmake/SdPayload.cmake` skips the `shellext32` rows: the per-user setup
+  still writes the 64-bit view only.
+- x86 MSIs (`x86-ia32`, `x86-sse2`) have no 32-bit view: `SD_MSI_SHELLEXT32=0`, no rows, no component. The tables test
+  checks that the 32-bit rows and the component are absent there.
+- Tests: `sd-test-msi tables ... 1` checks the component, its folder and feature, each 32-bit row (in a component without the
+  64-bit attribute), the 64-bit rows, and that the package has two shell extension files. `sd-test-msi admin ... 1` checks
+  the x64 DLL by PE machine type. The admin image cannot show the x86 copy: `msiexec /a` drops the root of each folder, so
+  both `LibreStatic\ShellDrive` paths land in one place. The x86 copy is covered by the tables check only.
+- Open: the per-user setup and the x64 setup payloads (`cmake/SdPayload.cmake`) do not cross-include the x86 DLL, although
+  04 6.2 says they do. Lab (04 11.4): after an MSI install on x64, a 32-bit application's file dialog shows the menu items,
+  loaded from `Program Files (x86)`.
 
 ### Removal of empty keys (item 4)
 
@@ -679,7 +697,7 @@ install; the 32-bit shell registration; empty keys left by the per-user removal)
 3. Product lookup stops at the first match, 64-bit view first. Two ShellDrive MSIs of different families (x86 and x64) in one
    registry would be ambiguous; the install folder is the same, so that should not happen. Check in the lab.
 4. Launch from an administrator's elevated run is refused (see above).
-5. Item 3 (32-bit shell DLL), see above.
+5. Item 3 (32-bit shell DLL) is done for the x64 MSI; the per-user setup and the x64 setup payloads still lack the x86 DLL (see above).
 
 ### Gate (this branch)
 

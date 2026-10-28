@@ -6,13 +6,15 @@
  *       (04 §12.2). UpgradeCodes are not derived: they are fixed in 04 §8.2.
  *
  *   sd-msigen registry --in <packaging/registration.txt> --out <Registry.wxi> --flavour <name>
- *                      --family <name> --win64 yes|no
+ *                      --family <name> --win64 yes|no --shellext32 yes|no
  *       Turns the registry rows into a WiX include. Every row becomes one Component with one RegistryValue
- *       (HKLM); the components are grouped by feature into SD_RegCore (core), SD_RegAutostart (autostart) and
- *       SD_RegShellExt (shellext, referenced by the ShellExt feature).
+ *       (HKLM); the components are grouped by feature into SD_RegCore (core), SD_RegAutostart (autostart),
+ *       SD_RegShellExt (shellext, referenced by the ShellExt feature) and SD_RegShellExt32 (shellext32: the 32-bit
+ *       view of the shell extension, Win64="no", written only with --shellext32 yes, 04 §8.3, 03 §8.5).
  *       The rows of Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive are skipped: Windows Installer
  *       writes the Add/Remove Programs entry of an MSI itself (04 §6.7). [VERSION] becomes [ProductVersion],
- *       [INSTALLDIR] stays (MSI formats it), [FLAVOUR] becomes the flavour name. [SIZEKB] is an error here.
+ *       [INSTALLDIR] stays (MSI formats it), [INSTALLDIR32] becomes [SD_INSTALLDIR32] (the 32-bit folder, Program
+ *       Files (x86)), [FLAVOUR] becomes the flavour name. [SIZEKB] is an error here.
  *
  *   sd-msigen wxl --po <l10n/installer/<lang>.po> --culture <xx-XX> --lcid <n> --out <file.wxl>
  *       Writes the WiX localization file of one culture from the msi.* entries of the installer catalog (the
@@ -152,6 +154,7 @@ static char *read_line(FILE *f)
 
 typedef struct {
   char *subkey, *name, *type, *data, *feature;
+  int view32;
   char id[16];
   char guid[48];
 } reg_item;
@@ -205,6 +208,9 @@ static void msi_value(const char *data, const char *flavour, char *out, size_t c
     } else if (strncmp(data, "[FLAVOUR]", 9) == 0) {
       n += sprintf_s(out + n, cap - n, "%s", flavour);
       data += 9;
+    } else if (strncmp(data, "[INSTALLDIR32]", 14) == 0) {
+      n += sprintf_s(out + n, cap - n, "%s", "[SD_INSTALLDIR32]");
+      data += 14;
     } else if (strncmp(data, "[SIZEKB]", 8) == 0) {
       die("registration.txt: [SIZEKB] has no MSI property (used outside the Uninstall key): %s", data);
     } else {
@@ -221,6 +227,7 @@ static int cmd_registry(int argc, char **argv)
   const char *flavour = need_arg(argc, argv, "--flavour");
   const char *family = need_arg(argc, argv, "--family");
   const char *win64 = need_arg(argc, argv, "--win64");
+  const char *shellext32 = need_arg(argc, argv, "--shellext32");
   FILE *f, *o;
   char *line;
   reg_item *items = NULL;
@@ -229,6 +236,8 @@ static int cmd_registry(int argc, char **argv)
 
   if (strcmp(win64, "yes") != 0 && strcmp(win64, "no") != 0)
     die("--win64 must be yes or no%s", NULL);
+  if (strcmp(shellext32, "yes") != 0 && strcmp(shellext32, "no") != 0)
+    die("--shellext32 must be yes or no%s", NULL);
   f = fopen(in, "rb");
   if (!f)
     die("cannot open %s", in);
@@ -243,8 +252,14 @@ static int cmd_registry(int argc, char **argv)
         if (strcmp(item.type, "SZ") != 0 && strcmp(item.type, "DWORD") != 0)
           die("registration.txt: unknown type %s", item.type);
         if (strcmp(item.feature, "core") != 0 && strcmp(item.feature, "autostart") != 0 &&
-            strcmp(item.feature, "shellext") != 0)
+            strcmp(item.feature, "shellext") != 0 && strcmp(item.feature, "shellext32") != 0)
           die("registration.txt: unknown feature %s", item.feature);
+        item.view32 = strcmp(item.feature, "shellext32") == 0;
+        if (item.view32 && strcmp(shellext32, "no") == 0) {
+          /* the 32-bit view rows exist only in the packages that carry the x86 shell extension */
+          free(line);
+          continue;
+        }
         if (count == cap) {
           size_t ncap = cap ? cap * 2 : 32;
           reg_item *nitems = (reg_item *)xmalloc(ncap * sizeof(reg_item));
@@ -258,7 +273,8 @@ static int cmd_registry(int argc, char **argv)
         sprintf_s(items[count].id, sizeof(items[count].id), "SD_Reg_%03u", (unsigned)count);
         {
           char seed[1024];
-          sprintf_s(seed, sizeof(seed), "%s|registry|%s|%s", family, item.subkey, item.name);
+          sprintf_s(seed, sizeof(seed), "%s|registry|%s|%s%s", family, item.subkey, item.name,
+                    item.view32 ? "|view32" : "");
           make_guid(seed, items[count].guid, sizeof(items[count].guid));
         }
         count++;
@@ -278,7 +294,8 @@ static int cmd_registry(int argc, char **argv)
   for (i = 0; i < count; i++) {
     char value[2048];
     msi_value(items[i].data, flavour, value, sizeof(value));
-    fprintf(o, "      <Component Id=\"%s\" Guid=\"%s\" Win64=\"%s\">\n", items[i].id, items[i].guid, win64);
+    fprintf(o, "      <Component Id=\"%s\" Guid=\"%s\" Win64=\"%s\">\n", items[i].id, items[i].guid,
+            items[i].view32 ? "no" : win64);
     fputs("        <RegistryValue Root=\"HKLM\" Key=\"", o);
     xml_put(o, items[i].subkey);
     fputs("\"", o);
@@ -300,10 +317,10 @@ static int cmd_registry(int argc, char **argv)
 
   /* Feature groups: components are referenced by the feature tree in Product.wxs. */
   {
-    static const char *groups[3] = { "core", "autostart", "shellext" };
-    static const char *group_ids[3] = { "SD_RegCore", "SD_RegAutostart", "SD_RegShellExt" };
+    static const char *groups[4] = { "core", "autostart", "shellext", "shellext32" };
+    static const char *group_ids[4] = { "SD_RegCore", "SD_RegAutostart", "SD_RegShellExt", "SD_RegShellExt32" };
     int g;
-    for (g = 0; g < 3; g++) {
+    for (g = 0; g < 4; g++) {
       fprintf(o, "  <Fragment>\n    <ComponentGroup Id=\"%s\">\n", group_ids[g]);
       first = 1;
       for (i = 0; i < count; i++) {

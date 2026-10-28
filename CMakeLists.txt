@@ -36,6 +36,26 @@ if(SD_HOST_TOOLS_ONLY)
   return()
 endif()
 
+if(SD_SHELLEXT_ONLY)
+  # Nested x86 configure of an x64 tree (cmake/SdShellExtX86.cmake, 04 §6.2, §8.3): only the x86-sse2 shell extension
+  # and the modules it links (sd_crypto: the constant-time gate of sd-isacheck reads it; sd_policy and its generated
+  # headers: sd_l10n includes them). Its build-time tools are x86 programs, which an x64 host runs under WOW64.
+  add_subdirectory(tools/sdl10n)
+  add_subdirectory(tools/sd-importcheck)
+  add_subdirectory(tools/sd-isacheck)
+  add_subdirectory(tools/sd-admxgen)
+  add_subdirectory(src/sd_base)
+  add_subdirectory(src/sd_platform)
+  add_subdirectory(src/sd_crypto)
+  add_subdirectory(res/policy)
+  add_subdirectory(src/sd_policy)
+  add_subdirectory(src/sd_ipc)
+  add_subdirectory(src/sd_l10n)
+  add_subdirectory(l10n)
+  add_subdirectory(apps/shelldrive-shellext)
+  return()
+endif()
+
 # Build-time tools first: sdl10n, sd-importcheck and sd-admxgen run during the build. An ARM64 or ARM32 tree takes
 # them from the nested x64 build instead of building ARM copies that cannot run here.
 if(SD_CROSS_HOST_TOOLS)

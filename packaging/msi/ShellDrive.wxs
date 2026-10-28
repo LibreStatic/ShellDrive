@@ -9,7 +9,9 @@
   Defines: SD_VERSION, SD_FLAVOUR, SD_PRODUCT_CODE, SD_PACKAGE_CODE, SD_UPGRADE_CODE, SD_INSTALLER_VERSION,
   SD_PF_DIR (ProgramFilesFolder or ProgramFiles64Folder), SD_WIN64 (yes/no), SD_BIN_DIR, SD_ICON,
   SD_LAUNCH (none or win10), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6), SD_LICENSE_RTF (the
-  LICENSE of the repository converted to RTF by build-msi.cmake, shown by the license page).
+  LICENSE of the repository converted to RTF by build-msi.cmake, shown by the license page),
+  SD_SHELLEXT32 (1 on the x64 flavours: the x86-sse2 shell extension in INSTALLDIR, Win64="no", 04 §8.3) and
+  SD_BIN32_DIR (the folder of that x86 DLL).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <?include Guids.wxi?>
@@ -124,6 +126,21 @@
           </Directory>
         </Directory>
       </Directory>
+
+      <?if $(var.SD_SHELLEXT32) = "1" ?>
+      <!-- The x86-sse2 shell extension for 32-bit apps' file dialogs (03 §8.5, 04 §6.2, §8.3). A Win64="no" component
+           needs a 32-bit folder (ICE80), so the copy lives in Program Files (x86). Its registration is the Win64="no"
+           rows of the SD_RegShellExt32 group, which name this folder as [SD_INSTALLDIR32]. -->
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="SD_VENDOR_PF32" Name="LibreStatic">
+          <Directory Id="SD_INSTALLDIR32" Name="ShellDrive">
+            <Component Id="C_ShellExt32" Guid="$(var.G_C_ShellExt32)" Win64="no">
+              <File Id="F_shelldrive_shellext32" Name="shelldrive-shellext.dll" Source="$(var.SD_BIN32_DIR)\shelldrive-shellext.dll" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+      <?endif?>
 
       <Directory Id="ProgramMenuFolder">
         <Directory Id="SD_STARTMENU" Name="ShellDrive">
@@ -261,6 +278,11 @@
         <ComponentRef Id="C_ShellExt" />
         <!-- CLSIDs, handlers (Drive, Directory, *, This PC) and Approved entries of the shell extension (03 §8.5). -->
         <ComponentGroupRef Id="SD_RegShellExt" />
+        <?if $(var.SD_SHELLEXT32) = "1" ?>
+        <!-- The 32-bit view: the x86 DLL and the Win64="no" CLSID and handler rows (04 §8.3). -->
+        <ComponentRef Id="C_ShellExt32" />
+        <ComponentGroupRef Id="SD_RegShellExt32" />
+        <?endif?>
       </Feature>
       <Feature Id="StartMenu" Title="!(loc.FeatureStartmenuTitle)" Description="!(loc.FeatureStartmenuDesc)" Level="1" AllowAdvertise="no">
         <ComponentRef Id="C_StartMenu" />
