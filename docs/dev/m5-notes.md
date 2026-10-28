@@ -275,7 +275,7 @@ anything.
 
 | Check | Result |
 |---|---|
-| `unit.svc` (`sd-test-svc.exe`): new `svc_refuses_a_machine_folder_with_a_foreign_owner_at_start` and `folder_check_reports_reparse_kind_and_owner`; `svc_core_stops_and_leaves_nothing_behind` also checks that no 3102 was written for the trusted fixture | see the build result in the report |
+| `unit.svc` (`sd-test-svc.exe`): new `svc_refuses_a_machine_folder_with_a_foreign_owner_at_start` and `folder_check_reports_reparse_kind_and_owner`; `svc_core_stops_and_leaves_nothing_behind` also checks that no 3102 was written for the trusted fixture | pass (x64-modern Release and Debug) |
 
 The reparse-point start refusal (a junction at a machine folder) has the same code path as the owner refusal and the
 shared check tests, but no end-to-end test of its own (the junction helper lives in `test_repair.c`).

@@ -2338,7 +2338,8 @@ v1.0 (can ship in v1.x without format changes).
   waiting for user sign-in (`attach` mode, 1.3), 1200 change through a global drive (info; `%1` profile, `%2` user
   SID, `%3` account name, `%4` operation, `%5` remote path; coalesced per 60 s; D35/TM-R24), 3101 service pipe client
   refused or over quota (warning, at most once per SID per 10 min; `%1` SID, `%2` reason; TM-R25), 3102 untrusted
-  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`; TM-R27, TM-R34).
+  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`, `not_directory` for a file where a folder belongs;
+  TM-R27, TM-R34).
   `ReportEventW` (XP+).
 - The agent does not write to the Event Log (users cannot register sources; its file log is enough).
 
