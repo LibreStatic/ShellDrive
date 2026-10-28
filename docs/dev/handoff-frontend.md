@@ -357,3 +357,35 @@ not show `reason`. The `update_stale` warning item stays open.
 - `sd_profile_enum` still reads the per-user store: org and global profiles appear as rows only while mounted (their group now
   comes from `scope`), and cannot be listed before a mount.
 - Stored key fingerprints for the type dialog (see round 17).
+
+
+## Round 20 (branch `wip/r20-uitail`): the UI tail of round 19
+
+- **`hostkey_source_insecure` balloon (item 1, TM-R06).** The warning is a notice of its own (`UI_NT_HOSTKEYS_SOURCE`, switch
+  `notify_hostkeys_source`, on by default): "ShellDrive ignores your {source} known_hosts because other users can change it.
+  Click to open Settings > Security." `{source}` is OpenSSH or PuTTY from the warning's `data.detail` (`ui_nt_source_name`; a
+  warning without a known detail names both). Always recorded in the event list (kind Host key); the balloon follows the master
+  switch and the kind's switch and the 60 s limit. A click opens Settings on the Security page (`ui_settings_open_security`).
+- **`mount.state` `reason` (item 2).** A `mounted` event with a reason after any state but `mounted` is the reconnected notice
+  (`ui_nt_of_mount_state_r`), also when the UI saw `connecting` and `authenticating` between offline and mounted. The balloon and
+  the event list say "{name}: reconnected after: {reason}." For the plain `connecting` / `authenticating` entries of the list the
+  text is "{state} (after: {reason})". Known codes (`disconnected`, `timeout`, `dns_failed`, `conn_refused`, `net_unreachable`,
+  `protocol`, `auth_failed`, `proxy_connect_failed`) have a localized phrase (`ui.notice.reason_*`); any other code is shown as it is.
+- **History at start (item 3).** After `list` and `prompt.list`, the IPC thread calls `events.recent` when `features` has it and
+  posts the result (`UI_WM_IPC_HISTORY`, `ui_app_on_history`). Each record becomes the entry the live event would have made, at
+  the time it happened (`ui_events_record_at`): the same notices (replayed per mount to know offline -> mounted), plain state
+  entries, failed mounts with the code, warnings, offers of new host keys (only for a mount still listed). The UI subscribes
+  before it asks, so a live event can also be in the history: `ui_evhist_model.c` remembers the live events (event, mount, state or
+  code, second) and a history record that says the same within 5 s is skipped once. A second import from the same agent (the
+  pipe reconnected) takes only records above the last imported `seq`; a smaller `last_seq` is a new agent and takes all. Limits: the
+  history has no `reason`, `detail` or `target`, so a reconnect from the history says no cause, `proxy_cleartext` is not replayed
+  (it needs the proxy) and the entries of unmounted mounts have no drive or server name. Entries of the history are appended after
+  the entries recorded live in the first moments; the Time column shows when they happened.
+- **Host key manager (item 4).** The details pane under Known keys also shows the MD5 fingerprint (`sd_hostkey_fingerprint_md5`, 5.2
+  "More"), the source (ShellDrive, Copied from PuTTY, Copied from OpenSSH, Updated by server; `origin` of
+  `sd_known_hosts_list_all`), the added date and the comment of the line; a fact the line does not have is left out. The Source
+  column of the list still shows the store (user or machine); the origin is in the details pane only.
+- Strings: 19 new entries in six locales (`ui.notice.reconnected_reason`, `ui.notice.hostkey_source`, `ui.notice.reason_*` (8),
+  `ui.events.text_reason`, `ui.hostkeys.det_md5|origin|added|comment`, `ui.hostkeys.origin_*` (4)); no mnemonics.
+- Tests: `tests/ui/test_evhist.c` (7), `test_notice.c` (+4), `test_hostkeys.c` (details with the new fields, a real known_hosts line
+  through `sd_known_hosts_list_all`); `--test-windows` checks `ui_events_record_at` and the details pane lines.

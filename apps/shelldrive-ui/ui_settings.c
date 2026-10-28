@@ -954,6 +954,15 @@ void ui_settings_open(void)
     load();
 }
 
+void ui_settings_open_security(void)
+{
+  ui_settings_open();
+  if (g_st.wnd != NULL && IsWindow(g_st.wnd) && g_st.tab != NULL) {
+    (void)SendMessageW(g_st.tab, TCM_SETCURSEL, (WPARAM)ST_PAGE_SECURITY, 0);
+    show_page(ST_PAGE_SECURITY);
+  }
+}
+
 void ui_settings_close(void)
 {
   if (g_st.wnd != NULL && IsWindow(g_st.wnd))

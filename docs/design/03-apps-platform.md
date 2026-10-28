@@ -1110,7 +1110,7 @@ unless a policy is set.
 | `[ui] notify_hostkeys_saved`, `notify_proxy_password`, `notify_service_attention` | `yes \| no` (on) | balloons: `hostkeys.announced` with `applied` (saved), warning `proxy_cleartext` (once per profile and proxy; the code `proxy_password` maps to the same kind, round 19), the service `attention` count going up | none |
 | `[ui] notify_pool_limited` | `yes \| no` (off) | warning code `pool_limited` | none |
 | `[ui] notify_update_available`, `notify_update_stale` | `yes \| no` (on) | update balloons (`update.available`); code `update_stale` (mapped) | none |
-| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` (the agent sends it, round 19, see below; no balloon yet) and `disk_cache_refused` | none |
+| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` (the agent sends it, round 19, see below; the UI shows the balloon, round 20) and `disk_cache_refused` | none |
 
 `warning hostkey_source_insecure` (round 19, TM-R06): when a mount starts, the agent checks each live source that is enabled
 (OpenSSH, PuTTY) with `sd_known_hosts_source_state`; a source other users can write is reported once per source and agent run,

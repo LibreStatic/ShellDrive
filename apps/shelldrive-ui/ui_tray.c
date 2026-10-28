@@ -187,15 +187,16 @@ void ui_tray_remove(void)
 static int is_info_balloon(sd_msg_id msg)
 {
   return msg == SD_MSG_UI_PROMPT_TIMEOUT || msg == SD_MSG_UI_NOTIFY_HOSTKEYS || msg == SD_MSG_UI_NOTICE_MOUNTED ||
-         msg == SD_MSG_UI_NOTICE_RECONNECTED || msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED ||
-         msg == SD_MSG_UI_NOTICE_POOL_LIMITED;
+         msg == SD_MSG_UI_NOTICE_RECONNECTED || msg == SD_MSG_UI_NOTICE_RECONNECTED_REASON ||
+         msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED || msg == SD_MSG_UI_NOTICE_POOL_LIMITED;
 }
 
 /* The balloon title: warnings say so, the neutral notices carry the product name. */
 static int neutral_title(sd_msg_id msg)
 {
   return msg == SD_MSG_UI_NOTIFY_HOSTKEYS || msg == SD_MSG_UI_NOTICE_MOUNTED || msg == SD_MSG_UI_NOTICE_RECONNECTED ||
-         msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED || msg == SD_MSG_UI_NOTICE_POOL_LIMITED;
+         msg == SD_MSG_UI_NOTICE_RECONNECTED_REASON || msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED ||
+         msg == SD_MSG_UI_NOTICE_POOL_LIMITED;
 }
 
 /* Shows one balloon now; the limiter has already allowed it. */
@@ -298,11 +299,12 @@ static ui_ev_kind event_kind_of(sd_msg_id msg)
 {
   if (msg == SD_MSG_UI_HKI_NOTIFY_CHANGED || msg == SD_MSG_UI_HKI_NOTIFY_TYPE ||
       msg == SD_MSG_UI_HKI_NOTIFY_TYPE_STORED || msg == SD_MSG_UI_NOTIFY_HOSTKEYS ||
-      msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED)
+      msg == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED || msg == SD_MSG_UI_NOTICE_HOSTKEY_SOURCE)
     return UI_EV_HOSTKEY;
   if (msg == SD_MSG_UI_WARN_WRITE_FAILED || msg == SD_MSG_UI_NOTICE_MOUNT_FAILED)
     return UI_EV_ERROR;
-  if (msg == SD_MSG_UI_NOTICE_MOUNTED || msg == SD_MSG_UI_NOTICE_RECONNECTED)
+  if (msg == SD_MSG_UI_NOTICE_MOUNTED || msg == SD_MSG_UI_NOTICE_RECONNECTED ||
+      msg == SD_MSG_UI_NOTICE_RECONNECTED_REASON)
     return UI_EV_DRIVE;
   if (msg == SD_MSG_UI_WARN_LEGACY || msg == SD_MSG_UI_WARN_TERRAPIN || msg == SD_MSG_UI_WARN_GENERIC ||
       msg == SD_MSG_UI_NOTICE_LOST || msg == SD_MSG_UI_NOTICE_PROXY_PASSWORD || msg == SD_MSG_UI_NOTICE_DISK_CACHE ||
@@ -365,16 +367,31 @@ void ui_tray_balloon(const char *code, const wchar_t *drive)
   }
 }
 
-/* The notices of 7.7 that follow the agent's state (ui_notice_model.h). The text is always recorded in the event list;
-   the balloon follows the master switch and the kind's own switch ([ui] notify_<kind>), and the rate limit of 60 s per
-   (subject, kind) applies as for every balloon. subject: the drive letter, else the profile or server; detail: the
-   proxy (host:port) for the proxy password notice, the host for saved host keys; count: the prompts waiting. */
-void ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *detail, int count)
+/* Why a drive reconnected (mount.state `reason`, an error code): the text of the codes the agent sends, the code itself
+   for any other. */
+void ui_reason_text(const char *code, wchar_t *out, size_t cch)
+{
+  static const sd_msg_id ids[UI_NT_REASONS] = {
+    SD_MSG_UI_NOTICE_REASON_DISCONNECTED, SD_MSG_UI_NOTICE_REASON_TIMEOUT, SD_MSG_UI_NOTICE_REASON_DNS_FAILED,
+    SD_MSG_UI_NOTICE_REASON_CONN_REFUSED, SD_MSG_UI_NOTICE_REASON_NET_UNREACHABLE, SD_MSG_UI_NOTICE_REASON_PROTOCOL,
+    SD_MSG_UI_NOTICE_REASON_AUTH_FAILED, SD_MSG_UI_NOTICE_REASON_PROXY_FAILED
+  };
+  int i = ui_nt_reason_index(code);
+  if (cch == 0)
+    return;
+  if (i >= 0)
+    wcsncpy_s(out, cch, sd_l10n_get(ids[i]), _TRUNCATE);
+  else
+    ui_text_utf8(code != NULL ? code : "", out, cch);
+}
+
+/* The text and message of a notice of 7.7 (NULL for a kind without one). subject: the drive letter, else the profile or
+   server; detail: the proxy (host:port) for the proxy password notice, the error code for a failed mount, the reason code
+   for a reconnect (may be empty), the known_hosts source for the ignored source; count: the prompts waiting. */
+static wchar_t *notice_text(ui_nt_kind kind, const wchar_t *name, const wchar_t *detail, int count, sd_msg_id *msg_out)
 {
   sd_msg_id msg;
-  wchar_t *text = NULL;
   sd_arg a[2];
-  const wchar_t *name = subject != NULL ? subject : L"";
   switch (kind) {
   case UI_NT_CONNECTION_LOST:   msg = SD_MSG_UI_NOTICE_LOST; break;
   case UI_NT_RECONNECTED:       msg = SD_MSG_UI_NOTICE_RECONNECTED; break;
@@ -384,14 +401,37 @@ void ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *deta
   case UI_NT_POOL_LIMITED:      msg = SD_MSG_UI_NOTICE_POOL_LIMITED; break;
   case UI_NT_HOSTKEYS_SAVED:    msg = SD_MSG_UI_NOTICE_HOSTKEYS_SAVED; break;
   case UI_NT_DISK_CACHE:        msg = SD_MSG_UI_NOTICE_DISK_CACHE; break;
+  case UI_NT_HOSTKEYS_SOURCE:   msg = SD_MSG_UI_NOTICE_HOSTKEY_SOURCE; break;
   case UI_NT_SERVICE_ATTENTION: msg = SD_MSG_UI_TRAY_ADMIN_PROMPTS; break;
   default:
-    return;
+    return NULL;
   }
-  if (kind == UI_NT_SERVICE_ATTENTION) {
-    text = ui_format_count(msg, (long long)count);
-    name = L"";
-  } else if (kind == UI_NT_PROXY_PASSWORD || kind == UI_NT_MOUNT_FAILED) {
+  *msg_out = msg;
+  if (kind == UI_NT_SERVICE_ATTENTION)
+    return ui_format_count(msg, (long long)count);
+  if (kind == UI_NT_HOSTKEYS_SOURCE) {
+    /* the source is OpenSSH or PuTTY; a warning without one names both */
+    return ui_format1(msg, "source", detail != NULL && detail[0] != 0 ? detail : L"OpenSSH/PuTTY");
+  }
+  if (kind == UI_NT_RECONNECTED && detail != NULL && detail[0] != 0) {
+    /* "{name}: connected again. Cause of the interruption: {reason}" (7.7) */
+    char code[64];
+    wchar_t reason[160];
+    size_t i;
+    for (i = 0; detail[i] != 0 && i + 1 < sizeof(code); i++)
+      code[i] = detail[i] < 0x80 ? (char)detail[i] : '?';
+    code[i] = 0;
+    ui_reason_text(code, reason, SD_COUNTOF(reason));
+    *msg_out = SD_MSG_UI_NOTICE_RECONNECTED_REASON;
+    a[0].name = "name";
+    a[0].type = SD_ARG_STR;
+    a[0].v.s = name;
+    a[1].name = "reason";
+    a[1].type = SD_ARG_STR;
+    a[1].v.s = reason;
+    return sd_l10n_format_alloc(SD_MSG_UI_NOTICE_RECONNECTED_REASON, a, 2);
+  }
+  if (kind == UI_NT_PROXY_PASSWORD || kind == UI_NT_MOUNT_FAILED) {
     /* the proxy (host:port) or the error code of the failed mount is the second argument */
     a[0].name = "name";
     a[0].type = SD_ARG_STR;
@@ -399,17 +439,67 @@ void ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *deta
     a[1].name = kind == UI_NT_PROXY_PASSWORD ? "proxy" : "code";
     a[1].type = SD_ARG_STR;
     a[1].v.s = detail != NULL ? detail : L"";
-    text = sd_l10n_format_alloc(msg, a, 2);
-  } else if (kind == UI_NT_HOSTKEYS_SAVED) {
-    text = ui_format1(msg, "host", name);
-  } else {
-    text = ui_format1(msg, "name", name);
+    return sd_l10n_format_alloc(msg, a, 2);
   }
+  if (kind == UI_NT_HOSTKEYS_SAVED)
+    return ui_format1(msg, "host", name);
+  return ui_format1(msg, "name", name);
+}
+
+/* The notices of 7.7 that follow the agent's state (ui_notice_model.h). The text is always recorded in the event list;
+   the balloon follows the master switch and the kind's own switch ([ui] notify_<kind>), and the rate limit of 60 s per
+   (subject, kind) applies as for every balloon. See notice_text for the arguments. */
+void ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *detail, int count)
+{
+  sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
+  const wchar_t *name = kind == UI_NT_SERVICE_ATTENTION ? L"" : (subject != NULL ? subject : L"");
+  wchar_t *text = notice_text(kind, name, detail, count, &msg);
   if (text == NULL)
     return;
   record_notice(msg, name, text);
   if (ui_tray_notify_wanted(ui_nt_switch_of(kind)))
     post_balloon(msg, name, text);
+  sd_free(text);
+}
+
+/* The same notice for something the agent's history says happened at `when` (unix seconds): recorded in the event list at
+   that time, with no balloon. */
+void ui_tray_history_notice(ui_nt_kind kind, long long when, const wchar_t *subject, const wchar_t *detail)
+{
+  sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
+  const wchar_t *name = subject != NULL ? subject : L"";
+  wchar_t *text = notice_text(kind, name, detail, 0, &msg);
+  if (text == NULL)
+    return;
+  ui_events_record_at(event_kind_of(msg), when, name, text);
+  sd_free(text);
+}
+
+/* A warning of the history that has no notice of its own (legacy algorithms, Terrapin, write failed, others). */
+void ui_tray_history_warning(const char *code, long long when, const wchar_t *subject)
+{
+  sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
+  wchar_t *text;
+  if (code && strcmp(code, "legacy_algorithms") == 0)
+    msg = SD_MSG_UI_WARN_LEGACY;
+  else if (code && strcmp(code, "terrapin_exposed") == 0)
+    msg = SD_MSG_UI_WARN_TERRAPIN;
+  else if (code && strcmp(code, "write_failed") == 0)
+    msg = SD_MSG_UI_WARN_WRITE_FAILED;
+  text = ui_format1(msg, "drive", subject != NULL ? subject : L"");
+  if (text == NULL)
+    return;
+  ui_events_record_at(event_kind_of(msg), when, subject != NULL ? subject : L"", text);
+  sd_free(text);
+}
+
+/* hostkeys.announced of the history: the offer of new host keys, without a balloon. */
+void ui_tray_history_hostkeys(long long when, const wchar_t *host)
+{
+  wchar_t *text = ui_format1(SD_MSG_UI_NOTIFY_HOSTKEYS, "host", host != NULL ? host : L"");
+  if (text == NULL)
+    return;
+  ui_events_record_at(UI_EV_HOSTKEY, when, host != NULL ? host : L"", text);
   sd_free(text);
 }
 
@@ -525,6 +615,8 @@ static void balloon_clicked(void)
 {
   if (g_last_balloon == SD_MSG_UI_NOTIFY_HOSTKEYS || g_last_balloon == SD_MSG_UI_NOTICE_HOSTKEYS_SAVED) {
     ui_windows_command(UI_CMD_HOSTKEYS);
+  } else if (g_last_balloon == SD_MSG_UI_NOTICE_HOSTKEY_SOURCE) {
+    ui_settings_open_security();       /* the known_hosts sources are on the Security page (TM-R06) */
   } else if (g_last_balloon == SD_MSG_UI_TRAY_ADMIN_PROMPTS) {
     (void)ui_svc_launch_admin(g_app.main);   /* the same as the tray menu item: the administrator window (UAC) */
   } else if (g_last_balloon == SD_MSG_UI_HKI_NOTIFY_CHANGED || g_last_balloon == SD_MSG_UI_HKI_NOTIFY_TYPE ||

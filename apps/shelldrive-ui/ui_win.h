@@ -81,6 +81,7 @@ HWND   ui_logs_create_hidden(void);
 
 /* ---- ui_settings.c: the Settings window (03 §3.2, §7.5) ---- */
 void   ui_settings_open(void);
+void   ui_settings_open_security(void);      /* opens Settings on the Security page (balloon of hostkey_source_insecure) */
 void   ui_settings_close(void);
 void   ui_settings_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_settings_update_refresh(void);     /* the update group: status, enabled controls (ui_update.c) */

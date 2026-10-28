@@ -58,7 +58,7 @@
 #define HK_ANN_ID_MAX      64
 #define HK_CLIENT_W        1000
 #define HK_CLIENT_H        520
-#define HK_DETAILS_LINES   7           /* host, port, type, fingerprint, store, line and the read-only note */
+#define HK_DETAILS_LINES   11          /* host, port, type, two fingerprints, store, line, source, added, comment, the read-only note */
 
 typedef struct hk_entry {
   ui_hk_row row;
@@ -224,6 +224,7 @@ static int collect_cb(void *ctx, const sd_kh_all_entry *e)
   hk_collect *c = (hk_collect *)ctx;
   hk_entry *k;
   char fp[UI_HK_FP_MAX];
+  char md5[UI_HK_FP_MAX];
   if (g_hk.nkeys >= HK_MAX_KEYS)
     return 1;
   if (g_hk.nkeys == g_hk.capkeys) {
@@ -236,10 +237,13 @@ static int collect_cb(void *ctx, const sd_kh_all_entry *e)
   }
   if (sd_hostkey_fingerprint_sha256(e->blob, e->len, fp) != SD_OK)
     strcpy_s(fp, sizeof(fp), "?");
+  if (sd_hostkey_fingerprint_md5(e->blob, e->len, md5) != SD_OK)
+    md5[0] = '\0';
   k = &g_hk.keys[g_hk.nkeys];
   memset(k, 0, sizeof(*k));
   if (ui_hk_row_init(&k->row, c->store, e->pattern, e->hashed, e->type, fp, e->line) != SD_OK)
     return 0;
+  ui_hk_row_set_extras(&k->row, md5, e->comment, e->added, (int)e->origin);
   k->blob = (uint8_t *)sd_alloc(e->len);
   if (k->blob == NULL)
     return 1;
@@ -344,37 +348,40 @@ static const hk_entry *selected_key(void)
   return &g_hk.keys[p];
 }
 
-/* The details under the list: one line per fact of the selected key (03 5.1, 7.5). */
-static void update_details(void)
+/* The text of the details pane for one key: one line per fact (03 5.1, 7.5). Lines for facts the key's line does not have
+   (MD5 not computed, no source comment, no added date, no comment) are left out. */
+static void build_details(const ui_hk_row *row, wchar_t *text, size_t cap)
 {
   static const sd_msg_id lines[UI_HK_DETAILS] = {
     SD_MSG_UI_HOSTKEYS_DET_HOST, SD_MSG_UI_HOSTKEYS_DET_PORT, SD_MSG_UI_HOSTKEYS_DET_TYPE,
-    SD_MSG_UI_HOSTKEYS_DET_FP, SD_MSG_UI_HOSTKEYS_DET_STORE, SD_MSG_UI_HOSTKEYS_DET_LINE
+    SD_MSG_UI_HOSTKEYS_DET_FP, SD_MSG_UI_HOSTKEYS_DET_MD5, SD_MSG_UI_HOSTKEYS_DET_STORE,
+    SD_MSG_UI_HOSTKEYS_DET_LINE, SD_MSG_UI_HOSTKEYS_DET_ORIGIN, SD_MSG_UI_HOSTKEYS_DET_ADDED,
+    SD_MSG_UI_HOSTKEYS_DET_COMMENT
   };
-  const hk_entry *k = selected_key();
+  const wchar_t *origins[UI_HK_ORIGINS];
   wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX];
-  wchar_t text[HK_DETAILS_LINES * (UI_HK_CELL_MAX + 64)];
   size_t i, used = 0;
-  if (g_hk.details == NULL)
-    return;
-  if (k == NULL) {
-    SetWindowTextW(g_hk.details, sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_NONE));
-    return;
-  }
-  ui_hk_row_details(&k->row, sd_l10n_get(SD_MSG_UI_HOSTKEYS_HASHED), sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_MACHINE),
-                    sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_USER), values);
+  origins[UI_HK_ORIGIN_OTHER] = L"";
+  origins[UI_HK_ORIGIN_SHELLDRIVE] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ORIGIN_SHELLDRIVE);
+  origins[UI_HK_ORIGIN_PUTTY] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ORIGIN_PUTTY);
+  origins[UI_HK_ORIGIN_OPENSSH] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ORIGIN_OPENSSH);
+  origins[UI_HK_ORIGIN_SERVER] = sd_l10n_get(SD_MSG_UI_HOSTKEYS_ORIGIN_SERVER);
+  ui_hk_row_details(row, sd_l10n_get(SD_MSG_UI_HOSTKEYS_HASHED), sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_MACHINE),
+                    sd_l10n_get(SD_MSG_UI_HOSTKEYS_SRC_USER), origins, values);
   text[0] = 0;
   for (i = 0; i < UI_HK_DETAILS; i++) {
     wchar_t *line;
     size_t n;
-    if (i == UI_HK_DET_PORT && k->row.hashed)
+    if (i == UI_HK_DET_PORT && row->hashed)
       continue;                                   /* a hashed entry names no port */
+    if (values[i][0] == 0 && i != UI_HK_DET_PORT)
+      continue;                                   /* a fact this line does not have */
     line = ui_format1(lines[i], "value", values[i]);
     if (line == NULL)
       continue;
     n = wcslen(line);
-    if (used + n + 3 < SD_COUNTOF(text)) {
-      wcscpy_s(text + used, SD_COUNTOF(text) - used, line);
+    if (used + n + 3 < cap) {
+      wcscpy_s(text + used, cap - used, line);
       used += n;
       text[used++] = L'\r';
       text[used++] = L'\n';
@@ -382,9 +389,46 @@ static void update_details(void)
     }
     sd_free(line);
   }
-  if (k->row.store == UI_HK_STORE_MACHINE)
-    wcsncat_s(text, SD_COUNTOF(text), sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_READONLY), _TRUNCATE);
+  if (row->store == UI_HK_STORE_MACHINE)
+    wcsncat_s(text, cap, sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_READONLY), _TRUNCATE);
+}
+
+/* The details under the list: the selected key. */
+static void update_details(void)
+{
+  const hk_entry *k = selected_key();
+  wchar_t text[HK_DETAILS_LINES * (UI_HK_CELL_MAX + 64)];
+  if (g_hk.details == NULL)
+    return;
+  if (k == NULL) {
+    SetWindowTextW(g_hk.details, sd_l10n_get(SD_MSG_UI_HOSTKEYS_DET_NONE));
+    return;
+  }
+  build_details(&k->row, text, SD_COUNTOF(text));
   SetWindowTextW(g_hk.details, text);
+}
+
+/* --test-windows: the details of a key with a comment, an added date, a source and an MD5 fingerprint have ten lines; a
+   key without them has the six that the line always has. */
+static int details_smoke(void)
+{
+  ui_hk_row row;
+  wchar_t text[HK_DETAILS_LINES * (UI_HK_CELL_MAX + 64)];
+  size_t i, lines;
+  if (ui_hk_row_init(&row, UI_HK_STORE_USER, "example.org", 0, "ssh-ed25519", "SHA256:abc", 3) != SD_OK)
+    return 0;
+  build_details(&row, text, SD_COUNTOF(text));
+  for (i = 0, lines = 0; text[i] != 0; i++)
+    if (text[i] == L'\n')
+      lines++;
+  if (lines != 6)
+    return 0;
+  ui_hk_row_set_extras(&row, "MD5:aa:bb", "imported-from=putty added=2026-10-24", "2026-10-24", UI_HK_ORIGIN_PUTTY);
+  build_details(&row, text, SD_COUNTOF(text));
+  for (i = 0, lines = 0; text[i] != 0; i++)
+    if (text[i] == L'\n')
+      lines++;
+  return lines == 10;
 }
 
 static void copy_fingerprint(void)
@@ -978,7 +1022,7 @@ int ui_hostkeys_dialogs_smoke(void)
     sd_free(blob);
     blob = NULL;
   }
-  return ok;
+  return ok && details_smoke();
 }
 
 static void add_from_server(void)

@@ -406,21 +406,103 @@ SD_TEST(hk_reject_params_json)
 
 SD_TEST(hk_row_details_follow_the_row)
 {
+  static const wchar_t *const origins[UI_HK_ORIGINS] = { L"", L"ShellDrive", L"From PuTTY", L"From OpenSSH", L"By server" };
   ui_hk_row r;
   wchar_t v[UI_HK_DETAILS][UI_HK_CELL_MAX];
   SD_CHECK(ui_hk_row_init(&r, UI_HK_STORE_USER, "[h.example]:2222", 0, "ssh-ed25519", "SHA256:abc", 7) == SD_OK);
-  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", v);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
   SD_CHECK(wcscmp(v[UI_HK_DET_HOST], L"h.example") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_PORT], L"2222") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_TYPE], L"ssh-ed25519") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_FP], L"SHA256:abc") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_STORE], L"User") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_LINE], L"7") == 0);
+  /* a row without extras shows no MD5, source, date or comment (the window leaves those lines out) */
+  SD_CHECK(v[UI_HK_DET_MD5][0] == 0);
+  SD_CHECK(v[UI_HK_DET_ORIGIN][0] == 0);
+  SD_CHECK(v[UI_HK_DET_ADDED][0] == 0);
+  SD_CHECK(v[UI_HK_DET_COMMENT][0] == 0);
 
   SD_CHECK(ui_hk_row_init(&r, UI_HK_STORE_MACHINE, "|1|c2FsdA==|aGFzaA==", 1, "ssh-rsa", "SHA256:x", 12) == SD_OK);
-  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", v);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
   SD_CHECK(wcscmp(v[UI_HK_DET_HOST], L"(hashed)") == 0);
   SD_CHECK(v[UI_HK_DET_PORT][0] == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_STORE], L"Machine") == 0);
   SD_CHECK(wcscmp(v[UI_HK_DET_LINE], L"12") == 0);
+}
+
+SD_TEST(hk_row_details_show_comment_added_origin_and_md5)
+{
+  static const wchar_t *const origins[UI_HK_ORIGINS] = { L"", L"ShellDrive", L"From PuTTY", L"From OpenSSH", L"By server" };
+  ui_hk_row r;
+  wchar_t v[UI_HK_DETAILS][UI_HK_CELL_MAX];
+  char longtext[400];
+  SD_CHECK(ui_hk_row_init(&r, UI_HK_STORE_USER, "example.org", 0, "ssh-ed25519", "SHA256:abc", 2) == SD_OK);
+  ui_hk_row_set_extras(&r, "MD5:aa:bb", "imported-from=putty added=2026-10-24", "2026-10-24", UI_HK_ORIGIN_PUTTY);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
+  SD_CHECK(wcscmp(v[UI_HK_DET_MD5], L"MD5:aa:bb") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_ORIGIN], L"From PuTTY") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_ADDED], L"2026-10-24") == 0);
+  SD_CHECK(wcscmp(v[UI_HK_DET_COMMENT], L"imported-from=putty added=2026-10-24") == 0);
+
+  /* the origin "other" and an origin out of range say nothing; every named origin has its own text */
+  ui_hk_row_set_extras(&r, NULL, NULL, NULL, UI_HK_ORIGIN_OTHER);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
+  SD_CHECK(v[UI_HK_DET_ORIGIN][0] == 0 && v[UI_HK_DET_MD5][0] == 0);
+  ui_hk_row_set_extras(&r, NULL, NULL, NULL, 99);
+  SD_CHECK_EQ_INT(r.origin, UI_HK_ORIGIN_OTHER);
+  ui_hk_row_set_extras(&r, NULL, NULL, NULL, UI_HK_ORIGIN_SERVER);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
+  SD_CHECK(wcscmp(v[UI_HK_DET_ORIGIN], L"By server") == 0);
+  ui_hk_row_set_extras(&r, NULL, NULL, NULL, UI_HK_ORIGIN_OPENSSH);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
+  SD_CHECK(wcscmp(v[UI_HK_DET_ORIGIN], L"From OpenSSH") == 0);
+
+  /* text from a file is cut to the fields and shown as printable ASCII */
+  memset(longtext, 'x', sizeof(longtext) - 1);
+  longtext[sizeof(longtext) - 1] = 0;
+  longtext[3] = '\t';
+  ui_hk_row_set_extras(&r, NULL, longtext, NULL, UI_HK_ORIGIN_SHELLDRIVE);
+  SD_CHECK(strlen(r.comment) == UI_HK_COMMENT_MAX - 1);
+  ui_hk_row_details(&r, L"(hashed)", L"Machine", L"User", origins, v);
+  SD_CHECK(v[UI_HK_DET_COMMENT][3] == L'?');
+  SD_CHECK_EQ_INT((int)wcslen(v[UI_HK_DET_COMMENT]), UI_HK_COMMENT_MAX - 1);
+}
+
+static int extras_cb(void *vctx, const sd_kh_all_entry *e)
+{
+  ui_hk_row *r = (ui_hk_row *)vctx;
+  char md5[64];
+  if (sd_hostkey_fingerprint_md5(e->blob, e->len, md5) != SD_OK)
+    md5[0] = 0;
+  if (ui_hk_row_init(r, UI_HK_STORE_USER, e->pattern, e->hashed, e->type, "SHA256:x", e->line) != SD_OK)
+    return 1;
+  ui_hk_row_set_extras(r, md5, e->comment, e->added, (int)e->origin);
+  return 1;
+}
+
+/* What the window does with a line of the store: the comment, the added date and the origin of
+   sd_known_hosts_list_all, and the MD5 fingerprint of the key, end up in the row. */
+SD_TEST(hk_store_extras_reach_the_row)
+{
+  wchar_t path[MAX_PATH];
+  sd_kh_store stores[1];
+  sd_known_hosts *kh = NULL;
+  ui_hk_row r;
+  memset(&r, 0, sizeof(r));
+  temp_file(path, SD_COUNTOF(path));
+  SD_REQUIRE(path[0] != L'\0');
+  SD_REQUIRE(write_text(path, "example.org ssh-rsa " KEY_B64 " # imported-from=openssh added=2026-10-24\r\n"));
+  memset(stores, 0, sizeof(stores));
+  stores[0].kind = SD_KH_STORE_USER;
+  stores[0].path = path;
+  stores[0].writable = 1;
+  SD_REQUIRE(sd_known_hosts_open(stores, 1, &kh) == SD_OK);
+  SD_CHECK(sd_known_hosts_list_all(kh, SD_KH_STORE_USER, extras_cb, &r) == SD_OK);
+  SD_CHECK_EQ_INT(r.origin, UI_HK_ORIGIN_OPENSSH);
+  SD_CHECK_STR(r.added, "2026-10-24");
+  SD_CHECK(strstr(r.comment, "imported-from=openssh") != NULL);
+  SD_CHECK(strncmp(r.md5, "MD5:", 4) == 0);
+  sd_known_hosts_close(kh);
+  DeleteFileW(path);
 }

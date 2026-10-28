@@ -2866,3 +2866,100 @@ msgstr "Se você esperava essa mudança, confira a nova impressão digital com o
 msgctxt "ui.hki.btn_add"
 msgid "&Add key from server…"
 msgstr "&Adicionar chave do servidor…"
+
+#. Balloon: a drive is connected again and the agent says why the connection was lost (03 2.4 mount.state reason, 7.7). {name} is the drive letter or the connection name, {reason} says what interrupted the connection (a short phrase, such as "timeout", or an error code).
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected_reason"
+msgid "{name}: reconnected after: {reason}."
+msgstr "{name}: reconectado após: {reason}."
+
+#. Balloon: a live known_hosts file of another program is ignored because other users can change it (03 5.1, 7.7, TM-R06). {source} is OpenSSH or PuTTY. A click opens Settings on the Security page.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkey_source"
+msgid "ShellDrive ignores your {source} known_hosts because other users can change it. Click to open Settings > Security."
+msgstr "O ShellDrive ignora o known_hosts do {source} porque outros usuários podem alterá-lo. Clique para abrir Configurações > Segurança."
+
+#. Event text: a drive changed state while it comes back after a lost connection. {state} is the new state (such as Connecting), {reason} what interrupted the connection (a short phrase or an error code).
+msgctxt "ui.events.text_reason"
+msgid "{state} (after: {reason})"
+msgstr "{state} (após: {reason})"
+
+#. Reason a connection was lost, after "reconnected after:" (a short phrase without a final period): the connection was closed.
+msgctxt "ui.notice.reason_disconnected"
+msgid "connection closed"
+msgstr "conexão encerrada"
+
+#. Reason a connection was lost (short phrase): the server did not answer in time.
+msgctxt "ui.notice.reason_timeout"
+msgid "timeout"
+msgstr "tempo esgotado"
+
+#. Reason a connection was lost (short phrase): the server name could not be resolved.
+msgctxt "ui.notice.reason_dns_failed"
+msgid "name lookup failed"
+msgstr "falha na resolução do nome"
+
+#. Reason a connection was lost (short phrase): the server refused the connection.
+msgctxt "ui.notice.reason_conn_refused"
+msgid "connection refused"
+msgstr "conexão recusada"
+
+#. Reason a connection was lost (short phrase): there is no route to the server.
+msgctxt "ui.notice.reason_net_unreachable"
+msgid "network unreachable"
+msgstr "rede inacessível"
+
+#. Reason a connection was lost (short phrase): the server broke the protocol.
+msgctxt "ui.notice.reason_protocol"
+msgid "protocol error"
+msgstr "erro de protocolo"
+
+#. Reason a connection was lost (short phrase): signing in again was refused.
+msgctxt "ui.notice.reason_auth_failed"
+msgid "sign-in failed"
+msgstr "falha na autenticação"
+
+#. Reason a connection was lost (short phrase): the proxy could not be reached.
+msgctxt "ui.notice.reason_proxy_failed"
+msgid "proxy connection failed"
+msgstr "falha na conexão com o proxy"
+
+#. Host key details line. {value} is the MD5 fingerprint (MD5:xx:xx:...), for comparing with old servers.
+msgctxt "ui.hostkeys.det_md5"
+msgid "MD5 fingerprint: {value}"
+msgstr "Impressão digital MD5: {value}"
+
+#. Host key details line. {value} says where the key came from (ShellDrive, copied from PuTTY or OpenSSH, updated by the server).
+msgctxt "ui.hostkeys.det_origin"
+msgid "Source: {value}"
+msgstr "Origem: {value}"
+
+#. Host key details line. {value} is the date the key was added (YYYY-MM-DD).
+msgctxt "ui.hostkeys.det_added"
+msgid "Added: {value}"
+msgstr "Adicionada: {value}"
+
+#. Host key details line. {value} is the comment at the end of the key's line in the known_hosts file.
+msgctxt "ui.hostkeys.det_comment"
+msgid "Comment: {value}"
+msgstr "Comentário: {value}"
+
+#. Host key source: the key was added by ShellDrive. The product name stays as it is.
+msgctxt "ui.hostkeys.origin_shelldrive"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+#. Host key source: the key was copied from the PuTTY host keys of the user.
+msgctxt "ui.hostkeys.origin_putty"
+msgid "Copied from PuTTY"
+msgstr "Copiada do PuTTY"
+
+#. Host key source: the key was copied from the OpenSSH known_hosts file of the user.
+msgctxt "ui.hostkeys.origin_openssh"
+msgid "Copied from OpenSSH"
+msgstr "Copiada do OpenSSH"
+
+#. Host key source: the server announced the key and the user accepted it (UpdateHostKeys).
+msgctxt "ui.hostkeys.origin_server"
+msgid "Updated by server"
+msgstr "Atualizada pelo servidor"

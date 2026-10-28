@@ -10,7 +10,7 @@ static int same(const char *a, const char *b)
   return a != NULL && b != NULL && strcmp(a, b) == 0;
 }
 
-ui_nt_kind ui_nt_of_mount_state(const char *prev_state, const char *state, const char *error_code)
+ui_nt_kind ui_nt_of_mount_state_r(const char *prev_state, const char *state, const char *error_code, const char *reason)
 {
   if (state == NULL || state[0] == 0)
     return UI_NT_NONE;
@@ -19,7 +19,9 @@ ui_nt_kind ui_nt_of_mount_state(const char *prev_state, const char *state, const
   if (strcmp(state, "mounted") == 0) {
     if (strcmp(prev_state, "mounted") == 0)
       return UI_NT_NONE;                 /* the same state with new connection details */
-    return strcmp(prev_state, "offline") == 0 ? UI_NT_RECONNECTED : UI_NT_MOUNTED;
+    if (strcmp(prev_state, "offline") == 0 || (reason != NULL && reason[0] != 0))
+      return UI_NT_RECONNECTED;
+    return UI_NT_MOUNTED;
   }
   if (strcmp(state, "offline") == 0)
     return strcmp(prev_state, "mounted") == 0 ? UI_NT_CONNECTION_LOST : UI_NT_NONE;
@@ -34,6 +36,11 @@ ui_nt_kind ui_nt_of_mount_state(const char *prev_state, const char *state, const
   return UI_NT_NONE;
 }
 
+ui_nt_kind ui_nt_of_mount_state(const char *prev_state, const char *state, const char *error_code)
+{
+  return ui_nt_of_mount_state_r(prev_state, state, error_code, NULL);
+}
+
 ui_nt_kind ui_nt_of_warning_code(const char *code)
 {
   if (code == NULL)
@@ -44,6 +51,8 @@ ui_nt_kind ui_nt_of_warning_code(const char *code)
     return UI_NT_POOL_LIMITED;
   if (strcmp(code, "disk_cache_refused") == 0)
     return UI_NT_DISK_CACHE;
+  if (strcmp(code, "hostkey_source_insecure") == 0)
+    return UI_NT_HOSTKEYS_SOURCE;
   return UI_NT_NONE;
 }
 
@@ -59,8 +68,33 @@ int ui_nt_switch_of(ui_nt_kind k)
   case UI_NT_SERVICE_ATTENTION:  return SD_NOTIFY_SERVICE_ATTENTION;
   case UI_NT_HOSTKEYS_SAVED:     return SD_NOTIFY_HOSTKEYS_SAVED;
   case UI_NT_DISK_CACHE:         return SD_NOTIFY_DISK_CACHE;
+  case UI_NT_HOSTKEYS_SOURCE:    return SD_NOTIFY_HOSTKEYS_SOURCE;
   default:                       return -1;
   }
+}
+
+int ui_nt_reason_index(const char *code)
+{
+  static const char *const known[UI_NT_REASONS] = {
+    "disconnected", "timeout", "dns_failed", "conn_refused", "net_unreachable", "protocol", "auth_failed",
+    "proxy_connect_failed"
+  };
+  int i;
+  if (code == NULL || code[0] == 0)
+    return -1;
+  for (i = 0; i < UI_NT_REASONS; i++)
+    if (strcmp(code, known[i]) == 0)
+      return i;
+  return -1;
+}
+
+const char *ui_nt_source_name(const char *detail)
+{
+  if (same(detail, "openssh"))
+    return "OpenSSH";
+  if (same(detail, "putty"))
+    return "PuTTY";
+  return NULL;
 }
 
 int ui_nt_attention_grew(int previous, int now)

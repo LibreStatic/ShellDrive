@@ -28,15 +28,22 @@ typedef enum ui_nt_kind {
   UI_NT_SERVICE_ATTENTION,
   UI_NT_HOSTKEYS_SAVED,
   UI_NT_DISK_CACHE,
+  UI_NT_HOSTKEYS_SOURCE,                 /* warning hostkey_source_insecure (TM-R06) */
   UI_NT_KINDS
 } ui_nt_kind;
+
+/* As ui_nt_of_mount_state, with the `reason` of the event (03 2.4, round 19): a mounted event that carries a reason ends an
+   offline period even when the UI saw the intermediate connecting and authenticating states, so it is the reconnected
+   notice and not the plain mounted one. reason may be NULL or "". */
+ui_nt_kind ui_nt_of_mount_state_r(const char *prev_state, const char *state, const char *error_code, const char *reason);
 
 /* The notice a mount.state event leads to. prev_state: the state this UI had for the mount ("" when it had none), state:
    the new one, error_code: error.code of the event or NULL. UI_NT_NONE when nothing changes for the user (the same state
    again, connection details only; reconnect attempts while offline; a host key error). */
 ui_nt_kind ui_nt_of_mount_state(const char *prev_state, const char *state, const char *error_code);
 
-/* The notice of a `warning` event code (proxy_cleartext, pool_limited, disk_cache_refused); UI_NT_NONE for any other. */
+/* The notice of a `warning` event code (proxy_cleartext, pool_limited, disk_cache_refused, hostkey_source_insecure);
+   UI_NT_NONE for any other. */
 ui_nt_kind ui_nt_of_warning_code(const char *code);
 
 /* The sd_notify_kind switch of a notice (7.7); -1 for a notice without a switch of its own. */
@@ -44,6 +51,19 @@ int ui_nt_switch_of(ui_nt_kind k);
 
 /* 1 when the attention count rose: a new prompt waits for an administrator. */
 int ui_nt_attention_grew(int previous, int now);
+
+/* ---- why a drive reconnected (mount.state reason, 7.7) ---- */
+
+/* The error codes the agent sends as a reason that have a text of their own. */
+#define UI_NT_REASONS 8
+
+/* Index (0 .. UI_NT_REASONS - 1) of a known reason code, -1 for an empty, NULL or unknown one (the UI then shows the code
+   itself). */
+int ui_nt_reason_index(const char *code);
+
+/* The name of a known_hosts source for the notice of hostkey_source_insecure (the `detail` of the warning): "OpenSSH"
+   or "PuTTY"; NULL for any other value. */
+const char *ui_nt_source_name(const char *detail);
 
 /* ---- once per (profile, proxy) ---- */
 
