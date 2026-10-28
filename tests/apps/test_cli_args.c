@@ -322,3 +322,29 @@ SD_TEST(cli_parse_diag_forms)
   SD_CHECK(parse_line(L"sd status --bundle", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--bundle") == 0);
   SD_CHECK(parse_line(L"sd mount web --fix webclient", &a) == CLI_E_UNKNOWN_OPTION);
 }
+
+/* location add|remove <profile> | repair (03 §6.1, §8.7): the profile is the second word, repair takes none, and
+   no option of another command is accepted. */
+SD_TEST(cli_parse_location_verbs)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd location add web", &a) == CLI_OK);
+  SD_CHECK_EQ_INT(a.cmd, CLI_CMD_LOCATION);
+  SD_CHECK(wcscmp(a.positional, L"add") == 0 && wcscmp(a.arg2, L"web") == 0);
+  SD_CHECK(parse_line(L"sd location remove web --json", &a) == CLI_OK && a.json);
+  SD_CHECK(wcscmp(a.positional, L"remove") == 0 && wcscmp(a.arg2, L"web") == 0);
+  SD_CHECK(parse_line(L"sd location repair", &a) == CLI_OK && wcscmp(a.positional, L"repair") == 0);
+  SD_CHECK(a.arg2 == NULL);
+  SD_CHECK(parse_line(L"sd location add repair", &a) == CLI_OK && wcscmp(a.arg2, L"repair") == 0);
+  SD_CHECK(parse_line(L"sd location", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd location add", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd location remove", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd location repair web", &a) == CLI_E_EXTRA_ARGUMENT && wcscmp(a.bad, L"web") == 0);
+  SD_CHECK(parse_line(L"sd location add web extra", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd location list web", &a) == CLI_E_UNKNOWN_COMMAND);
+  SD_CHECK(parse_line(L"sd location add web --all", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd location repair --force", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd location repair --dry-run", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd location add web --letter W:", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd location add web --machine", &a) == CLI_E_UNKNOWN_OPTION);
+}

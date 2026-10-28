@@ -594,20 +594,24 @@ static int create_entry(const wchar_t *nethood, const char *id, const wchar_t *w
   return 1;
 }
 
-/* Brings the entry of one profile to the wanted state. */
-static void netloc_sync(const char *id, const char *name, wchar_t letter, int present)
+/* Brings the entry of one profile to the wanted state. relink = 0 leaves the target of an existing entry alone
+   (the CLI does not know whether the profile is mounted). created (may be NULL) gets 1 when the entry was made.
+   Returns 1 when the entry is in place, 0 when it could not be written. */
+static int netloc_sync(const char *id, const char *name, wchar_t letter, int present, int relink, int *created)
 {
   wchar_t nethood[MAX_PATH], wname[PROFILE_NAME_CCH], want[NAME_CCH], folder[MAX_PATH], placeholder[MAX_PATH];
   wchar_t target[MAX_PATH];
   int found;
+  if (created)
+    *created = 0;
   if (!nethood_path(nethood, SD_COUNTOF(nethood)) || !mkdirs(nethood))
-    return;
+    return 0;
   utf8_to_wide(name, wname, SD_COUNTOF(wname));
   if (wname[0] == 0)
     copy_w(wname, SD_COUNTOF(wname), L"ShellDrive");
   sanitize_name(wname, want, SD_COUNTOF(want));
   if (!ensure_placeholder(id, want, placeholder, SD_COUNTOF(placeholder)))
-    return;
+    return 0;
   if (present && letter >= L'A' && letter <= L'Z') {
     target[0] = letter;
     target[1] = L':';
@@ -626,11 +630,14 @@ static void netloc_sync(const char *id, const char *name, wchar_t letter, int pr
   }
   if (!found) {
     if (!create_entry(nethood, id, want, target, folder, SD_COUNTOF(folder)))
-      return;
-  } else {
+      return 0;
+    if (created)
+      *created = 1;
+  } else if (relink) {
     (void)write_link(folder, target);
   }
   SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, folder, NULL);
+  return 1;
 }
 
 /* ---- control thread entry points ---- */
@@ -669,7 +676,7 @@ void explorer_apply(const host_explorer_mount *m)
     g_loc_id[idx][0] = 0;
   }
   if (g_netloc_on && m->profile_id[0] && m->network_location)
-    netloc_sync(m->profile_id, m->profile_name, m->letter, m->present);
+    (void)netloc_sync(m->profile_id, m->profile_name, m->letter, m->present, 1, NULL);
 }
 
 /* A profile gets a Network location when it asks for one and is not a service profile (03 §8.7). */
@@ -708,20 +715,25 @@ static int collect_profile(void *ctx, const sd_profile *p, const wchar_t *path)
   return 1;
 }
 
-/* Agent start (03 §8.7, lifecycle): Network location folders whose profile is gone or no longer asks
-   for one are deleted; every profile that asks for one gets its folder back. Entries without our marker
-   are never touched. */
-static void netloc_reconcile(void)
+/* Reconciles the Network location folders with the profiles (03 §8.7, lifecycle): folders with our marker whose
+   profile is gone or no longer asks for one are deleted; every profile that asks for one gets its folder back.
+   Entries without our marker are never touched. relink = 0 keeps the target of existing entries (CLI repair).
+   *changed (may be NULL) gets the number of entries deleted plus created. Returns 0 when the NetHood folder
+   is not available. */
+static int netloc_reconcile_run(int relink, int *changed)
 {
   ex_collect c;
   wchar_t nethood[MAX_PATH], pattern[MAX_PATH];
   WIN32_FIND_DATAW fd;
   HANDLE h;
   unsigned i;
+  int ok = 0;
+  if (changed)
+    *changed = 0;
   memset(&c, 0, sizeof(c));
   c.items = (ex_profile *)sd_calloc(PROFILE_MAX, sizeof(ex_profile));
   if (c.items == NULL)
-    return;
+    return 0;
   (void)sd_profile_enum(collect_profile, &c);
   if (!nethood_path(nethood, SD_COUNTOF(nethood)) || !mkdirs(nethood))
     goto done;
@@ -745,6 +757,8 @@ static void netloc_reconcile(void)
       if (!keep) {
         delete_entry(folder);
         remove_placeholder(mid);
+        if (changed)
+          (*changed)++;
       }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -752,12 +766,22 @@ static void netloc_reconcile(void)
   for (i = 0; i < c.n; i++)
     if (netloc_wanted(&c.items[i]) && valid_id(c.items[i].id)) {
       wchar_t l = loc_letter(c.items[i].id);     /* a mounted profile keeps pointing at its drive */
-      netloc_sync(c.items[i].id, c.items[i].name, l, l != 0);
+      int created = 0;
+      (void)netloc_sync(c.items[i].id, c.items[i].name, l, l != 0, relink, &created);
+      if (changed && created)
+        (*changed)++;
     }
   SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, nethood, NULL);
+  ok = 1;
 
 done:
   sd_free(c.items);
+  return ok;
+}
+
+static void netloc_reconcile(void)
+{
+  (void)netloc_reconcile_run(1, NULL);
 }
 
 /* Start: removes the icons listed by a crashed agent, then reconciles the Network locations. */
@@ -845,4 +869,60 @@ void explorer_cleanup_user(void)
   }
   if (g_icons_on)
     explorer_shutdown();
+}
+
+/* ---- shelldrive location verbs (03 §6.1, §8.7): shelldrive.exe, no agent ---- */
+
+int explorer_location_blocked(void)
+{
+  explorer_init();
+  return policy_disables_netloc();
+}
+
+int explorer_location_add(const char *id, const char *name, int *created)
+{
+  if (created)
+    *created = 0;
+  explorer_init();
+  if (policy_disables_netloc())
+    return EXPLORER_LOC_POLICY;
+  if (!valid_id(id))
+    return EXPLORER_LOC_FAILED;
+  return netloc_sync(id, name, 0, 0, 0, created) ? EXPLORER_LOC_OK : EXPLORER_LOC_FAILED;
+}
+
+int explorer_location_remove(const char *id, int *removed)
+{
+  wchar_t nethood[MAX_PATH], folder[MAX_PATH];
+  if (removed)
+    *removed = 0;
+  explorer_init();
+  if (policy_disables_netloc())
+    return EXPLORER_LOC_POLICY;
+  if (!valid_id(id) || !nethood_path(nethood, SD_COUNTOF(nethood)))
+    return EXPLORER_LOC_FAILED;
+  if (find_entry(nethood, id, folder, SD_COUNTOF(folder))) {     /* find_entry checks the marker */
+    delete_entry(folder);
+    if (removed)
+      *removed = 1;
+  }
+  remove_placeholder(id);
+  SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, nethood, NULL);
+  return EXPLORER_LOC_OK;
+}
+
+int explorer_location_repair(int *changed)
+{
+  HANDLE lock = NULL;
+  int ok;
+  if (changed)
+    *changed = 0;
+  explorer_init();
+  if (policy_disables_netloc())
+    return EXPLORER_LOC_POLICY;
+  if (sd_config_lock(&lock, 5000) != SD_OK)
+    return EXPLORER_LOC_FAILED;
+  ok = netloc_reconcile_run(0, changed);
+  sd_config_unlock(lock);
+  return ok ? EXPLORER_LOC_OK : EXPLORER_LOC_FAILED;
 }

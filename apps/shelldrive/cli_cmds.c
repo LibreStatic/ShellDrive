@@ -833,6 +833,8 @@ void cli_print_help(const wchar_t *topic)
     cli_print(L"");
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--stats", SD_MSG_CLI_HELP_OPT_STATS);
+  } else if (topic && wcscmp(topic, L"location") == 0) {
+    help_line(L"location add <profile> | remove <profile> | repair", SD_MSG_CLI_HELP_LOCATION);
   } else if (topic && wcscmp(topic, L"refresh") == 0) {
     help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
   } else if (topic && wcscmp(topic, L"cache") == 0) {
@@ -900,6 +902,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"status [<X:|profile>] [--stats]", SD_MSG_CLI_HELP_STATUS);
     help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
     help_line(L"cache clear [<profile>|X:] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
+    help_line(L"location add <profile> | remove <profile> | repair", SD_MSG_CLI_HELP_LOCATION);
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
     help_line(L"secret set|delete --machine --proxy SPEC [--stdin]", SD_MSG_CLI_HELP_SECRET);
     help_line(L"diag [--check] | --bundle [FILE] | --fix webclient|linked-connections", SD_MSG_CLI_HELP_DIAG);
@@ -952,6 +955,7 @@ int cli_run(const cli_args *a)
   case CLI_CMD_HOSTKEY:    return cli_run_hostkey(a);
   case CLI_CMD_REFRESH:    return cli_run_refresh(a);
   case CLI_CMD_CACHE:      return cli_run_cache(a);
+  case CLI_CMD_LOCATION:   return cli_run_location(a);
   case CLI_CMD_SERVICE:    return cli_run_service(a);
   case CLI_CMD_SECRET:     return cli_run_secret(a);
   case CLI_CMD_BENCH:      return cli_run_bench(a);

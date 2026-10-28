@@ -1053,3 +1053,136 @@ SD_TEST(smoke_diag_round19_rows)
   RemoveDirectoryW(machine);
   SD_CHECK(!agent_running());
 }
+
+/* ---- location add|remove|repair (03 §6.1, §8.7): no agent; the NetHood folder is a temporary one ---- */
+
+/* 1 when the ini text holds `key = want` (the first key of that name, "=" with or without spaces). */
+static int ini_value_is(const char *text, const char *key, const char *want)
+{
+  const char *p = strstr(text, key);
+  size_t n = strlen(want);
+  if (p == NULL)
+    return 0;
+  p += strlen(key);
+  while (*p == ' ' || *p == '\t' || *p == '=')
+    p++;
+  return strncmp(p, want, n) == 0 && (p[n] == '\r' || p[n] == '\n' || p[n] == 0);
+}
+
+static int path_exists(const wchar_t *p)
+{
+  return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+}
+
+/* A folder of the test NetHood; marker (wide text) is the [ShellDrive] profile= value, NULL = a foreign folder. */
+static void make_folder(const wchar_t *folder, const wchar_t *marker)
+{
+  wchar_t ini[MAX_PATH];
+  CreateDirectoryW(folder, NULL);
+  _snwprintf_s(ini, SD_COUNTOF(ini), _TRUNCATE, L"%s\\desktop.ini", folder);
+  if (marker)
+    WritePrivateProfileStringW(L"ShellDrive", L"profile", marker, ini);
+}
+
+/* Deletes an entry folder by hand (a lost entry): its attributes are cleared first. */
+static void drop_entry_folder(const wchar_t *folder)
+{
+  wchar_t f[MAX_PATH];
+  _snwprintf_s(f, SD_COUNTOF(f), _TRUNCATE, L"%s\\desktop.ini", folder);
+  SetFileAttributesW(f, FILE_ATTRIBUTE_NORMAL);
+  DeleteFileW(f);
+  _snwprintf_s(f, SD_COUNTOF(f), _TRUNCATE, L"%s\\target.lnk", folder);
+  SetFileAttributesW(f, FILE_ATTRIBUTE_NORMAL);
+  DeleteFileW(f);
+  SetFileAttributesW(folder, FILE_ATTRIBUTE_NORMAL);
+  RemoveDirectoryW(folder);
+}
+
+SD_TEST(smoke_location_verbs)
+{
+  static run_result r;
+  static unsigned char text[4096];
+  wchar_t nh[MAX_PATH], prof[MAX_PATH], other[MAX_PATH], folder[MAX_PATH], place[MAX_PATH], gone[MAX_PATH],
+          foreign[MAX_PATH];
+  SD_REQUIRE(setup());
+  wcscpy_s(nh, MAX_PATH, g_root);
+  wcscat_s(nh, MAX_PATH, L"\\nethood");
+  CreateDirectoryW(nh, NULL);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", nh);
+  /* the configuration root is shared by the smoke tests of this process: profiles other tests left would count
+     in repair, so this test starts with an empty profiles folder */
+  {
+    wchar_t pat[MAX_PATH], one[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    _snwprintf_s(pat, SD_COUNTOF(pat), _TRUNCATE, L"%s\\profiles\\*.ini", g_root);
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      do {
+        _snwprintf_s(one, SD_COUNTOF(one), _TRUNCATE, L"%s\\profiles\\%s", g_root, fd.cFileName);
+        DeleteFileW(one);
+      } while (FindNextFileW(h, &fd));
+      FindClose(h);
+    }
+  }
+  _snwprintf_s(folder, SD_COUNTOF(folder), _TRUNCATE, L"%s\\office", nh);
+  _snwprintf_s(gone, SD_COUNTOF(gone), _TRUNCATE, L"%s\\gone", nh);
+  _snwprintf_s(foreign, SD_COUNTOF(foreign), _TRUNCATE, L"%s\\foreign", nh);
+  _snwprintf_s(place, SD_COUNTOF(place), _TRUNCATE, L"%s\\places\\1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f", g_root);
+  _snwprintf_s(prof, SD_COUNTOF(prof), _TRUNCATE, L"%s\\profiles\\office.ini", g_root);
+  _snwprintf_s(other, SD_COUNTOF(other), _TRUNCATE, L"%s\\profiles\\machine.ini", g_root);
+  SD_REQUIRE(smoke_write_text(prof, "[profile]\r\nformat = 1\r\nid = 1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f\r\n"
+                                    "name = office\r\nhost = files.example.test\r\nuser = alice\r\n"
+                                    "[mount]\r\nnetwork_location = no\r\n"));
+
+  /* add: the entry and its placeholder appear, the profile asks for a Network location, JSON says what was done */
+  EXPECT(RUN(L"--json location add office", NULL) == 0 &&
+         strstr(r.out, "\"ok\":true") != NULL && strstr(r.out, "\"action\":\"add\"") != NULL &&
+         strstr(r.out, "\"created\":true") != NULL,
+         "location add in json: the result carries the action and created");
+  EXPECT(path_exists(folder) && path_exists(place), "the entry folder and the placeholder folder exist");
+  smoke_read_bytes(prof, text, sizeof(text) - 1);
+  EXPECT(ini_value_is((const char *)text, "network_location", "yes"), "add writes mount.network_location = yes");
+
+  /* a second add finds the entry in place and creates nothing */
+  EXPECT(RUN(L"location add office", NULL) == 0 && strstr(r.out, "already in place") != NULL,
+         "a second add says the entry is already in place");
+
+  /* remove: the entry and the placeholder go, the profile stops asking for one */
+  EXPECT(RUN(L"location remove office", NULL) == 0 && strstr(r.out, "Network location removed for office.") != NULL,
+         "location remove prints its confirmation");
+  EXPECT(!path_exists(folder) && !path_exists(place), "remove deletes the entry and the placeholder");
+  smoke_read_bytes(prof, text, sizeof(text) - 1);
+  EXPECT(ini_value_is((const char *)text, "network_location", "no"), "remove writes mount.network_location = no");
+
+  /* a service profile has no Network location: refused with the usage exit code, nothing is written */
+  SD_REQUIRE(smoke_write_text(other, "[profile]\r\nformat = 1\r\nid = 2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70\r\n"
+                                     "name = machine\r\nhost = svc.example.test\r\nuser = bob\r\n"
+                                     "scope = service\r\nservice_access = Administrators\r\n"));
+  EXPECT(RUN(L"location add machine", NULL) == 2 && strstr(r.err, "service profile") != NULL,
+         "a service profile is refused with exit 2");
+  EXPECT(RUN(L"location add nobody", NULL) == 3, "an unknown profile is refused with exit 3");
+
+  /* repair: a marked folder of a profile that is gone is deleted, a foreign folder stays, and a lost entry of
+     office comes back (two entries changed) */
+  make_folder(gone, L"ffeeddccbbaa99887766554433221100");
+  make_folder(foreign, NULL);
+  EXPECT(RUN(L"location add office", NULL) == 0 && path_exists(folder), "office has its entry again");
+  drop_entry_folder(folder);
+  EXPECT(RUN(L"--json location repair", NULL) == 0 && strstr(r.out, "\"action\":\"repair\"") != NULL &&
+         strstr(r.out, "\"changed\":2") != NULL,
+         "repair reports the two changes in json");
+  EXPECT(!path_exists(gone) && path_exists(foreign) && path_exists(folder),
+         "repair deletes the marked stale folder, keeps the foreign one and restores the lost entry");
+
+  /* nothing left to do: the human report says so */
+  EXPECT(RUN(L"location repair", NULL) == 0 && strstr(r.out, "0 network locations repaired.") != NULL,
+         "a repair with nothing to do reports 0");
+
+  /* without a NetHood folder (test seam unset) nothing is written and the verb fails */
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", NULL);
+  EXPECT(RUN(L"location repair", NULL) == 1 && strstr(r.err, "could not be written") != NULL,
+         "without a NetHood folder the repair fails with exit 1");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", NULL);
+  DeleteFileW(other);
+}

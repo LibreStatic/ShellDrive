@@ -2200,10 +2200,12 @@ Where 8.2.1 is silent or ambiguous, the choice below applies; each open point is
 - **Start reconciliation (8.7 lifecycle).** Agent start deletes every NetHood folder with a `[ShellDrive] profile=` marker
   whose profile is gone or no longer asks for a Network location, and recreates the folders that are missing. Folders
   without the marker are never touched. The policy `DisableNetworkLocations` (HKLM wins over HKCU) turns the feature off.
-- **Not done in M3 (8.7).** No hook at profile save (creation is at agent start only), no `shelldrive location add |
-  remove | repair` command, no `scope = service` handling (the profile model has no `scope` key yet), no portable-mode
+- **Not done in M3 (8.7).** No hook at profile save (creation is at agent start only), no portable-mode
   check (the agent does not know yet whether it runs portable), no per-user protected DACL on the placeholder and state
-  folders (3.2 asks for one) [open].
+  folders (3.2 asks for one) [open]. `shelldrive location add | remove | repair` is done in round 20 (`cli_location.c`,
+  `explorer_data.c`, no agent needed): add and remove write `mount.network_location` under the profile save lock and
+  refuse `scope = service`; repair holds config.lock; all three refuse under `DisableNetworkLocations`. The entry of a
+  mounted profile created by the CLI points at its placeholder until the agent's next profile change or start.
 - **Test isolation.** Test builds (`SD_HOST_TEST_HOOKS`) write icons and Network locations only when
   `SHELLDRIVE_TEST_EXPLORER_KEY` and `SHELLDRIVE_TEST_NETHOOD` name test locations; the test placeholders then go under the
   test configuration root. Without them a test build writes nothing to the user's keys or folders.

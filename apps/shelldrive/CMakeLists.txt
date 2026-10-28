@@ -9,6 +9,10 @@ set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds2.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds3.c
+  # location add|remove|repair (03 §6.1, §8.7): the Network location entries, made by the same code the agent runs.
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_location.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/explorer_data.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/explorer_data.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_bench.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_service.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c
@@ -44,5 +48,6 @@ sd_add_app(shelldrive
   OUTPUT_NAME shelldrive
   DESCRIPTION "ShellDrive command-line interface"
   SOURCES main.c ${SD_CLI_SOURCES}
-  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32 version)
+  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32 version
+       ole32 shell32)
 target_include_directories(shelldrive PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")

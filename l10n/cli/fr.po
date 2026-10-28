@@ -1651,3 +1651,47 @@ msgid_plural "setup log {setup}; {count} service log files."
 msgstr[0] "journal d'installation {setup} ; {count} fichier de journal du service."
 msgstr[1] "journal d'installation {setup} ; {count} fichiers de journal du service."
 msgstr[2] "journal d'installation {setup} ; {count} fichiers de journal du service."
+
+#. Help line of the location verb in the command list and of its topic.
+msgctxt "cli.help.location"
+msgid "Add, remove or repair the Network location entries of the profiles."
+msgstr "Permet d'ajouter, de retirer ou de réparer les emplacements réseau des profils."
+
+#. Confirmation of location add when the entry was made. {name} is the profile name.
+msgctxt "cli.location.added"
+msgid "Network location added for {name}."
+msgstr "Emplacement réseau ajouté pour {name}."
+
+#. location add when the entry was already in place. {name} is the profile name.
+msgctxt "cli.location.present"
+msgid "The Network location of {name} is already in place."
+msgstr "L'emplacement réseau de {name} est déjà en place."
+
+#. Confirmation of location remove. {name} is the profile name.
+msgctxt "cli.location.removed"
+msgid "Network location removed for {name}."
+msgstr "Emplacement réseau retiré pour {name}."
+
+#. Confirmation of location repair. {count} is the number of entries made or removed.
+#, plural-arg=count
+msgctxt "cli.location.repaired"
+msgid "{count} network location repaired."
+msgid_plural "{count} network locations repaired."
+msgstr[0] "{count} emplacement réseau réparé."
+msgstr[1] "{count} emplacements réseau réparés."
+msgstr[2] "{count} emplacements réseau réparés."
+
+#. Error of the location verbs when policy DisableNetworkLocations is set. Nothing is changed.
+msgctxt "cli.location.policy"
+msgid "Network locations are turned off by policy (DisableNetworkLocations)."
+msgstr "Les emplacements réseau sont désactivés par la stratégie (DisableNetworkLocations)."
+
+#. Error of location add or remove for a service profile, which has no Network location. {name} is the profile name.
+msgctxt "cli.location.service"
+msgid "{name} is a service profile and has no Network location."
+msgstr "{name} est un profil de service et n'a pas d'emplacement réseau."
+
+#. Error of the location verbs when an entry or placeholder cannot be written.
+msgctxt "cli.location.failed"
+msgid "The Network location could not be written."
+msgstr "L'emplacement réseau n'a pas pu être écrit."

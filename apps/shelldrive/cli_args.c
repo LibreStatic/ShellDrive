@@ -222,6 +222,7 @@ static cli_cmd command_of(const wchar_t *w)
   if (wcscmp(w, L"status") == 0 || wcscmp(w, L"stats") == 0) return CLI_CMD_STATUS;   /* stats: status --stats */
   if (wcscmp(w, L"refresh") == 0) return CLI_CMD_REFRESH;
   if (wcscmp(w, L"cache") == 0) return CLI_CMD_CACHE;
+  if (wcscmp(w, L"location") == 0) return CLI_CMD_LOCATION;
   if (wcscmp(w, L"profile") == 0) return CLI_CMD_PROFILE;
   if (wcscmp(w, L"hostkey") == 0) return CLI_CMD_HOSTKEY;
   if (wcscmp(w, L"service") == 0) return CLI_CMD_SERVICE;
@@ -398,6 +399,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       } else if (a->cmd == CLI_CMD_CACHE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
+      } else if (a->cmd == CLI_CMD_LOCATION) {
+        if (a->positional == NULL) slot = &a->positional;   /* add | remove | repair */
+        else if (a->arg2 == NULL) slot = &a->arg2;          /* the profile (repair takes none, checked below) */
       } else if (a->cmd == CLI_CMD_SECRET) {
         if (a->positional == NULL) slot = &a->positional;   /* set | delete */
         else if (a->arg2 == NULL) slot = &a->arg2;          /* rejected below (no second argument) */
@@ -548,6 +552,20 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     if (a->all && a->arg2)
       return set_err(a, CLI_E_CONFLICT, L"--all", a->arg2);
     if (!a->all && !a->arg2)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
+    break;
+  case CLI_CMD_LOCATION:
+    /* location add|remove <profile> | repair (cli_location.c, 03 §6.1, §8.7): no options beyond the globals */
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"repair") == 0) {
+      if (a->arg2)
+        return set_err(a, CLI_E_EXTRA_ARGUMENT, a->arg2, NULL);
+      break;
+    }
+    if (wcscmp(a->positional, L"add") != 0 && wcscmp(a->positional, L"remove") != 0)
+      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+    if (!a->arg2)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
     break;
   case CLI_CMD_SECRET:

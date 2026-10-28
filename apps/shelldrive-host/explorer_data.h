@@ -44,4 +44,26 @@ void explorer_config_changed(void);
    folders and the icons listed in explorer.ini. Entries without our marker are never touched. No agent needed. */
 void explorer_cleanup_user(void);
 
+/* shelldrive location add|remove|repair (03 §6.1, §8.7), run by shelldrive.exe without an agent. Each returns one of
+   the EXPLORER_LOC_* codes. All three refuse with EXPLORER_LOC_POLICY when policy DisableNetworkLocations is set, and
+   change nothing then. Only entries with our [ShellDrive] profile= marker are ever deleted. The entries of mounted
+   profiles are not re-pointed here (no mount state is known without the agent): the agent corrects them at its next
+   profile change or start. */
+enum {
+  EXPLORER_LOC_OK = 0,
+  EXPLORER_LOC_POLICY,       /* DisableNetworkLocations = 1 */
+  EXPLORER_LOC_FAILED        /* the NetHood folder or a placeholder could not be written */
+};
+
+/* 1 when policy DisableNetworkLocations = 1 (the CLI checks it before it writes a profile). */
+int explorer_location_blocked(void);
+
+/* add: the entry of one profile (id, UTF-8 display name) exists after the call; *created = 1 when it was made. */
+int explorer_location_add(const char *id, const char *name, int *created);
+/* remove: the entry and the placeholder of one profile are gone; *removed = 1 when an entry was deleted. */
+int explorer_location_remove(const char *id, int *removed);
+/* repair: entries of profiles that are gone or no longer ask for one are deleted, missing ones are created, under
+   config.lock. *changed = entries created plus entries deleted. */
+int explorer_location_repair(int *changed);
+
 #endif /* SD_HOST_EXPLORER_DATA_H */

@@ -157,8 +157,10 @@ Priority 3: Explorer integration (8).
     (8.7, `explorer_data.c`): the entries now follow profile changes while the agent runs (create, rename, remove, `network_location = no`;
     mounted profiles keep their drive as target; `scope = service` profiles get none) and `--installer-hook user-cleanup --apply`
     removes our NetHood entries and placeholders. Tests: `m3_network_location_follows_profile_changes`,
-    `m3_user_cleanup_hook_removes_our_entries`. **Open:** `shelldrive location add|remove|repair` in the CLI, the portable-mode
-    exclusion (no portable detection exists yet), the `[verify]` items on real Explorer.
+    `m3_user_cleanup_hook_removes_our_entries`. **Round 20 (`wip/r20-locverbs`), done:** `shelldrive location add|remove|repair`
+    (`cli_location.c`, shared with the agent through `explorer_data.c`; test `smoke_location_verbs`, parser test
+    `cli_parse_location_verbs`). **Open:** the portable-mode exclusion (no portable detection exists yet), the `[verify]`
+    items on real Explorer, a policy smoke test (sd_policy has no test seam yet).
     Still missing: Windows 11 modern menu (8.6, needs the certificate). The UI verbs used are `--action mount <profile id>`, `show`, `open|unmount|reconnect X:`, all
     existing in `ui_wire.c`; no new IPC method was needed (the DLL never opens the pipe, 8.2).
 12. **`.sdmount` MOTW check and error text** are in `main.c` (`--action mount-file`); the shell association
