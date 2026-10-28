@@ -21,6 +21,7 @@ SD_TEST_DECL(ec_independent_reference);
 SD_TEST_DECL(wycheproof_ecdsa);
 SD_TEST_DECL(wycheproof_ecdh);
 SD_TEST_DECL(ec_sign_verify_and_rules);
+SD_TEST_DECL(ec_field_reduction_differential);
 SD_TEST_DECL(cng_diff_ecdsa);
 SD_TEST_DECL(cng_diff_ecdh);
 SD_TEST_DECL(cng_diff_rsa);
@@ -49,6 +50,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(wycheproof_ecdsa),
   SD_TEST_ENTRY(wycheproof_ecdh),
   SD_TEST_ENTRY(ec_sign_verify_and_rules),
+  SD_TEST_ENTRY(ec_field_reduction_differential),
   SD_TEST_ENTRY(cng_diff_ecdsa),
   SD_TEST_ENTRY(cng_diff_ecdh),
   SD_TEST_ENTRY(cng_diff_rsa),

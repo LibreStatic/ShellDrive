@@ -4,7 +4,9 @@ Status: design, updated to the accepted decisions of 2026-10-24 (`decisions.md`,
 where they differ) and to the resolutions of `00-integration-review.md` that concern this module. Threat-model
 integration 2026-10-24: the recommendations of `05-threat-model.md` §8 that target this module (`TM-Rxx`, as
 accepted by decisions.md D33-D39) are applied in place; each change cites its `TM-R` and threat (`T-xx`) ids, the
-security tests (`TST-xx`, 05 §7) are mapped in section 12.4, and section 17 lists them.
+security tests (`TST-xx`, 05 §7) are mapped in section 12.4, and section 17 lists them. M7 (section 2.8.2): the P-256, P-384 and P-521 field multiplication uses the NIST reductions
+(FIPS 186-4 D.2 for P-256 and P-384, a Mersenne-type fold for P-521) on normal-form elements; the scalar field stays
+Montgomery.
 Scope: the three protocol and crypto modules under the mount backends. The filesystem layer (`sd_vfs`), the
 WebDAV and Dokany backends, the UI, credential storage and the installer are designed elsewhere. They only use the
 public APIs in sections 9 and 10 (`sd_sftp.h`, plus the few `sd_ssh.h` types it re-exports).
@@ -478,9 +480,12 @@ count is a compile-time constant per field or a fixed maximum for the bignum.
 
 #### 2.8.2 NIST P-256 / P-384 / P-521 (ECDH, ECDSA)
 
-- One generic **Montgomery field engine** with a fixed limb count per curve (CIOS word-by-word Montgomery
-  multiplication, final subtraction by mask). Specialized Solinas reductions are a later optimization, gated on the
-  same tests. P-521 uses the same engine in v1.
+- **Field arithmetic** (M7): elements in normal form with a fixed limb count per curve. A product is a schoolbook
+  multiplication followed by a curve-specific reduction (FIPS 186-4 D.2 for P-256 and P-384, Solinas-type folds of
+  2^256 and 2^384; the Mersenne-type fold 2^521 = 1 for P-521), run on 32-bit words so that 32-bit and 64-bit limb
+  builds share the code. Signed 64-bit column sums, constant shifts and masked conditional subtractions only: no
+  secret-dependent branch, index or division. The earlier generic Montgomery path (CIOS, `sd_mp_montmul`) remains
+  as the test reference. The scalar field (group order n) stays on the Montgomery engine.
 - The scalar field (group order n) uses the same engine, for ECDSA nonce inversion (Fermat) and signature
   arithmetic.
 - Points: projective coordinates with the complete addition and doubling formulas of Renes-Costello-Batina for

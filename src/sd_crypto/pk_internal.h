@@ -85,5 +85,10 @@ sd_err  sd_ec_test_mul(sd_curve c, const uint8_t *k, size_t klen, const uint8_t 
 /* r = P + Q (complete formulas) and r = 2P (doubling formula), same encodings. */
 sd_err  sd_ec_test_add(sd_curve c, const uint8_t *p, const uint8_t *q, uint8_t *out);
 sd_err  sd_ec_test_dbl(sd_curve c, const uint8_t *p, uint8_t *out);
+/* Field multiplication mod p (normal form, big-endian field-length operands below the curve's field bound):
+   the NIST reduction; a bit-serial reference (sd_mp_mod of the product); the previous Montgomery path. */
+sd_err  sd_ec_test_fe_mul(sd_curve c, const uint8_t *a, const uint8_t *b, uint8_t *out);
+sd_err  sd_ec_test_fe_ref(sd_curve c, const uint8_t *a, const uint8_t *b, uint8_t *out);
+sd_err  sd_ec_test_fe_mont(sd_curve c, const uint8_t *a, const uint8_t *b, uint8_t *out);
 
 #endif /* SD_PK_INTERNAL_H */

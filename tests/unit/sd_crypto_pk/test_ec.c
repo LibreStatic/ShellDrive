@@ -340,3 +340,118 @@ SD_TEST(ec_sign_verify_and_rules)
   SD_CHECK(sd_ec_field_len((sd_curve)9) == 0);
   sd_ec_free(NULL);
 }
+
+/* ---- NIST field reductions (ec_p.c fe_mul: FIPS 186-4 D.2 for P-256/P-384, Mersenne-type for P-521) ----
+ * Each product is checked against the bit-serial reference (sd_mp_mod of the schoolbook product) on edge
+ * operands (0, 1, 2, p-1, p, p+1, all ones, one all-ones word, boundary words 0 / 1 / 2^31 / 2^32-2 / 2^32-1,
+ * random words), and against the previous Montgomery path where both operands are below p. P-521 operands
+ * stay below 2^521, the bound its fold is written for; P-256 and P-384 operands range over the whole field
+ * length, including values above p. */
+static void fe_words_to_be(uint8_t *out, size_t fl, const uint32_t *w)
+{
+  size_t i;
+  for (i = 0; i < fl; i++)
+    out[fl - 1 - i] = (uint8_t)(w[i / 4] >> (8 * (i % 4)));
+}
+
+/* kind: 0 zero, 1 all ones, 2 one all-ones word, 3 boundary words, 4 random words; masked to `bits` bits. */
+static void fe_operand(uint8_t *out, size_t fl, unsigned bits, uint64_t *seed, int kind)
+{
+  static const uint32_t special[6] = {0, 1, 0x7fffffffu, 0x80000000u, 0xfffffffeu, 0xffffffffu};
+  uint32_t w[17];
+  uint8_t rb[4];
+  unsigned b, i;
+  memset(w, 0, sizeof(w));
+  if (kind == 1)
+    memset(w, 0xff, sizeof(w));
+  if (kind == 2) {
+    tu_rand_fill(seed, rb, sizeof(rb));
+    w[rb[0] % 17] = 0xffffffffu;
+  }
+  if (kind == 3 || kind == 4) {
+    for (i = 0; i < 17; i++) {
+      tu_rand_fill(seed, rb, sizeof(rb));
+      if (kind == 3 && (rb[1] & 1))
+        w[i] = special[rb[0] % 6];
+      else
+        w[i] = ((uint32_t)rb[0] << 24) | ((uint32_t)rb[1] << 16) | ((uint32_t)rb[2] << 8) | rb[3];
+    }
+  }
+  for (b = bits; b < 17 * 32; b++)
+    w[b / 32] &= ~(1u << (b % 32));
+  fe_words_to_be(out, fl, w);
+}
+
+/* out = in + d for d = +1 or -1 (big-endian, len bytes; the caller keeps the result in range). */
+static void fe_add_small(uint8_t *out, const uint8_t *in, size_t len, int d)
+{
+  int carry = d;
+  size_t i;
+  for (i = len; i-- > 0;) {
+    int v = in[i] + carry;
+    out[i] = (uint8_t)(v & 0xff);
+    carry = (v < 0) ? -1 : (v > 255);
+  }
+}
+
+SD_TEST(ec_field_reduction_differential)
+{
+  static const sd_curve curves[3] = {SD_CURVE_P256, SD_CURVE_P384, SD_CURVE_P521};
+  static const unsigned bits[3] = {256, 384, 521};
+  static const char *p_hex[2] = {
+    "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+    "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff",
+  };
+  static const int kinds[5] = {0, 1, 2, 3, 4};
+  static const int counts[5] = {1, 1, 8, 16, 16};
+  uint64_t seed = 0x6a09e667f3bcc908ull;
+  uint8_t ops[64][66], pb[66], ref[66], got[66], mont[66];
+  uint8_t pfull[66], pm1[66], pp1[66];
+  size_t ci, i, j, n, fl, total = 0;
+  int k, q;
+  for (ci = 0; ci < 3; ci++) {
+    sd_curve c = curves[ci];
+    unsigned nb = bits[ci];
+    fl = sd_ec_field_len(c);
+    SD_REQUIRE(fl != 0);
+    memset(pfull, 0, sizeof(pfull));
+    if (ci < 2) {
+      SD_REQUIRE(hx(p_hex[ci], pfull + (66 - fl), fl) == fl);
+    } else {
+      memset(pfull + 1, 0xff, 65);
+      pfull[0] = 0x01;                 /* 2^521 - 1 in 66 bytes */
+    }
+    memcpy(pb, pfull + (66 - fl), fl);
+    fe_add_small(pm1, pb, fl, -1);
+    fe_add_small(pp1, pb, fl, +1);
+    n = 0;
+    memset(ops[n], 0, 66);
+    n++;                                /* 0 */
+    memset(ops[n], 0, 66);
+    ops[n][fl - 1] = 1;
+    n++;                                /* 1 */
+    memset(ops[n], 0, 66);
+    ops[n][fl - 1] = 2;
+    n++;                                /* 2 */
+    memcpy(ops[n++], pm1, fl);          /* p - 1 */
+    memcpy(ops[n++], pb, fl);           /* p */
+    if (ci < 2)
+      memcpy(ops[n++], pp1, fl);        /* p + 1 (below 2^bits only for P-256 and P-384) */
+    for (k = 0; k < 5; k++)
+      for (q = 0; q < counts[k]; q++)
+        fe_operand(ops[n++], fl, nb, &seed, kinds[k]);
+    SD_CHECK(n > 40);
+    for (i = 0; i < n; i++) {
+      for (j = 0; j < n; j++) {
+        SD_CHECK(sd_ec_test_fe_ref(c, ops[i], ops[j], ref) == SD_OK);
+        SD_CHECK(memcmp(ref, pb, fl) < 0);                       /* the reference is reduced */
+        SD_CHECK(sd_ec_test_fe_mul(c, ops[i], ops[j], got) == SD_OK && memcmp(got, ref, fl) == 0);
+        if (memcmp(ops[i], pb, fl) < 0 && memcmp(ops[j], pb, fl) < 0) {
+          SD_CHECK(sd_ec_test_fe_mont(c, ops[i], ops[j], mont) == SD_OK && memcmp(mont, ref, fl) == 0);
+        }
+        total++;
+      }
+    }
+  }
+  SD_CHECK(total > 6000);
+}
