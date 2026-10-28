@@ -39,7 +39,9 @@
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
 #include "sd_config/sd_config.h"
+#include "sd_crypto/sd_crypto.h"
 #include "sd_ipc/sd_ipc.h"
+#include "sd_policy/sd_policy.h"
 #include "sd_secret/sd_secret.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_thread.h"
@@ -1883,6 +1885,16 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
     return fail(err, SD_E_INVALID_PARAM, "usage", "profile or adhoc required");
   }
   }
+  {
+    /* M4 (03 §3.4, §3.5): the effective write mode. An unset mount.write_mode takes [defaults] write_mode;
+       ForceWriteThrough refuses an explicit behind */
+    DWORD fv = 0;
+    int wm = prof->write_mode;
+    int force = sd_policy_get_dword(SD_POLICY_FORCEWRITETHROUGH, &fv) && fv != 0;
+    if (sd_profile_effective_write_mode(prof, &g.settings, force, &wm) != SD_OK)
+      return fail(err, SD_E_ACCESS_DENIED, "policy_denied", "write mode behind is not allowed by policy");
+    prof->write_mode = wm;
+  }
   if (sd_json_get_bool(params, "read_only", &ro) && ro)
     prof->read_only = 1;
   if (sd_json_get(params, "connections")) {
@@ -2804,6 +2816,35 @@ static sd_err handle_log_tail(const sd_json *params, sd_json_writer *res, sd_ipc
 
 /* ---- config.reload {scope?} (decision 3: the service only relies on this in M3) ---- */
 
+/* M4 (03 §10.1, TM-R31): [log] privacy and the LogPrivacy policy. Strict mode hashes host, user and remote path
+   with HMAC-SHA-256 under the per-installation key state\log.key. */
+static uint8_t g_log_key[32];
+
+static void log_privacy_hash(void *ctx, const char *utf8, size_t len, uint8_t out[32])
+{
+  sd_hmac_ctx c;
+  (void)ctx;
+  sd_hmac_init(&c, SD_HASH_SHA256, g_log_key, sizeof(g_log_key));
+  sd_hmac_update(&c, utf8, len);
+  sd_hmac_final(&c, out);
+  sd_hmac_wipe(&c);
+}
+
+static void log_privacy_apply(const sd_settings *s)
+{
+  DWORD v = 0;
+  int pol = sd_policy_get_dword(SD_POLICY_LOGPRIVACY, &v) ? (v ? 1 : 0) : -1;
+  int mode = sd_settings_effective_privacy(s, pol);
+  if (mode != SD_SETTINGS_PRIVACY_STRICT) {
+    sd_log_set_privacy(SD_LOG_PRIVACY_STANDARD, NULL, NULL);
+  } else if (sd_config_log_key(g_log_key) == SD_OK) {
+    sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, log_privacy_hash, NULL);
+  } else {
+    sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, NULL, NULL);   /* no key: names print as [redacted] */
+    SD_LOGW("agent", "log.key cannot be read or created: strict log privacy keeps names out of the log");
+  }
+}
+
 static int count_profile(void *ctx, const sd_profile *p, const wchar_t *path)
 {
   SD_UNUSED(p);
@@ -2830,8 +2871,10 @@ static sd_err handle_config_reload(const sd_json *params, sd_json_writer *res, s
   changed = memcmp(&g.settings, &ns, sizeof(ns)) != 0;
   g.settings = ns;
   sd_mutex_unlock(&g.lock);
-  if (changed)
+  if (changed) {
     sd_log_set_level((sd_log_level)ns.log_level);
+    log_privacy_apply(&ns);
+  }
   (void)sd_profile_enum(count_profile, &profiles);
   sd_jw_key(res, "profiles");
   sd_jw_obj_begin(res);
@@ -3440,6 +3483,7 @@ int host_agent_run(const host_agent_opts *opts)
   g.boot_tick = sd_tick_ms();
   (void)sd_settings_load(&g.settings);
   sd_log_set_level((sd_log_level)g.settings.log_level);
+  log_privacy_apply(&g.settings);
   {
     sd_secret_config sc;
     wchar_t root[MAX_PATH];

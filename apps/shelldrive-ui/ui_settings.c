@@ -111,32 +111,63 @@ static int run_key_on(void)
   return on;
 }
 
-static sd_err run_key_set(int on)
+/* Sets (on) or removes one value of the per-user Run key. Missing values are not an error when removing. */
+static sd_err run_value_set(const wchar_t *value, const wchar_t *cmd, int on)
 {
   HKEY k = NULL;
   LONG r;
   if (on) {
-    wchar_t exe[MAX_PATH * 2], cmd[MAX_PATH * 2 + 32];
-    if (GetModuleFileNameW(NULL, exe, SD_COUNTOF(exe)) == 0)
-      return SD_E_FAILURE;
-    if (ui_settings_run_command(exe, cmd, SD_COUNTOF(cmd)) != SD_OK)
-      return SD_E_INVALID_PARAM;
     r = RegCreateKeyExW(HKEY_CURRENT_USER, ST_RUN_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL);
     if (r == ERROR_SUCCESS) {
-      r = RegSetValueExW(k, ST_RUN_VALUE, 0, REG_SZ, (const BYTE *)cmd,
-                         (DWORD)((wcslen(cmd) + 1) * sizeof(wchar_t)));
+      r = RegSetValueExW(k, value, 0, REG_SZ, (const BYTE *)cmd, (DWORD)((wcslen(cmd) + 1) * sizeof(wchar_t)));
       RegCloseKey(k);
     }
   } else {
     r = RegOpenKeyExW(HKEY_CURRENT_USER, ST_RUN_KEY, 0, KEY_SET_VALUE, &k);
     if (r == ERROR_SUCCESS) {
-      r = RegDeleteValueW(k, ST_RUN_VALUE);
+      r = RegDeleteValueW(k, value);
       RegCloseKey(k);
     }
     if (r == ERROR_FILE_NOT_FOUND)
       r = ERROR_SUCCESS;
   }
   return r == ERROR_SUCCESS ? SD_OK : SD_E_FAILURE;
+}
+
+/* The tray's value: "<this program>" --tray. */
+static sd_err run_key_set(int on)
+{
+  wchar_t exe[MAX_PATH * 2], cmd[MAX_PATH * 2 + 32] = L"";
+  if (on) {
+    if (GetModuleFileNameW(NULL, exe, SD_COUNTOF(exe)) == 0)
+      return SD_E_FAILURE;
+    if (ui_settings_run_command(exe, cmd, SD_COUNTOF(cmd)) != SD_OK)
+      return SD_E_INVALID_PARAM;
+  }
+  return run_value_set(ST_RUN_VALUE, cmd, on);
+}
+
+/* The agent's value (M4, 03 §3.2 Start): shelldrive-host.exe next to this program, agent --logon. It is wanted when
+   [agent] start_at_logon is yes or a profile has autostart = logon (sd_settings_agent_run_wanted). */
+#define ST_AGENT_RUN_VALUE L"ShellDriveAgent"
+
+static sd_err agent_run_set(int on)
+{
+  wchar_t exe[MAX_PATH * 2], cmd[MAX_PATH * 2 + 32] = L"";
+  wchar_t *slash;
+  if (on) {
+    if (GetModuleFileNameW(NULL, exe, SD_COUNTOF(exe)) == 0)
+      return SD_E_FAILURE;
+    slash = wcsrchr(exe, L'\\');
+    if (slash == NULL)
+      return SD_E_FAILURE;
+    slash[1] = L'\0';
+    if (wcscat_s(exe, SD_COUNTOF(exe), L"shelldrive-host.exe") != 0)
+      return SD_E_NAME_TOO_LONG;
+    if (ui_settings_agent_run_command(exe, cmd, SD_COUNTOF(cmd)) != SD_OK)
+      return SD_E_INVALID_PARAM;
+  }
+  return run_value_set(ST_AGENT_RUN_VALUE, cmd, on);
 }
 
 /* ---- policies and read-only status ---- */
@@ -333,7 +364,13 @@ static void on_save(void)
       ui_win_error(g_st.wnd, SD_MSG_UI_SETTINGS_SAVE_FAILED, e);
       return;
     }
-    g_app.notify_on = s.notify ? 1 : 0;
+    g_app.settings = s;
+  }
+  /* the agent's Run value follows [agent] start_at_logon and the profiles with autostart = logon (M4) */
+  e = agent_run_set(sd_settings_agent_run_wanted(&s));
+  if (e != SD_OK) {
+    status_msg(SD_MSG_UI_SETTINGS_RUN_FAILED);
+    return;
   }
   if (m.start_at_logon != g_st.logon_before) {
     e = run_key_set(m.start_at_logon);

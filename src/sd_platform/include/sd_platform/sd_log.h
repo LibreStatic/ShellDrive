@@ -43,6 +43,17 @@ int          sd_log_enabled(sd_log_level level);
 sd_err sd_log_open_file(const wchar_t *path);
 void   sd_log_close(void);                                 /* flushes and closes all sinks */
 
+/* Privacy of names and paths (03 §10.1, TM-R31). Typed fields for the formatter:
+     %Hs  host name      %Us  user name      %Rs  remote path
+   standard (default): host and user are printed; a remote path only in error, debug and trace records.
+   strict: all three are replaced by a keyed hash ("h:3f9a1c", "u:...", "p:...") in every record. hash computes
+   the 32-byte MAC of a UTF-8 string (HMAC-SHA-256 with state\log.key, the caller's job); with no hash function the
+   field prints "[redacted]". Call at start-up and after a settings reload (a record in flight may use either mode). */
+typedef enum sd_log_privacy { SD_LOG_PRIVACY_STANDARD = 0, SD_LOG_PRIVACY_STRICT = 1 } sd_log_privacy;
+typedef void (*sd_log_hash_fn)(void *ctx, const char *utf8, size_t len, uint8_t out[32]);
+void           sd_log_set_privacy(sd_log_privacy mode, sd_log_hash_fn hash, void *ctx);
+sd_log_privacy sd_log_get_privacy(void);
+
 typedef void (*sd_log_sink_fn)(void *ctx, sd_log_level level, const char *line, size_t len);
 sd_err sd_log_add_sink(sd_log_sink_fn fn, void *ctx);     /* line excludes the CRLF */
 void   sd_log_remove_sink(sd_log_sink_fn fn, void *ctx);

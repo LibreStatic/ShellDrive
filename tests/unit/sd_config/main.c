@@ -30,6 +30,13 @@ SD_TEST_DECL(menu_entry_sanitizing);
 SD_TEST_DECL(menu_format_layout);
 SD_TEST_DECL(menu_format_caps);
 SD_TEST_DECL(menu_writer_through_profile_store);
+SD_TEST_DECL(settings_m4_defaults);
+SD_TEST_DECL(settings_m4_parse_values);
+SD_TEST_DECL(settings_m4_notify_kinds_and_codes);
+SD_TEST_DECL(settings_m4_write_mode_resolution);
+SD_TEST_DECL(profile_m4_write_mode_key_round_trip);
+SD_TEST_DECL(settings_m4_privacy_policy_override);
+SD_TEST_DECL(settings_m4_save_round_trip_and_run_condition);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ini_parses_grammar),
@@ -62,6 +69,13 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(menu_format_layout),
   SD_TEST_ENTRY(menu_format_caps),
   SD_TEST_ENTRY(menu_writer_through_profile_store),
+  SD_TEST_ENTRY(settings_m4_defaults),
+  SD_TEST_ENTRY(settings_m4_parse_values),
+  SD_TEST_ENTRY(settings_m4_notify_kinds_and_codes),
+  SD_TEST_ENTRY(settings_m4_write_mode_resolution),
+  SD_TEST_ENTRY(profile_m4_write_mode_key_round_trip),
+  SD_TEST_ENTRY(settings_m4_privacy_policy_override),
+  SD_TEST_ENTRY(settings_m4_save_round_trip_and_run_condition),
 };
 
 int main(int argc, char **argv)

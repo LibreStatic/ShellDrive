@@ -110,7 +110,7 @@ typedef struct ui_app {
   HANDLE mutex;                 /* SD_IPC_OBJ_UI_MUTEX, held for the life of the first instance */
   int agent_up;
   int agent_features;           /* UI_FEAT_* of the connected agent (hello), 0 when none */
-  int notify_on;                /* [ui] notify (settings.ini): balloons other than write_failed are shown when set */
+  sd_settings settings;         /* settings.ini as last loaded or saved: [ui] notify and the notify_<kind> switches (7.7) */
   int quit;
   int prompt_host;              /* --prompt-host: prompt dialogs and tray only, no main window, never starts the agent */
   unsigned idle_ms;             /* prompt host: time without an open prompt (UI_PROMPT_IDLE_MS exits) */
@@ -189,6 +189,8 @@ void   ui_tray_readd(void);
 void   ui_tray_update(void);
 void   ui_tray_callback(LPARAM mouse_message);
 void   ui_tray_balloon(const char *code, const wchar_t *drive);
+/* 1 when a balloon of this sd_notify_kind may be shown (the notify master and the kind's switch; -1: master only). */
+int    ui_tray_notify_wanted(int kind);
 /* Balloon with one catalog message; arg fills the placeholder called name ("drive" or "profile"). */
 void   ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg);
 /* Balloon with a text the caller formatted; msg names the kind (the balloon click and the rate limit use it). */

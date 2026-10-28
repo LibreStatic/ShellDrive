@@ -592,12 +592,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
       SD_COUNTOF(lang_buf) - 1u)
     lang = lang_buf;
   sd_l10n_init(&sd_l10n_catalog_ui, lang);
-  {
-    sd_settings st;
-    sd_settings_defaults(&st);
-    (void)sd_settings_load(&st);
-    g_app.notify_on = st.notify ? 1 : 0;
-  }
+  sd_settings_defaults(&g_app.settings);
+  (void)sd_settings_load(&g_app.settings);
 
   memset(&icc, 0, sizeof(icc));
   icc.dwSize = sizeof(icc);

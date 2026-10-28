@@ -135,6 +135,9 @@ typedef struct sd_profile {
   int      open_revalidate_ms;   /* cache.open_revalidate (1 s); -1 = never */
   uint32_t max_readahead;        /* cache.max_readahead (8 MiB) */
   int      crypto_backend;       /* security.crypto_backend: SD_PROFILE_CRYPTO_* (auto); parsed only */
+  /* M4 (03 §3.4.1, §3.4 "write mode"): 1 when mount.write_mode is in the file (or was set by a writer). 0 means the
+     key is absent and the effective mode comes from [defaults] write_mode (sd_profile_effective_write_mode). */
+  int      write_mode_set;
 } sd_profile;
 
 enum { SD_PROFILE_SCOPE_USER = 0, SD_PROFILE_SCOPE_USERS = 1, SD_PROFILE_SCOPE_SERVICE = 2 };
@@ -243,6 +246,16 @@ sd_err sd_config_cache_dir(const char *key, wchar_t *out, size_t cch);
 sd_err sd_config_identity_load(const wchar_t *dir, const char *hostkey_fp, uint32_t *uid, uint32_t *gid);
 sd_err sd_config_identity_store(const wchar_t *dir, const char *hostkey_fp, uint32_t uid, uint32_t gid);
 
+/* Notification kinds with a [ui] notify_<kind> switch (03 §7.7). Always-on kinds (host key changed, write failed,
+   agent stopped unexpectedly, session objects interference) have no switch. */
+enum { SD_SETTINGS_PRIVACY_STANDARD = 0, SD_SETTINGS_PRIVACY_STRICT = 1 };
+typedef enum sd_notify_kind {
+  SD_NOTIFY_CONNECTION_LOST = 0, SD_NOTIFY_RECONNECTED, SD_NOTIFY_MOUNT_FAILED, SD_NOTIFY_MOUNTED,
+  SD_NOTIFY_LEGACY_ALGORITHMS, SD_NOTIFY_HOSTKEYS_OFFERED, SD_NOTIFY_HOSTKEYS_SAVED, SD_NOTIFY_PROXY_PASSWORD,
+  SD_NOTIFY_POOL_LIMITED, SD_NOTIFY_SERVICE_ATTENTION, SD_NOTIFY_UPDATE_AVAILABLE, SD_NOTIFY_UPDATE_STALE,
+  SD_NOTIFY_TERRAPIN, SD_NOTIFY_HOSTKEYS_SOURCE, SD_NOTIFY_DISK_CACHE, SD_NOTIFY_COUNT
+} sd_notify_kind;
+
 /* M1 subset of <root>\settings.ini (03 §3.4.2): [log] level = error|warn|info|debug|trace (info) and
    [cache] memory = size (0 = sd_vfs default). A missing file gives the defaults; an invalid value
    is logged and ignored (the setting keeps its default). */
@@ -258,6 +271,11 @@ typedef struct sd_settings {
   int    notify;                 /* [ui] notify = yes (balloons on, default) | no */
   int    default_backend;        /* [defaults] backend: SD_PROFILE_BACKEND_* (auto) */
   char   update_channel[8];      /* [update] channel: "stable" (default) or "beta" (04 §9.1, the Settings window) */
+  /* M4 (03 §3.4 global settings, §7.7, §10.1) */
+  int    default_write_mode;     /* [defaults] write_mode = through (default, D9) | behind: profiles without mount.write_mode */
+  int    log_privacy;            /* [log] privacy = standard (default) | strict: SD_SETTINGS_PRIVACY_* (10.1, TM-R31) */
+  int    agent_start_at_logon;   /* [agent] start_at_logon = yes | no (default): the agent's HKCU Run value (3.2 Start) */
+  unsigned char notify_kind[SD_NOTIFY_COUNT];   /* [ui] notify_<kind> = yes | no, each under the notify master (7.7) */
 } sd_settings;
 void   sd_settings_defaults(sd_settings *s);
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s);   /* SD_E_INVALID_PARAM if a value was bad */
@@ -265,6 +283,27 @@ sd_err sd_settings_load(sd_settings *s);
 /* Writes the settings this struct holds into settings.ini under the per-user root: other keys and comments
    are kept, the file is replaced atomically under config.lock. An empty ui_language removes [ui] language. */
 sd_err sd_settings_save(const sd_settings *s);
+
+/* M4 helpers. Key name under [ui] of one kind, e.g. "notify_connection_lost". */
+const char *sd_notify_kind_key(sd_notify_kind k);
+/* Kind of a `warning` event code (03 §2.4, §7.7), or -1 when the code has no per-kind setting. */
+int sd_notify_kind_from_code(const char *code);
+/* 1 when a balloon of this kind may be shown: the [ui] notify master switch and the kind's own switch. kind -1
+   (no per-kind setting) follows the master switch only. */
+int sd_settings_notify_on(const sd_settings *s, int kind);
+/* Effective write mode of a profile (D9, 03 §3.4): the explicit mount.write_mode, else [defaults] write_mode.
+   policy_force_through (ForceWriteThrough = 1) makes the effective mode through; an explicit behind under that
+   policy is refused with SD_E_ACCESS_DENIED (a default is clamped to through instead). *mode is SD_PROFILE_WRITE_*. */
+sd_err sd_profile_effective_write_mode(const sd_profile *p, const sd_settings *s, int policy_force_through, int *mode);
+/* Effective [log] privacy, SD_SETTINGS_PRIVACY_*. policy_value is the LogPrivacy policy: -1 = not set, else 0 or 1;
+   a set policy overrides the file (03 §3.1). */
+int    sd_settings_effective_privacy(const sd_settings *s, int policy_value);
+/* 1 when the agent's HKCU Run value should exist: [agent] start_at_logon = yes, or a profile with
+   mount.autostart = logon (03 §3.2 Start). */
+int    sd_settings_agent_run_wanted(const sd_settings *s);
+/* The per-installation key of the log privacy hash (03 §10.1): 32 bytes read from state\log.key, created with
+   sd_random and the protected per-user DACL when missing. */
+sd_err sd_config_log_key(uint8_t key[32]);
 /* Process-wide override of the per-user root (portable layouts, tests). NULL clears it. */
 void   sd_config_set_root_override(const wchar_t *dir);
 

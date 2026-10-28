@@ -94,4 +94,8 @@ sd_err ui_settings_parse_cache(const wchar_t *text, unsigned *mb);
 /* The Run key value that starts the tray at sign-in: "<exe>" --tray (quoted path). */
 sd_err ui_settings_run_command(const wchar_t *exe, wchar_t *out, size_t cap);
 
+/* M4 (03 §3.2 Start): the Run key value of the agent, "<host_exe>" agent --logon (quoted path). The value is
+   ShellDriveAgent under HKCU Run; it exists when sd_settings_agent_run_wanted says so. */
+sd_err ui_settings_agent_run_command(const wchar_t *host_exe, wchar_t *out, size_t cap);
+
 #endif /* SD_UI_SETTINGS_MODEL_H */

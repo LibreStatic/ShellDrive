@@ -194,6 +194,76 @@ SD_TEST(secbuf_small_and_large)
   sd_secbuf_free(NULL);
 }
 
+/* M4 (03 §10.1): the privacy filter of %Hs / %Us / %Rs. The sink keeps the last record. */
+typedef struct priv_sink { int calls; char last[1024]; } priv_sink;
+
+static void priv_sink_fn(void *ctx, sd_log_level level, const char *line, size_t len)
+{
+  priv_sink *s = (priv_sink *)ctx;
+  SD_UNUSED(level);
+  s->calls++;
+  if (len >= sizeof(s->last))
+    len = sizeof(s->last) - 1;
+  memcpy(s->last, line, len);
+  s->last[len] = 0;
+}
+
+/* A fixed fake MAC: the first three bytes give "3f9a1c" in strict mode. */
+static void priv_hash(void *ctx, const char *utf8, size_t len, uint8_t out[32])
+{
+  size_t i;
+  SD_UNUSED(ctx);
+  SD_UNUSED(utf8);
+  SD_UNUSED(len);
+  for (i = 0; i < 32; i++)
+    out[i] = 0xEE;
+  out[0] = 0x3f;
+  out[1] = 0x9a;
+  out[2] = 0x1c;
+}
+
+/* sd_logv has no format annotation, so the restricted %Hs / %Us / %Rs specifiers do not trip the printf checks of /analyze. */
+static void plog(sd_log_level level, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  sd_logv(level, "t", NULL, fmt, ap);
+  va_end(ap);
+}
+
+SD_TEST(log_privacy_standard_and_strict)
+{
+  priv_sink s;
+  memset(&s, 0, sizeof(s));
+  SD_REQUIRE(sd_log_add_sink(priv_sink_fn, &s) == SD_OK);
+  sd_log_set_level(SD_LOG_TRACE);
+
+  sd_log_set_privacy(SD_LOG_PRIVACY_STANDARD, NULL, NULL);
+  SD_CHECK(sd_log_get_privacy() == SD_LOG_PRIVACY_STANDARD);
+  plog(SD_LOG_INFO, "host %Hs user %Us path %Rs", "example.org", "alice", "/srv/a.txt");
+  SD_CHECK(strstr(s.last, "host example.org user alice path (hidden)") != NULL);
+  plog(SD_LOG_ERROR, "failed %Rs", "/srv/a.txt");
+  SD_CHECK(strstr(s.last, "failed /srv/a.txt") != NULL);            /* error records name the path */
+  plog(SD_LOG_DEBUG, "debug %Rs", "/srv/b.txt");
+  SD_CHECK(strstr(s.last, "debug /srv/b.txt") != NULL);
+
+  sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, priv_hash, NULL);
+  plog(SD_LOG_ERROR, "host %Hs user %Us path %Rs", "example.org", "alice", "/srv/a.txt");
+  SD_CHECK(strstr(s.last, "host h:3f9a1c user u:3f9a1c path p:3f9a1c") != NULL);   /* every level, errors too */
+  SD_CHECK(strstr(s.last, "example.org") == NULL);
+  SD_CHECK(strstr(s.last, "alice") == NULL);
+  SD_CHECK(strstr(s.last, "/srv/") == NULL);
+
+  /* strict without a key never prints the text */
+  sd_log_set_privacy(SD_LOG_PRIVACY_STRICT, NULL, NULL);
+  plog(SD_LOG_WARN, "host %Hs", "example.org");
+  SD_CHECK(strstr(s.last, "host [redacted]") != NULL);
+
+  sd_log_set_privacy(SD_LOG_PRIVACY_STANDARD, NULL, NULL);
+  sd_log_set_level(SD_LOG_INFO);
+  sd_log_remove_sink(priv_sink_fn, &s);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(platform_os_version),
   SD_TEST_ENTRY(platform_resolve),
@@ -204,6 +274,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(log_restricted_format),
   SD_TEST_ENTRY(log_sinks_and_levels),
   SD_TEST_ENTRY(log_file_sink),
+  SD_TEST_ENTRY(log_privacy_standard_and_strict),
   SD_TEST_ENTRY(secbuf_small_and_large),
 };
 

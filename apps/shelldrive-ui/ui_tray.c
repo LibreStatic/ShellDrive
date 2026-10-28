@@ -320,11 +320,17 @@ void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
   sd_free(text);
 }
 
+int ui_tray_notify_wanted(int kind)
+{
+  return sd_settings_notify_on(&g_app.settings, kind);
+}
+
 void ui_tray_balloon(const char *code, const wchar_t *drive)
 {
   sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
-  /* write_failed is always shown (03 §7.7); the others follow the notifications setting */
-  int shown = g_app.notify_on || (code && strcmp(code, "write_failed") == 0);
+  /* write_failed is always shown (03 §7.7); the others follow the master switch and their own notify_<kind>. A
+     notice that shows no balloon still goes to the event list (7.7). */
+  int shown = (code && strcmp(code, "write_failed") == 0) || ui_tray_notify_wanted(sd_notify_kind_from_code(code));
   if (code && strcmp(code, "legacy_algorithms") == 0)
     msg = SD_MSG_UI_WARN_LEGACY;
   else if (code && strcmp(code, "terrapin_exposed") == 0)
@@ -351,7 +357,7 @@ static void notify_hostkeys(const wchar_t *host)
   if (text == NULL)
     return;
   record_notice(SD_MSG_UI_NOTIFY_HOSTKEYS, host, text);
-  if (g_app.notify_on)
+  if (ui_tray_notify_wanted(SD_NOTIFY_HOSTKEYS_OFFERED))
     post_balloon(SD_MSG_UI_NOTIFY_HOSTKEYS, host, text);
   sd_free(text);
 }

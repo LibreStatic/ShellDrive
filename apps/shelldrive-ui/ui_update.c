@@ -241,7 +241,7 @@ void ui_update_on_event(const char *name, const sd_json *data)
     if (o.version[0] == '\0')
       return;
     /* one balloon per version (the model), then the notification limiter spaces the balloons */
-    if (ui_upd_on_available(&g_upd, &o) && g_app.notify_on) {
+    if (ui_upd_on_available(&g_upd, &o) && ui_tray_notify_wanted(SD_NOTIFY_UPDATE_AVAILABLE)) {
       wchar_t version[UI_UPD_VERSION_MAX];
       ui_text_utf8(o.version, version, SD_COUNTOF(version));
       ui_tray_notify_msg(SD_MSG_UI_NOTIFY_UPDATE, "version", version);
