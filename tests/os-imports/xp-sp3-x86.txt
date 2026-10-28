@@ -377,6 +377,7 @@ user32.dll!DefWindowProcW
 user32.dll!DestroyWindow
 user32.dll!DispatchMessageW
 user32.dll!FindWindowW
+user32.dll!GetDlgItemTextW   # NT 3.1+ (host key manager dialogs)
 user32.dll!GetMessageW
 user32.dll!GetProcessWindowStation
 user32.dll!GetUserObjectInformationW
@@ -387,6 +388,7 @@ user32.dll!PeekMessageW
 user32.dll!PostMessageW
 user32.dll!PostThreadMessageW
 user32.dll!RegisterClassExW
+user32.dll!SendDlgItemMessageW   # NT 3.1+ (host key manager dialogs)
 user32.dll!SendMessageTimeoutW
 user32.dll!SendMessageW
 user32.dll!TranslateMessage

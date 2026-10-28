@@ -155,6 +155,10 @@ static int parse_port(const char *s, unsigned *port)
   return 1;
 }
 
+/* /analyze tracks buf as holding only the n copied bytes and misses the terminator memset leaves after them, so it
+   reports the string scans below (C6385, C6054); buf is zeroed in full and n < sizeof(buf). */
+#pragma warning(push)
+#pragma warning(disable: 6385 6054)
 int ui_hk_target_parse(const char *spec, ui_hk_target *t)
 {
   char buf[UI_HK_HOST_MAX + 16];
@@ -173,8 +177,8 @@ int ui_hk_target_parse(const char *spec, ui_hk_target *t)
     n--;
   if (n == 0 || n >= sizeof(buf))
     return 0;
+  memset(buf, 0, sizeof(buf));          /* the whole buffer is defined (and terminated) for the scans below */
   memcpy(buf, spec, n);
-  buf[n] = '\0';
   p = buf;
   end = buf + n;
   if (p[0] == '[') {
@@ -206,12 +210,13 @@ int ui_hk_target_parse(const char *spec, ui_hk_target *t)
   n = strlen(p);
   if (n == 0 || n >= UI_HK_HOST_MAX)
     return 0;
-  for (i = 0; i < n; i++) {
+  /* copy up to the terminator (n bounds it; indexing by n directly trips /analyze C6385) */
+  for (i = 0; i < n && p[i] != '\0'; i++) {
     if (!host_char_ok(p[i], v6))
       return 0;
     t->host[i] = (p[i] >= 'A' && p[i] <= 'Z') ? (char)(p[i] - 'A' + 'a') : p[i];
   }
-  t->host[n] = '\0';
+  t->host[i] = '\0';
   if (t->host[0] == '.' || t->host[0] == '-')
     return 0;
   t->port = port;
@@ -221,6 +226,7 @@ int ui_hk_target_parse(const char *spec, ui_hk_target *t)
     sprintf_s(t->lookup, sizeof(t->lookup), "[%s]:%u", t->host, port);
   return 1;
 }
+#pragma warning(pop)
 
 int ui_hk_type_ok(const char *type)
 {

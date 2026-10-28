@@ -211,6 +211,10 @@ static void w32_csub(uint32_t *x, const uint32_t *m, size_t n)
 /* P-256, FIPS 186-4 D.2.3: c0..c15 are the product words. Vector j lists, least significant word first,
    which c_k fills word k (index 16 is a zero word). The result is s0 + 2 s1 + 2 s2 + s3 + s4 - s5 - s6 - s7
    - s8 (mod p). The sum lies in (-4 2^256, 7 2^256); 5p makes it non-negative and below 13p. */
+/* /analyze cannot follow the constant index tables into tz (C6385, a false positive: every index is 0..16 and tz holds
+   32 words, 16..31 zero). */
+#pragma warning(push)
+#pragma warning(disable: 6385)
 static void red_p256(uint32_t *r, const uint32_t *t)
 {
   static const uint8_t s0[8] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -222,25 +226,25 @@ static void red_p256(uint32_t *r, const uint32_t *t)
   static const uint8_t s6[8] = {12, 13, 14, 15, 16, 16, 9, 11};
   static const uint8_t s7[8] = {13, 14, 15, 8, 9, 10, 16, 12};
   static const uint8_t s8[8] = {14, 15, 16, 9, 10, 11, 16, 13};
-  uint32_t tz[17], x[9];
+  uint32_t tz[32], x[9];                /* words 16..31 are zero; indices are masked to 0..31 (public tables) */
   int64_t acc[9];
   size_t k;
   memcpy(tz, t, 16 * sizeof(uint32_t));
-  tz[16] = 0;
+  memset(tz + 16, 0, 16 * sizeof(uint32_t));
   SD_CT_NO_VECTOR
   for (k = 0; k < 9; k++)
     acc[k] = (int64_t)k_w32_p256_5p[k];
   SD_CT_NO_VECTOR
   for (k = 0; k < 8; k++) {
-    acc[k] += (int64_t)tz[s0[k]];
-    acc[k] += (int64_t)tz[s1[k]] << 1;
-    acc[k] += (int64_t)tz[s2[k]] << 1;
-    acc[k] += (int64_t)tz[s3[k]];
-    acc[k] += (int64_t)tz[s4[k]];
-    acc[k] -= (int64_t)tz[s5[k]];
-    acc[k] -= (int64_t)tz[s6[k]];
-    acc[k] -= (int64_t)tz[s7[k]];
-    acc[k] -= (int64_t)tz[s8[k]];
+    acc[k] += (int64_t)tz[s0[k] & 31];
+    acc[k] += (int64_t)tz[s1[k] & 31] << 1;
+    acc[k] += (int64_t)tz[s2[k] & 31] << 1;
+    acc[k] += (int64_t)tz[s3[k] & 31];
+    acc[k] += (int64_t)tz[s4[k] & 31];
+    acc[k] -= (int64_t)tz[s5[k] & 31];
+    acc[k] -= (int64_t)tz[s6[k] & 31];
+    acc[k] -= (int64_t)tz[s7[k] & 31];
+    acc[k] -= (int64_t)tz[s8[k] & 31];
   }
   (void)w32_norm(x, acc, 9);            /* 0 <= value < 13p < 2^260: nine words, no carry out */
   w32_csub(x, k_w32_p256_8p, 9);
@@ -249,6 +253,7 @@ static void red_p256(uint32_t *r, const uint32_t *t)
   w32_csub(x, k_w32_p256_1p, 9);
   memcpy(r, x, 8 * sizeof(uint32_t));
 }
+#pragma warning(pop)
 
 /* P-384: 2^384 = 2^128 + 2^96 - 2^32 + 1 (mod p). Fold the high 12 words twice (the first fold leaves a value
    below 2^513, the second below 2^385), then once more for the single carry word, and subtract p once.

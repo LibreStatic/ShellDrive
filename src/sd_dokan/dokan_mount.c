@@ -120,6 +120,7 @@ static BOOL requestor_identity(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi, reques
   r->user = (BYTE *)sd_alloc(n);
   if (r->user == NULL || !GetTokenInformation(tok, TokenUser, r->user, n, &n))
     goto out;
+#pragma warning(suppress: 28159)   /* deliberate: XP has no GetTickCount64; the cache's expiry test is wrap-safe */
   now = GetTickCount();
   if (m->cache != NULL && dk_cache_get(m->cache, &stats.TokenId, &stats.ModifiedId,
                                        ((TOKEN_USER *)r->user)->User.Sid, now, &r->gsids, &r->n_gsids)) {

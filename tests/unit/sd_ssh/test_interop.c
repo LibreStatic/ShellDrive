@@ -714,6 +714,20 @@ static int write_kh(const char *text)
   return ok && w == strlen(text);
 }
 
+/* ACCEPT_AND_STORE writes the key from the connection's worker after the connect has completed: wait (up to 10 s, a
+   loaded machine) until the file holds an entry, so a later rewrite is not undone by that late append. */
+static int wait_kh_written(void)
+{
+  int i;
+  for (i = 0; i < 1000; i++) {
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (GetFileAttributesExW(g_kh_path, GetFileExInfoStandard, &a) && (a.nFileSizeLow || a.nFileSizeHigh))
+      return 1;
+    Sleep(10);
+  }
+  return 0;
+}
+
 SD_TEST(interop_reconnect_host_key_mismatch)
 {
   char text[512];
@@ -730,6 +744,7 @@ SD_TEST(interop_reconnect_host_key_mismatch)
   o.decision = SD_HK_ACCEPT_AND_STORE;
   SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
   SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_REQUIRE(wait_kh_written());
   /* the stored key changes underneath (what a MITM after a drop would look like to us) */
   SD_REQUIRE(tu_read_fixture("other_host.pub", &f, &n));
   {

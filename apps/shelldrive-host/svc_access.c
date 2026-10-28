@@ -243,6 +243,6 @@ int svc_refuse_log_due(svc_refuse_entry *tab, size_t n, const wchar_t *sid, uint
   }
   tab[victim].used = 1;
   tab[victim].last_ms = now_ms;
-  lstrcpynW(tab[victim].sid, sid, (int)SD_COUNTOF(tab[victim].sid));
+  wcsncpy_s(tab[victim].sid, SD_COUNTOF(tab[victim].sid), sid, _TRUNCATE);
   return 1;
 }
