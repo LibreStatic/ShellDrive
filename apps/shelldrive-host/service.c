@@ -1115,6 +1115,7 @@ static void job_start(void *arg)
     pr.global_mount = 1;
     pr.legacy_policy = p->legacy_algorithms;
     pr.refuse_terrapin_exposed = p->refuse_terrapin_exposed;
+    pr.compression = p->compression;
     pr.connections = 1;
     pr.no_secret_cache = p->cache_secrets ? 0 : 1;
     pr.offline_wait_ms = p->offline_wait_ms;

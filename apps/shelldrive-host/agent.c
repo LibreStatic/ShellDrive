@@ -1973,6 +1973,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
   h->params.hop_count = h->chain->count;
   h->params.legacy_policy = prof->legacy_algorithms;          /* same values as sd_legacy_policy */
   h->params.refuse_terrapin_exposed = prof->refuse_terrapin_exposed;
+  h->params.compression = prof->compression;
   h->params.connections = prof->connections;
   h->params.keepalive_ms = prof->keepalive_ms;
   h->params.connect_timeout_ms = prof->connect_timeout_ms;

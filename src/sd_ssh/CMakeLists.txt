@@ -15,7 +15,8 @@ set(SD_SSH_SOURCES
     negotiate.c
     packet.c
     prompt.c
-    seccache.c)
+    seccache.c
+    ssh_zlib.c)
 set(SD_SSH_SOURCES_HEADERS)
 include(${CMAKE_CURRENT_LIST_DIR}/sources_transport.cmake OPTIONAL)
 include(${CMAKE_CURRENT_LIST_DIR}/sources_auth.cmake OPTIONAL)

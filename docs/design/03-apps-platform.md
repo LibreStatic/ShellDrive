@@ -958,6 +958,7 @@ the value from `sd_mount`.
 | `proxy.proxy_fallback_direct`, `proxy.proxy_fallback_direct.N` | bool (`no`); only for `proxy = system` | `sd_ssh` (01 §5.2) | `AllowSystemProxy` |
 | `connection.connections` | `1..4` (`1`) | `sd_sftp` pool (`sd_sftp_options.connections`, D18, 01 §10.9) | — |
 | `connection.channels` | `1 \| 2` (`2`) | `sd_sftp` (D19) | — |
+| `connection.compression` | `yes \| no` (`no`); `yes` offers `zlib@openssh.com` (delayed, 01 section 4.7) | `sd_mount` -> `sd_ssh` (`SD_SSH_CFG_COMPRESS`) | — |
 | `mount.target`, `mount.backend` | (`auto`, `auto`) | `sd_mount` | `AllowedBackends` |
 | `mount.read_only` | bool (`no`) | `sd_vfs` | — |
 | `mount.write_mode` | `through \| behind` (`through`, D9) | `sd_vfs` (`write_mode`; `wb_window` 16 MiB node / 64 MiB mount for `behind`) | `ForceWriteThrough` |

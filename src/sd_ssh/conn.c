@@ -431,6 +431,7 @@ sd_err ssh_hop_init(sd_ssh_conn *c, const sd_ssh_config *cfg, const sd_ssh_hop *
   if (e != SD_OK) goto fail;
   c->methods = h->auth.methods ? h->auth.methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
   c->pool_member = (cfg->flags & SD_SSH_CFG_POOL_MEMBER) != 0;
+  c->compress = (cfg->flags & SD_SSH_CFG_COMPRESS) != 0;
   c->legacy_policy = cfg->algos.legacy_policy;
   c->refuse_terrapin = cfg->algos.refuse_terrapin_exposed;
   c->hku_mode = h->update_host_keys;

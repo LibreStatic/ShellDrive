@@ -103,6 +103,7 @@ typedef struct sd_profile {
   uint32_t keepalive_ms;         /* security.keepalive; 0 = default (15 s) */
   uint32_t connect_timeout_ms;   /* security.connect_timeout; 0 = default (20 s) */
   int      refuse_terrapin_exposed;   /* security.refuse_terrapin_exposed (no) */
+  int      compression;          /* connection.compression (no): zlib@openssh.com, delayed (01 section 4.7) */
   int      network_location;     /* mount.network_location (yes): Network locations entry, 03 §8.7 (D14) */
   /* M3 (3.4.1). Every value holds its effective setting (sd_profile_defaults sets the defaults). "parsed only"
      keys are validated and round-tripped but have no consumer yet (docs/dev/m3-notes.md). */

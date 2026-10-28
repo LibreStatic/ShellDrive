@@ -1068,6 +1068,11 @@ void ssh_auth_on_msg(sd_ssh_conn *c, const uint8_t *p, size_t n)
       store_password(c);
     } else if (c->auth.step == SSH_AU_KBDINT) c->methods_used |= SD_AUTH_KBDINT;
     pk_release(&c->auth);
+    /* delayed compression (01 section 4.7) starts with the packets after USERAUTH_SUCCESS */
+    if (ssh_dir_comp_start(&c->tx) != SD_OK || ssh_dir_comp_start(&c->rx) != SD_OK) {
+      ssh_fail(c, SD_E_NO_MEMORY, SSH_DISCONNECT_BY_APPLICATION, "compression state");
+      return;
+    }
     ssh_on_authenticated(c);
     return;
   case SSH_MSG_USERAUTH_FAILURE:

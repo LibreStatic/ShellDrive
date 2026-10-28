@@ -1,6 +1,6 @@
 # 01 - SSH, SFTP and crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`)
 
-Status: design, updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
+Status: design (M7: `zlib@openssh.com` implemented, section 4.7, docs/dev/m7-notes.md), updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
 where they differ) and to the resolutions of `00-integration-review.md` that concern this module. Threat-model
 integration 2026-10-24: the recommendations of `05-threat-model.md` §8 that target this module (`TM-Rxx`, as
 accepted by decisions.md D33-D39) are applied in place; each change cites its `TM-R` and threat (`T-xx`) ids, the
@@ -741,7 +741,7 @@ cipher:   chacha20-poly1305@openssh.com, aes256-gcm@openssh.com, aes128-gcm@open
           (with hardware AES: the two GCM entries move above chacha20-poly1305)
 mac:      hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256, hmac-sha2-512,
           [legacy] hmac-sha1-etm@openssh.com, hmac-sha1
-comp:     none            (later: none, zlib@openssh.com when the profile enables compression)
+comp:     zlib@openssh.com, none   (zlib@openssh.com only when the profile sets connection.compression = yes; otherwise none)
 ```
 
 The lists above are the static preference order. For each connection the transport derives the lists it actually
@@ -880,8 +880,7 @@ enum {
 
 ### 4.7 Compression (D6)
 
-v1 offers only `none`. After 1.0 (milestone M7), `zlib@openssh.com` (activated after USERAUTH_SUCCESS) will be offered
-after `none`, and only when the profile enables compression (default off). It needs our own RFC 1950/1951
+v1 offers only `none`. After 1.0 (milestone M7), `zlib@openssh.com` (activated after USERAUTH_SUCCESS) are offered first when the profile sets `connection.compression = yes` (default `no`); otherwise only `none` is offered. The client list order decides (RFC 4253 7.1), so `none` ahead of `zlib@openssh.com` would never select compression: the list puts zlib first, as OpenSSH does with `Compression yes`. (M7 implemented; deviation from the earlier "none, then zlib" wording, recorded in docs/dev/m7-notes.md.) It needs our own RFC 1950/1951
 inflate/deflate, roughly 1500 lines, fuzzed: inflate with a 32 KiB window, deflate with fixed/dynamic Huffman and a
 modest hash-chain LZ77, Z_PARTIAL_FLUSH (sync flush) per packet, and context kept across packets. Decompressed size per
 packet is capped at 256 KiB (zip-bomb guard). Plain `zlib` (pre-auth) is never offered because it adds pre-auth attack
@@ -2440,7 +2439,7 @@ with clang + ASan/UBSan/MSan (decisions.md D21: test infrastructure only, nothin
 | `fuzz_hostkeys` | `hostkeys-00` announcements and `hostkeys-prove-00` replies |
 | `fuzz_mlkem` | ML-KEM ciphertexts and encapsulation keys (decaps never crashes; implicit rejection holds) |
 | `fuzz_field25519`, `fuzz_fieldp`, `fuzz_bn_modexp` | differential against the test-only reference bignum (section 2.7.4) |
-| `fuzz_inflate` (post-1.0) | zlib@openssh decompression |
+| `fuzz_inflate` | zlib@openssh decompression (M7) |
 
 - Seed corpora: captures from interop runs (with keys from fixtures), plus the fixtures directory.
 - CI: each target runs 5 minutes on every PR touching `src/sd_ssh|sd_sftp|sd_crypto`, and 1 hour nightly. The corpus is kept
@@ -2619,7 +2618,7 @@ lab verifications and details for the implementers:
     (1-4), `identities_only`, `cache_secrets_for_reconnect`, `refuse_terrapin_exposed`, `crypto_backend`,
     `legacy_algorithms` (`allow|warn|ask|refuse` -> `SD_LEGACY_ALLOW|WARN|ASK|REFUSE`), `host_key_alias`,
     `update_host_keys` (`ask|yes|no` -> `sd_hku_mode`), `identity_probe` (`owner|exec`; `exec` sets
-    `SD_SFTP_OPT_IDENTITY_EXEC`), `keepalive`, `connect_timeout`. Proxies use 03's per-leg keys (03 §3.8): `proxy` /
+    `SD_SFTP_OPT_IDENTITY_EXEC`), `keepalive`, `connect_timeout`, `connection.compression` (`yes|no`, default `no`; sets `SD_SSH_CFG_COMPRESS`). Proxies use 03's per-leg keys (03 §3.8): `proxy` /
     `proxy.K` (spec `none|system|http://[user@]host[:port]|socks5://[user@]host[:port]`) for leg K, which is
     `hops[K-1].proxy`; `sd_mount` parses the spec into `sd_proxy_cfg` (kind, host, port, user; `remote_dns` always
     1, 03 uses socks5h semantics). `proxy_auth` maps `auto` -> `BASIC|SSPI_KERBEROS` (TM-R10: Negotiate restricted

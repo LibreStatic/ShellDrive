@@ -70,3 +70,17 @@ set_tests_properties(unit.ssh_transport PROPERTIES RESOURCE_LOCK hkcu_shelldrive
 
 # M2 per-area test lists (each area owns tests_<area>.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/tests_auth.cmake OPTIONAL)
+
+# zlib@openssh.com (01 section 4.7): own RFC 1950/1951 codec, streams with reference fixtures, corrupt and bomb
+# input, round trips, and the delayed-compression packet test lives in unit.ssh (test_packet.c).
+#   unit.zlib              sd-test-zlib.exe (no network)
+sd_add_unit_test(zlib
+  SOURCES test_zlib.c
+  DEPS sd_ssh sd_crypto sd_base sd_platform)
+target_include_directories(sd-test-zlib PRIVATE "${CMAKE_SOURCE_DIR}/src/sd_ssh")
+
+# interop.zlib: the same sd-test-ssh-interop binary, one test. The fixture's sshd uses OpenSSH's default
+# "Compression delayed", so zlib@openssh.com is negotiated; exit 77 when the fixture is not running.
+add_test(NAME interop.zlib COMMAND sd-test-ssh-interop --filter interop_zlib_delayed)
+set_tests_properties(interop.zlib PROPERTIES LABELS interop TIMEOUT 300 SKIP_RETURN_CODE 77
+  RESOURCE_LOCK wsl_sshd_fixture)
