@@ -278,6 +278,7 @@ advapi32.dll!GetAclInformation
 advapi32.dll!GetLengthSid
 advapi32.dll!GetNamedSecurityInfoW
 advapi32.dll!GetSecurityDescriptorDacl
+advapi32.dll!GetSecurityDescriptorControl   # Windows 2000+ (machine DACL compare, svc_folder.c)
 advapi32.dll!GetSecurityDescriptorOwner
 advapi32.dll!GetSecurityInfo
 advapi32.dll!GetTokenInformation
@@ -413,6 +414,7 @@ mpr.dll!WNetGetConnectionW
 # advapi32: token and SID helpers for the WM_COPYDATA sender check (documentation: Windows 2000). Pending capture.
 advapi32.dll!GetSidSubAuthority
 advapi32.dll!GetSidSubAuthorityCount
+advapi32.dll!GetSidIdentifierAuthority   # Windows 2000+ (well-known SID test, svc_folder.c)
 
 # comctl32: common controls initialisation (documentation: Windows XP). Pending capture.
 comctl32.dll!InitCommonControlsEx
