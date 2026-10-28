@@ -33,10 +33,9 @@ if(SD_X86)
 elseif(SD_ARM64 OR SD_ARM32)
   return()
 else()
-  # x64 flavours (x64-modern, x64-xp, x64-analysis): the hardware paths and the code that dispatches to them
-  # (aes_ct.c: key setup and the encrypt entry point; hash.c: the SHA-256 block dispatch). The rest of the list
-  # is judged on x86 only until the AMD64 decoder has been run on it (follow-up for the crypto agent).
-  set(SD_CT_SOURCES aes_ct hash ${SD_CT_HW_SOURCES})
+  # x64 flavours (x64-modern, x64-xp, x64-analysis): the same list as x86, judged in 64-bit mode by the AMD64
+  # decoder (M6 round 12), with the hardware objects. Nothing is taken out of SD_CT_SOURCES on x64.
+  list(APPEND SD_CT_SOURCES ${SD_CT_HW_SOURCES})
   set(_ct_hw_built 1)
 endif()
 set(_ct_args --ct-lib "$<TARGET_FILE:sd_crypto>" --config "$<CONFIG>"   # Release only, see sd-isacheck.c

@@ -737,11 +737,26 @@ were outside it. Changes:
   that is not in the library fails the gate), and `isacheck.detects_ct_branch_without_allow_list` (x86 only: the sbox
   branch is reported on the real object without `ct-branch-allow.txt`). The scan and the allow-list negative run in
   Release only.
-- Not judged: `sha256_final` (not a constant-time name) auto-vectorizes the big-endian digest store into `PSHUFB` on
-  x86-sse2 (`hash.obj`, four instances). The shipped executables pass the sse2 ISA audit, so that code is not in an
-  audited image; the library carries it. Follow-up: the same `SD_CT_NO_VECTOR` treatment, or
-  the digest store in a `_ct` function. Static helpers without the convention (`sbox`, `mix_columns`) are checked only
-  for helper calls, as before.
+- Not judged, then fixed in round 12 (below): `sha256_final` (not a constant-time name) auto-vectorized the big-endian
+  digest store into `PSHUFB` on x86-sse2 (`hash.obj`, four instances). The shipped executables passed the sse2 ISA
+  audit, so that code was not in an audited image; the library carried it. Static helpers without the convention
+  (`sbox`, `mix_columns`) are checked only for helper calls, as before.
+
+**Round 12 (wip/r12-ctfinal): the full list on the x64 flavours, and `sha256_final`.**
+
+- `sha256_final` keeps its name and is not judged by the gate. Its only branches test the public message length
+  (`s->n > 56`), and its loops are bounded by the public output length, so the rule 01 2.4.1 check is met without the
+  convention; a `_ct` name is for code the gate must judge. `SD_CT_NO_VECTOR` now keeps the digest store scalar, the same
+  as the block load loop. With that, our code no longer produces the `__isa_available`-dispatched PSHUFB that the ISA
+  audit's dispatch rule (m1-notes 2.7.5 item 5) was added for.
+- `tools/sd-isacheck/CMakeLists.txt`: the x64 flavours judge the full x86 `SD_CT_SOURCES` list (the else branch no
+  longer replaces it), plus `aes_ni` and `sha256_ni`. The AMD64 decoder ran on all of it; the gate passed with no
+  new findings, so `ct-branch-allow.txt` is unchanged.
+- Verification: `ci-local -Presets x64-modern, x86-sse2` (Release and Debug), all green. x64-modern Release 83 of 83
+  (`isacheck.ct_sd_crypto` included), x64-modern Debug 81, x86-sse2 Release 99, x86-sse2 Debug 96 (interop and WOW64
+  dokany skipped, as before). The Release `hash.obj` of x86-sse2 has no PSHUFB (`dumpbin /disasm`).
+- Open: the `__isa_available` dispatch rule of the ISA audit stays in the checker (no longer used by our code); removing
+  it is a checker change for a later round. The ARM32 gate and the timing run are still open, as before.
 - Compile check: `sd_crypto` builds for ARM64 with no warning (the `SD_NOINLINE` and pragma changes are in shared code).
   ARM32 was not compiled in this round.
 
