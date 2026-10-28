@@ -1664,3 +1664,86 @@ msgctxt "cli.secret.deleted"
 msgid "The proxy password is removed from the service."
 msgstr ""
 
+
+#. Row label of the Windows 11 menu package check.
+msgctxt "cli.diag.label_menu"
+msgid "Windows 11 menu"
+msgstr ""
+
+#. Row label of the Network locations check.
+msgctxt "cli.diag.label_netloc"
+msgid "Network locations"
+msgstr ""
+
+#. Row label of the logs check.
+msgctxt "cli.diag.label_logs"
+msgid "Logs"
+msgstr ""
+
+#. Value of the Dokany row when a version is known. {version} is the version, such as 2.3.1.
+msgctxt "cli.diag.v_dokany_version"
+msgid "installed, version {version}"
+msgstr ""
+
+#. Value of the Dokany row when the installed version is on the deny list (a warning). {version} is the version and
+#. {reason} the reason id of the list.
+msgctxt "cli.diag.v_dokany_denied"
+msgid "installed, version {version} is on the deny list ({reason}); the Dokany backend is disabled"
+msgstr ""
+
+#. Value of the menu row on a Windows version before 11.
+msgctxt "cli.diag.v_menu_na"
+msgid "not available on this Windows version"
+msgstr ""
+
+#. Value of the menu row when the package is registered for the current user.
+msgctxt "cli.diag.v_menu_on"
+msgid "registered for this user"
+msgstr ""
+
+#. Value of the menu row when the package is not registered for the current user.
+msgctxt "cli.diag.v_menu_off"
+msgid "not registered for this user"
+msgstr ""
+
+#. Value of the Network locations row when the NetHood folder is unknown.
+msgctxt "cli.diag.v_netloc_na"
+msgid "not available"
+msgstr ""
+
+#. Value of the Network locations row when no profile uses one.
+msgctxt "cli.diag.v_netloc_none"
+msgid "no profile uses a network location"
+msgstr ""
+
+#. Value of the Network locations row when all entries match. {count} is the number of profiles that want one.
+#, plural-arg=count
+msgctxt "cli.diag.v_netloc_sync"
+msgid "{count} network location in sync."
+msgid_plural "{count} network locations in sync."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Warning of the Network locations row. {missing} is the number of profiles without an entry, {stale} the number of
+#. entries without a profile that wants one.
+msgctxt "cli.diag.v_netloc_out"
+msgid "out of sync: {missing} missing, {stale} stale"
+msgstr ""
+
+#. Word for the setup log in the logs row, when a setup log exists.
+msgctxt "cli.diag.v_logs_found"
+msgid "found"
+msgstr ""
+
+#. Word for the setup log in the logs row, when none exists.
+msgctxt "cli.diag.v_logs_not_found"
+msgid "not found"
+msgstr ""
+
+#. Value of the logs row. {setup} is found or not found; {count} is the number of service log files.
+#, plural-arg=count
+msgctxt "cli.diag.v_logs"
+msgid "setup log {setup}; {count} service log file."
+msgid_plural "setup log {setup}; {count} service log files."
+msgstr[0] ""
+msgstr[1] ""

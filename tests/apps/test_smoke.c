@@ -979,3 +979,77 @@ SD_TEST(smoke_diag_bundle)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", NULL);
   DeleteFileW(fake);
 }
+
+/* diag round 19 rows (03 §10.5, 8.6, 8.7, 02 §6.3, 04 §9.2, 04 §13): fake values only, nothing real is read. */
+SD_TEST(smoke_diag_round19_rows)
+{
+  static run_result r;
+  static unsigned char zip[1 << 20];
+  wchar_t fake[MAX_PATH], machine[MAX_PATH], logs[MAX_PATH], logfile[MAX_PATH], path[MAX_PATH], args[1024];
+  size_t got;
+  SD_REQUIRE(setup());
+  smoke_fake_path(fake);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_DIAG_FAKE", fake);
+
+  /* Dokany 2.3.1 installed and not denied; the menu package registered; one NetHood entry that no profile wants */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=stopped\r\nwebclient_start=4\r\nsize=4294967295\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=1\r\ndokany_version=2.3.1\r\nsplit=0\r\nw32=1\r\n"
+                                    "domain=0\r\ndrives=3\r\nelevated=0\r\nmenu=1\r\n"
+                                    "netloc=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
+                                    "netloc_wanted=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n"));
+  EXPECT(RUN(L"--json diag --check", NULL) == 0 &&
+         strstr(r.out, "\"dokany\":{\"status\":\"ok\",\"present\":true,\"version\":\"2.3.1\",\"deny\":null}") != NULL &&
+         strstr(r.out, "\"windows11_menu\":{\"status\":\"ok\",\"registered\":true}") != NULL &&
+         strstr(r.out, "\"network_locations\":{\"status\":\"warn\",\"known\":true,\"wanted\":1,\"missing\":1,\"stale\":1}") != NULL &&
+         strstr(r.out, "\"logs\":{\"status\":\"ok\",\"setup_logs\":0,") != NULL,
+         "round 19 rows in json: version, menu, network locations out of sync, logs");
+
+  /* the installed version is on the deny list: a warning with the reason, not a problem */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=stopped\r\nwebclient_start=4\r\nsize=4294967295\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=1\r\ndokany_version=2.3.1\r\n"
+                                    "dokany_deny=2.0.0-2.3.1 cve-test-reason\r\nsplit=0\r\nw32=1\r\ndomain=0\r\n"
+                                    "drives=3\r\nelevated=0\r\nmenu=0\r\n"
+                                    "netloc=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n"
+                                    "netloc_wanted=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n"));
+  EXPECT(RUN(L"--json diag --check", NULL) == 0 &&
+         strstr(r.out, "\"dokany\":{\"status\":\"warn\",\"present\":true,\"version\":\"2.3.1\",\"deny\":\"cve-test-reason\"}") != NULL &&
+         strstr(r.out, "\"windows11_menu\":{\"status\":\"ok\",\"registered\":false}") != NULL &&
+         strstr(r.out, "\"network_locations\":{\"status\":\"ok\",\"known\":true,\"wanted\":1,\"missing\":0,\"stale\":0}") != NULL,
+         "a deny-listed Dokany warns with the reason; network locations in sync");
+  EXPECT(RUN(L"diag --check", NULL) == 0 && strstr(r.out, "cve-test-reason") != NULL &&
+         strstr(r.out, "1 network location in sync.") != NULL && strstr(r.out, "Windows 11 menu") != NULL,
+         "the human report carries the deny reason and the sync count");
+
+  /* the NetHood folder is unknown: the row says so and nothing is compared */
+  SD_REQUIRE(smoke_write_text(fake, "webclient=stopped\r\nwebclient_start=4\r\nsize=4294967295\r\nattr=100000000\r\n"
+                                    "auth=2\r\nlinked=none\r\ndokany=0\r\nsplit=0\r\nw32=1\r\ndomain=0\r\n"
+                                    "drives=3\r\nelevated=0\r\n"));
+  EXPECT(RUN(L"--json diag --check", NULL) == 0 &&
+         strstr(r.out, "\"dokany\":{\"status\":\"ok\",\"present\":false,\"version\":null,\"deny\":null}") != NULL &&
+         strstr(r.out, "\"network_locations\":{\"status\":\"ok\",\"known\":false,\"wanted\":0,\"missing\":0,\"stale\":0}") != NULL,
+         "absent Dokany and an unknown NetHood folder");
+
+  /* the bundle carries the service-side logs of the machine data folder (read only, anonymized like logs/) */
+  wcscpy_s(machine, MAX_PATH, g_root);
+  wcscat_s(machine, MAX_PATH, L"\\machine");
+  CreateDirectoryW(machine, NULL);
+  wcscpy_s(logs, MAX_PATH, machine);
+  wcscat_s(logs, MAX_PATH, L"\\logs");
+  CreateDirectoryW(logs, NULL);
+  wcscpy_s(logfile, MAX_PATH, logs);
+  wcscat_s(logfile, MAX_PATH, L"\\dokany-install.log");
+  SD_REQUIRE(smoke_write_text(logfile, "Dokany install, exit 0\r\n"));
+  wcscpy_s(path, MAX_PATH, g_root);
+  wcscat_s(path, MAX_PATH, L"\\bundle-r19.zip");
+  DeleteFileW(path);
+  _snwprintf_s(args, SD_COUNTOF(args), _TRUNCATE, L"--json diag --bundle \"%s\"", path);
+  EXPECT(RUN(args, NULL) == 0, "bundle with the machine logs written");
+  got = smoke_read_bytes(path, zip, sizeof(zip));
+  EXPECT(got > 200 && smoke_has(zip, got, "service-logs/dokany-install.log"), "the service-side log is in the bundle");
+  DeleteFileW(logfile);
+  DeleteFileW(path);
+  DeleteFileW(logs);
+  RemoveDirectoryW(logs);
+  RemoveDirectoryW(machine);
+  SD_CHECK(!agent_running());
+}

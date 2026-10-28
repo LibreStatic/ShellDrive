@@ -1,11 +1,13 @@
 /* Unit tests of the diag pieces that have no system dependency: the stored ZIP writer (cli_zip.c) and the
  * anonymizer (cli_anon.c). Both are pure; the sinks here keep the bytes in memory. */
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sd_test.h"
 #include "cli_zip.h"
 #include "cli_anon.h"
+#include "cli_diag_rules.h"
 #include "sd_base/sd_buf.h"
 #include "sd_base/sd_mem.h"
 
@@ -277,4 +279,77 @@ SD_TEST(anon_secret_key_names)
   SD_CHECK(!anon_is_secret_key("host", 4));
   SD_CHECK(!anon_is_secret_key("remote_path", 11));
   SD_CHECK(!anon_is_secret_key("identity", 8));
+}
+
+/* ---- diag rules (cli_diag_rules.c): versions, the dokany-deny list, Network location sync ---- */
+
+SD_TEST(diag_version_parse_and_text)
+{
+  char t[16];
+  SD_CHECK(diag_version_parse("2.3.1", 5) == 2003001u);
+  SD_CHECK(diag_version_parse("2.3.1.1000", 10) == 2003001u);
+  SD_CHECK(diag_version_parse("2.3", 3) == 2003000u);
+  SD_CHECK(diag_version_parse("2", 1) == 0);
+  SD_CHECK(diag_version_parse("2.x.1", 5) == 0);
+  SD_CHECK(diag_version_parse("2..1", 4) == 0);
+  SD_CHECK(diag_version_parse("1.2.3.4.5", 9) == 0);
+  SD_CHECK(diag_version_parse("", 0) == 0);
+  diag_version_text(2003001u, t, sizeof(t));
+  SD_CHECK(strcmp(t, "2.3.1") == 0);
+  diag_version_text(0, t, sizeof(t));
+  SD_CHECK(t[0] == 0);
+}
+
+SD_TEST(diag_deny_parse_and_match)
+{
+  static const char text[] =
+      "shelldrive-manifest 1\n"
+      "dokany-deny 2.0.0-2.2.9 dokany-cve-2018\n"
+      "dokany-deny 2.3.0-2.3.0 reason-b\r\n"
+      "dokany-deny 3.0.0-2.0.0 backwards\n"
+      "dokany-deny 2.1.0 nodash\n"
+      "xdokany-deny 9.0.0-9.9.9 other\n"
+      "dokany-deny 2.3.1-2.3.1\n";
+  diag_deny_list d;
+  const char *m;
+  memset(&d, 0, sizeof(d));
+  diag_deny_parse(&d, text, strlen(text));
+  SD_CHECK(d.count == 3);
+  m = diag_deny_match(&d, diag_version_pack(2, 2, 9));
+  SD_CHECK(m != NULL && strcmp(m, "dokany-cve-2018") == 0);
+  m = diag_deny_match(&d, diag_version_pack(2, 3, 0));
+  SD_CHECK(m != NULL && strcmp(m, "reason-b") == 0);
+  m = diag_deny_match(&d, diag_version_pack(2, 3, 1));
+  SD_CHECK(m != NULL && strcmp(m, "unspecified") == 0);
+  SD_CHECK(diag_deny_match(&d, diag_version_pack(2, 2, 10)) == NULL);
+  SD_CHECK(diag_deny_match(&d, diag_version_pack(2, 0, 0)) != NULL);
+  SD_CHECK(diag_deny_match(&d, 0) == NULL);
+  SD_CHECK(diag_deny_match(&d, diag_version_pack(9, 9, 9)) == NULL);
+}
+
+SD_TEST(diag_deny_parse_truncates_at_the_capacity)
+{
+  diag_deny_list d;
+  char text[4096];
+  size_t n = 0, i;
+  memset(&d, 0, sizeof(d));
+  for (i = 0; i < 40; i++)
+    n += (size_t)sprintf_s(text + n, sizeof(text) - n, "dokany-deny 2.0.%u-2.0.%u r%u\n", (unsigned)i, (unsigned)i,
+                           (unsigned)i);
+  diag_deny_parse(&d, text, n);
+  SD_CHECK(d.count == DIAG_DENY_MAX);
+  SD_CHECK(diag_deny_match(&d, diag_version_pack(2, 0, 0)) != NULL);
+}
+
+SD_TEST(diag_netloc_compare_token_lists)
+{
+  int missing = -1, stale = -1, wanted = -1;
+  diag_netloc_compare("aa\nbb\n", "aa,cc\n", &missing, &stale, &wanted);
+  SD_CHECK(wanted == 2 && missing == 1 && stale == 1);
+  diag_netloc_compare("", "", &missing, &stale, &wanted);
+  SD_CHECK(wanted == 0 && missing == 0 && stale == 0);
+  diag_netloc_compare("  aa  bb", "bb aa", &missing, &stale, &wanted);
+  SD_CHECK(wanted == 2 && missing == 0 && stale == 0);
+  diag_netloc_compare("aa", "aab", &missing, &stale, &wanted);
+  SD_CHECK(wanted == 1 && missing == 1 && stale == 1);
 }

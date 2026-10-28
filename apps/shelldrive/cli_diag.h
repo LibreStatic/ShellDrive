@@ -9,7 +9,10 @@
 
 #include <windows.h>
 
+#include <stdint.h>
+
 #include "cli.h"
+#include "cli_diag_rules.h"
 #include "sd_base/sd_buf.h"
 #include "sd_base/sd_json.h"
 
@@ -42,6 +45,19 @@ typedef struct diag_env {
   DWORD (*webclient_set_start)(void *ctx, DWORD start_type);      /* Win32 error, 0 = done */
   DWORD (*webclient_start)(void *ctx);                             /* Win32 error, 0 = running */
   DWORD (*linked_set)(void *ctx, DWORD value);                     /* Win32 error, 0 = done */
+  /* ---- read-only queries added in round 19 (03 §10.5, 8.6, 8.7, 02 §6.3) ---- */
+  DWORD (*dokany_version)(void *ctx);       /* System32\dokan2.dll file version, diag_version_pack; 0 = absent/unknown */
+  int   (*menu_package)(void *ctx);         /* 1 = a ShellExt package is registered for this user (8.6) */
+  /* Ids of our Network location entries (desktop.ini [ShellDrive] profile=), one per line; 0 = read, -1 = the
+     NetHood folder is unknown. cap bytes at out, always NUL-terminated. */
+  int   (*netloc_entries)(void *ctx, char *out, size_t cap);
+  /* Ids of the profiles that want a Network location (mount.network_location = yes, user scope); 0 = read. */
+  int   (*netloc_wanted)(void *ctx, char *out, size_t cap);
+  /* The folder of the setup logs (%TEMP%); 0 = none. */
+  int   (*setup_log_dir)(void *ctx, wchar_t *out, size_t cch);
+  /* The dokany-deny lines of the cached manifests (state\manifest.<channel>, per user and per machine, 04 §9.2);
+     fills out (diag_deny_parse), 0 = read. */
+  int   (*dokany_deny)(void *ctx, diag_deny_list *out);
 } diag_env;
 
 enum { DIAG_WEBDAV_FILE_SIZE, DIAG_WEBDAV_FILE_ATTRIBUTES, DIAG_WEBDAV_BASIC_AUTH };
@@ -57,7 +73,7 @@ const diag_env *diag_env_fake(void);
 enum {
   DIAG_ROW_OS, DIAG_ROW_AGENT, DIAG_ROW_SERVICE, DIAG_ROW_WEBCLIENT, DIAG_ROW_WEBDAV, DIAG_ROW_DOKANY,
   DIAG_ROW_LINKED, DIAG_ROW_ELEVATION, DIAG_ROW_DOMAIN, DIAG_ROW_DRIVES, DIAG_ROW_SETTINGS, DIAG_ROW_PRIVACY,
-  DIAG_ROW_CLOCK, DIAG_ROW_COUNT
+  DIAG_ROW_MENU, DIAG_ROW_NETLOC, DIAG_ROW_LOGS, DIAG_ROW_CLOCK, DIAG_ROW_COUNT
 };
 enum { DIAG_OK = 0, DIAG_WARN = 1, DIAG_PROBLEM = 2 };
 
@@ -74,6 +90,11 @@ typedef struct diag_report {
   __int64 size_limit, attr_limit, auth_level;   /* -1 = not set */
   int dokany, linked_on, elevated, split_token, domain_joined;
   int free_letters, settings_ok, privacy_strict, time_running;
+  uint32_t dokany_version;               /* diag_version_pack; 0 = unknown */
+  char dokany_deny[40];                  /* the reason-id when the installed version is on the deny list, "" otherwise */
+  int menu_registered;
+  int netloc_known, netloc_wanted, netloc_missing, netloc_stale;
+  int setup_logs, service_logs;          /* files in the setup log folder and in the machine logs folder */
 } diag_report;
 
 /* Runs the checks. The agent is asked over IPC without starting it. */

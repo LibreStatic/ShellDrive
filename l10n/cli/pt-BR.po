@@ -1583,3 +1583,71 @@ msgctxt "cli.secret.deleted"
 msgid "The proxy password is removed from the service."
 msgstr "A senha do proxy foi removida do serviço."
 
+
+msgctxt "cli.diag.label_menu"
+msgid "Windows 11 menu"
+msgstr "Menu do Windows 11"
+
+msgctxt "cli.diag.label_netloc"
+msgid "Network locations"
+msgstr "Locais de rede"
+
+msgctxt "cli.diag.label_logs"
+msgid "Logs"
+msgstr "Registros"
+
+msgctxt "cli.diag.v_dokany_version"
+msgid "installed, version {version}"
+msgstr "instalado, versão {version}"
+
+msgctxt "cli.diag.v_dokany_denied"
+msgid "installed, version {version} is on the deny list ({reason}); the Dokany backend is disabled"
+msgstr "instalado, a versão {version} está na lista de bloqueio ({reason}); o backend Dokany está desativado"
+
+msgctxt "cli.diag.v_menu_na"
+msgid "not available on this Windows version"
+msgstr "não disponível nesta versão do Windows"
+
+msgctxt "cli.diag.v_menu_on"
+msgid "registered for this user"
+msgstr "registrado para este usuário"
+
+msgctxt "cli.diag.v_menu_off"
+msgid "not registered for this user"
+msgstr "não registrado para este usuário"
+
+msgctxt "cli.diag.v_netloc_na"
+msgid "not available"
+msgstr "indisponível"
+
+msgctxt "cli.diag.v_netloc_none"
+msgid "no profile uses a network location"
+msgstr "nenhum perfil usa um local de rede"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_netloc_sync"
+msgid "{count} network location in sync."
+msgid_plural "{count} network locations in sync."
+msgstr[0] "{count} local de rede sincronizado."
+msgstr[1] "{count} locais de rede sincronizados."
+msgstr[2] "{count} locais de rede sincronizados."
+
+msgctxt "cli.diag.v_netloc_out"
+msgid "out of sync: {missing} missing, {stale} stale"
+msgstr "fora de sincronia: {missing} faltando, {stale} sobrando"
+
+msgctxt "cli.diag.v_logs_found"
+msgid "found"
+msgstr "encontrado"
+
+msgctxt "cli.diag.v_logs_not_found"
+msgid "not found"
+msgstr "não encontrado"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_logs"
+msgid "setup log {setup}; {count} service log file."
+msgid_plural "setup log {setup}; {count} service log files."
+msgstr[0] "registro de instalação {setup}; {count} arquivo de registro do serviço."
+msgstr[1] "registro de instalação {setup}; {count} arquivos de registro do serviço."
+msgstr[2] "registro de instalação {setup}; {count} arquivos de registro do serviço."

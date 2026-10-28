@@ -50,6 +50,11 @@ SD_TEST_DECL(anon_secret_key_names);
 SD_TEST_DECL(cli_parse_diag_forms);
 SD_TEST_DECL(smoke_diag_check_and_fix);
 SD_TEST_DECL(smoke_diag_bundle);
+SD_TEST_DECL(smoke_diag_round19_rows);
+SD_TEST_DECL(diag_version_parse_and_text);
+SD_TEST_DECL(diag_deny_parse_and_match);
+SD_TEST_DECL(diag_deny_parse_truncates_at_the_capacity);
+SD_TEST_DECL(diag_netloc_compare_token_lists);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -102,6 +107,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_parse_diag_forms),
   SD_TEST_ENTRY(smoke_diag_check_and_fix),
   SD_TEST_ENTRY(smoke_diag_bundle),
+  SD_TEST_ENTRY(smoke_diag_round19_rows),
+  SD_TEST_ENTRY(diag_version_parse_and_text),
+  SD_TEST_ENTRY(diag_deny_parse_and_match),
+  SD_TEST_ENTRY(diag_deny_parse_truncates_at_the_capacity),
+  SD_TEST_ENTRY(diag_netloc_compare_token_lists),
 };
 
 int main(int argc, char **argv)

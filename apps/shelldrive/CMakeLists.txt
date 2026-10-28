@@ -17,6 +17,8 @@ set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_fake.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_rules.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_rules.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_bundle.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.c
@@ -42,5 +44,5 @@ sd_add_app(shelldrive
   OUTPUT_NAME shelldrive
   DESCRIPTION "ShellDrive command-line interface"
   SOURCES main.c ${SD_CLI_SOURCES}
-  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32)
+  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32 version)
 target_include_directories(shelldrive PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")

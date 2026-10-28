@@ -1567,3 +1567,69 @@ msgctxt "cli.secret.deleted"
 msgid "The proxy password is removed from the service."
 msgstr "Das Proxy-Passwort wurde aus dem Dienst entfernt."
 
+
+msgctxt "cli.diag.label_menu"
+msgid "Windows 11 menu"
+msgstr "Windows-11-Menü"
+
+msgctxt "cli.diag.label_netloc"
+msgid "Network locations"
+msgstr "Netzwerkorte"
+
+msgctxt "cli.diag.label_logs"
+msgid "Logs"
+msgstr "Protokolle"
+
+msgctxt "cli.diag.v_dokany_version"
+msgid "installed, version {version}"
+msgstr "installiert, Version {version}"
+
+msgctxt "cli.diag.v_dokany_denied"
+msgid "installed, version {version} is on the deny list ({reason}); the Dokany backend is disabled"
+msgstr "installiert, Version {version} steht auf der Sperrliste ({reason}); das Dokany-Backend ist deaktiviert"
+
+msgctxt "cli.diag.v_menu_na"
+msgid "not available on this Windows version"
+msgstr "in dieser Windows-Version nicht verfügbar"
+
+msgctxt "cli.diag.v_menu_on"
+msgid "registered for this user"
+msgstr "für diesen Benutzer registriert"
+
+msgctxt "cli.diag.v_menu_off"
+msgid "not registered for this user"
+msgstr "für diesen Benutzer nicht registriert"
+
+msgctxt "cli.diag.v_netloc_na"
+msgid "not available"
+msgstr "nicht verfügbar"
+
+msgctxt "cli.diag.v_netloc_none"
+msgid "no profile uses a network location"
+msgstr "kein Profil verwendet einen Netzwerkort"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_netloc_sync"
+msgid "{count} network location in sync."
+msgid_plural "{count} network locations in sync."
+msgstr[0] "{count} Netzwerkort synchron."
+msgstr[1] "{count} Netzwerkorte synchron."
+
+msgctxt "cli.diag.v_netloc_out"
+msgid "out of sync: {missing} missing, {stale} stale"
+msgstr "nicht synchron: {missing} fehlen, {stale} überzählig"
+
+msgctxt "cli.diag.v_logs_found"
+msgid "found"
+msgstr "gefunden"
+
+msgctxt "cli.diag.v_logs_not_found"
+msgid "not found"
+msgstr "nicht gefunden"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_logs"
+msgid "setup log {setup}; {count} service log file."
+msgid_plural "setup log {setup}; {count} service log files."
+msgstr[0] "Installationsprotokoll {setup}; {count} Dienstprotokolldatei."
+msgstr[1] "Installationsprotokoll {setup}; {count} Dienstprotokolldateien."
