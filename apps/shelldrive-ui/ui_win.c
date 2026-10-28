@@ -232,6 +232,8 @@ int ui_windows_smoke_test(void)
   if (w)
     DestroyWindow(w);
   ok = ok && ui_hostkeys_dialogs_smoke();
+  ok = ok && ui_hkissue_smoke();       /* the changed-key dialog for every source of the old key */
+  ok = ok && ui_secdlg_smoke();        /* the legacy and Terrapin details dialog */
 
   w = ui_logs_create_hidden();
   ok = ok && w != NULL && IsWindow(w) && !IsWindowVisible(w);

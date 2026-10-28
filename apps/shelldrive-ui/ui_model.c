@@ -7,6 +7,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "ui_int.h"
+#include "ui_mainview_model.h"
 
 void ui_text_utf8(const char *s, wchar_t *out, size_t cch)
 {
@@ -81,11 +82,35 @@ static void server_text(const sd_json *mo, wchar_t *out, size_t cch)
   }
 }
 
+/* Reads the connection sub-state (03 §2.4): the session token and the reconnect attempt. */
+static void read_connection(const sd_json *obj, ui_mount *it)
+{
+  const sd_json *c = sd_json_get(obj, "connection");
+  const char *s = sd_json_get_str(c, "session");
+  int64_t attempt = 0;
+  it->session[0] = 0;
+  it->attempt = 0;
+  if (s != NULL && strlen(s) < sizeof(it->session))
+    strcpy_s(it->session, sizeof(it->session), s);
+  if (sd_json_get_int64(c, "attempt", &attempt) && attempt > 0 && attempt < 1000000)
+    it->attempt = (int)attempt;
+}
+
+void ui_model_set_connection(ui_mount *it, const sd_json *data)
+{
+  read_connection(data, it);
+}
+
 void ui_model_set_list(ui_model *m, const sd_json *result)
 {
   const sd_json *arr = sd_json_get(result, "mounts");
+  const sd_json *warnings = sd_json_get(result, "warnings");
   size_t i, n = sd_json_count(arr);
+  ui_model *old = (ui_model *)sd_calloc(1, sizeof(ui_model));
 
+  /* the algorithm names come from warning events; a new list keeps the ones already seen */
+  if (old != NULL)
+    *old = *m;
   ui_model_clear(m);
   for (i = 0; i < n && m->count < UI_MAX_MOUNTS; i++) {
     const sd_json *mo = sd_json_at(arr, i);
@@ -113,8 +138,29 @@ void ui_model_set_list(ui_model *m, const sd_json *result)
     ui_text_utf8(sd_json_get_str(mo, "profile"), it->profile, SD_COUNTOF(it->profile));
     ui_text_utf8(sd_json_get_str(mo, "backend"), it->backend, SD_COUNTOF(it->backend));
     server_text(mo, it->server, SD_COUNTOF(it->server));
+    s = sd_json_get_str(mo, "host");
+    if (s != NULL) {
+      size_t k;
+      for (k = 0; k + 1 < sizeof(it->host) && s[k] != 0; k++)
+        it->host[k] = ((unsigned char)s[k] >= 0x20 && (unsigned char)s[k] < 0x7f) ? s[k] : '?';
+      it->host[k] = 0;
+    }
+    read_connection(mo, it);
+    it->sec = ui_mv_sec_from_warnings(warnings, it->id);
+    if (old != NULL) {
+      size_t k;
+      for (k = 0; k < old->count; k++) {
+        if (strcmp(old->items[k].id, it->id) == 0) {
+          if (it->sec & UI_MV_SEC_LEGACY)
+            strcpy_s(it->algos, sizeof(it->algos), old->items[k].algos);
+          it->sec |= old->items[k].sec;
+          break;
+        }
+      }
+    }
     m->count++;
   }
+  sd_free(old);
 }
 
 ui_mount *ui_model_find_id(ui_model *m, const char *id)

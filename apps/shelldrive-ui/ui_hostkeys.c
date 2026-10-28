@@ -1221,6 +1221,26 @@ void ui_hostkeys_open(void)
   request_announced();
 }
 
+/* Opens the manager and selects the first key of host (a changed key or a wrong key type led here, 5.4, TM-R04). */
+void ui_hostkeys_open_for(const char *host)
+{
+  size_t i;
+  ui_hostkeys_open();
+  if (host == NULL || host[0] == 0 || g_hk.list_known == NULL)
+    return;
+  for (i = 0; i < g_hk.nkeys; i++) {
+    if (_stricmp(g_hk.keys[i].row.host, host) == 0) {
+      ListView_SetItemState(g_hk.list_known, (int)i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+      ListView_EnsureVisible(g_hk.list_known, (int)i, FALSE);
+      break;
+    }
+  }
+  if (g_hk.tab != NULL && SendMessageW(g_hk.tab, TCM_GETCURSEL, 0, 0) != HK_TAB_KNOWN) {
+    SendMessageW(g_hk.tab, TCM_SETCURSEL, HK_TAB_KNOWN, 0);
+    show_tab();
+  }
+}
+
 void ui_hostkeys_close(void)
 {
   if (g_hk.wnd != NULL && IsWindow(g_hk.wnd))

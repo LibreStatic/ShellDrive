@@ -3,7 +3,7 @@
 # ui_win.h). GUI subsystem, comctl32 v6 and DPI awareness come from sd_add_app WINDOWS (cmake/SdModule.cmake).
 #
 # ui_wire.c, ui_dpi.c, ui_dlg.c, ui_prompt_model.c, ui_sdmount.c, ui_profile_model.c, ui_logs_model.c,
-# ui_hostkeys_model.c and ui_settings_model.c are pure (no window, IPC or agent code): they are also compiled into
+# ui_hostkeys_model.c, ui_settings_model.c, ui_hkissue_model.c and ui_mainview_model.c are pure (no window, IPC or agent code): they are also compiled into
 # the unit tests (tests/ui) through SD_UI_PURE_SOURCES. The profile editor (ui_editor.c) and the profile list
 # (ui_profiles.c) link sd_config directly (03 §2.4 decision).
 
@@ -22,7 +22,9 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_dark_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_wizard_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_admin_model.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_service_model.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_service_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_hkissue_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_mainview_model.c)
 set(SD_UI_PURE_SOURCES ${SD_UI_PURE_SOURCES} PARENT_SCOPE)
 
 # Icon resources (res/icons): the template gets the absolute icon directory (rc.exe does not search the
@@ -42,6 +44,7 @@ sd_add_app(shelldrive-ui
     ui_about.c
     ui_editor.c
     ui_hostkeys.c
+    ui_hkissue.c
     ui_icon.c
     ui_import.c
     ui_ipc.c
@@ -52,6 +55,7 @@ sd_add_app(shelldrive-ui
     ui_profiles.c
     ui_prompt.c
     ui_service.c
+    ui_secdlg.c
     ui_settings.c
     ui_svc.c
     ui_update.c
@@ -81,6 +85,8 @@ sd_add_app(shelldrive-ui
     ui_update_model.h
     ui_admin_model.h
     ui_service_model.h
+    ui_hkissue_model.h
+    ui_mainview_model.h
     ${CMAKE_CURRENT_BINARY_DIR}/shelldrive-ui-icons.rc
     # the Service page (03 §1.3): the SCM status and the data folder repair are the code of the CLI verbs
     # `service status` and `service repair-data` (shared with shelldrive.exe and the service host)
