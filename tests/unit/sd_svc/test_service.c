@@ -1192,7 +1192,7 @@ SD_TEST(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder)
   SD_CHECK(sd_json_get_int64(o, "prompts", &n) && n == 0);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 5);
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 9);   /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   SD_CHECK(sd_json_get_str(o, "reason") == NULL);
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1252,7 +1252,7 @@ SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
   SD_REQUIRE(res != NULL);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 5);
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 9);   /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   sd_json_free(res);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));

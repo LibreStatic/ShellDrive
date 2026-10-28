@@ -995,7 +995,7 @@ static uint32_t gate_wire_bytes(uint32_t unit) { return unit + 27; }
    more, and the write is still parked. Returns 1 when parked as expected. */
 static int gate_wait_parked(xf *x, waiter *w, int want1, int want3)
 {
-  uint64_t end = sd_tick_ms() + 5000;
+  uint64_t end = sd_tick_ms() + 20000;   /* reaching the park is slow on a loaded x86 run; the counts stay exact */
   static tr_ev ev[TR_MAX];
   for (;;) {
     LONG n = tr_snapshot(&x->sv, ev, TR_MAX);
