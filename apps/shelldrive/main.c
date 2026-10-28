@@ -13,12 +13,15 @@
 #include "sd_platform/sd_platform.h"
 
 #ifdef SD_CLI_TEST_HOOKS
-/* Test builds only (tests/apps): isolated pipe names, configuration root and agent executable. */
+/* Test builds only (tests/apps, tests/e2e): isolated pipe names, configuration root, agent executable and the
+   owner SID the service pipe must have (SHELLDRIVE_TEST_EXPECTED_OWNER: the e2e service runs as this user). */
 static void apply_test_hooks(void)
 {
   wchar_t v[MAX_PATH];
   if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_INSTANCE", v, MAX_PATH) - 1u < MAX_PATH - 1u)
     sd_ipc_set_instance_suffix(v);
+  if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_EXPECTED_OWNER", v, MAX_PATH) - 1u < MAX_PATH - 1u)
+    sd_ipc_test_set_expected_owner(v);
   if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_CONFIG_DIR", v, MAX_PATH) - 1u < MAX_PATH - 1u)
     sd_config_set_root_override(v);
   if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_HOST_EXE", v, MAX_PATH) - 1u < MAX_PATH - 1u)

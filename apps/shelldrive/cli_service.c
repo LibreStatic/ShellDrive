@@ -452,6 +452,45 @@ static void print_report_json(const svc_status_report *r, const svc_pipe_report 
   sd_wr_free(&w);
 }
 
+#ifdef SD_CLI_TEST_HOOKS
+/* Test seam (test builds only): SHELLDRIVE_TEST_SCM=running (installed and running) or absent (not installed) replaces
+   the two read-only SCM queries, so the pipe path of service status runs on a machine without ShellDriveSvc. Any other
+   value, or no value, leaves the real SCM. */
+static DWORD test_query_service(void *ctx, svc_status_report *out)
+{
+  wchar_t v[16];
+  (void)ctx;
+  memset(out, 0, sizeof(*out));
+  if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", v, SD_COUNTOF(v)) == 0 || wcscmp(v, L"running") != 0)
+    return 0;                                /* absent: installed stays 0 */
+  out->installed = 1;
+  out->state = SERVICE_RUNNING;
+  out->start_type = SERVICE_AUTO_START;
+  wcscpy_s(out->binary, SD_COUNTOF(out->binary), L"\"C:\\test\\shelldrive-host.exe\" service");
+  return 0;
+}
+
+static DWORD test_query_source(void *ctx, const wchar_t *source, wchar_t *message_file, size_t cch)
+{
+  (void)ctx;
+  (void)source;
+  (void)message_file;
+  (void)cch;
+  return ERROR_FILE_NOT_FOUND;
+}
+
+static void test_scm_seam(svc_scm_ops *ops)
+{
+  wchar_t v[16];
+  if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", v, SD_COUNTOF(v)) == 0)
+    return;
+  if (wcscmp(v, L"running") != 0 && wcscmp(v, L"absent") != 0)
+    return;
+  ops->query_service = test_query_service;
+  ops->query_source = test_query_source;
+}
+#endif
+
 /* shelldrive service status (no argument): reads the SCM and, when running, the service pipe. Exit 0 whenever the
    facts could be read, also when the service is not installed; a failed SCM query is exit 1. */
 static int run_service_report(const cli_args *a)
@@ -463,6 +502,9 @@ static int run_service_report(const cli_args *a)
   int have_spec, queried = 0;
   DWORD e;
   svc_scm_real_ops(&ops);
+#ifdef SD_CLI_TEST_HOOKS
+  test_scm_seam(&ops);
+#endif
   have_spec = svc_scm_host_spec(&spec, L"") == 0;
   e = svc_scm_status(&ops, have_spec ? &spec : NULL, &r);
   if (e != 0) {

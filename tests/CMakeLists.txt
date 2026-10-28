@@ -14,6 +14,7 @@ endif()
 
 add_subdirectory(fuzz)
 add_subdirectory(apps)
+add_subdirectory(e2e)
 add_subdirectory(l10n)
 add_subdirectory(policy)
 add_subdirectory(logpriv)
