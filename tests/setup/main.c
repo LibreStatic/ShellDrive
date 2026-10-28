@@ -70,6 +70,19 @@ SD_TEST_DECL(setup_elev_stage2_reports_msiexec_failure);
 SD_TEST_DECL(setup_elev_parent_cancelled_uac);
 SD_TEST_DECL(setup_elev_parent_silent_channel_fails);
 SD_TEST_DECL(setup_elev_parent_in_process_when_elevated);
+SD_TEST_DECL(setup_elev_parent_relays_progress);
+SD_TEST_DECL(setup_elev_stage1_keeps_the_stage_log_in_the_stage);
+SD_TEST_DECL(setup_elev_parent_writes_the_relayed_log);
+SD_TEST_DECL(setup_elev_parent_truncated_block_is_written);
+SD_TEST_DECL(setup_elev_parent_malformed_block_writes_nothing);
+SD_TEST_DECL(setup_elev_parent_oversized_block_writes_nothing);
+SD_TEST_DECL(setup_elev_stage2_sends_the_stage_log);
+SD_TEST_DECL(setup_elev_forward_uninstall);
+SD_TEST_DECL(setup_elev_stage2_uninstall_runs_msiexec_x);
+SD_TEST_DECL(setup_elev_stage2_uninstall_without_product_runs_nothing);
+SD_TEST_DECL(setup_elev_stage2_uninstall_refuses_a_bad_code_and_untrusted_folder);
+SD_TEST_DECL(setup_elev_launch_is_unelevated);
+SD_TEST_DECL(setup_elev_launch_refused_when_elevated_or_unknown);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flavour_table),
@@ -125,6 +138,19 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_elev_parent_cancelled_uac),
   SD_TEST_ENTRY(setup_elev_parent_silent_channel_fails),
   SD_TEST_ENTRY(setup_elev_parent_in_process_when_elevated),
+  SD_TEST_ENTRY(setup_elev_parent_relays_progress),
+  SD_TEST_ENTRY(setup_elev_stage1_keeps_the_stage_log_in_the_stage),
+  SD_TEST_ENTRY(setup_elev_parent_writes_the_relayed_log),
+  SD_TEST_ENTRY(setup_elev_parent_truncated_block_is_written),
+  SD_TEST_ENTRY(setup_elev_parent_malformed_block_writes_nothing),
+  SD_TEST_ENTRY(setup_elev_parent_oversized_block_writes_nothing),
+  SD_TEST_ENTRY(setup_elev_stage2_sends_the_stage_log),
+  SD_TEST_ENTRY(setup_elev_forward_uninstall),
+  SD_TEST_ENTRY(setup_elev_stage2_uninstall_runs_msiexec_x),
+  SD_TEST_ENTRY(setup_elev_stage2_uninstall_without_product_runs_nothing),
+  SD_TEST_ENTRY(setup_elev_stage2_uninstall_refuses_a_bad_code_and_untrusted_folder),
+  SD_TEST_ENTRY(setup_elev_launch_is_unelevated),
+  SD_TEST_ENTRY(setup_elev_launch_refused_when_elevated_or_unknown),
   SD_TEST_ENTRY(psig_valid_stable_table),
   SD_TEST_ENTRY(psig_tampered_table_refused),
   SD_TEST_ENTRY(psig_raw_table_without_domain_refused),

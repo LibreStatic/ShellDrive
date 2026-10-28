@@ -29,6 +29,16 @@ typedef struct fake {
   wchar_t last_exe[MAX_PATH];
   wchar_t last_dir[MAX_PATH];
   wchar_t last_cmd[2048];
+  int has_product;              /* the machine registry holds the ShellDrive MSI (product below) */
+  wchar_t product[64];
+  int find_calls;
+  int has_machine_dir;          /* the machine registry holds an install folder (machine_dir below) */
+  wchar_t machine_dir[MAX_PATH];
+  int launch_count;
+  int launch_result;            /* what launch returns */
+  wchar_t last_launch_exe[MAX_PATH];
+  wchar_t last_launch_dir[MAX_PATH];
+  wchar_t last_launch_cmd[MAX_PATH + 8];
 } fake_t;
 
 /* Writes the lines to the pipe named in cmd over one connection, the way a stage child does (the pipe has one instance). */
@@ -169,6 +179,36 @@ static int f_trusted(void *ctx, const wchar_t *dir)
   return ((fake_t *)ctx)->trust;
 }
 
+static int f_find_product(void *ctx, wchar_t *code, size_t cch)
+{
+  fake_t *f = (fake_t *)ctx;
+  f->find_calls++;
+  if (!f->has_product)
+    return 0;
+  StringCchCopyW(code, cch, f->product);
+  return 1;
+}
+
+static int f_machine_dir(void *ctx, wchar_t *out, size_t cch)
+{
+  fake_t *f = (fake_t *)ctx;
+  if (!f->has_machine_dir)
+    return 0;
+  StringCchCopyW(out, cch, f->machine_dir);
+  return 1;
+}
+
+/* Records the launch; nothing is started. */
+static int f_launch(void *ctx, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *dir)
+{
+  fake_t *f = (fake_t *)ctx;
+  f->launch_count++;
+  StringCchCopyW(f->last_launch_exe, SD_SETUP_COUNTOF(f->last_launch_exe), exe);
+  StringCchCopyW(f->last_launch_cmd, SD_SETUP_COUNTOF(f->last_launch_cmd), cmdline);
+  StringCchCopyW(f->last_launch_dir, SD_SETUP_COUNTOF(f->last_launch_dir), dir);
+  return f->launch_result;
+}
+
 static void fake_make(sd_setup_elev_ops *ops, fake_t *f)
 {
   memset(f, 0, sizeof(*f));
@@ -181,6 +221,9 @@ static void fake_make(sd_setup_elev_ops *ops, fake_t *f)
   ops->copy_image = f_copy;
   ops->run = f_run;
   ops->folder_trusted = f_trusted;
+  ops->find_machine_product = f_find_product;
+  ops->machine_dir = f_machine_dir;
+  ops->launch = f_launch;
 }
 
 /* A temp base folder, the fixture CAB as payload (payload-ok.cab: no MSI) and its SHA-256. */
@@ -331,6 +374,192 @@ SD_TEST(setup_elev_args_stage_switches)
   SD_CHECK(a.elevate_stage == 2);
   SD_CHECK(sd_setup_elev_pipe_name_ok(a.pipe_name) == 1);
   SD_CHECK(sd_setup_parse_args((int)SD_SETUP_COUNTOF(bad_argv), bad_argv, &a, &bad) != 0);
+}
+
+/* ------------------------------------------------------------------ per-machine uninstall and launch */
+
+static const wchar_t k_product[] = L"{8A3C5E2B-1D4F-4B6A-9E7C-2F1D0A3B5C6E}";
+
+SD_TEST(setup_elev_forward_uninstall)
+{
+  static const wchar_t *const un_argv[] = { L"s.exe", L"/uninstall", L"/quiet", L"REMOVEDATA=1" };
+  static const wchar_t *const in_argv[] = { L"s.exe", L"/quiet" };
+  sd_setup_args a;
+  const wchar_t *bad = NULL;
+  wchar_t fwd[1024];
+
+  SD_REQUIRE(sd_setup_parse_args((int)SD_SETUP_COUNTOF(un_argv), un_argv, &a, &bad) == 0);
+  SD_REQUIRE(sd_setup_elev_forward(&a, fwd, SD_SETUP_COUNTOF(fwd)) == 0);
+  SD_CHECK(wcsstr(fwd, L"/uninstall") != NULL);
+  SD_CHECK(wcsstr(fwd, L"REMOVEDATA=1") != NULL);
+  SD_REQUIRE(sd_setup_parse_args((int)SD_SETUP_COUNTOF(in_argv), in_argv, &a, &bad) == 0);
+  SD_REQUIRE(sd_setup_elev_forward(&a, fwd, SD_SETUP_COUNTOF(fwd)) == 0);
+  SD_CHECK(wcsstr(fwd, L"/uninstall") == NULL);
+}
+
+SD_TEST(setup_elev_stage2_uninstall_runs_msiexec_x)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+  wchar_t base[MAX_PATH];
+  wchar_t image[MAX_PATH];
+  wchar_t name[64];
+  wchar_t text[512];
+  HANDLE server = INVALID_HANDLE_VALUE;
+  sd_setup_args a;
+  DWORD rc;
+
+  SD_REQUIRE(test_make_temp_dir(base, MAX_PATH) == 0);
+  SD_REQUIRE(make_stage(base, image, MAX_PATH) == 0);
+  fake_make(&ops, &f);
+  f.elevated = 1;
+  f.has_product = 1;
+  StringCchCopyW(f.product, SD_SETUP_COUNTOF(f.product), k_product);
+  f.run_exit = 0;
+  SD_REQUIRE(make_pipe(name, &server) == 0);
+  memset(&a, 0, sizeof(a));
+  StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
+  a.elevate_stage = 2;
+  a.mode = SD_SETUP_MODE_UNINSTALL;
+  a.quiet = 1;
+  a.norestart = 1;
+  StringCchCopyW(a.props, SD_SETUP_COUNTOF(a.props), L"\"REMOVEDATA=1\" ");
+
+  rc = sd_setup_elev_stage2_uninstall(&ops, base, image, &a);
+  SD_CHECK(rc == 0);
+  SD_CHECK(f.find_calls == 1);
+  SD_CHECK(f.run_count == 1);
+  /* msiexec /x with the product code the registry gave; no package, no /i, the forwarded property. */
+  SD_CHECK(_wcsicmp(f.last_exe + wcslen(f.last_exe) - 11, L"msiexec.exe") == 0);
+  SD_CHECK(wcsstr(f.last_cmd, L" /x {8A3C5E2B-1D4F-4B6A-9E7C-2F1D0A3B5C6E} ") != NULL);
+  SD_CHECK(wcsstr(f.last_cmd, L" /i ") == NULL);
+  SD_CHECK(wcsstr(f.last_cmd, L"/qn") != NULL);
+  SD_CHECK(wcsstr(f.last_cmd, L"/norestart") != NULL);
+  SD_CHECK(wcsstr(f.last_cmd, L"\"REMOVEDATA=1\"") != NULL);
+  SD_CHECK(collect(server, text, SD_SETUP_COUNTOF(text)) == 0);
+  SD_CHECK(wcsstr(text, L"P 100\n") != NULL);
+  SD_CHECK(wcsstr(text, L"R 0") != NULL);
+  CloseHandle(server);
+  test_remove_tree(base);
+}
+
+SD_TEST(setup_elev_stage2_uninstall_without_product_runs_nothing)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+  wchar_t base[MAX_PATH];
+  wchar_t image[MAX_PATH];
+  wchar_t name[64];
+  wchar_t text[512];
+  HANDLE server = INVALID_HANDLE_VALUE;
+  sd_setup_args a;
+
+  SD_REQUIRE(test_make_temp_dir(base, MAX_PATH) == 0);
+  SD_REQUIRE(make_stage(base, image, MAX_PATH) == 0);
+  fake_make(&ops, &f);
+  f.elevated = 1;
+  f.has_product = 0;
+  SD_REQUIRE(make_pipe(name, &server) == 0);
+  memset(&a, 0, sizeof(a));
+  StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
+  a.elevate_stage = 2;
+  a.mode = SD_SETUP_MODE_UNINSTALL;
+
+  /* No product in the machine registry: nothing runs, and the stage reports a failure. */
+  SD_CHECK(sd_setup_elev_stage2_uninstall(&ops, base, image, &a) == SD_SETUP_EXIT_FATAL);
+  SD_CHECK(f.find_calls == 1);
+  SD_CHECK(f.run_count == 0);
+  SD_CHECK(collect(server, text, SD_SETUP_COUNTOF(text)) == 0);
+  SD_CHECK(wcsstr(text, L"R 1603") != NULL);
+  CloseHandle(server);
+  test_remove_tree(base);
+}
+
+SD_TEST(setup_elev_stage2_uninstall_refuses_a_bad_code_and_untrusted_folder)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+  wchar_t base[MAX_PATH];
+  wchar_t image[MAX_PATH];
+  wchar_t name[64];
+  HANDLE server = INVALID_HANDLE_VALUE;
+  sd_setup_args a;
+
+  SD_REQUIRE(test_make_temp_dir(base, MAX_PATH) == 0);
+  SD_REQUIRE(make_stage(base, image, MAX_PATH) == 0);
+  fake_make(&ops, &f);
+  f.elevated = 1;
+  f.has_product = 1;
+  /* Not a product code: the value never reaches the msiexec command line. */
+  StringCchCopyW(f.product, SD_SETUP_COUNTOF(f.product), L"{x} /qn & calc");
+  SD_REQUIRE(make_pipe(name, &server) == 0);
+  memset(&a, 0, sizeof(a));
+  StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
+  a.elevate_stage = 2;
+  a.mode = SD_SETUP_MODE_UNINSTALL;
+  SD_CHECK(sd_setup_elev_stage2_uninstall(&ops, base, image, &a) == SD_SETUP_EXIT_FATAL);
+  SD_CHECK(f.run_count == 0);
+  CloseHandle(server);
+
+  /* An untrusted stage folder: refused before the registry is read. */
+  server = INVALID_HANDLE_VALUE;
+  f.run_count = 0;
+  f.find_calls = 0;
+  f.has_product = 1;
+  f.trust = 0;
+  SD_REQUIRE(make_pipe(name, &server) == 0);
+  StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
+  SD_CHECK(sd_setup_elev_stage2_uninstall(&ops, base, image, &a) == SD_SETUP_EXIT_FATAL);
+  SD_CHECK(f.run_count == 0);
+  SD_CHECK(f.find_calls == 0);
+  CloseHandle(server);
+  test_remove_tree(base);
+}
+
+SD_TEST(setup_elev_launch_is_unelevated)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+
+  fake_make(&ops, &f);
+  f.elevated = 0;
+  f.has_machine_dir = 1;
+  StringCchCopyW(f.machine_dir, SD_SETUP_COUNTOF(f.machine_dir), L"C:\\Program Files\\LibreStatic\\ShellDrive");
+  f.launch_result = 1;
+  SD_CHECK(sd_setup_elev_launch_installed(&ops) == 0);
+  SD_CHECK(f.launch_count == 1);
+  SD_CHECK(f.run_count == 0);
+  /* The UI of the machine folder, started by the seam (no runas, no elevated stage). */
+  SD_CHECK(_wcsicmp(f.last_launch_exe, L"C:\\Program Files\\LibreStatic\\ShellDrive\\shelldrive-ui.exe") == 0);
+  SD_CHECK(_wcsicmp(f.last_launch_dir, L"C:\\Program Files\\LibreStatic\\ShellDrive") == 0);
+  SD_CHECK(_wcsicmp(f.last_launch_cmd, L"\"C:\\Program Files\\LibreStatic\\ShellDrive\\shelldrive-ui.exe\"") == 0);
+
+  /* A failed start is reported to the caller. */
+  f.launch_result = 0;
+  SD_CHECK(sd_setup_elev_launch_installed(&ops) == 1);
+  SD_CHECK(f.launch_count == 2);
+}
+
+SD_TEST(setup_elev_launch_refused_when_elevated_or_unknown)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+
+  fake_make(&ops, &f);
+  f.has_machine_dir = 1;
+  StringCchCopyW(f.machine_dir, SD_SETUP_COUNTOF(f.machine_dir), L"C:\\Program Files\\LibreStatic\\ShellDrive");
+  f.launch_result = 1;
+
+  /* An administrator token would run the UI elevated: it is not started. */
+  f.elevated = 1;
+  SD_CHECK(sd_setup_elev_launch_installed(&ops) == 1);
+  SD_CHECK(f.launch_count == 0);
+
+  /* No install folder in the registry: nothing to start. */
+  f.elevated = 0;
+  f.has_machine_dir = 0;
+  SD_CHECK(sd_setup_elev_launch_installed(&ops) == 1);
+  SD_CHECK(f.launch_count == 0);
 }
 
 /* ------------------------------------------------------------------ stage 1 */

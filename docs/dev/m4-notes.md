@@ -594,3 +594,99 @@ r16 section that the gate misses `unit.engine` is superseded by this note.
   setup_elev_stage1_keeps_the_stage_log_in_the_stage.
 - Open: the cap is 4 MiB of raw log; a longer msi.log is truncated, not refused. Throughput is limited by pipe round trips
   (the parent drains without waiting while data keeps coming).
+
+## Per-machine uninstall, launch and removal (wip/r18-setupuninst)
+
+Scope: the four open items of the r17 section that this branch took on (per-machine uninstall; launch after an all-users
+install; the 32-bit shell registration; empty keys left by the per-user removal). Paths are relative to the repository root.
+
+| # | Item | Status now | Where / evidence |
+|---|---|---|---|
+| 1 | Per-machine uninstall through the two stages (04 6.7) | Done in code; lab pending | `setup_main.c` (`is_machine_uninstall`, `run_uninstall`), `setup_elevate.c` (`sd_setup_elev_stage2_uninstall`), `setup_reg.c` (`sd_setup_machine_product`) |
+| 2 | Launch after an all-users install | Done in code; lab pending | `setup_elevate.c` (`sd_setup_elev_launch_installed`), `setup_main.c` (`launch_installed_ui`) |
+| 3 | 32-bit view of the shell extension in the x64 MSI | Not done: the x86 shell DLL does not ship (see below) | `packaging/msi/build-msi.cmake`, `cmake/SdPayload.cmake` |
+| 4 | Empty CLSID, InprocServer32 and shellex keys left by the per-user removal | Done; checked by the install round trip | `setup_reg.c` (`row_is_product_key`), `tests/setup/test_install.c` |
+
+### Per-machine uninstall (item 1)
+
+- Detection (`is_machine_uninstall`, before any page or copy): the machine registry holds the ShellDrive MSI
+  (`sd_setup_machine_product`: a braced GUID Uninstall key with `DisplayName` ShellDrive, `Publisher` LibreStatic and
+  `WindowsInstaller` = 1, read in both registry views, 64-bit first) and the folder is the machine install folder
+  (`sd_setup_machine_install_dir`, the `InstallDir` value of the core rows), or no folder was named, or the image runs from it.
+  Anything else keeps the per-user path. The per-user `%TEMP%` copy is not made for a machine install (04 6.7).
+- Route: the removal pages (interactive), then `run_machine_elevated` with the same parent as the install (asInvoker, progress
+  relayed, UAC consent). `/uninstall` is forwarded to both stages (`sd_setup_elev_forward`), so the stages know the mode; no path is.
+- Stage 1: unchanged. Stage 2 (`sd_setup_elev_stage2_uninstall`) needs no payload (`uninstall.exe` has none). It shares the
+  entry checks of the install stage 2 (`stage2_guard`: administrator token, pipe shape, stage folder from its own image, trusted
+  owner). The product code comes only from `find_machine_product` and must have the braced GUID shape; without one nothing
+  runs (exit 1603, message `installer.error.not_installed`). The command is `msiexec /x <code> /qb|/qn [/norestart] /L*v
+  msi.log` plus the forwarded `PROPERTY=value` tokens (for example `REMOVEDATA=1`). `msi.log` goes back over the pipe as for an
+  install. A removal reporting 3010 gets the done message, as the per-user one does.
+- Seams: `sd_setup_elev_ops` gained `find_machine_product`, `machine_dir` and `launch`; the tests fake all three.
+- Not shown: the removal of a machine install run from `Program Files` leaves `uninstall.exe` for Windows Installer
+  (locked while running), so the result is normally 3010. Lab check (below).
+
+### Launch after an all-users install (item 2)
+
+- `sd_setup_elev_launch_installed` runs in the unelevated parent only, after stage 1 has returned. It starts
+  `<InstallDir>\shelldrive-ui.exe` with `CreateProcessW` (no runas, no wait), so the UI has the logged-on user's token.
+  The folder comes from the machine registry (`InstallDir`, both views).
+- Refused when the parent holds an administrator token (the UI would run elevated). The user then sees the launch-failed message
+  and starts ShellDrive from the Start menu. This is a limit, not a bug: the stub runs as asInvoker, so this only happens when the
+  user started the stub with "Run as administrator".
+- The finish page's Launch checkbox is now honoured for all-users installs (before, it was ignored for them).
+
+### 32-bit shell registration (item 3): not done, nothing to register
+
+- 03 8.5 and 04 6.2 want the x86 shell DLL beside the x64 one, with the 32-bit registry view written too. The x64 package does not
+  ship it: `packaging/msi/build-msi.cmake` takes only the `shelldrive-shellext.dll` of the flavour's own build directory, and
+  `cmake/SdPayload.cmake` adds only the flavour's own UI members (no `x86-sse2` DLL is cross-included, despite 04 6.2).
+- So `packaging/registration.txt` keeps the 64-bit rows only, and the x64 MSI registers only what ships, as the task asked.
+  The 32-bit view rows must come with the cross-included DLL. Open (needs a build dependency of the x64 MSI on the x86
+  shell DLL, and `Win64="no"` components for the 32-bit view). Until then menu items are missing in 32-bit apps' file dialogs.
+
+### Removal of empty keys (item 4)
+
+- The old rule deleted only keys whose path contained `ShellDrive` or `shelldrive-ui.exe`. The CLSID keys
+  (`Software\Classes\CLSID\{C2A44993-...}`, `{5E1C7D02-...}`) and their `InprocServer32` never qualified, so they stayed.
+- Now a key is a candidate only when it is a row of `packaging/registration.txt` (no parent that no row names is touched) and
+  owned: its last component names ShellDrive or shelldrive-ui.exe, or it sits under one of our two CLSIDs. Shared keys (Run,
+  Shell Extensions\Approved, shellex, ContextMenuHandlers, the Windows This PC CLSID `{20D04FE0-...}`) are never deleted.
+- `setup_user_install_repair_uninstall` asserts the removal, and that the shared parents stay.
+
+### Tests
+
+- `tests/setup/main.c`: seven round-17 tests were defined in `test_elevate.c` but missing from the runner table, so they never
+  ran. They are registered now (`setup_elev_parent_relays_progress`, `..._stage1_keeps_the_stage_log_in_the_stage`,
+  `..._parent_writes_the_relayed_log`, `..._parent_truncated_block_is_written`, `..._parent_malformed_block_writes_nothing`,
+  `..._parent_oversized_block_writes_nothing`, `setup_elev_stage2_sends_the_stage_log`).
+- New (`test_elevate.c`): `setup_elev_forward_uninstall`, `setup_elev_stage2_uninstall_runs_msiexec_x`,
+  `setup_elev_stage2_uninstall_without_product_runs_nothing`, `setup_elev_stage2_uninstall_refuses_a_bad_code_and_untrusted_folder`,
+  `setup_elev_launch_is_unelevated`, `setup_elev_launch_refused_when_elevated_or_unknown`.
+- No msiexec, elevation, launch or HKLM write happens in the tests: every one goes through the fakes, and the machine readers are
+  not called with a real registry in tests.
+- No installer strings were added: every message used exists in the six catalogs already (`installer.error.not_installed`,
+  `installer.progress.uninstall`, `installer.done.uninstall`, `installer.launch.failed`).
+- `tests/msi`: no change. The registration table did not change.
+
+### Open items after this pass
+
+1. Lab (04 11.4), not run here: per-machine uninstall from ARP (`UninstallString` of the `Uninstall\ShellDrive` key, which the
+   MSI also writes from `registration.txt`, points at `uninstall.exe`) and from `shelldrive-setup.exe /uninstall`; Windows Installer
+   removing a locked `uninstall.exe`; the 3010 path; `REMOVEDATA=1` through the stage.
+2. Two ARP entries after an MSI install: `Uninstall\ShellDrive` (registration.txt row, `UninstallString` = `uninstall.exe`) and the
+   product's own `{GUID}` key. Decide whether the row should be per-user only.
+3. Product lookup stops at the first match, 64-bit view first. Two ShellDrive MSIs of different families (x86 and x64) in one
+   registry would be ambiguous; the install folder is the same, so that should not happen. Check in the lab.
+4. Launch from an administrator's elevated run is refused (see above).
+5. Item 3 (32-bit shell DLL), see above.
+
+### Gate (this branch)
+
+- Required gate (`ci-local`, presets x86-ia32, x64-modern, x64-analysis, `-TestRegex 'setup|engine|msi|shellext|l10n|importcheck|isacheck'`):
+  pass on all three; 54, 37 and 32 tests pass.
+- Found by the first run and fixed here: a malformed or oversized log block dropped the `R` result line too (`rx_line` returned
+  on `bad`), so a successful install reported failure. Control lines now count even when the log block is bad (the install result
+  never depends on the log). The two tests that caught it (`setup_elev_parent_malformed_block_writes_nothing`,
+  `setup_elev_parent_oversized_block_writes_nothing`) were unregistered before this branch.
+- Also fixed: a use of `run_machine_elevated` before its definition, and an analysis warning (NULL `out`) in `key_sz`.

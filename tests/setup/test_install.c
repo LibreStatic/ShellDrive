@@ -255,6 +255,17 @@ SD_TEST(setup_user_install_repair_uninstall)
   SD_CHECK(!reg_key_exists(L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ShellDrive"));
   SD_CHECK(!reg_key_exists(L"Software\\LibreStatic\\ShellDrive"));
   SD_CHECK(!reg_value_exists(L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", L"ShellDrive"));
+  /* Our keys go completely, the CLSIDs with their InprocServer32 included (M4 open item 4). The shared parents
+     (ContextMenuHandlers, shellex, the Windows This PC CLSID) stay: they are not ours to delete. */
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\\InprocServer32"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\\InprocServer32"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\*\\shellex\\ContextMenuHandlers\\ShellDrive"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\Drive\\shellex\\ContextMenuHandlers\\ShellDrive"));
+  SD_CHECK(!reg_key_exists(L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\ContextMenuHandlers\\ShellDrive"));
+  SD_CHECK(reg_key_exists(L"Software\\Classes\\*\\shellex\\ContextMenuHandlers"));
+  SD_CHECK(reg_key_exists(L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\ContextMenuHandlers"));
 
   /* Uninstall again: nothing is registered any more. */
   memset(&uo, 0, sizeof(uo));

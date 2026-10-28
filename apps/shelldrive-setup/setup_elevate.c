@@ -278,6 +278,38 @@ static int real_folder_trusted(void *ctx, const wchar_t *dir)
   return ok;
 }
 
+static int real_find_machine_product(void *ctx, wchar_t *code, size_t cch)
+{
+  (void)ctx;
+  return sd_setup_machine_product(code, cch);
+}
+
+static int real_machine_dir(void *ctx, wchar_t *out, size_t cch)
+{
+  (void)ctx;
+  return sd_setup_machine_install_dir(out, cch) == 0;
+}
+
+static int real_launch(void *ctx, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *dir)
+{
+  wchar_t cmd[SD_ELEV_CMD_CCH];
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+
+  (void)ctx;
+  if (exe == NULL || cmdline == NULL || FAILED(StringCchCopyW(cmd, SD_ELEV_CMD_CCH, cmdline)))
+    return 0;
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  memset(&pi, 0, sizeof(pi));
+  /* No runas and no wait: the UI runs with this process's token, the logged-on user (04 §6.4). */
+  if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi))
+    return 0;
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return 1;
+}
+
 void sd_setup_elev_real_ops(sd_setup_elev_ops *out)
 {
   out->ctx = NULL;
@@ -287,6 +319,9 @@ void sd_setup_elev_real_ops(sd_setup_elev_ops *out)
   out->copy_image = real_copy_image;
   out->run = real_run;
   out->folder_trusted = real_folder_trusted;
+  out->find_machine_product = real_find_machine_product;
+  out->machine_dir = real_machine_dir;
+  out->launch = real_launch;
 }
 
 /* ------------------------------------------------------------------ pipe */
@@ -468,6 +503,8 @@ int sd_setup_elev_forward(const sd_setup_args *args, wchar_t *out, size_t cch)
     StringCchCatW(out, cch, L"/quiet ");
   else if (args->passive)
     StringCchCatW(out, cch, L"/passive ");
+  if (args->mode == SD_SETUP_MODE_UNINSTALL)
+    StringCchCatW(out, cch, L"/uninstall ");
   if (args->norestart)
     StringCchCatW(out, cch, L"/norestart ");
   if (args->force)
@@ -598,8 +635,7 @@ static void rx_line(elev_rx *rx)
   const wchar_t *l = rx->line;
   size_t n = rx->nline;
 
-  if (rx->bad)
-    return;
+  /* A bad log block only drops the log (rx->bad); control lines still count, so the stage result is never lost. */
   if (n == 1 && l[0] == L'G') {
     if (rx->block) {
       rx->bad = 1;
@@ -1010,12 +1046,42 @@ static void send_stage_log(HANDLE pipe, const wchar_t *dir)
     sd_setup_elev_pipe_write(pipe, L"T");
 }
 
+/* The checks every stage 2 starts with (04 §6.4): an administrator token, a pipe name of the right shape, and a stage folder
+   under the root that holds this image, with a trusted owner. Nothing from the command line is a path: the folder comes from
+   this image (TM-R33, TM-R34). Returns 0 with dir set, or 1 with the message and code to report. */
+static int stage2_guard(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                        const sd_setup_args *args, wchar_t *dir, size_t cch, sd_msg_id *msg, long *code)
+{
+  wchar_t root[MAX_PATH];
+
+  *msg = 0;
+  *code = 0;
+  if (!ops->is_elevated(ops->ctx)) {
+    *msg = SD_MSG_INSTALLER_ERROR_ELEVATION;
+    *code = ERROR_ACCESS_DENIED;
+    return 1;
+  }
+  if (!sd_setup_elev_pipe_name_ok(args->pipe_name) || sd_setup_elev_root(base, root, SD_SETUP_COUNTOF(root)) != 0) {
+    *msg = SD_MSG_INSTALLER_ERROR_ELEVATION;
+    *code = ERROR_INVALID_PARAMETER;
+    return 1;
+  }
+  if (!image_in_stage(root, self) || parent_of(self, dir, cch) != 0) {
+    *msg = SD_MSG_INSTALLER_ERROR_STAGE_UNTRUSTED;
+    return 1;
+  }
+  if (!ops->folder_trusted(ops->ctx, dir)) {
+    *msg = SD_MSG_INSTALLER_ERROR_STAGE_UNTRUSTED;
+    return 1;
+  }
+  return 0;
+}
+
 DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
                            const sd_setup_args *args, const sd_setup_payload *payload,
                            const unsigned char expected[32])
 {
   HANDLE pipe = INVALID_HANDLE_VALUE;
-  wchar_t root[MAX_PATH];
   wchar_t dir[MAX_PATH];
   wchar_t pdir[MAX_PATH];
   wchar_t msi[MAX_PATH];
@@ -1034,17 +1100,12 @@ DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, co
   if (sd_setup_elev_pipe_open(args->pipe_name, &pipe) != 0)
     return SD_SETUP_EXIT_FATAL;
 
-  if (!ops->is_elevated(ops->ctx))
-    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, ERROR_ACCESS_DENIED);
-  if (!sd_setup_elev_pipe_name_ok(args->pipe_name) || sd_setup_elev_root(base, root, SD_SETUP_COUNTOF(root)) != 0)
-    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, ERROR_INVALID_PARAMETER);
-
-  /* Nothing from the command line is a path here: the folder comes from this image and must be a stage folder under
-     the root with a trusted owner (TM-R33, TM-R34). */
-  if (!image_in_stage(root, self) || parent_of(self, dir, SD_SETUP_COUNTOF(dir)) != 0)
-    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_STAGE_UNTRUSTED, 0);
-  if (!ops->folder_trusted(ops->ctx, dir))
-    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_STAGE_UNTRUSTED, 0);
+  {
+    sd_msg_id gmsg = 0;
+    long gcode = 0;
+    if (stage2_guard(ops, base, self, args, dir, SD_SETUP_COUNTOF(dir), &gmsg, &gcode) != 0)
+      return stage2_end(pipe, SD_SETUP_EXIT_FATAL, gmsg, gcode);
+  }
 
   /* The payload table check again, on the bytes this image carries. */
   sd_setup_sha256(payload->data, payload->size, sha);
@@ -1086,4 +1147,92 @@ DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, co
 
   progress(pipe, 100);
   return stage2_end(pipe, mcode, 0, 0);
+}
+
+/* ------------------------------------------------------------------ per-machine uninstall and launch */
+
+/* 1 when code has the shape of a braced product code (either letter case). */
+static int product_code_ok(const wchar_t *code)
+{
+  size_t i;
+  if (wcslen(code) != 38 || code[0] != L'{' || code[37] != L'}')
+    return 0;
+  for (i = 1; i < 37; i++) {
+    wchar_t c = code[i];
+    if (i == 9 || i == 14 || i == 19 || i == 24) {
+      if (c != L'-')
+        return 0;
+    } else if (!is_hex(c) && !(c >= L'A' && c <= L'F')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+DWORD sd_setup_elev_stage2_uninstall(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                                     const sd_setup_args *args)
+{
+  HANDLE pipe = INVALID_HANDLE_VALUE;
+  wchar_t dir[MAX_PATH];
+  wchar_t log[MAX_PATH];
+  wchar_t exe[MAX_PATH];
+  wchar_t code[64];
+  wchar_t cmd[SD_ELEV_CMD_CCH];
+  sd_msg_id gmsg = 0;
+  long gcode = 0;
+  DWORD mcode = 0;
+  DWORD rc;
+
+  if (ops == NULL || base == NULL || self == NULL || args == NULL)
+    return SD_SETUP_EXIT_FATAL;
+  if (sd_setup_elev_pipe_open(args->pipe_name, &pipe) != 0)
+    return SD_SETUP_EXIT_FATAL;
+  if (stage2_guard(ops, base, self, args, dir, SD_SETUP_COUNTOF(dir), &gmsg, &gcode) != 0)
+    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, gmsg, gcode);
+
+  /* The product code is the one the machine registry holds for the ShellDrive MSI. It is never taken from the command
+     line, and nothing runs when the registry has none or its value is not a product code. */
+  code[0] = L'\0';
+  if (!ops->find_machine_product(ops->ctx, code, SD_SETUP_COUNTOF(code)) || !product_code_ok(code))
+    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_NOT_INSTALLED, 0);
+
+  progress(pipe, 10);
+  if (sd_setup_path_join(log, MAX_PATH, dir, SD_ELEV_MSI_LOG) != 0 ||
+      sd_setup_system_path(L"msiexec.exe", exe, MAX_PATH) != 0)
+    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MSI_FAILED, 0);
+  StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /x %s %s%s /L*v \"%s\" %s", exe, code,
+                   args->quiet ? L"/qn" : L"/qb", args->norestart ? L" /norestart" : L"", log, args->props);
+
+  progress(pipe, 60);
+  rc = ops->run(ops->ctx, exe, cmd, dir, 0, &mcode);
+  send_stage_log(pipe, dir);
+  if (rc != 0)
+    return stage2_end(pipe, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MSI_FAILED, (long)rc);
+  if (mcode != SD_SETUP_EXIT_OK && mcode != SD_SETUP_EXIT_REBOOT)
+    return stage2_end(pipe, mcode, SD_MSG_INSTALLER_ERROR_MSI_FAILED, (long)mcode);
+
+  progress(pipe, 100);
+  return stage2_end(pipe, mcode, 0, 0);
+}
+
+int sd_setup_elev_launch_installed(const sd_setup_elev_ops *ops)
+{
+  wchar_t dir[MAX_PATH];
+  wchar_t exe[MAX_PATH];
+  wchar_t cmd[MAX_PATH + 4];
+
+  if (ops == NULL || ops->is_elevated == NULL || ops->machine_dir == NULL || ops->launch == NULL)
+    return 1;
+  /* The UI must not run with an administrator token: a parent that holds one does not start it. */
+  if (ops->is_elevated(ops->ctx)) {
+    sd_setup_log("launch.refused", L"the installer holds an administrator token; ShellDrive was not started");
+    return 1;
+  }
+  if (!ops->machine_dir(ops->ctx, dir, MAX_PATH) || sd_setup_path_join(exe, MAX_PATH, dir, L"shelldrive-ui.exe") != 0)
+    return 1;
+  StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\"", exe);
+  if (ops->launch(ops->ctx, exe, cmd, dir))
+    return 0;
+  sd_setup_log("launch.failed", L"the installed ShellDrive could not be started");
+  return 1;
 }

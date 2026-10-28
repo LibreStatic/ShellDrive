@@ -234,6 +234,14 @@ typedef struct sd_setup_uninstall_opts {
 
 int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r);
 
+/* Per-machine (MSI) installs, read from the machine registry in both registry views (a 32-bit process on x64 sees
+   Wow6432Node; the x64 package writes the 64-bit view). sd_setup_machine_product finds the Uninstall key of an MSI product
+   named ShellDrive by LibreStatic (WindowsInstaller = 1) and copies its braced product code: 1 when found.
+   sd_setup_machine_install_dir reads the InstallDir value of the core registration rows: 0 when found, with no trailing
+   backslash. Read-only. */
+int sd_setup_machine_product(wchar_t *code, size_t cch);
+int sd_setup_machine_install_dir(wchar_t *out, size_t cch);
+
 /* Log file (04 §13): English lines, UTF-8. */
 int sd_setup_log_open(const wchar_t *path);
 void sd_setup_log(const char *event, const wchar_t *text);

@@ -196,6 +196,45 @@ static void launch_shelldrive(const wchar_t *folder, HWND owner)
     sd_setup_ui_message(owner, SD_TITLE, text, 1);
 }
 
+static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res,
+                                sd_msg_id done);
+
+/* Starts the UI that an all-users install put in place, as the logged-on user (04 §6.4): this is the unelevated parent, never
+   the elevated stage. A failure is shown. */
+static void launch_installed_ui(void)
+{
+  sd_setup_elev_ops ops;
+  wchar_t text[512];
+  sd_setup_result tmp;
+
+  sd_setup_elev_real_ops(&ops);
+  if (sd_setup_elev_launch_installed(&ops) == 0)
+    return;
+  memset(&tmp, 0, sizeof(tmp));
+  if (sd_setup_format_message(&tmp, SD_MSG_INSTALLER_LAUNCH_FAILED, text, SD_SETUP_COUNTOF(text)) >= 0)
+    sd_setup_ui_message(NULL, SD_TITLE, text, 1);
+}
+
+/* True when this uninstall is the per-machine one (04 §6.7): the ShellDrive MSI is registered in the machine registry, and
+   either no folder was named or the named folder is the machine install folder (or the running image sits there). dir gets
+   the machine folder when none was named. Read-only. */
+static int is_machine_uninstall(const wchar_t *self, wchar_t *dir, size_t cch, wchar_t *code, size_t ccode)
+{
+  wchar_t mdir[MAX_PATH];
+  int known;
+
+  if (!sd_setup_machine_product(code, ccode))
+    return 0;
+  known = sd_setup_machine_install_dir(mdir, SD_SETUP_COUNTOF(mdir)) == 0;
+  if (dir[0] == L'\0') {
+    /* Only the machine install is known here: the elevated stage finds the product itself. */
+    if (known)
+      StringCchCopyW(dir, cch, mdir);
+    return 1;
+  }
+  return known && (_wcsicmp(mdir, dir) == 0 || running_from_install_dir(self, mdir));
+}
+
 static int run_uninstall(HINSTANCE inst, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
 {
   sd_setup_uninstall_opts uo;
@@ -204,7 +243,9 @@ static int run_uninstall(HINSTANCE inst, const sd_setup_args *args, const wchar_
   sd_setup_defaults defs;
   sd_setup_choices choice;
   wchar_t dir[MAX_PATH];
+  wchar_t code[64];
   int interactive = !args->quiet && !args->passive;
+  int machine;
   int rc;
 
   memset(&uo, 0, sizeof(uo));
@@ -217,6 +258,7 @@ static int run_uninstall(HINSTANCE inst, const sd_setup_args *args, const wchar_
   } else {
     sd_setup_registered_install_dir(dir, SD_SETUP_COUNTOF(dir));
   }
+  machine = is_machine_uninstall(self, dir, SD_SETUP_COUNTOF(dir), code, SD_SETUP_COUNTOF(code));
 
   if (!args->quiet && sd_setup_ui_create(inst, SD_TITLE, &ui) != 0)
     ui = NULL;
@@ -236,6 +278,16 @@ static int run_uninstall(HINSTANCE inst, const sd_setup_args *args, const wchar_
       fail_result(res, SD_SETUP_EXIT_CANCEL, 0);
       return SD_SETUP_EXIT_CANCEL;
     }
+  }
+
+  if (machine) {
+    /* Per-machine: the elevated stages run msiexec /x for the registered product (04 §6.7). The image is not copied to
+       %TEMP%: Windows Installer removes the installed files itself. */
+    if (ui != NULL)
+      sd_setup_ui_begin_progress(ui);
+    rc = run_machine_elevated(ui, args, self, res, SD_MSG_INSTALLER_DONE_UNINSTALL);
+    sd_setup_ui_destroy(ui);
+    return rc;
   }
 
   if (dir[0] != L'\0' && running_from_install_dir(self, dir) && !args->uninstall_relaunched) {
@@ -382,9 +434,11 @@ static void elev_progress(void *ctx, unsigned value)
   sd_setup_ui_status(ui, L"", value);
 }
 
-/* Per-machine install (04 §6.3, 6.4): the unelevated parent starts the two stages and relays their progress to ui (which
-   has begun its progress view, or is NULL for /quiet). The UAC prompt is the consent step. No path is passed to the elevated stages. */
-static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
+/* Per-machine install or uninstall (04 §6.3, 6.4, 6.7): the unelevated parent starts the two stages and relays their progress
+   to ui (which has begun its progress view, or is NULL for /quiet). The UAC prompt is the consent step. No path is passed to
+   the elevated stages. done is the success message; a reboot-pending uninstall also gets it. */
+static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res,
+                                sd_msg_id done)
 {
   sd_setup_elev_ops ops;
   wchar_t base[MAX_PATH];
@@ -396,8 +450,8 @@ static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, cons
   }
   sd_setup_elev_real_ops(&ops);
   rc = sd_setup_elev_parent_ex(&ops, base, self, args, res, elev_progress, ui);
-  if (rc == SD_SETUP_EXIT_OK && res->msg == 0)
-    res->msg = SD_MSG_INSTALLER_DONE_INSTALL;
+  if (res->msg == 0 && (rc == SD_SETUP_EXIT_OK || (rc == SD_SETUP_EXIT_REBOOT && done == SD_MSG_INSTALLER_DONE_UNINSTALL)))
+    res->msg = done;
   return rc;
 }
 
@@ -471,7 +525,7 @@ static int run_install(HINSTANCE inst, const sd_setup_args *args, const wchar_t 
     sd_setup_ui_begin_progress(ui);
 
   if (mode == SD_SETUP_MODE_MACHINE) {
-    rc = run_machine_elevated(ui, args, self, res);
+    rc = run_machine_elevated(ui, args, self, res, SD_MSG_INSTALLER_DONE_INSTALL);
   } else {
     memset(&io, 0, sizeof(io));
     io.mode = mode;
@@ -490,14 +544,18 @@ static int run_install(HINSTANCE inst, const sd_setup_args *args, const wchar_t 
     rc = sd_setup_install(&io, res);
   }
   if (rc == SD_SETUP_EXIT_OK && interactive && ui != NULL) {
-    /* The finish page carries the success text and the Launch checkbox. The all-users install does not offer the
-       launch: the parent does not know the folder the MSI installed into (open item in m4-notes). */
+    /* The finish page carries the success text and the Launch checkbox. An all-users install starts the UI the MSI
+       installed, from this unelevated parent (the folder comes from the machine registry); see launch_installed_ui. */
     wchar_t text[1024];
     int launch = 0;
     if (sd_setup_format_message(res, res->msg, text, SD_SETUP_COUNTOF(text)) < 0)
       text[0] = L'\0';
-    if (sd_setup_ui_finish(ui, text, &launch) && launch && mode != SD_SETUP_MODE_MACHINE)
-      launch_shelldrive(res->folder, NULL);
+    if (sd_setup_ui_finish(ui, text, &launch) && launch) {
+      if (mode == SD_SETUP_MODE_MACHINE)
+        launch_installed_ui();
+      else
+        launch_shelldrive(res->folder, NULL);
+    }
   }
   sd_setup_ui_destroy(ui);
   return rc;
@@ -522,6 +580,11 @@ static int run_elevated_stage(HINSTANCE inst, const sd_setup_args *args, const w
     DWORD child = 0;
     rc = sd_setup_elev_stage1(&ops, base, self, args, &child);
     return rc == 0 ? SD_SETUP_EXIT_OK : SD_SETUP_EXIT_FATAL;
+  }
+  /* A per-machine uninstall needs no payload: its stage 2 runs msiexec /x for the registered product (04 §6.7). */
+  if (args->mode == SD_SETUP_MODE_UNINSTALL) {
+    rc = sd_setup_elev_stage2_uninstall(&ops, base, self, args);
+    return (int)rc;
   }
   if (host_flavour(&flavour, &reason, args) != 0 || load_payload(inst, flavour, &payload, expected, &reason) != 0)
     return SD_SETUP_EXIT_FATAL;
