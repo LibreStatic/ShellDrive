@@ -72,9 +72,10 @@ updates. Method:
    that test `__isa_available`, `__sse2_available` or `__use_sse2_mathfcns` before their SIMD path (each was
    checked in `dumpbin /disasm`; re-check on any toolset update). Our own code never goes on that list.
 5. sse2 floor only: a function that reads `__isa_available` (a relocated absolute reference; address from
-   `SymFromName`) counts as dispatching and its hits are allowed. Needed because the v141 auto-vectorizer
-   compiles our plain-C byte-swap loops in `hash.c` (`sha256_blocks`, `sha256_final`) into a PSHUFB (SSSE3)
-   loop behind `cmp __isa_available, 2; jl <scalar>` in the x86-sse2 build. Never applied on the ia32 floor.
+   `SymFromName`) counts as dispatching and its hits are allowed. It was needed because the v141 auto-vectorizer
+   compiled our plain-C byte-swap loops in `hash.c` (`sha256_blocks`, `sha256_final`) into a PSHUFB (SSSE3)
+   loop behind `cmp __isa_available, 2; jl <scalar>` in the x86-sse2 build. Both loops now carry `SD_CT_NO_VECTOR`
+   (M6 round 12), so no hit in our code needs this rule; it stays for the CRT. Never applied on the ia32 floor.
 6. `--entry <symbol>`: the PE entry point must be that symbol and its function must be IA32-clean even on the
    sse2 floor.
 

@@ -129,6 +129,9 @@ static void sha256_final(sha256_state *s, uint8_t *out, size_t outlen)
   memset(s->buf + s->n, 0, 56 - s->n);
   sd_store_be64(s->buf + 56, bits);
   sha256_blocks(s->h, s->buf, 1);
+  /* Scalar stores only: the state is secret for keyed hashes (HMAC), and at /arch:SSE2 the vectorizer would emit
+     SSSE3 PSHUFB for the big-endian store (not on the x86-sse2 floor). The loop bound is the public output length. */
+  SD_CT_NO_VECTOR
   for (i = 0; i < outlen / 4; i++)
     sd_store_be32(out + 4 * i, s->h[i]);
 }

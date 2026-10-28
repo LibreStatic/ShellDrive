@@ -87,12 +87,12 @@ Gate (every x86 and x64 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_s
 
 - No call to a compiler helper from constant-time code (as before).
 - DIV and IDIV are forbidden in constant-time-named functions (`*_ct_*`, `*_ct`, `sd_ct_*`).
-- Which objects: the constant-time list of `tools/sd-isacheck/CMakeLists.txt` (`SD_CT_SOURCES`). On x86-sse2 it also
-  takes the AES-NI and SHA-NI objects (`aes_ni`, `sha256_ni`); on the x64 flavours it takes those two plus `aes_ct` and
-  `hash`. x86-ia32 and ARM take no hardware object. A new hardware or SIMD function that must be judged needs the
-  constant-time name; the `isacheck.ct_scans_*` tests fail if a rename removes it from the scan.
-- x64 objects are decoded in 64-bit mode (`isacheck.selftest` covers both modes). The branch and divide rules on x64
-  reach only the functions listed above.
+- Which objects: the constant-time list of `tools/sd-isacheck/CMakeLists.txt` (`SD_CT_SOURCES`). It is the same list on
+  x86-ia32, x86-sse2 and the x64 flavours. x86-sse2 and the x64 flavours also take the AES-NI and SHA-NI objects
+  (`aes_ni`, `sha256_ni`); x86-ia32 and ARM take no hardware object. A new hardware or SIMD function that must be judged
+  needs the constant-time name; the `isacheck.ct_scans_*` tests fail if a rename removes it from the scan.
+- x64 objects are decoded in 64-bit mode (`isacheck.selftest` covers both modes). Since round 12 the branch and divide
+  rules on x64 reach the whole list, as on x86.
 - A **forward** conditional branch in those functions is reported, except a loop-entry guard (a forward branch that
   skips a loop whose back-edge lies inside the skipped region). Backward branches are loop back-edges; their bounds
   are public by 01 section 2.4 rule 1 and are not classified.
@@ -100,7 +100,7 @@ Gate (every x86 and x64 Release build, `sd_crypto_ctcheck`, CTest `isacheck.ct_s
   `tools/sd-isacheck/ct-branch-allow.txt` with the reason. The list is exempt from the forward-branch rule only.
   A change to a listed function needs its branches reviewed again.
 
-Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the ARM32 run. The x86-sse2 run is in place: the vectorizer's overlap checks are kept out of CT loops with `SD_CT_NO_VECTOR` (d38-pass1 section 9.4). Round 10 (d38-pass1 section 9.4) brought the AES-NI and SHA-NI code and the dispatch cores under the gate. The `sha256_final` digest store still vectorizes to SSSE3 `PSHUFB` on x86-sse2 and is not judged (open).
+Not implemented: secret-indexed memory operands, the 64x64 multiply sequence check, the ARM32 run. The x86-sse2 run is in place: the vectorizer's overlap checks are kept out of CT loops with `SD_CT_NO_VECTOR` (d38-pass1 section 9.4). Round 10 (d38-pass1 section 9.4) brought the AES-NI and SHA-NI code and the dispatch cores under the gate. Round 12 (d38-pass1 section 9.4) takes the full list on the x64 flavours and keeps the `sha256_final` digest store out of vectorization: it has no secret-dependent branch or index (its loops are bounded by the public output length), so it keeps its name and is not judged by the gate. The Release `hash.obj` of x86-sse2 has no PSHUFB or other SSSE3 instruction and no `__isa_available` dispatch (`dumpbin /disasm`, 2026-10-27).
 
 dudect-style timing (opt-in, once per release candidate and nightly on a quiet machine):
 
