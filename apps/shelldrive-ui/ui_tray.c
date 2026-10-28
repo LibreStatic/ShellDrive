@@ -299,11 +299,16 @@ void ui_tray_notify_msg(sd_msg_id msg, const char *name, const wchar_t *arg)
   sd_free(text);
 }
 
+int ui_tray_notify_wanted(int kind)
+{
+  return sd_settings_notify_on(&g_app.settings, kind);
+}
+
 void ui_tray_balloon(const char *code, const wchar_t *drive)
 {
   sd_msg_id msg = SD_MSG_UI_WARN_GENERIC;
-  /* write_failed is always shown (03 §7.7); the others follow the notifications setting */
-  if (!g_app.notify_on && !(code && strcmp(code, "write_failed") == 0))
+  /* write_failed is always shown (03 §7.7); the others follow the master switch and their own notify_<kind> */
+  if (!(code && strcmp(code, "write_failed") == 0) && !ui_tray_notify_wanted(sd_notify_kind_from_code(code)))
     return;
   if (code && strcmp(code, "legacy_algorithms") == 0)
     msg = SD_MSG_UI_WARN_LEGACY;
@@ -334,7 +339,7 @@ void ui_tray_on_hostkeys_announced(const sd_json *data)
   wchar_t w[UI_NOTIFY_SUBJECT_MAX + 1];
   ui_mount *m;
 
-  if (!g_app.notify_on)
+  if (!ui_tray_notify_wanted(SD_NOTIFY_HOSTKEYS_OFFERED))
     return;
   if (host != NULL && host[0] != '\0') {
     ui_text_utf8(host, w, SD_COUNTOF(w));

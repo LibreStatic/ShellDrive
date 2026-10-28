@@ -47,19 +47,30 @@ Priority 1: the user can not do it at all, and the backend exists.
    `UILanguage`. Only changed values are written (`ui_settings_changed`), locked fields are never rewritten, and the
    agent is asked for `config.reload` only after a write. Model and tests: `ui_settings_model.c`,
    `tests/ui/test_settings.c`, smoke `ui_settings_security_smoke` in `--test-windows`.
-   **Still missing, shown nowhere until the backend exists (backend missing):**
-   - Default write mode (`[defaults] write_mode`): `sd_settings` has no field, `sd_settings_from_ini` does not parse it,
-     new profiles do not take it. Policy `ForceWriteThrough` exists, but nothing reads the default to lock.
-   - "Keep host names and file paths out of log files" (`[log] privacy = strict`, policy `LogPrivacy`): no field in
-     `sd_settings`, `sd_log` does not read it.
+   **Backend done in round 17 (branch `wip/r17-settingsbe`, item 3):** the four backend keys below are parsed,
+   validated, saved and consumed; their Settings controls are still to be added (see the list after them).
+   - Default write mode `[defaults] write_mode = through | behind`: `sd_settings.default_write_mode`. A profile without
+     `mount.write_mode` takes it (`sd_profile.write_mode_set` = 0); the agent and the service resolve the effective mode
+     with `sd_profile_effective_write_mode`, and policy `ForceWriteThrough` clamps a default to through and refuses an
+     explicit behind (`SD_E_ACCESS_DENIED`, mount fails with `policy_denied`). The profile editor sets the key on edit.
+   - `[log] privacy = standard | strict` (policy `LogPrivacy` overrides the file): `sd_settings.log_privacy`; the agent
+     applies it with `sd_log_set_privacy` (typed fields `%Hs`, `%Us`, `%Rs`, HMAC key in `state\log.key`).
+   - `[ui] notify_<kind>` per notification type (15 kinds, 03 §7.7 defaults) under the `[ui] notify` master:
+     `sd_settings.notify_kind[]`, `sd_settings_notify_on`. The tray gates its balloons by kind (`ui_tray_notify_wanted`).
+   - `[agent] start_at_logon`: `sd_settings.agent_start_at_logon`. The Settings save writes or removes the agent's HKCU
+     Run value `ShellDriveAgent` (`agent_run_set`) when `sd_settings_agent_run_wanted` says so (the key or a profile
+     with autostart = logon). The tray Run value `ShellDriveTray` is unchanged.
+   **Still open (frontend or follow-up):**
+   - Settings controls for the four keys above (a second "start agent at sign-in" checkbox, the write mode combo, the
+     privacy checkbox, the per-type notification list) and their policy lock bits in `ui_settings_model`.
+   - The log call sites still print host, user and path with `%s`: they must move to `%Hs`, `%Us`, `%Rs` before strict
+     privacy covers the whole log (about 100 sites in agent, sd_ssh, sd_sftp, sd_vfs).
+   - Balloons for connection lost, reconnected, mount failed, mounted, proxy password, pool limit and disk cache are
+     not emitted by the tray yet; their switches are read and take effect when the balloons exist.
    - Windows 11 menu status and `[explorer] modern_menu = auto|off` (8.6): there is no registration query and no
      `sd_settings` field (policy `DisableModernContextMenu` is not read by anything either).
-   - Notifications per type (`[ui] notify_*`) and "start tray and agent separately" (`[agent] start_at_logon`): only
-     the single `[ui] notify` and the tray Run key are parsed.
    - Linked connections status and "Change..." (8.7): needs a system query helper and an elevated change path.
    - Credential roaming is not locked by any policy (none is defined); the control is always editable.
-   To add one of these, give `sd_settings` the field (parse and save in `src/sd_config/profile.c`), make the agent or
-   `sd_log` read it, then add a field to `ui_settings_model` with its lock bit.
 
 2. **Service status and repair page for admins. Done in round 15** (branch `wip/r15-uisvc`). Decision: the UI does not
    shell out to `shelldrive.exe`. The service pipe has two new methods, `service.status` (any client) and
@@ -73,7 +84,8 @@ Priority 1: the user can not do it at all, and the backend exists.
    service is not running). Details: the last section of m5-notes ("Service page: service.status and service.repair_data"). Still open on this item: install, uninstall, start and stop are
    CLI verbs only (the page shows the state, it does not change it), and the WebClient and linked-connections status
    of 7.5 (item 3).
-3. **Settings is missing most of the 7.5 list.** Present: language, backend, cache budget, notify, start at sign-in,
+3. **Settings is missing most of the 7.5 list.** Backend for the default write mode, log privacy, per-type notify and
+   the agent's start at sign-in is DONE in round 17 (the Settings controls are still open, see below). Present: language, backend, cache budget, notify, start at sign-in,
    updates. Missing: default write mode, credential roaming, "Trust host keys accepted in PuTTY / OpenSSH" with the
    "Ignored: other users can change this file" state (5.1, TM-R06), "Keep host names and file paths out of log
    files" (`[log] privacy = strict`, 10.1), WebClient status, Windows 11 menu status (8.6), linked connections

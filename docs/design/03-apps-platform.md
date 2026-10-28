@@ -1077,6 +1077,25 @@ makes `backend = auto` resolve to WebDAV, 04 §8.4, D36). The MSI properties `UP
 `[update] enabled` and `manifest_url` of the machine `settings.ini`; per-user values override machine values
 unless a policy is set.
 
+**Settings schema rows added in round 17 (`sd_settings` in `src/sd_config`; defaults are the `sd_settings_defaults` values):**
+
+| Key | Values (default) | Consumer | Policy |
+|---|---|---|---|
+| `[defaults] write_mode` | `through \| behind` (`through`, D9) | agent and service resolve every mount with `sd_profile_effective_write_mode`: a profile without `mount.write_mode` takes it (`sd_profile.write_mode_set` = 0) | `ForceWriteThrough` = 1 clamps a default to through and refuses an explicit `behind` (`policy_denied`) |
+| `[log] privacy` | `standard \| strict` (`standard`) | `sd_log_set_privacy`: `%Hs` host, `%Us` user and `%Rs` remote path are printed (standard; a path only at error, debug and trace) or replaced by HMAC-SHA-256 hashes under `state\log.key` (strict) | `LogPrivacy` (0 standard, 1 strict) overrides the file (10.1, TM-R31) |
+| `[ui] notify` | `yes \| no` (`yes`), the master switch | every balloon except `write_failed` (7.7) | none |
+| `[ui] notify_connection_lost`, `notify_reconnected`, `notify_mount_failed`, `notify_mounted` | `yes \| no` (on, on, on, off) | read and stored; the tray emits no balloon of these kinds yet (7.7 target) | none |
+| `[ui] notify_legacy_algorithms`, `notify_terrapin` | `yes \| no` (on) | tray balloons for the warning codes `legacy_algorithms` and `terrapin_exposed` | none |
+| `[ui] notify_hostkeys_offered` | `yes \| no` (on) | tray balloon for `hostkeys.announced` (5.6) | none |
+| `[ui] notify_hostkeys_saved`, `notify_proxy_password`, `notify_service_attention` | `yes \| no` (on) | read and stored; `proxy_password` and `service_attention` are mapped to their kind for the tray, no balloon is emitted for them yet | none |
+| `[ui] notify_pool_limited` | `yes \| no` (off) | warning code `pool_limited` (mapped; no balloon emitted yet) | none |
+| `[ui] notify_update_available`, `notify_update_stale` | `yes \| no` (on) | update balloons (`update.available`); code `update_stale` (mapped) | none |
+| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` and `disk_cache_refused` (mapped) | none |
+| `[agent] start_at_logon` | `yes \| no` (`no`) | the agent's HKCU Run value `ShellDriveAgent` (`"<dir>\shelldrive-host.exe" agent --logon`), written by the Settings save when `sd_settings_agent_run_wanted` (this key or a profile with `autostart = logon`) | none |
+
+The always-on kinds (host key changed, write failed, agent stopped unexpectedly, session objects interference) have no
+switch. The tray Run value `ShellDriveTray` (start tray at sign-in) is separate from `[agent] start_at_logon`.
+
 ### 3.5 Group Policy values (registry, read-only for us)
 
 All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (HKLM wins), listed here once (C8):

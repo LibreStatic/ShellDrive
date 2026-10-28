@@ -8,6 +8,7 @@
 #include "sd_config/sd_config.h"
 #include "config_internal.h"
 #include "sd_base/sd_mem.h"
+#include "sd_crypto/sd_crypto.h"
 #include "sd_base/sd_utf.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
@@ -233,6 +234,7 @@ sd_err sd_profile_from_ini(const sd_ini *ini, sd_profile *p, const char **bad_ke
     if (strcmp(v, "through") == 0) p->write_mode = SD_PROFILE_WRITE_THROUGH;
     else if (strcmp(v, "behind") == 0) p->write_mode = SD_PROFILE_WRITE_BEHIND;
     else BAD("mount.write_mode");
+    p->write_mode_set = 1;          /* M4: an absent key takes [defaults] write_mode */
   }
   if ((v = sd_ini_get(ini, "mount", "label")) != NULL && !scpy(p->label, sizeof(p->label), v)) BAD("mount.label");
   if ((v = sd_ini_get(ini, "mount", "network_location")) != NULL) {
@@ -330,7 +332,9 @@ sd_err sd_profile_to_ini(const sd_profile *p, sd_ini **ini)
   SET("mount", "read_only", p->read_only ? "yes" : "no");
   SET("mount", "symlinks", p->symlinks == SD_PROFILE_SYMLINKS_FOLLOW ? "follow"
                          : p->symlinks == SD_PROFILE_SYMLINKS_HIDE ? "hide" : "follow_inside");
-  SET("mount", "write_mode", p->write_mode == SD_PROFILE_WRITE_BEHIND ? "behind" : "through");
+  /* M4: written only when the profile sets it; an absent key follows [defaults] write_mode */
+  if (p->write_mode_set || sd_ini_get(d, "mount", "write_mode"))
+    SET("mount", "write_mode", p->write_mode == SD_PROFILE_WRITE_BEHIND ? "behind" : "through");
   if (p->label[0] || sd_ini_get(d, "mount", "label")) SET("mount", "label", p->label);
   /* the default is yes: written only when it is off or the key is already present */
   if (!p->network_location || sd_ini_get(d, "mount", "network_location"))
@@ -668,6 +672,15 @@ static int settings_lang_valid(const char *v)
   return 1;
 }
 
+/* M4: the [ui] notify_<kind> keys, in sd_notify_kind order, with the 7.7 defaults (mounted and the pool limit are off). */
+static const char *const k_notify_keys[SD_NOTIFY_COUNT] = {
+  "notify_connection_lost", "notify_reconnected", "notify_mount_failed", "notify_mounted",
+  "notify_legacy_algorithms", "notify_hostkeys_offered", "notify_hostkeys_saved", "notify_proxy_password",
+  "notify_pool_limited", "notify_service_attention", "notify_update_available", "notify_update_stale",
+  "notify_terrapin", "notify_hostkeys_source", "notify_disk_cache"
+};
+static const unsigned char k_notify_defaults[SD_NOTIFY_COUNT] = { 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1 };
+
 void sd_settings_defaults(sd_settings *s)
 {
   memset(s, 0, sizeof(*s));
@@ -677,6 +690,9 @@ void sd_settings_defaults(sd_settings *s)
   s->notify = 1;
   s->default_backend = SD_PROFILE_BACKEND_AUTO;
   strcpy_s(s->update_channel, sizeof(s->update_channel), "stable");
+  s->default_write_mode = SD_PROFILE_WRITE_THROUGH;
+  s->log_privacy = SD_SETTINGS_PRIVACY_STANDARD;
+  memcpy(s->notify_kind, k_notify_defaults, sizeof(s->notify_kind));
 }
 
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
@@ -733,6 +749,32 @@ sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
       strcpy_s(s->update_channel, sizeof(s->update_channel), v);
     else { SD_LOGW("config", "settings.ini: invalid [update] channel"); e = SD_E_INVALID_PARAM; }
   }
+  /* M4 */
+  if ((v = sd_ini_get(ini, "defaults", "write_mode")) != NULL) {
+    if (strcmp(v, "through") == 0) s->default_write_mode = SD_PROFILE_WRITE_THROUGH;
+    else if (strcmp(v, "behind") == 0) s->default_write_mode = SD_PROFILE_WRITE_BEHIND;
+    else { SD_LOGW("config", "settings.ini: invalid [defaults] write_mode"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "log", "privacy")) != NULL) {
+    if (strcmp(v, "standard") == 0) s->log_privacy = SD_SETTINGS_PRIVACY_STANDARD;
+    else if (strcmp(v, "strict") == 0) s->log_privacy = SD_SETTINGS_PRIVACY_STRICT;
+    else { SD_LOGW("config", "settings.ini: invalid [log] privacy"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "agent", "start_at_logon")) != NULL) {
+    int b;
+    if (sd_ini_parse_bool(v, &b)) s->agent_start_at_logon = b ? 1 : 0;
+    else { SD_LOGW("config", "settings.ini: invalid [agent] start_at_logon"); e = SD_E_INVALID_PARAM; }
+  }
+  {
+    unsigned k;
+    for (k = 0; k < SD_NOTIFY_COUNT; k++) {
+      int b;
+      if ((v = sd_ini_get(ini, "ui", k_notify_keys[k])) == NULL)
+        continue;
+      if (sd_ini_parse_bool(v, &b)) s->notify_kind[k] = b ? 1 : 0;
+      else { SD_LOGW("config", "settings.ini: invalid [ui] %s", k_notify_keys[k]); e = SD_E_INVALID_PARAM; }
+    }
+  }
   return e;
 }
 
@@ -773,7 +815,8 @@ sd_err sd_settings_save(const sd_settings *s)
   char num[32];
   sd_err e;
   int lvl;
-  if (s == NULL || s->default_backend < 0 || s->default_backend > 2)
+  if (s == NULL || s->default_backend < 0 || s->default_backend > 2 || s->default_write_mode < 0 ||
+      s->default_write_mode > 1 || s->log_privacy < 0 || s->log_privacy > 1)
     return SD_E_INVALID_PARAM;
   if ((e = sd_config_ensure_dirs()) != SD_OK)
     return e;
@@ -808,6 +851,15 @@ sd_err sd_settings_save(const sd_settings *s)
     if (strcmp(s->update_channel, "beta") == 0) e = sd_ini_set(ini, "update", "channel", "beta");
     else (void)sd_ini_remove(ini, "update", "channel");
   }
+  /* M4: every key is written, so the file says what is in effect */
+  if (e == SD_OK) e = sd_ini_set(ini, "defaults", "write_mode", s->default_write_mode ? "behind" : "through");
+  if (e == SD_OK) e = sd_ini_set(ini, "log", "privacy", s->log_privacy ? "strict" : "standard");
+  if (e == SD_OK) e = sd_ini_set(ini, "agent", "start_at_logon", s->agent_start_at_logon ? "yes" : "no");
+  {
+    unsigned i;
+    for (i = 0; e == SD_OK && i < SD_NOTIFY_COUNT; i++)
+      e = sd_ini_set(ini, "ui", k_notify_keys[i], s->notify_kind[i] ? "yes" : "no");
+  }
   if (e == SD_OK) {
     sd_wr_init(&w, SD_INI_MAX_BYTES);
     e = sd_ini_serialize(ini, &w);
@@ -817,6 +869,120 @@ sd_err sd_settings_save(const sd_settings *s)
   sd_ini_free(ini);
   sd_config_unlock(lock);
   return e;
+}
+
+/* ---- M4 settings helpers (03 §3.4, §7.7, §10.1) ---- */
+
+const char *sd_notify_kind_key(sd_notify_kind k)
+{
+  if ((unsigned)k >= SD_NOTIFY_COUNT)
+    return "";
+  return k_notify_keys[(unsigned)k];
+}
+
+int sd_notify_kind_from_code(const char *code)
+{
+  static const struct { const char *code; int kind; } map[] = {
+    { "legacy_algorithms", SD_NOTIFY_LEGACY_ALGORITHMS }, { "terrapin_exposed", SD_NOTIFY_TERRAPIN },
+    { "pool_limited", SD_NOTIFY_POOL_LIMITED }, { "proxy_password", SD_NOTIFY_PROXY_PASSWORD },
+    { "hostkey_source_insecure", SD_NOTIFY_HOSTKEYS_SOURCE }, { "disk_cache_refused", SD_NOTIFY_DISK_CACHE },
+    { "update_stale", SD_NOTIFY_UPDATE_STALE }, { "service_attention", SD_NOTIFY_SERVICE_ATTENTION },
+  };
+  size_t i;
+  if (code == NULL)
+    return -1;
+  for (i = 0; i < SD_COUNTOF(map); i++)
+    if (strcmp(code, map[i].code) == 0)
+      return map[i].kind;
+  return -1;
+}
+
+int sd_settings_notify_on(const sd_settings *s, int kind)
+{
+  if (s == NULL || !s->notify)
+    return 0;
+  if (kind < 0 || kind >= SD_NOTIFY_COUNT)
+    return 1;
+  return s->notify_kind[kind] ? 1 : 0;
+}
+
+sd_err sd_profile_effective_write_mode(const sd_profile *p, const sd_settings *s, int policy_force_through, int *mode)
+{
+  int m;
+  if (p == NULL || mode == NULL)
+    return SD_E_INVALID_PARAM;
+  m = p->write_mode_set ? p->write_mode : (s != NULL ? s->default_write_mode : SD_PROFILE_WRITE_THROUGH);
+  if (m != SD_PROFILE_WRITE_THROUGH && m != SD_PROFILE_WRITE_BEHIND)
+    m = SD_PROFILE_WRITE_THROUGH;
+  if (policy_force_through && m == SD_PROFILE_WRITE_BEHIND) {
+    if (p->write_mode_set) {
+      *mode = SD_PROFILE_WRITE_THROUGH;
+      return SD_E_ACCESS_DENIED;          /* 03 §3.5: ForceWriteThrough refuses an explicit behind */
+    }
+    m = SD_PROFILE_WRITE_THROUGH;         /* a default is clamped */
+  }
+  *mode = m;
+  return SD_OK;
+}
+
+int sd_settings_effective_privacy(const sd_settings *s, int policy_value)
+{
+  if (policy_value == 0 || policy_value == 1)
+    return policy_value;
+  return s != NULL && s->log_privacy == SD_SETTINGS_PRIVACY_STRICT ? SD_SETTINGS_PRIVACY_STRICT
+                                                                  : SD_SETTINGS_PRIVACY_STANDARD;
+}
+
+static int any_logon_profile_cb(void *ctx, const sd_profile *p, const wchar_t *path)
+{
+  SD_UNUSED(path);
+  if (p->autostart == SD_PROFILE_AUTOSTART_LOGON) {
+    *(int *)ctx = 1;
+    return 0;                              /* found: stop */
+  }
+  return 1;
+}
+
+int sd_settings_agent_run_wanted(const sd_settings *s)
+{
+  int found = 0;
+  if (s != NULL && s->agent_start_at_logon)
+    return 1;
+  (void)sd_profile_enum(any_logon_profile_cb, &found);
+  return found;
+}
+
+sd_err sd_config_log_key(uint8_t key[32])
+{
+  wchar_t dir[MAX_PATH], path[MAX_PATH];
+  HANDLE h;
+  DWORD n = 0;
+  BOOL ok;
+  sd_err e;
+  if (key == NULL)
+    return SD_E_INVALID_PARAM;
+  if ((e = sd_config_root(dir, SD_COUNTOF(dir))) != SD_OK)
+    return e;
+  if (!wcat(dir, SD_COUNTOF(dir), L"\\state"))
+    return SD_E_NAME_TOO_LONG;
+  if (!wcpy(path, SD_COUNTOF(path), dir) || !wcat(path, SD_COUNTOF(path), L"\\log.key"))
+    return SD_E_NAME_TOO_LONG;
+  if (GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES && (e = sd_config_make_protected_dir(dir)) != SD_OK)
+    return e;
+  h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h != INVALID_HANDLE_VALUE) {
+    ok = ReadFile(h, key, 32, &n, NULL);
+    CloseHandle(h);
+    return ok && n == 32 ? SD_OK : SD_E_FAILURE;
+  }
+  if ((e = sd_random(key, 32)) != SD_OK)
+    return e;
+  h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+    return SD_E_ACCESS_DENIED;             /* lost a race with another writer: the next start reads it */
+  ok = WriteFile(h, key, 32, &n, NULL);
+  CloseHandle(h);
+  return ok && n == 32 ? SD_OK : SD_E_FAILURE;
 }
 
 sd_err sd_config_expand_path(const char *utf8, wchar_t *out, size_t cch)

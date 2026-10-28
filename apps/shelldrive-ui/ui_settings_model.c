@@ -151,3 +151,14 @@ sd_err ui_settings_run_command(const wchar_t *exe, wchar_t *out, size_t cap)
     return SD_E_NAME_TOO_LONG;
   return SD_OK;
 }
+
+sd_err ui_settings_agent_run_command(const wchar_t *host_exe, wchar_t *out, size_t cap)
+{
+  if (host_exe == NULL || out == NULL || cap == 0)
+    return SD_E_INVALID_PARAM;
+  if (wcschr(host_exe, L'"') != NULL)
+    return SD_E_INVALID_PARAM;
+  if (_snwprintf_s(out, cap, _TRUNCATE, L"\"%s\" agent --logon", host_exe) < 0)
+    return SD_E_NAME_TOO_LONG;
+  return SD_OK;
+}

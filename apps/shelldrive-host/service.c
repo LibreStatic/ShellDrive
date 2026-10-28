@@ -1934,7 +1934,18 @@ static void job_start(void *arg)
     pr.letter = r->letter;
     pr.read_only = p->read_only;
     pr.symlinks = p->symlinks;
-    pr.write_mode = p->write_mode;
+    {
+      /* M4 (03 §3.4, §3.5): the effective write mode, [defaults] write_mode for an unset key (see the agent) */
+      sd_settings st;
+      DWORD fv = 0;
+      int wm = p->write_mode;
+      int force = sd_policy_get_dword(SD_POLICY_FORCEWRITETHROUGH, &fv) && fv != 0;
+      sd_settings_defaults(&st);
+      (void)sd_settings_load(&st);
+      if (why == NULL && sd_profile_effective_write_mode(p, &st, force, &wm) != SD_OK)
+        why = "write mode behind is not allowed by policy";
+      pr.write_mode = wm;
+    }
     wide_from_utf8(p->label[0] ? p->label : p->name, labelw, SD_COUNTOF(labelw));
     pr.volume_label = labelw;
     wide_from_utf8(p->name, namew, SD_COUNTOF(namew));

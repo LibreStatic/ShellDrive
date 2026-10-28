@@ -185,7 +185,7 @@ sd_err ui_pform_set(sd_profile *p, ui_pfield f, const char *text)
   case UI_PF_CONNECT_TIMEOUT:    p->connect_timeout_ms = (uint32_t)x; break;
   case UI_PF_BACKEND:            p->backend = (int)x; break;
   case UI_PF_READ_ONLY:          if (x > 1) return SD_E_INVALID_PARAM; p->read_only = (int)x; break;
-  case UI_PF_WRITE_MODE:         p->write_mode = (int)x; break;
+  case UI_PF_WRITE_MODE:         p->write_mode = (int)x; p->write_mode_set = 1; break;   /* an edit makes the key explicit (M4) */
   case UI_PF_SYMLINKS:           p->symlinks = (int)x; break;
   case UI_PF_OFFLINE_WAIT:       p->offline_wait_ms = (uint32_t)x; break;
   case UI_PF_NETWORK_LOCATION:   if (x > 1) return SD_E_INVALID_PARAM; p->network_location = (int)x; break;
