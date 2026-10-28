@@ -29,7 +29,11 @@ param(
   [switch]$NoFixture,
   # Parallel ctest jobs. Tests that share a fixture, a pipe or other machine state carry a RESOURCE_LOCK (or
   # RUN_SERIAL), so they still run one at a time; 1 restores the fully serial run.
-  [ValidateRange(1, 64)][int]$Jobs = 8
+  [ValidateRange(1, 64)][int]$Jobs = 8,
+  # Inner loop for one change (not a gate run): only the tests whose name matches this ctest regex (-R), and with
+  # -ReleaseOnly no Debug configuration.
+  [string]$TestRegex = '',
+  [switch]$ReleaseOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,7 +86,7 @@ foreach ($preset in $Presets) {
 
     $configs = @($preset)
     $listing = & $cmake --list-presets=build 2>$null
-    if ($listing -match "`"$preset-debug`"") { $configs += "$preset-debug" }
+    if (-not $ReleaseOnly -and $listing -match "`"$preset-debug`"") { $configs += "$preset-debug" }
 
     foreach ($cfg in $configs) {
       Write-Host "== [$cfg] build"
@@ -104,7 +108,9 @@ foreach ($preset in $Presets) {
       # tests: they need the per-row matrix fixtures and are run by tests\interop\run-matrix.ps1.
       # -LE also excludes the opt-in benchmarks (bench.vfs_pool needs SD_IT_BENCH=1 and the fixture; run by
       # hand). One expression: ctest's repeated -LE flags replace rather than accumulate.
-      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg -j $Jobs --output-on-failure --output-junit $junit -LE 'matrix|bench|repro' 2>&1 }
+      $sel = @()
+      if ($TestRegex) { $sel = @('-R', $TestRegex) }
+      $tlog = & { $ErrorActionPreference = 'Continue'; & $ctest --preset $cfg -j $Jobs --output-on-failure --output-junit $junit -LE 'matrix|bench|repro' @sel 2>&1 }
       $tlog | Out-Host
       if ($LASTEXITCODE) { throw "tests $cfg failed" }
       $skipped = @($tlog | Select-String -Pattern '\*\*\*Skipped' | ForEach-Object { ($_ -split ':')[1].Trim().Split(' ')[0] })
