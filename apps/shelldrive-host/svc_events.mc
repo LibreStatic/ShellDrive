@@ -38,6 +38,11 @@ Language=English
 ShellDrive service could not start (%1).
 .
 
+MessageId=3101 Severity=Warning SymbolicName=SVC_MSG_CLIENT_REFUSED
+Language=English
+ShellDrive refused a service pipe client of user %1 (%2: token, per_sid, reserved or rate). At most one such event is written per user every 10 minutes.
+.
+
 MessageId=3102 Severity=Warning SymbolicName=SVC_MSG_UNTRUSTED_FOLDER
 Language=English
 ShellDrive refused the untrusted machine folder or service file %1 (%2). A refused folder keeps the service idle until an elevated shelldrive service repair-data renames it aside; a refused file fails the mount that uses it.

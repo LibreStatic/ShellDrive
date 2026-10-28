@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "sd_test.h"
 #include "host.h"
@@ -22,7 +23,7 @@
 #include "fake_backend.h"
 
 /* Event Log sink of the shared core: records the ids in order (the core calls it on its own thread). */
-#define T_EV_MAX 64
+#define T_EV_MAX 256
 static DWORD g_ev_ids[T_EV_MAX];
 static int g_ev_n;
 
@@ -734,6 +735,112 @@ SD_TEST(svc_list_hides_mounts_outside_service_access_from_users)
   SD_CHECK(unmount_id(admin, mid));
   SD_CHECK(wait_state(admin, mid, "gone", 10000, NULL));
   sd_ipc_close(admin);
+}
+
+/* Event 3101 count so far (the sink records ids in order). */
+static int count_event(DWORD id)
+{
+  int i, n = 0;
+  for (i = 0; i < g_ev_n; i++)
+    if (g_ev_ids[i] == id)
+      n++;
+  return n;
+}
+
+/* A raw connection to the service pipe that never sends hello: it holds an instance and nothing else. */
+static int open_raw_instance(HANDLE *out)
+{
+  wchar_t sid[256], name[512];
+  DWORD session = 0;
+  HANDLE h = INVALID_HANDLE_VALUE;
+  int tries;
+  *out = INVALID_HANDLE_VALUE;
+  if (sd_ipc_current_identity(sid, SD_COUNTOF(sid), &session) != SD_OK)
+    return 0;
+  if (sd_ipc_pipe_name(SD_IPC_SERVICE, sid, session, name, SD_COUNTOF(name)) != SD_OK)
+    return 0;
+  for (tries = 0; tries < 100 && h == INVALID_HANDLE_VALUE; tries++) {
+    h = CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+      WaitNamedPipeW(name, 100);
+  }
+  *out = h;
+  return h != INVALID_HANDLE_VALUE;
+}
+
+/* 2.2, TM-R25: the request cap is 64 KiB for clients that are not elevated admins and 1 MiB for admins; the same
+   100 KiB request is refused for the restricted token and accepted for the admin. Two of the 32 instances stay free
+   for admins: with 30 held by other clients, a restricted client is refused at hello and the admin still connects.
+   Event 3101 is written once for the SID in the window. All clients share this process's SID (the per-SID limit of 4
+   applies), so at most one client here has completed hello at a time. */
+#define T_BIG_PAD (100u * 1024u)
+SD_TEST(svc_pipe_caps_and_reserved_admin_instances)
+{
+  sd_ipc_conn *adm = NULL, *user = NULL;
+  sd_ipc_error err;
+  sd_err e = SD_OK, rc = SD_OK;
+  sd_json *res;
+  char *big;
+  size_t i;
+  int has_token = 0, r, nraw = 0, ev0, ev1;
+  HANDLE raw[30];
+  SD_REQUIRE(ensure_core());
+  big = (char *)malloc(T_BIG_PAD + 32);
+  SD_REQUIRE(big != NULL);
+  memcpy(big, "{\"pad\":\"", 8);
+  for (i = 8; i < 8 + T_BIG_PAD; i++)
+    big[i] = 'a';
+  memcpy(big + 8 + T_BIG_PAD, "\"}", 3);
+
+  /* non-admin: the oversize request closes the connection (no reply) */
+  e = connect_restricted(&user, &has_token);
+  if (e == SD_OK) {
+    res = call(user, "list", big, &err, &rc);
+    SD_CHECK(res == NULL);
+    SD_CHECK(rc != SD_OK);
+    if (res) sd_json_free(res);
+    sd_ipc_close(user);
+    user = NULL;
+  }
+
+  /* admin: the same size is accepted */
+  SD_REQUIRE(connect_as("testadmin", 0, &adm) == SD_OK);
+  res = call(adm, "list", big, &err, &rc);
+  SD_CHECK(res != NULL);
+  if (res) sd_json_free(res);
+
+  /* 30 raw instances: the instances left are the two for administrators */
+  for (nraw = 0; nraw < 30; nraw++)
+    if (!open_raw_instance(&raw[nraw]))
+      break;
+  SD_REQUIRE(nraw == 30);
+
+  ev0 = count_event(SVC_MSG_CLIENT_REFUSED);
+  for (r = 0; r < 2; r++) {
+    sd_ipc_conn *u = NULL;
+    int ht = 0;
+    e = connect_restricted(&u, &ht);
+    if (ht) {
+      SD_CHECK(u == NULL);
+      SD_CHECK(e != SD_OK);
+    }
+    if (u) sd_ipc_close(u);
+  }
+  ev1 = count_event(SVC_MSG_CLIENT_REFUSED);
+  SD_CHECK(ev1 - ev0 <= 1);
+
+  /* an administrator still connects while the 30 are held */
+  sd_ipc_close(adm);
+  adm = NULL;
+  SD_REQUIRE(connect_as("testadmin", 0, &adm) == SD_OK);
+  res = call(adm, "list", NULL, &err, &rc);
+  SD_CHECK(res != NULL);
+  if (res) sd_json_free(res);
+
+  sd_ipc_close(adm);
+  for (i = 0; i < (size_t)nraw; i++)
+    CloseHandle(raw[i]);
+  free(big);
 }
 
 SD_TEST(svc_core_stops_and_leaves_nothing_behind)

@@ -216,3 +216,33 @@ int svc_path_under(const wchar_t *path, const wchar_t *folder)
     return 0;
   return 1;
 }
+
+/* ---- Event 3101 throttle (10.3, TM-R25) ---- */
+
+int svc_refuse_log_due(svc_refuse_entry *tab, size_t n, const wchar_t *sid, uint64_t now_ms)
+{
+  size_t i, victim = 0;
+  if (tab == NULL || n == 0 || sid == NULL)
+    return 0;
+  for (i = 0; i < n; i++) {
+    if (tab[i].used && lstrcmpW(tab[i].sid, sid) == 0) {
+      if (now_ms >= tab[i].last_ms && now_ms - tab[i].last_ms < SVC_REFUSE_WINDOW_MS)
+        return 0;
+      tab[i].last_ms = now_ms;
+      return 1;
+    }
+  }
+  /* not seen in the window: take a free slot, else the entry that was logged longest ago */
+  for (i = 0; i < n; i++) {
+    if (!tab[i].used) {
+      victim = i;
+      break;
+    }
+    if (tab[i].last_ms < tab[victim].last_ms)
+      victim = i;
+  }
+  tab[victim].used = 1;
+  tab[victim].last_ms = now_ms;
+  lstrcpynW(tab[victim].sid, sid, (int)SD_COUNTOF(tab[victim].sid));
+  return 1;
+}

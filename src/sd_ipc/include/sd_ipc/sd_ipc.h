@@ -93,6 +93,7 @@ sd_err sd_ipc_server_start(sd_ipc_endpoint ep, sd_ipc_handler h, void *ctx, sd_i
 void   sd_ipc_server_stop(sd_ipc_server *s);    /* control thread; waits for the pipe thread */
 int    sd_ipc_client_is_elevated(sd_ipc_client *client);   /* via impersonation; 0 on XP */
 int    sd_ipc_client_is_admin(sd_ipc_client *client);      /* elevated + BUILTIN\Administrators */
+PSID   sd_ipc_client_sid(sd_ipc_client *client);           /* token user SID, set by the hello check; NULL before */
 DWORD  sd_ipc_client_pid(sd_ipc_client *client);
 /* Sends an event to every client subscribed to `topic`; `event_json` is a complete JSON object. */
 void   sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len);
@@ -139,6 +140,17 @@ typedef struct sd_ipc_server_cfg {
   /* M5 (service): called on the pipe thread for every valid topic of a subscribe request before anything is
      subscribed; 0 refuses the whole request with access_denied. NULL = every topic allowed. */
   int (*topic_allowed)(void *ctx, sd_ipc_client *client, const char *topic);
+  /* M5 (service, TM-R25): request cap for clients that are not elevated admins, also before hello. 0 = max_message
+     for every client. The admin cap is max_message (1 MiB, 2.2). */
+  uint32_t max_message_nonadmin;
+  /* M5 (service, TM-R25): instances held back for elevated administrators. Once this many other instances are
+     connected, a client that is not an admin is closed at hello with too_many_connections. 0 = no reservation. */
+  uint32_t reserved_admin_instances;
+  /* M5: admin state of a client that completed hello (the service's caller_is_admin). NULL = the token's flag. */
+  int (*is_admin)(void *ctx, sd_ipc_client *client);
+  /* M5: a client refused at hello or by the rate limit, on the pipe thread. reason: "token", "per_sid", "reserved"
+     or "rate". Not called by the agent, which has no quotas. */
+  void (*on_refused)(void *ctx, sd_ipc_client *client, const char *reason);
 } sd_ipc_server_cfg;
 
 /* TEST HOOK (M5): the service pipe is created with this owner SID string instead of SYSTEM (an unelevated test

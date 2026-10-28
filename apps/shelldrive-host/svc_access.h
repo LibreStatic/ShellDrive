@@ -70,4 +70,20 @@ sd_err svc_volume_sddl(const svc_acl *acl, char *out, size_t cap);
    machine service folder followed by a backslash and must not contain a reparse-ambiguous "..\" segment. */
 int svc_path_under(const wchar_t *path, const wchar_t *folder);
 
+/* Event 3101 throttle (10.3, TM-R25): one entry per SID that was refused or over quota. */
+#define SVC_REFUSE_WINDOW_MS (10u * 60u * 1000u)
+#define SVC_REFUSE_SLOTS 32
+#define SVC_REFUSE_SID_CCH 96
+
+typedef struct svc_refuse_entry {
+  int used;
+  uint64_t last_ms;                    /* when the event was last written for this SID */
+  wchar_t sid[SVC_REFUSE_SID_CCH];     /* SID string */
+} svc_refuse_entry;
+
+/* 1 when an Event 3101 may be written for sid now (not written for it in the last 10 minutes), and records it;
+   0 otherwise. tab holds n entries; when full, the entry logged longest ago is reused. now_ms is the caller's
+   monotonic clock (tests pass their own times). Not thread-safe: the caller serializes it. */
+int svc_refuse_log_due(svc_refuse_entry *tab, size_t n, const wchar_t *sid, uint64_t now_ms);
+
 #endif /* SVC_ACCESS_H */

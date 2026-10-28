@@ -415,7 +415,7 @@ profile, or a password prompt), or an sd_ssh "post-KEX" connect mode that stops 
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
 - The display name as an indirect string (`@<path>,-<id>`, Vista+); the service's own re-set of the description at
-  first start (1.3); the Event Log 3100 and 3101 and the other 2xxx/3xxx ids of 10.3 that depend on features not in
+  first start (1.3); the Event Log 3100 and the other 2xxx/3xxx ids of 10.3 that depend on features not in
   this part. Event 3102 is written (part 4).
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store): the command
   surface and the elevation rule are in part 5; the connect, the store write and the service side are not (the
@@ -428,8 +428,6 @@ profile, or a password prompt), or an sd_ssh "post-KEX" connect mode that stops 
   `identity_store` keys for service profiles.
 - Re-applying the 3.2 DACLs of existing machine folders at service start (3.2): done in part 6 for trusted folders.
   Untrusted folders are still only refused at start; `service repair-data` (part 3) moves them aside.
-- Non-admin 64 KiB cap separate from the admin cap, and the two reserved administrator slots of the service pipe
-  (2.2, TM-R25). One 64 KiB cap applies to every client; the 4-per-SID and 10-per-second limits are in place.
 - Power events and session changes are logged only; the admin session list for the attention flow (2.6) is not kept.
 - Admin UI, not done: a list window of pending service prompts (the admin mode shows one prompt dialog per open prompt
   instead); host-key announcements of the service machine store in the admin UI (`hostkey.announced` on the service is
@@ -557,3 +555,50 @@ writing; a group in the write list; SYSTEM with and without `allow_system`; the 
 
 **Build.** `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -NoFixture -AllowSkip -TestRegex 'vfs|webdav|dokany'`:
 pass, 4 of 4 tests (`unit.vfs`, `unit.webdav`, `webdav.redirector`, `dokany.mount`).
+
+## Service pipe: non-admin cap, reserved administrator instances, Event 3101 (TM-R25)
+
+Closes the "Left" item on the non-admin request cap and the reserved administrator slots of the service pipe (03 §2.2,
+TM-R25). The 4-per-SID and 10-per-second limits were already in place and are unchanged.
+
+**Spec values (03 §2.2, 05 TM-R25, 03 §10.3):** request cap 1 MiB for elevated admins and 64 KiB for every other client,
+also before hello; 32 instances of which 2 are reserved: once 30 other instances are connected, a client that is not an
+elevated admin is closed at hello with `too_many_connections`; 4 instances per SID; 10 requests per second for
+non-admins; Event 3101 at most once per SID per 10 minutes (`%1` SID, `%2` reason).
+
+**Changes**
+
+- `src/sd_ipc/include/sd_ipc/sd_ipc.h`, `src/sd_ipc/ipc_server.c`: `sd_ipc_server_cfg` gets four members at the end,
+  all zero or NULL for the agent (its behaviour is unchanged): `max_message_nonadmin` (request cap of non-admins,
+  checked per read; before hello the non-admin cap applies), `reserved_admin_instances` (checked at hello, after the
+  client kind is known), `is_admin` (the service's `caller_is_admin`, so the test admin override applies) and
+  `on_refused` (called on the pipe thread for reasons `token`, `per_sid`, `reserved` and `rate`). New accessor
+  `sd_ipc_client_sid`.
+- `apps/shelldrive-host/service.c`: admin cap `SD_IPC_MAX_MESSAGE` (1 MiB), non-admin cap 64 KiB, 2 reserved
+  instances, and `svc_on_refused`, which writes Event 3101 through the existing `svc_event` seam.
+- `apps/shelldrive-host/svc_access.c`, `svc_access.h`: `svc_refuse_log_due`, the 10-minute per-SID throttle for 3101
+  (32 slots; a full table reuses the entry logged longest ago). Takes the clock as a parameter, so tests use fake times.
+- `apps/shelldrive-host/svc_events.mc`: Event 3101 `SVC_MSG_CLIENT_REFUSED`.
+
+**Tests** (`tests/unit/sd_svc`, `sd-test-svc.exe`, 67 of 67 pass):
+
+- `refuse_log_is_once_per_sid_per_window`: fake clock; first event due, same SID inside the window not due, due again
+  after 10 minutes, another SID due at once, eviction of the oldest entry.
+- `svc_pipe_caps_and_reserved_admin_instances`: a restricted-token client's 100 KiB request is refused and the same
+  request from `testadmin` is accepted; with 30 raw pipe instances held (connected, no hello), a restricted client is
+  refused at hello, two such refusals write at most one 3101, and a new `testadmin` connection still succeeds.
+
+**Build.** `ci-local.ps1 -Presets 'x64-modern' -ReleaseOnly -NoFixture -AllowSkip -Jobs 4 -TestRegex 'unit\.svc|unit\.ipc|unit\.apps'`:
+pass, 3 of 3 (`unit.svc`, `unit.ipc`, `unit.apps`).
+
+**Open items**
+
+- A client that connects and never sends hello holds an instance until the 60 s idle timeout, and the reservation is
+  decided at hello (as 03 §2.2 describes). Thirty-two hello-less connections can therefore still block administrators
+  for up to a minute. A connect-time token check would close that gap; it is not done.
+- The non-admin cap check in `svc_pipe_caps_and_reserved_admin_instances` only runs when the restricted-token connect
+  succeeds, which depends on the pipe ACE in the test session (the same convention as the existing tests). The
+  check was not separately confirmed to run in this session.
+- Event 3101 is not written for a refusal before the token gives a SID (`token` refusals with no SID).
+- Event 3101 is English only, like the other 3xxx events in `svc_events.mc`; it is not in the `svc` l10n catalogs.
+- Not exercised on a real elevated admin token or on XP; TST-23 in 05 §7 covers that in the lab.

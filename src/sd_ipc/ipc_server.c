@@ -90,6 +90,32 @@ static void client_close(sd_ipc_client *c);
 static void client_start_read(sd_ipc_client *c);
 static void client_pump_write(sd_ipc_client *c);
 
+/* Admin state for the service rules (caps, reserved instances, rate limit): the server's callback when it has one. */
+static int client_is_admin(sd_ipc_client *c)
+{
+  sd_ipc_server *s = c->srv;
+  if (s->cfg.is_admin)
+    return s->cfg.is_admin(s->cfg.ctx, c) ? 1 : 0;
+  return c->admin;
+}
+
+/* Request cap of a client (TM-R25): the admin cap after hello for an admin, the non-admin cap otherwise. */
+static size_t client_msg_cap(sd_ipc_client *c)
+{
+  sd_ipc_server *s = c->srv;
+  if (s->cfg.max_message_nonadmin == 0)
+    return s->cfg.max_message;
+  if (c->hello_done && client_is_admin(c))
+    return s->cfg.max_message;
+  return s->cfg.max_message_nonadmin;
+}
+
+static void refused(sd_ipc_client *c, const char *reason)
+{
+  if (c->srv->cfg.on_refused)
+    c->srv->cfg.on_refused(c->srv->cfg.ctx, c, reason);
+}
+
 /* ---- instances ---- */
 
 static HANDLE create_instance(sd_ipc_server *s, int first)
@@ -417,6 +443,7 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
   }
   if (!check_client_token(c, &code)) {
     SD_LOGW("ipc", "client %llu refused at hello", (unsigned long long)c->id);
+    refused(c, "token");
     c->close_after_write = 1;
     reply_error_code(c, 0, SD_E_ACCESS_DENIED, code, "client token refused");
     return;
@@ -430,6 +457,7 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
         same++;
     sd_mutex_unlock(&s->lock);
     if (same >= s->cfg.max_per_sid) {
+      refused(c, "per_sid");
       c->close_after_write = 1;
       reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "per-user instance quota reached");
       return;
@@ -456,6 +484,19 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     const char *kind = sd_json_get_str(msg, "client");
     if (kind && strlen(kind) < sizeof(c->kind))
       memcpy(c->kind, kind, strlen(kind) + 1);
+  }
+  /* TM-R25: the last instances are held back for administrators. The other connected instances (the pending
+     listener excluded) are counted against the instances that are not held back. */
+  if (s->cfg.reserved_admin_instances && s->cfg.max_instances > s->cfg.reserved_admin_instances &&
+      !client_is_admin(c)) {
+    uint32_t connected = s->ninstances - (s->pending_pipe != NULL ? 1u : 0u);
+    uint32_t others = connected > 0 ? connected - 1u : 0u;
+    if (others >= s->cfg.max_instances - s->cfg.reserved_admin_instances) {
+      refused(c, "reserved");
+      c->close_after_write = 1;
+      reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "instances reserved for administrators");
+      return;
+    }
   }
   {
     sd_wr w;
@@ -572,13 +613,14 @@ static void handle_request(sd_ipc_client *c, const sd_json *msg)
     reply_error_code(c, id, SD_E_PROTOCOL, "usage", "malformed request");
     return;
   }
-  if (s->cfg.max_requests_per_sec && !c->admin) {
+  if (s->cfg.max_requests_per_sec && !client_is_admin(c)) {
     uint64_t now = sd_tick_ms();
     if (now - c->rate_window >= 1000) {
       c->rate_window = now;
       c->rate_count = 0;
     }
     if (++c->rate_count > s->cfg.max_requests_per_sec) {
+      refused(c, "rate");
       reply_error_code(c, id, SD_E_BUSY, "rate_limited", "too many requests");
       return;
     }
@@ -665,7 +707,6 @@ static void process_message(sd_ipc_client *c, const uint8_t *data, size_t len)
 static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
 {
   sd_ipc_client *c = CONTAINING_RECORD(ov, sd_ipc_client, read_ov);
-  sd_ipc_server *s = c->srv;
   DWORD left = 0;
   c->pending--;
   /* A message larger than the buffer completes with STATUS_BUFFER_OVERFLOW (a warning): the
@@ -685,7 +726,7 @@ static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
     if (!PeekNamedPipe(c->pipe, NULL, 0, NULL, NULL, &left) || left == 0)
       left = IPC_READ_CHUNK;
     want = c->rlen + left;
-    if (want > s->cfg.max_message) {
+    if (want > client_msg_cap(c)) {
       SD_LOGW("ipc", "client %llu message over the size cap; closing", (unsigned long long)c->id);
       client_close(c);
       return;
@@ -702,7 +743,7 @@ static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
     client_start_read(c);
     return;
   }
-  if (c->rlen > s->cfg.max_message) {
+  if (c->rlen > client_msg_cap(c)) {
     client_close(c);
     return;
   }
@@ -1082,6 +1123,7 @@ sd_err sd_ipc_server_start_ex(sd_ipc_endpoint ep, const sd_ipc_server_cfg *cfg, 
   s->cfg = *cfg;
   if (s->cfg.max_instances == 0 || s->cfg.max_instances > PIPE_UNLIMITED_INSTANCES - 1) s->cfg.max_instances = 32;
   if (s->cfg.max_message == 0 || s->cfg.max_message > SD_IPC_MAX_MESSAGE) s->cfg.max_message = SD_IPC_MAX_MESSAGE;
+  if (s->cfg.max_message_nonadmin > s->cfg.max_message) s->cfg.max_message_nonadmin = s->cfg.max_message;
   if (s->cfg.idle_timeout_ms == 0) s->cfg.idle_timeout_ms = 10u * 60u * 1000u;
   e = ipc_process_user_sid(&s->own_sid);
   if (e == SD_OK) e = sd_ipc_current_identity(sidstr, SD_COUNTOF(sidstr), &session);
@@ -1149,6 +1191,7 @@ void sd_ipc_server_stop(sd_ipc_server *s)
 
 int sd_ipc_client_is_elevated(sd_ipc_client *client) { return client ? client->elevated : 0; }
 int sd_ipc_client_is_admin(sd_ipc_client *client) { return client ? client->admin : 0; }
+PSID sd_ipc_client_sid(sd_ipc_client *client) { return client ? client->sid : NULL; }
 
 /* M5: is the client's token a member of `sid` (enabled group membership, or the client's own user SID). Call on the
    pipe thread from a handler only: the client is impersonated for the duration of the check. A token that cannot be
