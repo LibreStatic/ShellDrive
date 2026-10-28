@@ -196,6 +196,36 @@ static int build_fixtures(void)
   if (write_text(ddf, text) != 0 || run_makecab(ddf) != 0)
     return 1;
 
+  /* payload-x64.cab: the members of an x64 payload, with the x86 copy of the shell extension in x86\ (04 §6.2). */
+  {
+    wchar_t x86src[MAX_PATH];
+    char ascii_x86[MAX_PATH * 2];
+
+    if (sd_setup_path_join(x86src, MAX_PATH, src, L"x86") != 0 || !CreateDirectoryW(x86src, NULL))
+      return 1;
+    if (sd_setup_path_join(p, MAX_PATH, x86src, L"shelldrive-shellext.dll") != 0 ||
+        write_text(p, "fake x86 shell extension\r\n"))
+      return 1;
+    if (narrow(x86src, ascii_x86, sizeof(ascii_x86)) != 0)
+      return 1;
+    StringCchPrintfA(text, sizeof(text),
+                     ".OPTION EXPLICIT\r\n.Set CabinetNameTemplate=payload-x64.cab\r\n"
+                     ".Set DiskDirectoryTemplate=%s\\\r\n.Set InfFileName=%s\\x64.inf\r\n"
+                     ".Set RptFileName=%s\\x64.rpt\r\n.Set CompressionType=LZX\r\n.Set CompressionMemory=21\r\n"
+                     ".Set Compress=ON\r\n.Set Cabinet=ON\r\n"
+                     "\"%s\\shelldrive.exe\" shelldrive.exe\r\n"
+                     "\"%s\\shelldrive-host.exe\" shelldrive-host.exe\r\n"
+                     "\"%s\\shelldrive-ui.exe\" shelldrive-ui.exe\r\n"
+                     "\"%s\\shelldrive-shellext.dll\" shelldrive-shellext.dll\r\n"
+                     "\"%s\\uninstall.exe\" uninstall.exe\r\n"
+                     "\"%s\\shelldrive-shellext.dll\" x86\\shelldrive-shellext.dll\r\n",
+                     ascii_dir, ascii_dir, ascii_dir, ascii_src, ascii_src, ascii_src, ascii_src, ascii_src, ascii_x86);
+    if (sd_setup_path_join(ddf, MAX_PATH, g_fixture_dir, L"x64.ddf") != 0 || narrow(ddf, ascii_ddf, sizeof(ascii_ddf)))
+      return 1;
+    if (write_text(ddf, text) != 0 || run_makecab(ddf) != 0)
+      return 1;
+  }
+
   g_fixture_state = 1;
   return 0;
 }

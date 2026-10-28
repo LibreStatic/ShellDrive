@@ -11,7 +11,14 @@
 #       sd_shellext_x86_dll, whose location follows the configuration of the outer build. The caller adds the
 #       dependency of its own targets (add_dependencies) and the DLL to its DEPENDS lists.
 
+#   The MSI (packaging/msi) and the setup payloads (cmake/SdPayload.cmake) both ask for it: the second call only
+#   returns the name, the nested configure runs once per tree.
+
 function(sd_add_x86_shellext out_var)
+  if(TARGET sd_shellext_x86)
+    set(${out_var} sd_shellext_x86 PARENT_SCOPE)
+    return()
+  endif()
   set(_bin "${CMAKE_BINARY_DIR}/shellext-x86")
   include(ExternalProject)
   ExternalProject_Add(sd_shellext_x86

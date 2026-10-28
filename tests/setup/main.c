@@ -25,6 +25,9 @@ SD_TEST_DECL(setup_user_damaged_payload_refused);
 SD_TEST_DECL(setup_user_traversal_refused);
 SD_TEST_DECL(setup_portable_roundtrip);
 SD_TEST_DECL(setup_machine_mode_not_in_this_build);
+SD_TEST_DECL(setup_reg_shell32_rows);
+SD_TEST_DECL(setup_user_x64_install_carries_x86_copy);
+SD_TEST_DECL(setup_shell32_gate);
 SD_TEST_DECL(setup_shortcut_and_log_files);
 SD_TEST_DECL(setup_current_sid_format);
 SD_TEST_DECL(setup_flow_first_page);
@@ -107,6 +110,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_user_traversal_refused),
   SD_TEST_ENTRY(setup_portable_roundtrip),
   SD_TEST_ENTRY(setup_machine_mode_not_in_this_build),
+  SD_TEST_ENTRY(setup_reg_shell32_rows),
+  SD_TEST_ENTRY(setup_user_x64_install_carries_x86_copy),
+  SD_TEST_ENTRY(setup_shell32_gate),
   SD_TEST_ENTRY(setup_shortcut_and_log_files),
   SD_TEST_ENTRY(setup_current_sid_format),
   SD_TEST_ENTRY(setup_flow_first_page),

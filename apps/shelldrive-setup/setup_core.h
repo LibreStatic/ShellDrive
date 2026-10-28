@@ -178,12 +178,23 @@ typedef struct sd_setup_regrow {
   int is_dword;
   const wchar_t *data;
   int autostart;                 /* 1 = written only when sign-in start is chosen */
+  int view;                      /* SD_SETUP_REGVIEW_* : which registry view the row belongs to */
 } sd_setup_regrow;
 extern const sd_setup_regrow sd_setup_regtable[];
 extern const size_t sd_setup_regtable_count;
 
+/* Registry views of a row (04 §6.2, 03 §8.5). DEFAULT: the view of the setup process. SHELL: the shell extension of
+   the installed flavour (its bitness: sd_setup_regctx.shell_access). SHELL32: the x86 copy of the shell extension,
+   written only when sd_setup_regctx.install_dir32 is set. */
+#define SD_SETUP_REGVIEW_DEFAULT 0
+#define SD_SETUP_REGVIEW_SHELL 1
+#define SD_SETUP_REGVIEW_SHELL32 2
+
 /* Write (remove = 0) or remove (remove = 1) the rows under HKCU or HKLM via the hive root given.
-   install_dir ends with a backslash; version and flavour fill the placeholders. */
+   install_dir ends with a backslash; version and flavour fill the placeholders.
+   shell_access is KEY_WOW64_32KEY or KEY_WOW64_64KEY (0 = the setup process's own view): the view of the SHELL rows.
+   install_dir32 is the folder of the x86 shell extension ([INSTALLDIR32], ends with a backslash) or NULL: then the
+   SHELL32 rows are not written (they would otherwise replace the same CLSIDs in a view that is shared, 03 §8.5). */
 typedef struct sd_setup_regctx {
   HKEY root;
   const wchar_t *install_dir;
@@ -191,10 +202,19 @@ typedef struct sd_setup_regctx {
   const wchar_t *flavour;
   unsigned long long install_bytes;
   int autostart;
+  REGSAM shell_access;
+  const wchar_t *install_dir32;
 } sd_setup_regctx;
 
 int sd_setup_reg_apply(const sd_setup_regctx *c);
 int sd_setup_reg_remove(const sd_setup_regctx *c);
+
+/* Per-user shell registration of the x86 copy (04 §6.2, 03 §8.5). sd_setup_views_split: 1 on x64 Windows XP and
+   Server 2003, where the 32-bit and 64-bit views of HKCU\Software\Classes are separate (XP x64); 0 on every other
+   system, where one HKCU\Software\Classes serves both views and a second registration would replace the 64-bit
+   CLSIDs. sd_setup_shell32_wanted: 1 when the flavour has an x86 copy (x64-xp, x64-modern) and the views are split. */
+int sd_setup_views_split(const sd_setup_host *h);
+int sd_setup_shell32_wanted(sd_setup_flavour f, const sd_setup_host *h);
 
 /* Operations. Paths default when NULL: install folder = %LOCALAPPDATA%\Programs\LibreStatic\ShellDrive,
    Start menu = Programs\ShellDrive.lnk. Writes the setup log to log_path when given ("" = none). */
