@@ -364,3 +364,69 @@ Not in this build (open items):
 - Warm and cold cache control: the run does not drop the cache, so cold numbers need a remount between runs.
 - WAN figures (netem) and the XP, Win7 and ARM64 spot checks of 02 section 11; this is the CLI part only.
 - Ctrl+C during a run leaves the folder behind; the next run uses a new folder name, so nothing is overwritten.
+
+## diag: checks, fixes and the support bundle (03 §6.1, §10.5, TM-R31)
+
+Status of the `shelldrive diag` forms that were missing after round 13 (which only had `diag bench`).
+
+| Form | Where | Notes |
+|---|---|---|
+| `diag` / `diag --check [--json]` | `apps/shelldrive/cli_diag.c` | Checks in the order of 03 §10.5 (see the list below). Exit 0 when no check is a problem, 1 when one is (only an unreadable settings.ini is a problem so far). |
+| `diag --fix webclient` | `cli_diag.c` | WebClient to manual start and started; refused with exit 15 (`policy_denied`) when `AllowedBackends` is set and has no `webdav`; exit 9 without elevation; exit 11 when WebClient is not installed; confirmation unless `--yes`. |
+| `diag --fix linked-connections` | `cli_diag.c` | Sets `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableLinkedConnections` = 1 after a confirmation; a restart is needed. |
+| `admin webclient-enable` | `cli_args.c` | Alias of `diag --fix webclient` (03 §6.1). |
+| `diag --bundle [FILE]`, `diag collect` | `cli_bundle.c`, `cli_zip.c`, `cli_anon.c` | Stored ZIP (no compression, data descriptors, UTF-8 names), anonymized by default. `--no-anonymize`, `--include-dumps` opt in. `FILE` is created with CREATE_NEW: an existing file is never replaced. Without FILE the name is `shelldrive-diag-<yyyymmdd>-<hhmmss>.zip` in the current folder. |
+| `diag bench` / `bench` | `cli_bench.c` | Unchanged. |
+
+### Seam and tests
+
+- Every system change goes through `diag_env` (`cli_diag.h`): WebClient start type and start, the linked-connections
+  value. The shipping binary uses the real Win32 calls (`cli_diag.c`). Test builds (`SD_CLI_TEST_HOOKS`) replace the
+  seam with `cli_diag_fake.c`, which keeps the state of a fake machine in a text file of the test
+  (`SHELLDRIVE_TEST_DIAG_FAKE`). The fake grants elevation only through its own key; `SHELLDRIVE_TEST_ELEVATED=0`
+  still denies it first. No test changes the real WebClient, services, registry or drives.
+- Read-only queries of the service (`ShellDriveSvc`) use `svc_scm_status` (no elevation, nothing written).
+- Unit tests (`tests/apps/test_diag_units.c`): the CRC-32 check value, the ZIP layout (signatures, flags, data
+  descriptors, central directory offsets), refused names, sink failures, anonymizer tokens, log and configuration
+  lines, secrets. Parser tests: `cli_parse_diag_forms`. Smoke tests: `smoke_diag_check_and_fix`, `smoke_diag_bundle`.
+
+### What the checks read
+
+Windows version and flavour; agent (IPC, never started); ShellDriveSvc installed and running; WebClient state and start
+type; WebDAV limits (`FileSizeLimitInBytes`, `FileAttributesLimitInBytes`, `BasicAuthLevel`, read only); Dokany present
+(`System32\dokan2.dll`); EnableLinkedConnections; split-token administrator; elevation; domain (`USERDNSDOMAIN`);
+free drive letters D: to Z:; settings.ini readable; log privacy (policy `LogPrivacy` or `[log] privacy`); clock (local
+time, UTC offset, Windows Time service state).
+
+Warnings: WebClient running on a domain-joined computer (10.5 text); WebDAV limits not at the webclient-tune values;
+a split-token administrator without EnableLinkedConnections; no free drive letter; Windows Time not running.
+
+### Bundle contents and the anonymizer
+
+`README.txt` (what is in and what is not), `check.json` (the checks, English keys), `versions.txt`, `agent.json`
+(from the agent's `diag.collect`), `config/settings.ini`, `config/profiles/*.ini`, `logs/*.log` (every `.log` of the
+logs folder, line by line through the anonymizer), `crash/list.txt` (name and size of each dump; the dumps themselves
+only with `--include-dumps`).
+
+- Anonymized (default): `host`, `user`, `rpath`, `remote_path`, `path`, `identity`, `jump` and `proxy` values, and every
+  value of a profile's host, user, remote_path and identity are replaced everywhere in the text (ASCII case ignored).
+  Tokens are `h:`, `u:`, `p:` followed by six hex digits: HMAC-SHA-256 of the value under a random key drawn per bundle.
+- Always redacted, with or without `--no-anonymize`: any key containing `pass`, `secret`, `token`, `credential` or
+  `private` keeps its name and loses its value (`<redacted>`).
+- Never included: `state\log.key`, key files, the `keys\` and `secrets\` folders, the agent's private data.
+- A line the anonymizer cannot process (more than 64 fields) is replaced by a marker, never copied raw.
+- `agent.json` holds the agent's version, pid, mount count and warning codes only; it has no names or paths.
+- The agent method `diag.collect` (`apps/shelldrive-host/agent.c`) is listed in the hello features.
+
+### Open items (not in this change)
+
+- Ports (03 §10.5 mentions them): not checked; the agent's WebDAV port is per run and is not published.
+- Dokany: presence only. The version and the `dokany-deny` list (02 §6.3) are not read here.
+- Network location entries in sync (8.7), the Windows 11 menu package (8.6), the `diag --check` "free drive letters" from
+  the agent's mounts, and the update and setup logs of 04 §13 are not checked; the logs of 04 §13 are included only when
+  they are in the user logs folder.
+- Service-side logs (`%ProgramData%`) and the machine data folder are not in the bundle (the CLI runs as the user).
+- Clock skew is not measured (no time source is contacted); only the Windows Time service state is reported.
+- `ChangeServiceConfigW` is resolved at run time (it is not on the XP import floor list `tests/os-imports/xp-sp3-x86.txt`);
+  the rest of the new imports are on that list.
+- The bundle's text is English (logs and JSON); README and the human output are localized (cli catalog, six locales).

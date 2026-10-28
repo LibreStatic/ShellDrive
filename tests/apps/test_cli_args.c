@@ -237,7 +237,7 @@ SD_TEST(cli_parse_diag_bench)
   SD_CHECK(parse_line(L"sd diag --help", &a) == CLI_OK && a.help && a.cmd == CLI_CMD_DIAG);
   SD_CHECK(parse_line(L"sd bench --help", &a) == CLI_OK && a.help && a.cmd == CLI_CMD_BENCH);
   /* errors */
-  SD_CHECK(parse_line(L"sd diag", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd diag", &a) == CLI_OK && a.cmd == CLI_CMD_DIAG);   /* a plain diag is the checks */
   SD_CHECK(parse_line(L"sd diag check X:", &a) == CLI_E_UNKNOWN_COMMAND && wcscmp(a.bad, L"check") == 0);
   SD_CHECK(parse_line(L"sd diag bench", &a) == CLI_E_MISSING_ARGUMENT);
   SD_CHECK(parse_line(L"sd bench", &a) == CLI_E_MISSING_ARGUMENT);
@@ -251,4 +251,52 @@ SD_TEST(cli_parse_diag_bench)
   SD_CHECK(parse_line(L"sd bench X: --size 12k", &a) == CLI_E_BAD_VALUE);
   SD_CHECK(parse_line(L"sd bench X: --write-mode sync", &a) == CLI_E_BAD_VALUE && wcscmp(a.bad, L"--write-mode") == 0);
   SD_CHECK(parse_line(L"sd bench X: --size", &a) == CLI_E_MISSING_VALUE);
+}
+
+/* diag --check, --bundle, --fix, admin webclient-enable and diag collect (03 §6.1, §10.5). */
+SD_TEST(cli_parse_diag_forms)
+{
+  cli_args a;
+  /* a plain diag is the checks; --check and --json are the same form */
+  SD_CHECK(parse_line(L"sd diag", &a) == CLI_OK && a.cmd == CLI_CMD_DIAG && a.diag_check && !a.diag_bundle);
+  SD_CHECK(parse_line(L"sd diag --check --json", &a) == CLI_OK && a.diag_check && a.json);
+  SD_CHECK(parse_line(L"sd diag --check --bundle", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd diag --check --fix webclient", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd diag check", &a) == CLI_E_UNKNOWN_COMMAND && wcscmp(a.bad, L"check") == 0);
+  SD_CHECK(parse_line(L"sd diag frob", &a) == CLI_E_UNKNOWN_COMMAND && wcscmp(a.bad, L"frob") == 0);
+  /* --bundle with and without its optional file name; the next word is the file name unless it is an option */
+  SD_CHECK(parse_line(L"sd diag --bundle", &a) == CLI_OK && a.cmd == CLI_CMD_DIAG && a.diag_bundle && a.bundle_file == NULL);
+  SD_CHECK(!a.diag_check && !a.no_anonymize && !a.include_dumps);
+  SD_CHECK(parse_line(L"sd diag --bundle out.zip --no-anonymize --include-dumps", &a) == CLI_OK && a.diag_bundle);
+  SD_CHECK(wcscmp(a.bundle_file, L"out.zip") == 0 && a.no_anonymize && a.include_dumps);
+  SD_CHECK(parse_line(L"sd diag --bundle --json", &a) == CLI_OK && a.bundle_file == NULL && a.json);
+  SD_CHECK(parse_line(L"sd diag --bundle=C:\\temp\\d.zip", &a) == CLI_OK && wcscmp(a.bundle_file, L"C:\\temp\\d.zip") == 0);
+  SD_CHECK(parse_line(L"sd diag --bundle=", &a) == CLI_E_MISSING_VALUE);
+  SD_CHECK(parse_line(L"sd diag --bundle x.zip --anonymize", &a) == CLI_OK && a.anonymize && !a.no_anonymize);
+  SD_CHECK(parse_line(L"sd diag --bundle x.zip --anonymize --no-anonymize", &a) == CLI_E_CONFLICT);
+  SD_CHECK(parse_line(L"sd diag --no-anonymize", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--no-anonymize") == 0);
+  SD_CHECK(parse_line(L"sd diag --include-dumps", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--include-dumps") == 0);
+  /* diag collect is the bundle with the default name */
+  SD_CHECK(parse_line(L"sd diag collect", &a) == CLI_OK && a.diag_bundle && a.bundle_file == NULL && a.positional == NULL);
+  SD_CHECK(parse_line(L"sd diag collect extra.zip", &a) == CLI_E_EXTRA_ARGUMENT);
+  /* --fix takes the two items only; --yes needs a fix */
+  SD_CHECK(parse_line(L"sd diag --fix webclient", &a) == CLI_OK && wcscmp(a.fix_item, L"webclient") == 0 && !a.yes);
+  SD_CHECK(parse_line(L"sd diag --fix linked-connections --yes", &a) == CLI_OK && a.yes);
+  SD_CHECK(wcscmp(a.fix_item, L"linked-connections") == 0);
+  SD_CHECK(parse_line(L"sd diag --fix nope", &a) == CLI_E_BAD_VALUE && wcscmp(a.bad, L"--fix") == 0);
+  SD_CHECK(parse_line(L"sd diag --fix", &a) == CLI_E_MISSING_VALUE);
+  SD_CHECK(parse_line(L"sd diag --yes", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--yes") == 0);
+  SD_CHECK(parse_line(L"sd diag --fix webclient --bundle", &a) == CLI_E_CONFLICT);
+  /* admin webclient-enable is the webclient fix (03 §6.1 alias); other admin verbs are unknown */
+  SD_CHECK(parse_line(L"sd admin webclient-enable", &a) == CLI_OK && a.cmd == CLI_CMD_DIAG);
+  SD_CHECK(wcscmp(a.fix_item, L"webclient") == 0 && a.positional == NULL);
+  SD_CHECK(parse_line(L"sd admin", &a) == CLI_E_UNKNOWN_COMMAND);
+  SD_CHECK(parse_line(L"sd admin webclient-disable", &a) == CLI_E_UNKNOWN_COMMAND);
+  /* the bench form is unchanged, and diag options do not reach it */
+  SD_CHECK(parse_line(L"sd diag bench X:", &a) == CLI_OK && a.cmd == CLI_CMD_BENCH && wcscmp(a.positional, L"X:") == 0);
+  SD_CHECK(parse_line(L"sd diag bench X: --check", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd diag bench X: --yes", &a) == CLI_E_UNKNOWN_OPTION);
+  /* the bundle and fix options belong to diag only */
+  SD_CHECK(parse_line(L"sd status --bundle", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--bundle") == 0);
+  SD_CHECK(parse_line(L"sd mount web --fix webclient", &a) == CLI_E_UNKNOWN_OPTION);
 }

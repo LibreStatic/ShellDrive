@@ -12,7 +12,8 @@ typedef enum cli_cmd {
   CLI_CMD_AGENT_STOP, CLI_CMD_STATUS, CLI_CMD_PROFILE, CLI_CMD_HOSTKEY,
   CLI_CMD_REFRESH, CLI_CMD_CACHE,    /* M3: refresh <X:|PATH>[\sub\path], cache clear [<profile>|--all] */
   CLI_CMD_SERVICE,                   /* M5: service list | mount | unmount | status (03 §6.1) */
-  CLI_CMD_DIAG,                      /* diag: only "diag bench" so far; the parser turns it into CLI_CMD_BENCH */
+  CLI_CMD_DIAG,                      /* diag [--check] | --bundle [FILE] | --fix ITEM (cli_diag.c, cli_bundle.c, 03 §6.1);
+                                        "diag bench" becomes CLI_CMD_BENCH in the parser */
   CLI_CMD_BENCH                      /* diag bench <X:> and the bench alias (cli_bench.c, 03 §6.1, 02 §11) */
 } cli_cmd;
 
@@ -64,6 +65,13 @@ typedef struct cli_args {
   const wchar_t *bench_scenario;   /* diag bench --scenario NAME; NULL = all */
   const wchar_t *bench_write_mode; /* diag bench --write-mode through|behind; NULL = through */
   int bench_size_mib;              /* diag bench --size MIB (1..4096); 0 = default */
+  int diag_check;                  /* diag --check (also the meaning of a plain "diag") */
+  int diag_bundle;                 /* diag --bundle [FILE] and "diag collect" */
+  const wchar_t *bundle_file;      /* diag --bundle FILE; NULL = a new file name in the current folder */
+  int include_dumps;               /* diag --bundle --include-dumps */
+  int no_anonymize, anonymize;     /* diag --bundle --no-anonymize; --anonymize is the default and accepted */
+  const wchar_t *fix_item;         /* diag --fix webclient | linked-connections; admin webclient-enable = webclient */
+  int yes;                         /* diag --fix --yes: no confirmation question */
   cli_usage_err err;
   const wchar_t *bad;
   const wchar_t *bad_value;
