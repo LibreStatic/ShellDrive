@@ -1,7 +1,7 @@
 /* shelldrive-ui: the profile list of the main window and the file side of .sdmount files (03 §3.4, §8.1).
  *
- * The profiles are read from the per-user store with sd_profile_enum (sd_config is linked directly, 2.4
- * decision). The list is a snapshot: the UI reloads it after every save or delete. Sorted by name,
+ * The profiles are read from the per-user store with sd_profile_enum, then the machine templates with
+ * sd_profile_enum_templates (sd_config is linked directly, 2.4 decision). The list is a snapshot: the UI reloads it after every save or delete. Sorted by name,
  * case-insensitively, so the list order does not depend on the file names. */
 #include <windows.h>
 #include <string.h>
@@ -46,6 +46,17 @@ static int collect(void *ctx, const sd_profile *p, const wchar_t *path)
   return 1;
 }
 
+/* A machine template (scope = users, 03 §3.2) is listed after the user's profiles, unless the user's store has a profile
+   with its id. It is read-only here: Edit, Duplicate and Delete do not apply to it (ui_mv_scope_read_only). */
+static int collect_template(void *ctx, const sd_profile *p, const wchar_t *path)
+{
+  size_t i;
+  for (i = 0; i < g_profiles.count; i++)
+    if (p->id[0] && strcmp(g_profiles.items[i].id, p->id) == 0)
+      return 1;
+  return collect(ctx, p, path);
+}
+
 void ui_profiles_clear(void)
 {
   sd_free(g_profiles.items);
@@ -61,6 +72,9 @@ sd_err ui_profiles_load(void)
   e = sd_profile_enum(collect, NULL);
   if (e == SD_E_NOT_FOUND)                   /* no profiles folder yet: an empty list */
     e = SD_OK;
+  /* the templates are listed also when the user has no profile; an untrusted machine folder lists nothing (sd_config
+     logs it) and does not fail the list */
+  (void)sd_profile_enum_templates(collect_template, NULL);
   if (g_profiles.count > 1)
     qsort(g_profiles.items, g_profiles.count, sizeof(sd_profile), by_name);
   return e;

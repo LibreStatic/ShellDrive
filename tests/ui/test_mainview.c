@@ -109,6 +109,11 @@ SD_TEST(mainview_groups_follow_the_scope)
   SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(SD_PROFILE_SCOPE_USERS), (int)UI_MV_GROUP_ORG);
   SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(SD_PROFILE_SCOPE_SERVICE), (int)UI_MV_GROUP_GLOBAL);
   SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(-1), (int)UI_MV_GROUP_MINE);   /* an ad-hoc mount */
+  /* a machine template is read-only in the list (no Edit, Duplicate, Delete); the user's and the global ones are not */
+  SD_CHECK(ui_mv_scope_read_only(SD_PROFILE_SCOPE_USERS));
+  SD_CHECK(!ui_mv_scope_read_only(SD_PROFILE_SCOPE_USER));
+  SD_CHECK(!ui_mv_scope_read_only(SD_PROFILE_SCOPE_SERVICE));
+  SD_CHECK(!ui_mv_scope_read_only(-1));
 }
 
 SD_TEST(mainview_algorithm_categories_and_reasons)

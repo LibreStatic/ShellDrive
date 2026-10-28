@@ -898,6 +898,7 @@ int sd_notify_kind_from_code(const char *code)
   static const struct { const char *code; int kind; } map[] = {
     { "legacy_algorithms", SD_NOTIFY_LEGACY_ALGORITHMS }, { "terrapin_exposed", SD_NOTIFY_TERRAPIN },
     { "pool_limited", SD_NOTIFY_POOL_LIMITED }, { "proxy_password", SD_NOTIFY_PROXY_PASSWORD },
+    { "proxy_cleartext", SD_NOTIFY_PROXY_PASSWORD },
     { "hostkey_source_insecure", SD_NOTIFY_HOSTKEYS_SOURCE }, { "disk_cache_refused", SD_NOTIFY_DISK_CACHE },
     { "update_stale", SD_NOTIFY_UPDATE_STALE }, { "service_attention", SD_NOTIFY_SERVICE_ATTENTION },
   };
@@ -1373,6 +1374,32 @@ sd_err sd_profile_find(const char *name_or_id, sd_profile *p, wchar_t *path_out,
   }
   if ((e = sd_profile_enum(find_cb, &f)) != SD_OK) return e;
   return f.found ? SD_OK : SD_E_NOT_FOUND;
+}
+
+sd_err sd_profile_find_mountable(const char *name_or_id, sd_profile *p, wchar_t *path_out, size_t path_cch)
+{
+  find_ctx f;
+  sd_err e = sd_profile_find(name_or_id, p, path_out, path_cch);
+  if (e != SD_E_NOT_FOUND)
+    return e;
+  if (name_or_id == NULL || name_or_id[0] == 0)
+    return SD_E_INVALID_PARAM;
+  /* not in the user's store: a machine template (scope = users). An untrusted machine folder lists nothing, so it is
+     "not found" here too (sd_profile_enum_templates logged why). */
+  memset(&f, 0, sizeof(f));
+  f.key = name_or_id;
+  f.out = p;
+  f.path = path_out;
+  f.path_cch = path_cch;
+  f.by_id = valid_id(name_or_id);
+  if (f.by_id) {
+    if (sd_profile_enum_templates(find_cb, &f) == SD_OK && f.found)
+      return SD_OK;
+    f.by_id = 0;
+  }
+  if (sd_profile_enum_templates(find_cb, &f) == SD_OK && f.found)
+    return SD_OK;
+  return SD_E_NOT_FOUND;
 }
 
 static void slug(const char *name, wchar_t *out, size_t cch)

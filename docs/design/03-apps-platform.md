@@ -550,7 +550,12 @@ Events (`{"type":"evt","event":<name>,"data":{...}}`, after `subscribe`; the top
 
 | Event | Topic | Data | When |
 |---|---|---|---|
-| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, lookup_name?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?, store_kind?, stored_types?, offered_types?}, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, lookup_name?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?, store_kind?, stored_types?, offered_types?}, reason?, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+
+`reason` (round 19, additive) is the error code that took the mount offline, a string. The agent sends it with `connecting`,
+`authenticating` and `mounted` while the connection comes back from that offline period, so the UI can say why the drive
+reconnected; the `mounted` event that ends the period carries it too. A failed, unmounting or unmounted mount forgets it. The
+offline event itself keeps its `error` object. Absent when the mount has no offline period behind it.
 
 Host key error members (5.2, 5.4). `host`, `lookup_name` (the name the key was looked up under: `host`, `[host]:port` or the alias) and
 `offered_type`/`offered_fp` are sent for `host_key_mismatch` and `host_key_type_unavailable`. A mismatch adds `stored_type`,
@@ -1055,7 +1060,10 @@ Semantics owned by this layer:
 - Scope `users`: machine-provided template; each user's agent mounts it with the user's own credentials and
   known_hosts. The UI lists them under "Provided by your organization" through `sd_profile_enum_templates` (sd_config):
   the machine store `%ProgramData%\LibreStatic\ShellDrive\profiles` only, read-only, each folder and file checked on its
-  handle (plain, owned by SYSTEM or Administrators, no write right for others; 3.2). Test roots use `<override>\machine`. **Per-user overrides are limited to `mount.target`, `mount.autostart` and
+  handle (plain, owned by SYSTEM or Administrators, no write right for others; 3.2). Test roots use `<override>\machine`.
+  The UI's profile list reads them after the user's profiles (a template whose id the user's store also has is skipped); Edit,
+  Duplicate and Delete do not apply to them, Mount does. The agent mounts them through `sd_profile_find_mountable` (the user's
+  store first, then the templates; `sd_profile_find` stays the user's store only). **Per-user overrides are limited to `mount.target`, `mount.autostart` and
   `mount.autostart_sessions` (D25)**, plus hiding the template. They are stored in
   `%APPDATA%\LibreStatic\ShellDrive\overrides\<profile id>.ini` (`[override] target, autostart, autostart_sessions, hidden`);
   any other key in that file is ignored with a log line. The profile editor shows a template read-only except the
@@ -1099,10 +1107,14 @@ unless a policy is set.
 | `[ui] notify_connection_lost`, `notify_reconnected`, `notify_mount_failed`, `notify_mounted` | `yes \| no` (on, on, on, off) | tray balloons derived from `mount.state` changes (connection lost, reconnected, mount failed, mounted) | none |
 | `[ui] notify_legacy_algorithms`, `notify_terrapin` | `yes \| no` (on) | tray balloons for the warning codes `legacy_algorithms` and `terrapin_exposed` | none |
 | `[ui] notify_hostkeys_offered` | `yes \| no` (on) | tray balloon for `hostkeys.announced` (5.6) | none |
-| `[ui] notify_hostkeys_saved`, `notify_proxy_password`, `notify_service_attention` | `yes \| no` (on) | balloons: `hostkeys.announced` with `applied` (saved), warning `proxy_cleartext` (once per profile and proxy), the service `attention` count going up | none |
+| `[ui] notify_hostkeys_saved`, `notify_proxy_password`, `notify_service_attention` | `yes \| no` (on) | balloons: `hostkeys.announced` with `applied` (saved), warning `proxy_cleartext` (once per profile and proxy; the code `proxy_password` maps to the same kind, round 19), the service `attention` count going up | none |
 | `[ui] notify_pool_limited` | `yes \| no` (off) | warning code `pool_limited` | none |
 | `[ui] notify_update_available`, `notify_update_stale` | `yes \| no` (on) | update balloons (`update.available`); code `update_stale` (mapped) | none |
-| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` (the agent does not send it yet) and `disk_cache_refused` | none |
+| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` (the agent sends it, round 19, see below; no balloon yet) and `disk_cache_refused` | none |
+
+`warning hostkey_source_insecure` (round 19, TM-R06): when a mount starts, the agent checks each live source that is enabled
+(OpenSSH, PuTTY) with `sd_known_hosts_source_state`; a source other users can write is reported once per source and agent run,
+on the mount that started first, with `data.detail` = `openssh` or `putty`. Its `mount_id` is that mount's.
 | `[agent] start_at_logon` | `yes \| no` (`no`) | the agent's HKCU Run value `ShellDriveAgent` (`"<dir>\shelldrive-host.exe" agent --logon`), written by the Settings save when `sd_settings_agent_run_wanted` (this key or a profile with `autostart = logon`) | none |
 
 The always-on kinds (host key changed, write failed, agent stopped unexpectedly, session objects interference) have no
@@ -2416,7 +2428,8 @@ plural entries with every CLDR form of 9.4. Log lines, Event Log messages and JS
   - The Event Log follows the same rule for remote paths except Event 1200, whose purpose is attribution (3.4.1).
   - Call sites: every log call that formats a host name, a lookup name (`[host]:port`), a user name or a remote path
     uses the typed specifier (`%Hs`, `%Us`, `%Rs`); local paths, error names, algorithm names and profile ids stay
-    `%s`. The restricted format language is not printf, so `sd_log` and `ssh_log` are not annotated
+    `%s`. The restricted format language is not printf, so `sd_log` and `ssh_log` are not annotated. `ssh_log` formats
+    with its record level (`sd_log_format_level`), so a `%Rs` there follows the level rule above (round 19)
     `_Printf_format_string_` (`/analyze` would reject the typed specifiers). `tests/logpriv/check-log-privacy.ps1`
     (run by ctest) fails on an untyped host, user or path, on an unknown conversion, and on a conversion and
     argument count that differ.

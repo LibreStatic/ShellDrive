@@ -340,16 +340,19 @@ static void update_buttons(void)
   int mounted = r != NULL && r->mount >= 0;
   int has_profile = r != NULL && r->profile >= 0;
   int secure = mounted && g_app.model.items[r->mount].sec != 0;
+  /* a machine template is read-only: no Edit, Duplicate or Delete (Mount stays) */
+  const sd_profile *cur = has_profile ? ui_profiles_at((size_t)r->profile) : NULL;
+  int editable = cur != NULL && !ui_mv_scope_read_only(cur->scope);
 
   enable_tb(UI_CMD_NEW, TRUE);
-  enable_tb(UI_CMD_EDIT, has_profile);
-  enable_tb(UI_CMD_DELETE, has_profile);
+  enable_tb(UI_CMD_EDIT, editable);
+  enable_tb(UI_CMD_DELETE, editable);
   enable_tb(UI_CMD_MOUNT, has_profile && !mounted && g_app.agent_up);
   enable_tb(UI_CMD_UNMOUNT, mounted && g_app.agent_up);
   enable_tb(UI_CMD_OPEN_DRIVE, mounted);
   enable_tb(UI_CMD_HOSTKEYS, TRUE);
   enable_tb(UI_CMD_LOGS, TRUE);
-  enable_menu(UI_CMD_DUPLICATE, has_profile);
+  enable_menu(UI_CMD_DUPLICATE, editable);
   enable_menu(UI_CMD_QUICK_MOUNT, TRUE);
   enable_menu(UI_CMD_IMPORT, TRUE);
   enable_menu(UI_CMD_REFRESH, g_app.agent_up);
@@ -525,7 +528,7 @@ static void do_edit(void)
 {
   const sd_profile *cur = ui_main_selected_profile();
   sd_profile p;
-  if (cur == NULL)
+  if (cur == NULL || ui_mv_scope_read_only(cur->scope))
     return;
   p = *cur;
   if (!ui_editor_run(g_app.main, UI_EDIT_EDIT, &p))
@@ -539,7 +542,7 @@ static void do_duplicate(void)
 {
   const sd_profile *cur = ui_main_selected_profile();
   sd_profile p;
-  if (cur == NULL)
+  if (cur == NULL || ui_mv_scope_read_only(cur->scope))
     return;
   p = *cur;
   p.id[0] = 0;
@@ -557,7 +560,7 @@ static void do_delete(void)
   wchar_t name[160];
   char id[33];
   sd_err e;
-  if (cur == NULL)
+  if (cur == NULL || ui_mv_scope_read_only(cur->scope))
     return;
   strcpy_s(id, sizeof(id), cur->id);
   ui_text_utf8(cur->name, name, SD_COUNTOF(name));

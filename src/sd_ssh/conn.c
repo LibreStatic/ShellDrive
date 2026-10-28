@@ -43,7 +43,7 @@ void ssh_log(sd_ssh_conn *c, sd_log_level level, const char *fmt, ...)
   va_list ap;
   if (!sd_log_enabled(level) && !(c && c->cb.on_log)) return;
   va_start(ap, fmt);
-  sd_log_format(buf, sizeof(buf), fmt, ap);
+  sd_log_format_level(buf, sizeof(buf), level, fmt, ap);   /* %Rs follows the level rule of sd_log (03 §10.1) */
   va_end(ap);
   sd_log(level, "ssh", NULL, "%s", buf);
   if (c && c->cb.on_log) c->cb.on_log(c->cb.ctx, (int)level, buf);

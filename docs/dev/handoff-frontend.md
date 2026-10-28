@@ -336,6 +336,13 @@ new dialogs in the lab, XP behaviour of anything (no lab).
 
 ### Backend missing (round 18)
 
+Round 19 (branch `wip/r19-smallfix`) closed these: `proxy_cleartext` maps to the proxy password kind
+(`sd_notify_kind_from_code`); the main window lists machine templates (read-only: no Edit, Duplicate or Delete; Mount works
+through `sd_profile_find_mountable`); `ssh_log` formats with its level (`sd_log_format_level`); `warning
+hostkey_source_insecure` is sent once per live source and run; `mount.state` carries `reason` while a reconnect runs. Still
+open: no balloon for `hostkey_source_insecure` (the UI kind `notify_hostkeys_source` has no text yet), and the event list does
+not show `reason`. The `update_stale` warning item stays open.
+
 - The settings backend maps the code `proxy_password` to its switch, but the agent raises `proxy_cleartext`; the UI accepts
   both. `sd_notify_kind_from_code` should learn `proxy_cleartext`.
 - Every kind of item 5 has a triggering event. Not emitted by the agent: `hostkey_source_insecure` (kind `notify_hostkeys_source`,

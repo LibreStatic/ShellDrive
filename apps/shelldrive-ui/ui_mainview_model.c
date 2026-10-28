@@ -232,6 +232,11 @@ ui_mv_group ui_mv_group_of_scope(int scope)
   return UI_MV_GROUP_MINE;
 }
 
+int ui_mv_scope_read_only(int scope)
+{
+  return scope == SD_PROFILE_SCOPE_USERS;
+}
+
 static int starts(const char *s, const char *p)
 {
   return strncmp(s, p, strlen(p)) == 0;
