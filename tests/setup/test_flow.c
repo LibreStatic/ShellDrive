@@ -113,6 +113,12 @@ SD_TEST(setup_flow_interactive_pages)
                in, SD_SETUP_MODE_MACHINE,
                SD_FLOW_WELCOME, SD_FLOW_LICENSE, SD_FLOW_DOKANY, SD_FLOW_PROGRESS, SD_FLOW_FINISH);
 
+  /* All users chosen on the mode page: the same pages after it. */
+  memset(&in, 0, sizeof(in));
+  SD_FLOW_CASE("all users chosen on the mode page",
+               in, SD_SETUP_MODE_MACHINE,
+               SD_FLOW_WELCOME, SD_FLOW_LICENSE, SD_FLOW_MODE, SD_FLOW_DOKANY, SD_FLOW_PROGRESS, SD_FLOW_FINISH);
+
   /* The removal: confirmation, progress, and no finish page (its result is a message box). */
   memset(&in, 0, sizeof(in));
   in.uninstall = 1;
@@ -201,6 +207,6 @@ SD_TEST(setup_flow_names_and_titles)
   SD_CHECK(sd_flow_page_title(SD_FLOW_NONE, &id) == 0);
   SD_CHECK(sd_flow_page_title(SD_FLOW_PROGRESS, &id) == 1 && id == SD_MSG_INSTALLER_WINDOW_TITLE);
   SD_CHECK_STR(sd_flow_page_name(SD_FLOW_DOKANY), "dokany");
-  /* The all-users choice is disabled in this build (04 §6.10): the test pins that state. */
-  SD_CHECK_EQ_INT(SD_FLOW_MACHINE_AVAILABLE, 0);
+  /* The all-users choice is offered (04 §6.3); its install runs the elevated stages with the progress view. */
+  SD_CHECK_EQ_INT(SD_FLOW_MACHINE_AVAILABLE, 1);
 }

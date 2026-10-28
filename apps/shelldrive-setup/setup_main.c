@@ -271,130 +271,8 @@ static int run_uninstall(HINSTANCE inst, const sd_setup_args *args, const wchar_
   return rc;
 }
 
-static int run_install(HINSTANCE inst, const sd_setup_args *args, sd_setup_result *res)
-{
-  sd_setup_host host;
-  sd_setup_flavour flavour = SD_SETUP_FL_NONE;
-  sd_msg_id reason = 0;
-  sd_setup_payload payload;
-  sd_setup_install_opts io;
-  unsigned char expected[32];
-  sd_setup_ui *ui = NULL;
-  sd_flow_input flow;
-  sd_setup_defaults defs;
-  sd_setup_choices choice;
-  sd_setup_mode mode;
-  const wchar_t *portable_dir;
-  HRSRC hres;
-  HGLOBAL hglob;
-  HRSRC htab;
-  HGLOBAL htglob;
-  int interactive = !args->quiet && !args->passive;
-  int rc;
-
-  if (args->extract_dir[0] != L'\0') {
-    /* /extract= (admin deployment copy) needs the MSI and the stages of 04 §6.4: not in this build. */
-    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC);
-    return SD_SETUP_EXIT_FATAL;
-  }
-
-  sd_setup_detect_host(&host);
-  if (sd_setup_select_flavour(&host, args->flavour_forced ? args->flavour : SD_SETUP_FL_NONE, &flavour, &reason) != 0) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
-    if (args->flavour_forced && sd_setup_flavour_name(args->flavour) != NULL)
-      StringCchCopyW(res->text, SD_SETUP_COUNTOF(res->text), sd_setup_flavour_name(args->flavour));
-    return SD_SETUP_EXIT_FATAL;
-  }
-
-  memset(&payload, 0, sizeof(payload));
-  hres = FindResourceW(inst, sd_setup_payload_resource(flavour), RT_RCDATA);
-  hglob = hres != NULL ? LoadResource(inst, hres) : NULL;
-  if (hglob == NULL) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_MISSING);
-    StringCchCopyW(res->text, SD_SETUP_COUNTOF(res->text), sd_setup_flavour_name(flavour));
-    return SD_SETUP_EXIT_FATAL;
-  }
-  payload.data = (const unsigned char *)LockResource(hglob);
-  payload.size = SizeofResource(inst, hres);
-
-  /* Without the table there is no verified hash: the stub refuses (TM-R38 until the signature exists). */
-  htab = FindResourceW(inst, L"PAYLOAD_TABLE", RT_RCDATA);
-  htglob = htab != NULL ? LoadResource(inst, htab) : NULL;
-  if (htglob == NULL ||
-      sd_setup_payload_table_lookup((const char *)LockResource(htglob), SizeofResource(inst, htab),
-                                    sd_setup_flavour_name(flavour), expected) != 0) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED);
-    return SD_SETUP_EXIT_FATAL;
-  }
-  /* TM-R38: the table must carry a valid release signature (PAYLOAD_SIG); fails closed. */
-  if (sd_setup_payload_sig_check(inst, (const unsigned char *)LockResource(htglob), SizeofResource(inst, htab)) !=
-      SD_SETUP_PSIG_OK) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED);
-    return SD_SETUP_EXIT_FATAL;
-  }
-
-  if (!args->quiet && sd_setup_ui_create(inst, SD_TITLE, &ui) != 0)
-    ui = NULL;
-
-  mode = args->mode == SD_SETUP_MODE_PORTABLE ? SD_SETUP_MODE_PORTABLE : SD_SETUP_MODE_USER;
-  portable_dir = args->portable_dir;
-  if (interactive) {
-    if (ui == NULL) {
-      fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC);
-      return SD_SETUP_EXIT_FATAL;
-    }
-    memset(&flow, 0, sizeof(flow));
-    memset(&defs, 0, sizeof(defs));
-    memset(&choice, 0, sizeof(choice));
-    flow.mode_given = args->mode != SD_SETUP_MODE_AUTO;
-    flow.dest_given = args->portable_dir[0] != L'\0';
-    defs.mode = args->mode;
-    defs.portable_dir = args->portable_dir;
-    defs.uninstall_dir = L"";
-    defs.dokany_plan = sd_setup_dokany_decide(SD_SETUP_MODE_MACHINE, args->dokany_set, args->dokany,
-                                              host.os_major, host.os_minor);
-    if (!sd_setup_ui_run_pages(ui, &flow, &defs, &choice)) {
-      sd_setup_ui_destroy(ui);
-      fail_result(res, SD_SETUP_EXIT_CANCEL, 0);
-      return SD_SETUP_EXIT_CANCEL;
-    }
-    mode = choice.mode;
-    portable_dir = choice.portable_dir;
-  }
-  if (ui != NULL)
-    sd_setup_ui_begin_progress(ui);
-
-  memset(&io, 0, sizeof(io));
-  io.mode = mode;
-  io.install_dir = args->install_dir[0] != L'\0' ? args->install_dir : NULL;
-  io.portable_dir = portable_dir;
-  io.version = SD_VERSION_STRING_W;
-  io.flavour = flavour;
-  io.payload = &payload;
-  io.expected_sha256 = expected;
-  io.autostart = args->autostart;
-  io.force = args->force;
-  io.update = args->update;
-  io.log_path = args->log_path[0] != L'\0' ? args->log_path : NULL;
-  io.progress = progress_cb;
-  io.progress_ctx = ui;
-
-  rc = sd_setup_install(&io, res);
-  if (rc == SD_SETUP_EXIT_OK && interactive && ui != NULL) {
-    /* The finish page carries the success text and the Launch checkbox. */
-    wchar_t text[1024];
-    int launch = 0;
-    if (sd_setup_format_message(res, res->msg, text, SD_SETUP_COUNTOF(text)) < 0)
-      text[0] = L'\0';
-    if (sd_setup_ui_finish(ui, text, &launch) && launch)
-      launch_shelldrive(res->folder, NULL);
-  }
-  sd_setup_ui_destroy(ui);
-  return rc;
-}
-
 /* The payload of the flavour this host runs, and its SHA-256 from the PAYLOAD_TABLE resource (04 §6.1). Returns 0, or 1
-   with *msg set. Nothing is unpacked here. */
+   with *msg set. Nothing is unpacked here. A payload without a valid release signature gets its own message (TM-R38). */
 static int load_payload(HINSTANCE inst, sd_setup_flavour flavour, sd_setup_payload *payload, unsigned char expected[32],
                         sd_msg_id *msg)
 {
@@ -425,7 +303,7 @@ static int load_payload(HINSTANCE inst, sd_setup_flavour flavour, sd_setup_paylo
      stage 2 included; fails closed. */
   if (sd_setup_payload_sig_check(inst, (const unsigned char *)LockResource(htglob), SizeofResource(inst, htab)) !=
       SD_SETUP_PSIG_OK) {
-    *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED;
+    *msg = SD_MSG_INSTALLER_ERROR_PAYLOAD_SIGNATURE;
     return 1;
   }
   return 0;
@@ -439,36 +317,190 @@ static int host_flavour(sd_setup_flavour *flavour, sd_msg_id *reason, const sd_s
   return sd_setup_select_flavour(&host, args->flavour_forced ? args->flavour : SD_SETUP_FL_NONE, flavour, reason);
 }
 
-/* Per-machine install (04 §6.3): the unelevated parent. Shows no UI of its own: the UAC prompt is the consent step. */
-static int run_machine(HINSTANCE inst, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
+/* /extract=<dir> (04 §6.5): the MSI of the payload is written to the folder, for administrators who deploy it themselves.
+   Nothing is installed, and no elevation is needed: the folder is the user's own. The copy is ShellDrive.msi. */
+static int run_extract(const sd_setup_payload *payload, const sd_setup_args *args, sd_setup_result *res)
 {
-  sd_setup_flavour flavour = SD_SETUP_FL_NONE;
-  sd_msg_id reason = 0;
-  sd_setup_payload payload;
-  unsigned char expected[32];
+  wchar_t temp[MAX_PATH];
+  wchar_t hex[40];
+  wchar_t leaf[64];
+  wchar_t work[MAX_PATH];
+  wchar_t msi[MAX_PATH];
+  wchar_t dst[MAX_PATH];
+  sd_setup_result cab;
+  DWORD attrs;
+  unsigned files = 0;
+
+  memset(&cab, 0, sizeof(cab));
+  if (sd_setup_temp_dir(temp, SD_SETUP_COUNTOF(temp)) != 0 || sd_setup_random_hex(hex, SD_SETUP_COUNTOF(hex)) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  StringCchPrintfW(leaf, SD_SETUP_COUNTOF(leaf), L"ShellDrive-extract-%s", hex);
+  if (sd_setup_path_join(work, MAX_PATH, temp, leaf) != 0 || sd_setup_mkdirs(work) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (sd_setup_cab_extract(payload, work, NULL, &cab, &files) != 0) {
+    sd_setup_remove_tree(work, NULL);
+    fail_result(res, SD_SETUP_EXIT_FATAL, cab.msg != 0 ? cab.msg : SD_MSG_INSTALLER_ERROR_PAYLOAD_EXTRACT);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (sd_setup_path_join(msi, MAX_PATH, work, L"ShellDrive.msi") != 0) {
+    sd_setup_remove_tree(work, NULL);
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  attrs = GetFileAttributesW(msi);
+  if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    sd_setup_remove_tree(work, NULL);
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_MSI_MISSING);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (sd_setup_mkdirs(args->extract_dir) != 0 ||
+      sd_setup_path_join(dst, MAX_PATH, args->extract_dir, L"ShellDrive.msi") != 0 || !CopyFileW(msi, dst, FALSE)) {
+    sd_setup_remove_tree(work, NULL);
+    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_WRITE);
+    return SD_SETUP_EXIT_FATAL;
+  }
+  sd_setup_remove_tree(work, NULL);
+  memset(res, 0, sizeof(*res));
+  res->exit_code = SD_SETUP_EXIT_OK;
+  StringCchCopyW(res->folder, SD_SETUP_COUNTOF(res->folder), args->extract_dir);
+  return SD_SETUP_EXIT_OK;
+}
+
+/* Progress of the parent while the elevated stages run: the value is a percentage, or SD_SETUP_ELEV_TICK (pump only). */
+static void elev_progress(void *ctx, unsigned value)
+{
+  sd_setup_ui *ui = (sd_setup_ui *)ctx;
+  if (value == SD_SETUP_ELEV_TICK) {
+    if (ui != NULL)
+      sd_setup_ui_pump(ui);
+    return;
+  }
+  sd_setup_ui_status(ui, L"", value);
+}
+
+/* Per-machine install (04 §6.3, 6.4): the unelevated parent starts the two stages and relays their progress to ui (which
+   has begun its progress view, or is NULL for /quiet). The UAC prompt is the consent step. The stage log goes to /log=. */
+static int run_machine_elevated(sd_setup_ui *ui, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
+{
   sd_setup_elev_ops ops;
   wchar_t base[MAX_PATH];
+  int rc;
 
-  if (args->extract_dir[0] != L'\0') {
-    /* /extract= (admin deployment copy) is not in this build (04 §6.5). */
-    fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC);
-    return SD_SETUP_EXIT_FATAL;
-  }
-  if (host_flavour(&flavour, &reason, args) != 0) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
-    return SD_SETUP_EXIT_FATAL;
-  }
-  /* The flavour is checked before UAC, so a host that cannot run it is refused without a prompt. */
-  if (load_payload(inst, flavour, &payload, expected, &reason) != 0) {
-    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
-    return SD_SETUP_EXIT_FATAL;
-  }
   if (sd_setup_common_appdata(base, SD_SETUP_COUNTOF(base)) != 0) {
     fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION);
     return SD_SETUP_EXIT_FATAL;
   }
   sd_setup_elev_real_ops(&ops);
-  return sd_setup_elev_parent(&ops, base, self, args, res);
+  rc = sd_setup_elev_parent_ex(&ops, base, self, args, res, elev_progress, ui);
+  if (rc == SD_SETUP_EXIT_OK && res->msg == 0)
+    res->msg = SD_MSG_INSTALLER_DONE_INSTALL;
+  return rc;
+}
+
+/* The install: per-user, portable or all users (04 §6.3). The payload is checked first, so a damaged or unsigned setup
+   stops before any page. Interactive runs show the wizard; the all-users choice runs the elevated stages. */
+static int run_install(HINSTANCE inst, const sd_setup_args *args, const wchar_t *self, sd_setup_result *res)
+{
+  sd_setup_host host;
+  sd_setup_flavour flavour = SD_SETUP_FL_NONE;
+  sd_msg_id reason = 0;
+  sd_setup_payload payload;
+  sd_setup_install_opts io;
+  unsigned char expected[32];
+  sd_setup_ui *ui = NULL;
+  sd_flow_input flow;
+  sd_setup_defaults defs;
+  sd_setup_choices choice;
+  sd_setup_mode mode;
+  const wchar_t *portable_dir;
+  int interactive = !args->quiet && !args->passive;
+  int rc;
+
+  sd_setup_detect_host(&host);
+  if (sd_setup_select_flavour(&host, args->flavour_forced ? args->flavour : SD_SETUP_FL_NONE, &flavour, &reason) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
+    if (args->flavour_forced && sd_setup_flavour_name(args->flavour) != NULL)
+      StringCchCopyW(res->text, SD_SETUP_COUNTOF(res->text), sd_setup_flavour_name(args->flavour));
+    return SD_SETUP_EXIT_FATAL;
+  }
+  /* The flavour is checked before any UAC prompt and before any page (TM-R38). */
+  if (load_payload(inst, flavour, &payload, expected, &reason) != 0) {
+    fail_result(res, SD_SETUP_EXIT_FATAL, reason);
+    if (reason == SD_MSG_INSTALLER_ERROR_PAYLOAD_MISSING)
+      StringCchCopyW(res->text, SD_SETUP_COUNTOF(res->text), sd_setup_flavour_name(flavour));
+    return SD_SETUP_EXIT_FATAL;
+  }
+  if (args->extract_dir[0] != L'\0')
+    return run_extract(&payload, args, res);
+
+  if (!args->quiet && sd_setup_ui_create(inst, SD_TITLE, &ui) != 0)
+    ui = NULL;
+
+  mode = args->mode == SD_SETUP_MODE_PORTABLE ? SD_SETUP_MODE_PORTABLE
+         : args->mode == SD_SETUP_MODE_MACHINE ? SD_SETUP_MODE_MACHINE
+                                               : SD_SETUP_MODE_USER;
+  portable_dir = args->portable_dir;
+  if (interactive) {
+    if (ui == NULL) {
+      fail_result(res, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC);
+      return SD_SETUP_EXIT_FATAL;
+    }
+    memset(&flow, 0, sizeof(flow));
+    memset(&defs, 0, sizeof(defs));
+    memset(&choice, 0, sizeof(choice));
+    flow.mode_given = args->mode != SD_SETUP_MODE_AUTO;
+    flow.dest_given = args->portable_dir[0] != L'\0';
+    defs.mode = args->mode;
+    defs.portable_dir = args->portable_dir;
+    defs.uninstall_dir = L"";
+    defs.dokany_plan = sd_setup_dokany_decide(SD_SETUP_MODE_MACHINE, args->dokany_set, args->dokany,
+                                              host.os_major, host.os_minor);
+    if (!sd_setup_ui_run_pages(ui, &flow, &defs, &choice)) {
+      sd_setup_ui_destroy(ui);
+      fail_result(res, SD_SETUP_EXIT_CANCEL, 0);
+      return SD_SETUP_EXIT_CANCEL;
+    }
+    mode = choice.mode;
+    portable_dir = choice.portable_dir;
+  }
+  if (ui != NULL)
+    sd_setup_ui_begin_progress(ui);
+
+  if (mode == SD_SETUP_MODE_MACHINE) {
+    rc = run_machine_elevated(ui, args, self, res);
+  } else {
+    memset(&io, 0, sizeof(io));
+    io.mode = mode;
+    io.install_dir = args->install_dir[0] != L'\0' ? args->install_dir : NULL;
+    io.portable_dir = portable_dir;
+    io.version = SD_VERSION_STRING_W;
+    io.flavour = flavour;
+    io.payload = &payload;
+    io.expected_sha256 = expected;
+    io.autostart = args->autostart;
+    io.force = args->force;
+    io.update = args->update;
+    io.log_path = args->log_path[0] != L'\0' ? args->log_path : NULL;
+    io.progress = progress_cb;
+    io.progress_ctx = ui;
+    rc = sd_setup_install(&io, res);
+  }
+  if (rc == SD_SETUP_EXIT_OK && interactive && ui != NULL) {
+    /* The finish page carries the success text and the Launch checkbox. The all-users install does not offer the
+       launch: the parent does not know the folder the MSI installed into (open item in m4-notes). */
+    wchar_t text[1024];
+    int launch = 0;
+    if (sd_setup_format_message(res, res->msg, text, SD_SETUP_COUNTOF(text)) < 0)
+      text[0] = L'\0';
+    if (sd_setup_ui_finish(ui, text, &launch) && launch && mode != SD_SETUP_MODE_MACHINE)
+      launch_shelldrive(res->folder, NULL);
+  }
+  sd_setup_ui_destroy(ui);
+  return rc;
 }
 
 /* The elevated stages (--elevated-stage1 and --elevated-child, 04 §6.4). Stage 1 needs no payload; stage 2 checks the
@@ -584,18 +616,10 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show)
     return rc;
   }
 
-  if (args.mode == SD_SETUP_MODE_MACHINE) {
-    /* Per-machine: the unelevated parent starts the stages and reads their result (setup_elevate.c). */
-    rc = run_machine(inst, &args, self, &res);
-    show_result(&res, 0);
-    LocalFree(argv);
-    return rc;
-  }
-
   if (args.mode == SD_SETUP_MODE_UNINSTALL)
     rc = run_uninstall(inst, &args, self, &res);
   else
-    rc = run_install(inst, &args, &res);
+    rc = run_install(inst, &args, self, &res);
 
   /* A removal says so in a message box when it was shown interactively; an install ends on its finish page. */
   show_result(&res, args.mode == SD_SETUP_MODE_UNINSTALL && !args.quiet && !args.passive);

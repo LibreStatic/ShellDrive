@@ -428,3 +428,8 @@ msgstr "Este programa de instalação não contém o pacote para todos os usuár
 msgctxt "installer.error.msi_failed"
 msgid "The installation for all users failed with Windows Installer code {code}."
 msgstr "A instalação para todos os usuários falhou com o código {code} do Windows Installer."
+
+#. Shown when the release signature of the payload table is missing or does not verify (TM-R38).
+msgctxt "installer.error.payload_signature"
+msgid "The setup program's release signature could not be verified. Download it again."
+msgstr "Não foi possível verificar a assinatura de lançamento do programa de instalação. Baixe-o novamente."

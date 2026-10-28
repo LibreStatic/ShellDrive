@@ -7,9 +7,19 @@
 #
 #   sd_setup_add_payload(<stub_target> <out_exe> <flavour>)
 #       Builds the payload CAB of this tree for <flavour> with makecab (build time only, 04 §6.1): the four
-#       shipping binaries of the current preset plus uninstall.exe, which is the payload-less stub. Then
-#       tools/sd-payload attaches the CAB and the PAYLOAD_TABLE hash to a copy of the stub as RT_RCDATA.
+#       shipping binaries of the current preset plus uninstall.exe, which is the payload-less stub. With
+#       SD_BUILD_MSI the per-machine MSI of the flavour is a member too, as ShellDrive.msi (the elevated stage 2
+#       runs msiexec on it, 04 §6.4). Then tools/sd-payload attaches the CAB and the PAYLOAD_TABLE hash to a copy
+#       of the stub as RT_RCDATA, with --channel SD_SETUP_CHANNEL and, when SD_PAYLOAD_SIG names a file, the
+#       PAYLOAD_SIG resource made offline by tools/sd-release (TM-R38).
 #       Result: <out_exe>, a custom target shelldrive-setup depends on it.
+
+# Channel of the payload table (stable or beta; the stub refuses a table of the other channel, TM-R38).
+set(SD_SETUP_CHANNEL "stable" CACHE STRING "Channel of the setup payload table: stable or beta (04 §6.1, TM-R38)")
+set_property(CACHE SD_SETUP_CHANNEL PROPERTY STRINGS stable beta)
+# One-line signature of the payload table (sd-release sign --kind payload --sig-only). Empty: no PAYLOAD_SIG, and the
+# stub refuses the payload until one is attached (the release pipeline supplies it).
+set(SD_PAYLOAD_SIG "" CACHE FILEPATH "Signature file of the payload table (PAYLOAD_SIG); empty: none")
 
 function(sd_setup_generate_regtable out_var)
   set(_src "${CMAKE_SOURCE_DIR}/packaging/registration.txt")
@@ -90,6 +100,16 @@ function(sd_setup_add_payload stub_target out_exe flavour)
     set(_ui_deps shelldrive-ui shelldrive-shellext)
   endif()
 
+  # The per-machine MSI of this flavour (packaging/msi, SD_BUILD_MSI). Without it the stage 2 reports msi_missing.
+  set(_msi_member "")
+  set(_msi_deps "")
+  set(_msi_target "")
+  if(SD_BUILD_MSI AND DEFINED SD_MSI_PACKAGE)
+    set(_msi_member "\"${SD_MSI_PACKAGE}\" ShellDrive.msi\n")
+    set(_msi_deps "${SD_MSI_PACKAGE}")
+    set(_msi_target msi)
+  endif()
+
   # The member list is generated per configuration: the binaries of this tree, and the stub as uninstall.exe.
   file(GENERATE OUTPUT "${_dir}/payload-$<CONFIG>.ddf" CONTENT
 ".OPTION EXPLICIT
@@ -105,26 +125,34 @@ function(sd_setup_add_payload stub_target out_exe flavour)
 \"$<TARGET_FILE:shelldrive>\" shelldrive.exe
 \"$<TARGET_FILE:shelldrive-host>\" shelldrive-host.exe
 ${_ui_members}\"$<TARGET_FILE:${stub_target}>\" uninstall.exe
-")
+${_msi_member}")
 
   find_program(SD_MAKECAB makecab REQUIRED)
   add_custom_command(
     OUTPUT "${_cab}"
     COMMAND "${SD_MAKECAB}" /F "${_dir}/payload-$<CONFIG>.ddf"
-    DEPENDS "${_dir}/payload-$<CONFIG>.ddf"
+    DEPENDS "${_dir}/payload-$<CONFIG>.ddf" ${_msi_deps}
     COMMENT "makecab: payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup-payload-${flavour} DEPENDS "${_cab}")
-  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target})
+  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target} ${_msi_target})
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
+
+  # The table channel and, when given, the PAYLOAD_SIG file (tools/sd-release sign --kind payload --sig-only).
+  set(_sig_args "")
+  set(_sig_deps "")
+  if(NOT SD_PAYLOAD_SIG STREQUAL "")
+    set(_sig_args --sig "${SD_PAYLOAD_SIG}")
+    set(_sig_deps "${SD_PAYLOAD_SIG}")
+  endif()
 
   set(_final "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shelldrive-setup.exe")
   sd_tool_depends(sd-payload _tool_dep)
   add_custom_command(
     OUTPUT "${_final}"
     COMMAND $<TARGET_FILE:sd-payload> --base "$<TARGET_FILE:${stub_target}>" --out "${_final}"
-            --flavour ${flavour} --cab "${_cab}"
-    DEPENDS ${_tool_dep} ${stub_target} "${_cab}"
+            --flavour ${flavour} --cab "${_cab}" --channel "${SD_SETUP_CHANNEL}" ${_sig_args}
+    DEPENDS ${_tool_dep} ${stub_target} "${_cab}" ${_sig_deps}
     COMMENT "shelldrive-setup.exe: attach payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup ALL DEPENDS "${_final}")

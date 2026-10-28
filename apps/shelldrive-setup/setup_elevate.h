@@ -1,10 +1,12 @@
 /* shelldrive-setup: two-stage elevation for per-machine installs (docs/design/04 §6.4, TM-R33, TM-R34, T-62, T-63).
  *
  *   parent  (asInvoker, keeps the UI)   creates the progress pipe, starts stage 1 with "runas" (or in this process when
- *                                        the token is already elevated), waits, reads the stage 2 result from the pipe.
+ *                                        the token is already elevated) on a worker thread, relays the "P" lines to the
+ *                                        progress view while it waits, then reads the stage 2 result from the pipe.
  *   stage 1 (elevated, no window)       secures %ProgramData%\LibreStatic\ShellDrive, creates a new protected stage folder
  *                                        setup\<hex>, copies its own image into it (FILE_SHARE_READ source), starts that copy
- *                                        as stage 2 with the same elevated token and waits.
+ *                                        as stage 2 with the same elevated token and waits. Then copies the stage log to the
+ *                                        /log= path, when one was given (the parent passes it to stage 1 only).
  *   stage 2 (elevated, in the stage)    re-derives everything from its own image: the folder must be a stage folder under the
  *                                        expected root with a trusted owner, the pipe name must have the expected shape. It
  *                                        extracts the payload into the stage folder, runs msiexec for the MSI and reports
@@ -68,6 +70,14 @@ int sd_setup_elev_forward(const sd_setup_args *args, wchar_t *out, size_t cch);
    refusal gives SD_SETUP_EXIT_CANCEL with no message. */
 int sd_setup_elev_parent(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
                          const sd_setup_args *args, sd_setup_result *r);
+
+/* The progress of the stage while the parent waits: progress(ctx, n) for each new "P <n>" percentage (0..100), and
+   progress(ctx, SD_SETUP_ELEV_TICK) about every 100 ms, so that the caller can pump its window. progress may be NULL. */
+#define SD_SETUP_ELEV_TICK 0xFFFFFFFFu
+typedef void (*sd_setup_elev_progress_fn)(void *ctx, unsigned value);
+int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                            const sd_setup_args *args, sd_setup_result *r, sd_setup_elev_progress_fn progress,
+                            void *ctx);
 
 /* Stage 1 (elevated). Returns 0 when stage 2 reported success, else a Win32 error or the stage 2 exit code. */
 DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,

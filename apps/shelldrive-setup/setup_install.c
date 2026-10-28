@@ -327,6 +327,7 @@ static int stage_and_place(const sd_setup_install_opts *o, const wchar_t *dst, s
                            unsigned *files, unsigned long long *bytes)
 {
   wchar_t staging[MAX_PATH];
+  wchar_t msi[MAX_PATH];
   unsigned extracted = 0;
   unsigned aside = 0;
   int rc;
@@ -342,6 +343,11 @@ static int stage_and_place(const sd_setup_install_opts *o, const wchar_t *dst, s
     return rc;
   }
   setup_logf("payload.extracted", L"%u member(s) into staging", extracted);
+
+  /* The MSI is the all-users package (stage 2 of the elevated install only): it never lands in a per-user or portable
+     folder. */
+  if (sd_setup_path_join(msi, MAX_PATH, staging, L"ShellDrive.msi") == 0)
+    DeleteFileW(msi);
 
   report(o->progress, o->progress_ctx, SD_MSG_INSTALLER_PROGRESS_COPY, dst, 60);
   rc = place_tree(staging, dst, files, bytes, &aside, r);

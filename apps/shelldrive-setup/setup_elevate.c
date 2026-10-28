@@ -503,17 +503,92 @@ static int fail_result(sd_setup_result *r, int exit_code, sd_msg_id msg, long co
   return exit_code;
 }
 
-int sd_setup_elev_parent(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
-                         const sd_setup_args *args, sd_setup_result *r)
+/* One stage start, run on a worker thread so that the parent can relay the progress lines while it waits. */
+typedef struct elev_job {
+  const sd_setup_elev_ops *ops;
+  const wchar_t *base;
+  const wchar_t *self;
+  sd_setup_args args;
+  DWORD rc;
+  DWORD child;
+} elev_job;
+
+static DWORD WINAPI elev_job_main(LPVOID param)
 {
-  sd_setup_args a;
-  wchar_t text[512];
-  wchar_t cmd[SD_ELEV_CMD_CCH];
+  elev_job *j = (elev_job *)param;
   wchar_t fwd[SD_ELEV_FWD_CCH];
+  wchar_t cmd[SD_ELEV_CMD_CCH];
+
+  if (j->ops->is_elevated(j->ops->ctx)) {
+    /* Already an administrator (XP, UAC off, or an elevated launch): no runas, but the same stage 1 (04 §6.4). */
+    j->args.elevate_stage = 1;
+    j->rc = sd_setup_elev_stage1(j->ops, j->base, j->self, &j->args, &j->child);
+  } else if (sd_setup_elev_forward(&j->args, fwd, SD_SETUP_COUNTOF(fwd)) != 0) {
+    j->rc = ERROR_BUFFER_OVERFLOW;
+  } else {
+    /* The log path goes to stage 1 only: stage 1 copies the stage log there (stage 2 never gets a path). */
+    if (j->args.log_path[0] != L'\0')
+      StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s/log=\"%s\"", j->self,
+                       j->args.pipe_name, fwd, j->args.log_path);
+    else
+      StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s", j->self, j->args.pipe_name,
+                       fwd);
+    j->rc = j->ops->run(j->ops->ctx, j->self, cmd, NULL, 1, &j->child);
+  }
+  return 0;
+}
+
+/* The last "P <n>" line of the collected text: 1 with *value set when there is one. */
+static int last_progress(const wchar_t *text, unsigned *value)
+{
+  const wchar_t *p;
+  int found = 0;
+  unsigned v = 0;
+
+  for (p = text; *p != L'\0'; p++) {
+    if ((p == text || p[-1] == L'\n') && p[0] == L'P' && p[1] == L' ' && p[2] >= L'0' && p[2] <= L'9') {
+      const wchar_t *q;
+      v = 0;
+      for (q = p + 2; *q >= L'0' && *q <= L'9'; q++)
+        v = v * 10 + (unsigned)(*q - L'0');
+      if (v > 100)
+        v = 100;
+      found = 1;
+    }
+  }
+  *value = v;
+  return found;
+}
+
+/* Reads what the stage has written since the last call into acc (appended), and reports a new percentage. */
+static void relay_poll(HANDLE server, wchar_t *acc, size_t cch, unsigned *last, sd_setup_elev_progress_fn progress,
+                       void *ctx)
+{
+  wchar_t chunk[1024];
+  unsigned value = 0;
+  size_t used = wcslen(acc);
+
+  if (sd_setup_elev_pipe_collect(server, chunk, SD_SETUP_COUNTOF(chunk)) == 0 && chunk[0] != L'\0' &&
+      used + wcslen(chunk) + 1 < cch)
+    StringCchCatW(acc, cch, chunk);
+  if (last_progress(acc, &value) && value != *last) {
+    *last = value;
+    if (progress != NULL)
+      progress(ctx, value);
+  }
+}
+
+int sd_setup_elev_parent_ex(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                            const sd_setup_args *args, sd_setup_result *r, sd_setup_elev_progress_fn progress,
+                            void *ctx)
+{
+  elev_job job;
+  wchar_t text[2048];
   HANDLE server = INVALID_HANDLE_VALUE;
+  HANDLE thread = NULL;
   sd_msg_id msg = 0;
   long mcode = 0;
-  DWORD child = 0;
+  unsigned last = (unsigned)-1;
   DWORD rc;
 
   if (r == NULL)
@@ -522,24 +597,36 @@ int sd_setup_elev_parent(const sd_setup_elev_ops *ops, const wchar_t *base, cons
   if (ops == NULL || base == NULL || self == NULL || args == NULL)
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_GENERIC, 0);
 
-  a = *args;
-  if (sd_setup_elev_pipe_new_name(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name)) != 0)
+  memset(&job, 0, sizeof(job));
+  job.ops = ops;
+  job.base = base;
+  job.self = self;
+  job.args = *args;
+  if (sd_setup_elev_pipe_new_name(job.args.pipe_name, SD_SETUP_COUNTOF(job.args.pipe_name)) != 0)
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, 0);
-  rc = sd_setup_elev_pipe_create(a.pipe_name, &server);
+  rc = sd_setup_elev_pipe_create(job.args.pipe_name, &server);
   if (rc != 0)
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)rc);
-  sd_setup_log("elevate.parent", a.pipe_name);
+  sd_setup_log("elevate.parent", job.args.pipe_name);
 
-  if (ops->is_elevated(ops->ctx)) {
-    /* Already an administrator (XP, UAC off, or an elevated launch): no runas, but the same stage 1 (04 §6.4). */
-    a.elevate_stage = 1;
-    rc = sd_setup_elev_stage1(ops, base, self, &a, &child);
-  } else if (sd_setup_elev_forward(&a, fwd, SD_SETUP_COUNTOF(fwd)) != 0) {
-    rc = ERROR_BUFFER_OVERFLOW;
-  } else {
-    StringCchPrintfW(cmd, SD_SETUP_COUNTOF(cmd), L"\"%s\" /elevated-stage1 /pipe=%s %s", self, a.pipe_name, fwd);
-    rc = ops->run(ops->ctx, self, cmd, NULL, 1, &child);
+  thread = CreateThread(NULL, 0, elev_job_main, &job, 0, NULL);
+  if (thread == NULL) {
+    CloseHandle(server);
+    return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)GetLastError());
   }
+  /* Wait for the stage, relaying its "P" lines every 100 ms; the tick lets the caller pump its window. */
+  text[0] = L'\0';
+  for (;;) {
+    DWORD w = WaitForSingleObject(thread, 100);
+    relay_poll(server, text, SD_SETUP_COUNTOF(text), &last, progress, ctx);
+    if (progress != NULL)
+      progress(ctx, SD_SETUP_ELEV_TICK);
+    if (w != WAIT_TIMEOUT)
+      break;
+  }
+  CloseHandle(thread);
+  rc = job.rc;
+
   if (rc == ERROR_CANCELLED) {
     CloseHandle(server);
     return fail_result(r, SD_SETUP_EXIT_CANCEL, 0, 0);
@@ -550,25 +637,84 @@ int sd_setup_elev_parent(const sd_setup_elev_ops *ops, const wchar_t *base, cons
     return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)rc);
   }
 
-  /* The stage has finished: read what it reported. */
-  if (sd_setup_elev_pipe_collect(server, text, SD_SETUP_COUNTOF(text)) != 0)
-    text[0] = L'\0';
+  /* The stage has finished: read the rest of what it reported, and relay its last progress. */
+  relay_poll(server, text, SD_SETUP_COUNTOF(text), &last, progress, ctx);
   CloseHandle(server);
-  if (sd_setup_elev_result_line(text, &child) != 0)
-    return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)child);
+  if (sd_setup_elev_result_line(text, &job.child) != 0)
+    return fail_result(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_ELEVATION, (long)job.child);
 
   if (message_line(text, &msg, &mcode)) {
     r->msg = msg;
     r->code = mcode;
   }
-  r->exit_code = (int)child;
-  if (child != SD_SETUP_EXIT_OK && child != SD_SETUP_EXIT_REBOOT && r->msg == 0)
+  r->exit_code = (int)job.child;
+  if (job.child != SD_SETUP_EXIT_OK && job.child != SD_SETUP_EXIT_REBOOT && r->msg == 0)
     r->msg = SD_MSG_INSTALLER_ERROR_ELEVATION;
   sd_setup_log("elevate.result", L"the parent received the stage result");
   return r->exit_code;
 }
 
+int sd_setup_elev_parent(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                         const sd_setup_args *args, sd_setup_result *r)
+{
+  return sd_setup_elev_parent_ex(ops, base, self, args, r, NULL, NULL);
+}
+
 /* ------------------------------------------------------------------ stage 1 */
+
+/* 1 when path is a plain file: it exists, is not a folder and is not a reparse point. */
+static int plain_file(const wchar_t *path)
+{
+  DWORD a = GetFileAttributesW(path);
+  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0 && (a & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+/* 1 when path may take the stage log (/log=, stage 1): an absolute drive path of a .log file, no parent-folder
+   component, in a folder that exists and is not a reparse point. An existing target must be a plain file (replaced). */
+static int log_target_ok(const wchar_t *path)
+{
+  wchar_t dir[MAX_PATH];
+  size_t n = wcslen(path);
+  size_t i;
+  DWORD a;
+
+  if (n < 8 || n >= MAX_PATH || path[1] != L':' || path[2] != L'\\' || wcschr(path, L'"') != NULL)
+    return 0;
+  for (i = 0; i + 1 < n; i++) {
+    if (path[i] == L'.' && path[i + 1] == L'.')
+      return 0;
+  }
+  if (_wcsicmp(path + n - 4, L".log") != 0 || parent_of(path, dir, MAX_PATH) != 0)
+    return 0;
+  a = GetFileAttributesW(dir);
+  if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_DIRECTORY) == 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    return 0;
+  a = GetFileAttributesW(path);
+  if (a != INVALID_FILE_ATTRIBUTES && ((a & FILE_ATTRIBUTE_DIRECTORY) != 0 || (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0))
+    return 0;
+  return 1;
+}
+
+/* Copies the stage log (msi.log in the stage folder) to the /log= path. Stage 1 does it after stage 2 has finished:
+   the stage folder is admin-only, so the unelevated parent cannot read the log itself. */
+static void copy_stage_log(const sd_setup_elev_ops *ops, const wchar_t *stage, const wchar_t *log_path)
+{
+  wchar_t src[MAX_PATH];
+
+  if (log_path == NULL || log_path[0] == L'\0')
+    return;
+  if (!log_target_ok(log_path)) {
+    sd_setup_log("elevate.log_refused", L"the log path is not a usable .log file");
+    return;
+  }
+  if (sd_setup_path_join(src, MAX_PATH, stage, SD_ELEV_MSI_LOG) != 0 || !plain_file(src))
+    return;
+  DeleteFileW(log_path);
+  if (ops->copy_image(ops->ctx, src, log_path) != 0)
+    sd_setup_log("elevate.log_failed", L"the stage log could not be copied");
+  else
+    sd_setup_log("elevate.log", L"the stage log was copied to the log path");
+}
 
 DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
                            const sd_setup_args *args, DWORD *child_exit)
@@ -617,6 +763,7 @@ DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, co
   if (rc != 0)
     return rc;
   sd_setup_log("elevate.stage1", L"stage 2 finished");
+  copy_stage_log(ops, stage, args->log_path);
   /* A successful stage removes its folder; a failed one keeps the MSI log for diagnosis (admin-only folder). */
   if (*child_exit == 0)
     sd_setup_remove_tree(stage, NULL);
@@ -645,13 +792,6 @@ static void progress(HANDLE pipe, unsigned percent)
   wchar_t line[32];
   StringCchPrintfW(line, SD_SETUP_COUNTOF(line), L"P %u", percent);
   sd_setup_elev_pipe_write(pipe, line);
-}
-
-/* 1 when path is a plain file: it exists, is not a folder and is not a reparse point. */
-static int plain_file(const wchar_t *path)
-{
-  DWORD a = GetFileAttributesW(path);
-  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0 && (a & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
 }
 
 DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,

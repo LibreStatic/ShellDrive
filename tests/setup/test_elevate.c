@@ -21,6 +21,8 @@ typedef struct fake {
   int image_present_at_run;
   int reply;                    /* 1: a stage child writes "R <reply_code>" to the pipe named on its command line */
   DWORD reply_code;
+  int progress;                 /* 1: the stage child writes "P 10" and "P 40" before its result */
+  int write_log;                /* 1: the stage child leaves msi.log in its folder (stage 2 does that for msiexec) */
   DWORD run_result;             /* what run returns */
   DWORD run_exit;               /* the exit code it stores */
   wchar_t last_exe[MAX_PATH];
@@ -28,13 +30,13 @@ typedef struct fake {
   wchar_t last_cmd[2048];
 } fake_t;
 
-/* Writes one "R <n>" line to the pipe named in cmd, the way a finished stage does. */
-static void reply_to_pipe(const wchar_t *cmd, DWORD code)
+/* Writes the lines to the pipe named in cmd over one connection, the way a stage child does (the pipe has one instance). */
+static void lines_to_pipe(const wchar_t *cmd, const wchar_t *const *lines, size_t n)
 {
   const wchar_t *p = wcsstr(cmd, L"/pipe=");
   wchar_t name[64];
   HANDLE client = INVALID_HANDLE_VALUE;
-  wchar_t line[32];
+  size_t i;
 
   if (p == NULL)
     return;
@@ -47,10 +49,11 @@ static void reply_to_pipe(const wchar_t *cmd, DWORD code)
   }
   if (sd_setup_elev_pipe_open(name, &client) != 0)
     return;
-  StringCchPrintfW(line, SD_SETUP_COUNTOF(line), L"R %lu", (unsigned long)code);
-  sd_setup_elev_pipe_write(client, line);
+  for (i = 0; i < n; i++)
+    sd_setup_elev_pipe_write(client, lines[i]);
   CloseHandle(client);
 }
+
 
 static int f_is_elevated(void *ctx)
 {
@@ -87,8 +90,26 @@ static DWORD f_run(void *ctx, const wchar_t *exe, const wchar_t *cmdline, const 
   StringCchCopyW(f->last_cmd, SD_SETUP_COUNTOF(f->last_cmd), cmdline);
   StringCchCopyW(f->last_dir, SD_SETUP_COUNTOF(f->last_dir), dir != NULL ? dir : L"");
   f->image_present_at_run = GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES;
-  if (f->reply && wcsstr(cmdline, L"/elevated-") != NULL)
-    reply_to_pipe(cmdline, f->reply_code);
+  if (f->write_log && dir != NULL) {
+    wchar_t log[MAX_PATH];
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (sd_setup_path_join(log, MAX_PATH, dir, L"msi.log") == 0)
+      h = CreateFileW(log, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+      DWORD put = 0;
+      WriteFile(h, "msi log", 7, &put, NULL);
+      CloseHandle(h);
+    }
+  }
+  if (f->reply && wcsstr(cmdline, L"/elevated-") != NULL) {
+    wchar_t r[32];
+    const wchar_t *lines[3];
+    lines[0] = L"P 10";
+    lines[1] = L"P 40";
+    StringCchPrintfW(r, SD_SETUP_COUNTOF(r), L"R %lu", (unsigned long)f->reply_code);
+    lines[2] = r;
+    lines_to_pipe(cmdline, lines + (f->progress ? 0 : 2), f->progress ? 3 : 1);
+  }
   if (exit_code != NULL)
     *exit_code = f->run_exit;
   return f->run_result;
@@ -635,5 +656,82 @@ SD_TEST(setup_elev_parent_in_process_when_elevated)
   SD_CHECK(r.msg == 0);
   SD_CHECK(f.run_count == 1);
   SD_CHECK(f.last_runas == 0);
+  test_remove_tree(base);
+}
+
+/* ------------------------------------------------------------------ progress relay and the stage log (r17) */
+
+static unsigned g_seen[8];
+static int g_seen_n;
+
+static void record_progress(void *ctx, unsigned value)
+{
+  (void)ctx;
+  if (value != SD_SETUP_ELEV_TICK && g_seen_n < 8)
+    g_seen[g_seen_n++] = value;
+}
+
+SD_TEST(setup_elev_parent_relays_progress)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+  sd_setup_args a;
+  sd_setup_result r;
+  int rc;
+
+  fake_make(&ops, &f);
+  f.reply = 1;
+  f.progress = 1;
+  f.reply_code = 0;
+  memset(&a, 0, sizeof(a));
+  g_seen_n = 0;
+  /* Not elevated: the stage starts with runas on the worker thread; its "P" lines reach the progress callback. */
+  rc = sd_setup_elev_parent_ex(&ops, L"C:\\ProgramData", L"C:\\Temp\\setup.exe", &a, &r, record_progress, NULL);
+  SD_CHECK(rc == 0);
+  SD_CHECK(r.exit_code == 0);
+  SD_CHECK(f.last_runas == 1);
+  SD_CHECK(g_seen_n >= 1);
+  SD_CHECK(g_seen_n >= 1 && g_seen[g_seen_n - 1] == 40);
+}
+
+SD_TEST(setup_elev_stage1_copies_the_stage_log)
+{
+  sd_setup_elev_ops ops;
+  fake_t f;
+  wchar_t base[MAX_PATH];
+  wchar_t self[MAX_PATH];
+  wchar_t name[64];
+  wchar_t good[MAX_PATH];
+  wchar_t refused[MAX_PATH];
+  sd_setup_args a;
+  DWORD child = 99;
+
+  SD_REQUIRE(test_make_temp_dir(base, MAX_PATH) == 0);
+  SD_REQUIRE(sd_setup_path_join(self, MAX_PATH, base, L"download-setup.exe") == 0);
+  SD_REQUIRE(write_file(self, "download image") == 0);
+  SD_REQUIRE(sd_setup_path_join(good, MAX_PATH, base, L"install-log.log") == 0);
+  SD_REQUIRE(sd_setup_path_join(refused, MAX_PATH, base, L"install-log.txt") == 0);
+  fake_make(&ops, &f);
+  f.elevated = 1;
+  f.write_log = 1;
+  SD_REQUIRE(sd_setup_elev_pipe_new_name(name, SD_SETUP_COUNTOF(name)) == 0);
+  memset(&a, 0, sizeof(a));
+  StringCchCopyW(a.pipe_name, SD_SETUP_COUNTOF(a.pipe_name), name);
+  a.quiet = 1;
+
+  /* A .log path in an existing folder: the stage log is copied there. */
+  StringCchCopyW(a.log_path, SD_SETUP_COUNTOF(a.log_path), good);
+  SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
+  SD_CHECK(child == 0);
+  SD_CHECK(GetFileAttributesW(good) != INVALID_FILE_ATTRIBUTES);
+
+  /* Any other extension is refused: nothing is written there. */
+  StringCchCopyW(a.log_path, SD_SETUP_COUNTOF(a.log_path), refused);
+  SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
+  SD_CHECK(GetFileAttributesW(refused) == INVALID_FILE_ATTRIBUTES);
+
+  /* A parent-folder component is refused too. */
+  StringCchPrintfW(a.log_path, SD_SETUP_COUNTOF(a.log_path), L"%s\\..\\install-log.log", base);
+  SD_CHECK(sd_setup_elev_stage1(&ops, base, self, &a, &child) == 0);
   test_remove_tree(base);
 }
