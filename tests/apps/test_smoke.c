@@ -629,8 +629,9 @@ SD_TEST(smoke_webdav_token_only_prompt_none)
   wd_noauth(0);
 }
 
-/* hostkey add and accept-announced --machine without an elevated console (exit 9), and the paths this build does
-   not have yet (exit 1). SHELLDRIVE_TEST_ELEVATED=0 reports a non-elevated token; the store is never touched. */
+/* hostkey add, accept-announced and list --announced with --machine without an elevated console (exit 9). The elevated
+   path talks to the service pipe, which no smoke test starts: it is covered by the service tests (tests/unit/sd_svc,
+   svc_hostkey_*). SHELLDRIVE_TEST_ELEVATED=0 reports a non-elevated token; the store is never touched. */
 SD_TEST(smoke_hostkey_add_machine)
 {
   static run_result r;
@@ -641,6 +642,10 @@ SD_TEST(smoke_hostkey_add_machine)
   EXPECT(RUN(L"hostkey add --from-server smokehk.test --machine --json", NULL) == 9 &&
          strstr(r.out, "access_denied") != NULL, "machine add json is access_denied");
   EXPECT(RUN(L"hostkey accept-announced a-1 --machine", NULL) == 9, "machine accept needs an elevated console");
+  EXPECT(RUN(L"hostkey list --announced --machine", NULL) == 9 &&
+         strstr(r.err, "elevated console") != NULL, "machine announcements need an elevated console");
+  EXPECT(RUN(L"hostkey list --announced --machine --json", NULL) == 9 &&
+         strstr(r.out, "access_denied") != NULL, "machine announcements json is access_denied");
   /* without --machine the agent does the connect (smoke_hostkey_add_offers covers the rest; the CLI starts the agent
      on demand and this test stops it at the end): a first contact that nobody answers is refused, and a fingerprint
      that matches nothing is refused as well */

@@ -139,6 +139,24 @@ static void handle_owner_and_dacl(HANDLE h, svc_owner_fn owner_ok, void *ctx, sv
     LocalFree(sd);
 }
 
+DWORD svc_store_check(const wchar_t *path, svc_owner_fn owner_ok, void *ctx, svc_folder_reason *why)
+{
+  HANDLE h = NULL;
+  DWORD e = svc_folder_open(path, READ_CONTROL | FILE_READ_ATTRIBUTES, &h);
+  *why = SVC_FOLDER_OK;
+  if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+    return 0;                       /* not created yet: the write creates it inside the checked data folder */
+  if (e != 0) {
+    *why = SVC_FOLDER_NO_RIGHTS;
+    return e;
+  }
+  e = svc_folder_inspect(h, 0, owner_ok, ctx, why);
+  if (e == 0 && *why == SVC_FOLDER_OK)
+    handle_owner_and_dacl(h, owner_ok, ctx, why);
+  CloseHandle(h);
+  return e;
+}
+
 /* 1 when the DACL want equals have, ACE by ACE in order (the inherited flag is not compared). */
 static int same_dacl(PACL want, PACL have)
 {

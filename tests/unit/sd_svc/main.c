@@ -16,6 +16,11 @@ SD_TEST_DECL(svc_attention_counts_the_open_prompts);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
 SD_TEST_DECL(svc_pipe_caps_and_reserved_admin_instances);
+SD_TEST_DECL(svc_hostkey_add_offers_then_accept_writes_the_machine_store);
+SD_TEST_DECL(svc_hostkey_first_contact_is_offered_and_expect_stores_it);
+SD_TEST_DECL(svc_hostkey_add_refuses_a_changed_key_and_an_unknown_host);
+SD_TEST_DECL(svc_hostkey_methods_are_for_elevated_admins);
+SD_TEST_DECL(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
 SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
 SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
@@ -85,6 +90,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
   SD_TEST_ENTRY(svc_pipe_caps_and_reserved_admin_instances),
+  SD_TEST_ENTRY(svc_hostkey_add_offers_then_accept_writes_the_machine_store),
+  SD_TEST_ENTRY(svc_hostkey_first_contact_is_offered_and_expect_stores_it),
+  SD_TEST_ENTRY(svc_hostkey_add_refuses_a_changed_key_and_an_unknown_host),
+  SD_TEST_ENTRY(svc_hostkey_methods_are_for_elevated_admins),
+  SD_TEST_ENTRY(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
   SD_TEST_ENTRY(refuse_log_is_once_per_sid_per_window),
   SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),

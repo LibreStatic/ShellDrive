@@ -22,6 +22,11 @@
 #define FAKE_FP         "SHA256:K3l2sJ0pAqv0d8ZbFakeFakeFakeFakeFakeFake0Q"
 
 const sd_mount_backend *fake_backend(void);
+/* M5 (tests/unit/sd_svc): fake_backend() plus the hostkey connection (hostkey add): *.known.test verifies against a
+   stored key, *.changed.test mismatches, anything else is a first contact. Its kh_apply accepts the user and the
+   machine store; fake_backend_apply_machine_calls() counts the machine-store writes. */
+const sd_mount_backend *fake_backend_hostkeys(void);
+uint32_t fake_backend_apply_machine_calls(void);
 void fake_backend_reset(void);
 int  fake_backend_is_trusted(const char *host);
 /* M5 (tests/unit/sd_svc): marks a host as trusted without a TOFU prompt, as if its key had been stored before. */

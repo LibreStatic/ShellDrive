@@ -726,3 +726,59 @@ different TokenId: miss), `dokan_cache_changed_modified_id_misses` (adjusted Mod
 `tests/unit/sd_svc/test_service.c` (`svc_admin_mounts_reports_and_unmounts`): a fake vfs audit reaches the Event
 Log seam as SVC_MSG_AUDIT. The Dokany requestor path itself (`requestor_identity`) is not unit-tested: it needs a
 live requestor token.
+
+## Part 9: the service side of host keys (`wip/r15-svcmachine`)
+
+Closes "the service pipe (`hostkey.add` on the service, the machine store with `--machine`) is still not built" from Part 8.
+
+**Decisions.**
+
+- The service methods keep the agent's names and reply shapes: `hostkey.add`, `hostkey.announced.list`, `hostkey.announced.accept` (03 §2.4). All three need an elevated administrator (`need_admin`).
+- A machine `hostkey.add` uses the machine profile whose host and port match, or the one named by `profile`. There are no default credentials for the service, so an unknown host is `profile_not_found` (exit 3), not a host-only default as in the agent.
+- The connection is a hostkey mount (`hostkey_fetch`) with the profile's service credentials. The service answers no prompt: sd_mount takes the first-contact host-key question itself (5.2), and every other prompt (password, passphrase, keyboard-interactive) is refused in `svc_hk_on_prompt`. The service never routes a hostkey.add prompt to a UI.
+- `sd_mount_create` requires a drive letter even for a hostkey mount, so the service passes `Z:` as a label. The mount never mounts a drive.
+- The hops use `update_host_keys = no`. The hostkey connection does not produce its own announcements.
+- Writes to the machine known_hosts go through `sd_mount_apply_hostkeys_to(..., SD_KH_STORE_MACHINE, ...)`, a new function. `sd_mount_apply_hostkeys` is now a wrapper with `SD_KH_STORE_USER`. The file is checked first by `svc_store_check` (svc_folder.c): a plain file, owner trusted, DACL with no write for an untrusted principal, opened without following links. A missing file is accepted because it is created inside the already-checked data folder.
+- Mount announcements (UpdateHostKeys ask) are kept in the same list, raise Event 2300 (`SVC_MSG_HOSTKEYS_ANNOUNCED`, Warning, English), and are broadcast on the `hostkeys` topic (admin only). The list keeps 32 entries and drops the oldest when full.
+- `hostkey.add` is deferred (`sd_ipc_defer`). At most 2 requests run at once (`SVC_MAX_HK`). The reply is sent from `on_state` when the mount is final, and the record and mount are released in `svc_tick`. On shutdown, open hostkey mounts are stopped and the teardown waits for them.
+- A hostkey connection that ends with no verified keys and no first-contact key is reported as `connect_failed`. It is not an empty success.
+
+**Files.**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/service.c` | `svc_identity_hop` (identity file as a hop, shared by mounts and hostkey requests); announcement store `ann_keep`, `svc_on_hostkeys`, `svc_event_announced`; `svc_machine_apply`; `job_hk_start`, `svc_hk_on_state`, `svc_hk_reply`, `svc_hk_complete`, `svc_hk_release`; pipe handlers `handle_hk_add`, `handle_hk_list`, `handle_hk_accept`; dispatch and `hello` features; reap in `svc_tick`; shutdown in `svc_shutdown_all` |
+| `apps/shelldrive-host/svc_folder.c`, `.h` | `svc_store_check` |
+| `apps/shelldrive-host/svc_events.mc` | 2300 `SVC_MSG_HOSTKEYS_ANNOUNCED` |
+| `src/sd_mount/mount.c`, `include/sd_mount/sd_mount.h` | `sd_mount_apply_hostkeys_to`; `apply_on` takes the target store |
+| `apps/shelldrive/cli_cmds2.c` | `hk_add_user(a, machine)`, `hk_announced(a, machine)`, `hk_accept(a, machine)`, `hk_accept_offer(a, id, machine)`; `hk_not_built` removed |
+| `apps/shelldrive/cli_service.c`, `cli_int.h` | `connect_service` exported for the `--machine` commands |
+| `apps/shelldrive/cli_args.c` | `hostkey list --announced --machine` accepted (a plain `list --machine` is still refused) |
+| `l10n/cli/*.po` | removed `cli.hk.not_built`; appended `cli.hk.machine_scope` and `cli.error.hk_no_profile` in all six locales |
+| `tests/unit/sd_mount/fake_backend.c`, `.h` | `fake_backend_hostkeys()` (hostkey connection scripted by host name, as `tests/apps/host_fake_backend.c`); kh_apply accepts the machine store; `fake_backend_apply_machine_calls()` |
+| `tests/unit/sd_svc/test_service.c`, `main.c` | five tests (below); fixture profiles `hk.known.test`, `hk.changed.test`, `hk.first.test`, `rotate.example`; profile count 5 to 9 |
+| `tests/apps/test_smoke.c`, `test_cli_args.c` | non-elevated `list --announced --machine` (exit 9, `access_denied`); parse of `list --announced --machine` |
+| `docs/design/03-apps-platform.md` | `hostkey.add` method row: service column and behaviour |
+
+**Behaviour.**
+
+- `hostkey.add` (admin): connects with the machine profile, offers the stored types (or `--type`), keeps the other keys as an announcement `id`. `--expect` writes the one matching key to the machine store with no question. A first contact is offered and stored only by the accept or by `--expect`.
+- `hostkey.announced.accept {id, add_only}` (admin): writes the announcement to the machine store and removes it from the list; a failed write puts it back.
+- CLI: `hostkey add --machine`, `hostkey accept-announced <id> --machine` and `hostkey list --announced --machine` need an elevated console (exit 9 otherwise), then talk to the service pipe. With no service: "service unavailable", exit 8. A `profile_not_found` from the service is printed as `cli.error.hk_no_profile` (exit 3). Before the question, `cli.hk.machine_scope` says where the keys go.
+- The agent's `not_implemented` (a backend without a hostkey connection) is now a generic error, not the removed "not part of this build" text.
+
+**Tests.**
+
+- `tests/unit/sd_svc` over the real pipe, with the scripted hostkey connection: `svc_hostkey_add_offers_then_accept_writes_the_machine_store` (type restriction, offer, list, accept, accept again is not found), `svc_hostkey_first_contact_is_offered_and_expect_stores_it`, `svc_hostkey_add_refuses_a_changed_key_and_an_unknown_host` (6, `profile_not_found`), `svc_hostkey_methods_are_for_elevated_admins`, `svc_mount_announcement_is_kept_and_accepted_into_the_machine_store` (Event 2300 seen, removals applied).
+- The CLI is not tested end to end against the service: no test starts the service pipe for the CLI process. The `--machine` smoke tests cover the elevation and argument paths only.
+
+**Build.** `ci-local.ps1 -Presets 'x64-modern','x64-analysis' -ReleaseOnly -NoFixture -AllowSkip -TestRegex 'unit\.svc|unit\.apps|unit\.mount|unit\.ipc|l10n'`: both presets pass. No Win32 import was added to the shipping binaries, so the `x86-ia32` import check was not run.
+
+**Open.**
+
+- No live run against a real sshd or the real service. The hostkey path is tested on the fake connection only.
+- `UpdateHostKeys = 2` (automatic machine-store update, policy) is not built. Every service announcement waits for an administrator.
+- Declined offers stay in the list until the service restarts (as in the agent). There is no reject method.
+- A stop during a hostkey connection relies on sd_mount's teardown; sd_mount finishes such a mount without destroying the hostkey connection until its I/O thread reports back. Not exercised by a test.
+- Replies to in-flight `hostkey.add` requests are lost if the pipe closes at shutdown.
+- No Event 2300 test through the Event Log sink beyond the seam (`svc_event` test sink).

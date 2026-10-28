@@ -39,7 +39,7 @@ static void utf8_of(const wchar_t *w, char *out, size_t cch)
 }
 
 
-static int connect_service(sd_ipc_conn **c)
+int connect_service(sd_ipc_conn **c)
 {
   sd_ipc_hello h;
   memset(&h, 0, sizeof(h));
