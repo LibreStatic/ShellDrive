@@ -203,6 +203,22 @@ SD_TEST(volume_sddl_is_valid_and_lists_every_entry)
   SD_CHECK_EQ_INT(svc_volume_sddl(&acl, sddl, 20), SD_E_NO_SPACE);
 }
 
+/* Event 3101 throttle (10.3, TM-R25): fake clock, one event per SID per 10 minutes, a full table reuses the oldest. */
+SD_TEST(refuse_log_is_once_per_sid_per_window)
+{
+  svc_refuse_entry tab[2];
+  memset(tab, 0, sizeof(tab));
+  SD_CHECK(svc_refuse_log_due(tab, 2, L"S-1-5-21-1", 1000));
+  SD_CHECK(!svc_refuse_log_due(tab, 2, L"S-1-5-21-1", 2000));
+  SD_CHECK(!svc_refuse_log_due(tab, 2, L"S-1-5-21-1", 600999));    /* 10 min from 1000 ms is 601000 */
+  SD_CHECK(svc_refuse_log_due(tab, 2, L"S-1-5-21-1", 601000));     /* the window has passed */
+  SD_CHECK(svc_refuse_log_due(tab, 2, L"S-1-5-21-2", 601001));     /* another SID is due at once */
+  SD_CHECK(svc_refuse_log_due(tab, 2, L"S-1-5-21-3", 601002));     /* full: evicts -1 (logged longest ago) */
+  SD_CHECK(!svc_refuse_log_due(tab, 2, L"S-1-5-21-2", 601003));
+  SD_CHECK(svc_refuse_log_due(tab, 2, L"S-1-5-21-1", 601004));     /* evicted, so logged again */
+  SD_CHECK(!svc_refuse_log_due(tab, 2, NULL, 601005));
+}
+
 SD_TEST(identity_path_must_stay_under_the_service_folder)
 {
   SD_CHECK(svc_path_under(L"C:\\PD\\LibreStatic\\ShellDrive\\service\\keys\\a.ppk", L"C:\\PD\\LibreStatic\\ShellDrive\\service"));

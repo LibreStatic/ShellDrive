@@ -15,7 +15,9 @@ SD_TEST_DECL(svc_admin_answers_a_password_prompt_on_the_pipe);
 SD_TEST_DECL(svc_attention_counts_the_open_prompts);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
+SD_TEST_DECL(svc_pipe_caps_and_reserved_admin_instances);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
+SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
 SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
 SD_TEST_DECL(scm_install_registers_the_service_in_order);
 SD_TEST_DECL(scm_install_skips_the_sid_type_before_vista);
@@ -82,7 +84,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_attention_counts_the_open_prompts),
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
+  SD_TEST_ENTRY(svc_pipe_caps_and_reserved_admin_instances),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
+  SD_TEST_ENTRY(refuse_log_is_once_per_sid_per_window),
   SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),
   SD_TEST_ENTRY(scm_install_registers_the_service_in_order),
   SD_TEST_ENTRY(scm_install_skips_the_sid_type_before_vista),

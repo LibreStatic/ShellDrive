@@ -52,7 +52,8 @@
 #define SVC_MAX_MOUNTS   32
 #define SVC_MAX_PROMPTS  16
 #define SVC_PROMPT_MS    120000u          /* 2.5: user-initiated operations; the service has no reconnect prompts */
-#define SVC_MAX_MESSAGE  65536u           /* 2.2: one cap for every client of the service pipe in this build */
+#define SVC_MAX_MESSAGE_NONADMIN 65536u   /* 2.2, TM-R25: request cap of clients that are not elevated admins (admins: 1 MiB) */
+#define SVC_RESERVED_ADMIN_INSTANCES 2u   /* 2.2, TM-R25: of the 32 pipe instances, these are kept for elevated admins */
 #define SVC_IDLE_MS      60000u           /* 2.2: idle timeout of a non-subscribed client */
 #define SVC_SHUTDOWN_MS  15000u
 
@@ -122,6 +123,7 @@ static struct svc_state {
   uint32_t next_mount, next_prompt;
   svc_prompt prompts[SVC_MAX_PROMPTS];
   svc_work *qh, *qt;
+  svc_refuse_entry refuse[SVC_REFUSE_SLOTS];   /* Event 3101 throttle; written on the pipe thread only */
 } g;
 
 /* Admin check of the callers. SD_SVC_TEST_HOOKS builds (tests/unit/sd_svc) may treat a "testadmin" client as an elevated
@@ -1779,6 +1781,33 @@ static int svc_topic_allowed(void *ctx, sd_ipc_client *client, const char *topic
   return 1;
 }
 
+static int svc_ipc_is_admin(void *ctx, sd_ipc_client *client)
+{
+  (void)ctx;
+  return caller_is_admin(client);
+}
+
+/* Event 3101 (10.3, TM-R25): a client refused at hello or over the rate limit. %1 is the SID (not written when the
+   token gave none), %2 the reason: token, per_sid, reserved or rate. At most once per SID per 10 minutes. Runs on the
+   pipe thread, the only writer of the throttle table. */
+static void svc_on_refused(void *ctx, sd_ipc_client *client, const char *reason)
+{
+  PSID sid = sd_ipc_client_sid(client);
+  LPWSTR text = NULL;
+  wchar_t why[32];
+  const wchar_t *args[2];
+  (void)ctx;
+  if (sid == NULL || !ConvertSidToStringSidW(sid, &text))
+    return;
+  if (svc_refuse_log_due(g.refuse, SVC_REFUSE_SLOTS, text, sd_tick_ms())) {
+    wide_from_utf8(reason, why, SD_COUNTOF(why));
+    args[0] = text;
+    args[1] = why;
+    svc_event(SVC_MSG_CLIENT_REFUSED, args, 2);
+  }
+  LocalFree(text);
+}
+
 /* attention: a new subscriber gets the current count at once, so a UI that starts after a prompt knows about it. */
 static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic)
 {
@@ -1857,10 +1886,14 @@ int svc_run(const svc_opts *o)
   cfg.handler = svc_ipc_handler;
   cfg.ctx = NULL;
   cfg.max_instances = 32;
-  cfg.max_message = SVC_MAX_MESSAGE;
+  cfg.max_message = SD_IPC_MAX_MESSAGE;   /* 2.2: admins, 1 MiB */
+  cfg.max_message_nonadmin = SVC_MAX_MESSAGE_NONADMIN;
   cfg.idle_timeout_ms = SVC_IDLE_MS;
   cfg.max_per_sid = 4;                    /* TM-R25 */
   cfg.max_requests_per_sec = 10;          /* TM-R25; admins are exempt in the server */
+  cfg.reserved_admin_instances = SVC_RESERVED_ADMIN_INSTANCES;
+  cfg.is_admin = svc_ipc_is_admin;
+  cfg.on_refused = svc_on_refused;
   cfg.features = k_service_features;
   cfg.topic_allowed = svc_topic_allowed;
   cfg.on_subscribe = svc_on_subscribe;
