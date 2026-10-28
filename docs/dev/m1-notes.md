@@ -587,6 +587,42 @@ Local HTTP/1.1 + WebDAV server over `sd_vfs`, mapped through the built-in Window
 - Global (service) WebDAV mounts (7.7), multi-user TST-09/TST-10 lab runs, XP (http form, port, LOCK) and
   Windows 7/8/10 behaviour are unverified here.
 
+### M1 remainder: replacing MOVE locks and the negative cache (r13, `wip/r13-davmove`)
+
+Spec: `docs/design/02-filesystem.md` §7.5 "Locks across a replacing MOVE" and §7.6 "Negative cache".
+
+- **Replacing MOVE drops the destination lock: fixed.** `m_move_copy` called `wd_lock_drop_tree(dv)` after a
+  replacing MOVE, which removed the lock the Office save holds on the document, so the final `UNLOCK` got 409.
+  Decision: the lock on the destination URL survives the replacing MOVE (same token, same timeout), because the
+  client holds it and the URL now names the moved resource. Locks below a replaced collection go with its
+  children; a lock on the source URL moves with the resource unless the destination already has one (the
+  destination lock wins, so one URL never needs two tokens). `wd_lock_replace` implements this; `COPY` with
+  `Overwrite: T` keeps the destination lock and uses `wd_lock_drop_below`. The lock manager keys locks by vfs
+  path, not vfs node: the comments and the 02 text said node.
+- **Tests** (`unit.webdav`, `tests/unit/sd_webdav/test_server.c`): `webdav_server_office_save_sequence` (LOCK,
+  temp PUT, MOVE 423 without a token and with a wrong token, MOVE 204 with `If:`, PROPFIND shows the lock, GET
+  content, UNLOCK 204 and 409, plain PUT 204, two cycles); `webdav_server_replacing_move_drops_replaced_children_locks`
+  (a MOVE of a collection onto a locked child: 423 without the token, 204 with it, the replaced child's lock gone);
+  `webdav_server_link_down_miss_is_503_not_404` (the negative-cache mitigation below).
+- **Negative cache (`FileNotFoundCacheLifeTimeInSec`, 60 s).** WebClient answers "not found" for a name from its
+  own cache after a failed lookup, without a request. A rename or create made on the server after that is not
+  visible on `P:` for up to 60 s (acceptance, `m1-acceptance.md`). The server cannot clear that cache.
+  - Mitigated: a miss while the link is down is `503` + `Retry-After: 10` (vfs `DISCONNECTED`), never `404`.
+    The redirector retries rather than caching a miss.
+  - Not mitigated, open: the vfs answers from its own negative cache while the link is down and reports
+    `NOT_FOUND`, so a `404` still reaches the redirector in that window. Closing it needs the session state in
+    `sd_webdav_export_cfg` (`sd_sftp_session_state`, which `sd_vfs` does not expose per connection). Owner:
+    `sd_mount` wiring; not implemented here.
+  - User-facing: a name the user sees missing right after a change made elsewhere can stay missing for about
+    60 s. Waiting is the only fix on the drive; `shelldrive refresh` drops the vfs TTLs, not WebClient's cache.
+  - CLI and agent: they work through the agent (sd_vfs and IPC), never through the drive letter, so they do not
+    fill the redirector cache. `sd_mount` maps the letter only after the vfs is mounted and the export is listening.
+- **Build/test:** `ci-local -Presets x64-modern -ReleaseOnly -NoFixture -TestRegex webdav`: `unit.webdav` and
+  `webdav.redirector` pass, no compiler warnings in sd_webdav (Release, x64-modern). Debug, the x86 presets and the
+  WebDAV lab runs were not run in this change.
+- **Open:** real Office and LibreOffice saves against the lab mount (the 204 instead of 409 after the final
+  UNLOCK; `[lab-verify]`), and the 60 s wait measured on Windows 7/10 with the link down.
+
 ## Integration (sd_mount, host, CLI wiring of the M1 modules)
 
 Done when the four workstreams above were merged. Acceptance results: `docs/dev/m1-acceptance.md`.

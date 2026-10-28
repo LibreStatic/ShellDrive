@@ -138,6 +138,10 @@ int  wd_lock_refresh(sd_webdav_export *ex, const WCHAR *path, char toks[][80], u
 int  wd_lock_remove(sd_webdav_export *ex, const WCHAR *path, const char *token);   /* 0 / 409 */
 void wd_lock_move(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to);
 void wd_lock_drop_tree(sd_webdav_export *ex, const WCHAR *path);
+/* Replacing MOVE: the lock on to survives, locks below to go, locks on from move to to (02 §7.5). */
+void wd_lock_replace(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to);
+/* Locks strictly below path (a replacing COPY deleted that tree). */
+void wd_lock_drop_below(sd_webdav_export *ex, const WCHAR *path);
 /* Appends <D:lockdiscovery>...</D:lockdiscovery> for locks covering path. */
 void wd_lock_discovery(sd_webdav_export *ex, const WCHAR *path, wd_sb *b, const char *only_token);
 

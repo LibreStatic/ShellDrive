@@ -1061,16 +1061,16 @@ static void m_move_copy(wd_rq *q, BOOL move)
       if (sd_vfs_delete_path(q->ex->vfs, &q->caller, dv, TRUE) == SD_VFS_OK)
         st = sd_vfs_rename_path(q->ex->vfs, &q->caller, q->vpath, dv, FALSE);
     }
-    if (st == SD_VFS_OK) {
-      wd_lock_drop_tree(q->ex, dv);
-      wd_lock_move(q->ex, q->vpath, dv);   /* locks are keyed by node: renames carry them (02 §7.5) */
-    }
+    if (st == SD_VFS_OK)   /* the destination URL keeps its lock (Office save, 02 §7.5) */
+      wd_lock_replace(q->ex, q->vpath, dv);
   } else {
     st = SD_VFS_OK;
     if (existed)
       st = sd_vfs_delete_path(q->ex->vfs, &q->caller, dv, TRUE);
     if (st == SD_VFS_OK)
       st = copy_tree(q, q->vpath, dv, recursive, 0);
+    if (st == SD_VFS_OK && existed)   /* the replaced tree's children are gone; the destination URL keeps its lock */
+      wd_lock_drop_below(q->ex, dv);
   }
   sd_free(dv);
   if (st == SD_VFS_E_EXISTS) {
