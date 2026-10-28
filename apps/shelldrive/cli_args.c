@@ -506,8 +506,10 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
       if (a->hk_type || a->from || a->add_only)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" : L"--add-only", NULL);
-      if (a->from_server || a->expect || a->machine)
-        return set_err(a, CLI_E_UNKNOWN_OPTION, hk_add_option_name(a), NULL);
+      /* --machine is the service's list with --announced (03 §5.6, §6.1); a plain list has no machine form */
+      if (a->from_server || a->expect || (a->machine && !a->announced))
+        return set_err(a, CLI_E_UNKNOWN_OPTION, a->from_server ? L"--from-server" : a->expect ? L"--expect" : L"--machine",
+                       NULL);
     } else if (wcscmp(a->positional, L"import") == 0) {
       if (!a->from)
         return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);

@@ -362,6 +362,10 @@ typedef struct sd_mount_announcement {
    that may do file I/O. */
 sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
                                const sd_mount_announcement *a, int add_only);
+/* The same for a chosen store kind: target is the store the keys go to (SD_KH_STORE_MACHINE for the service, 5.6);
+   that store must be writable in the list. sd_mount_apply_hostkeys is this with SD_KH_STORE_USER. */
+sd_err sd_mount_apply_hostkeys_to(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
+                                  sd_kh_store_kind target, const sd_mount_announcement *a, int add_only);
 
 /* hostkey add result of a mount created with params.hostkey_fetch (03 §6.1): verified = 1 when the connection
    matched a stored key (the keys are the other host keys of the server); verified = 0 on first contact, where the

@@ -1077,11 +1077,6 @@ msgctxt "cli.hk.need_admin"
 msgid "Changing the machine host keys needs an elevated console. Run it as administrator."
 msgstr "Cambiar las claves de host de la máquina requiere una consola elevada. Ejecutá el programa como administrador."
 
-#. Printed by hostkey add and accept-announced --machine until the service connect path exists (exit 1).
-msgctxt "cli.hk.not_built"
-msgid "Adding host keys from a server is not part of this build yet."
-msgstr "Agregar claves de host desde un servidor todavía no forma parte de esta versión."
-
 #. Summary of the diag bench command (and of the bench alias), in --help. Literal syntax stays as it is.
 msgctxt "cli.help.bench"
 msgid "Measure a mounted drive: sequential transfers, small files and the latency of opening a file. The run uses a new folder on the drive and removes it afterwards."
@@ -1193,3 +1188,13 @@ msgstr "¿Agregás esta clave? [s]í, [N]o: "
 msgctxt "cli.hk.add_choices"
 msgid "[y]es, [N]o: "
 msgstr "[s]í, [N]o: "
+
+#. Printed by hostkey add --machine and hostkey list --announced --machine before the question, to say where the keys go.
+msgctxt "cli.hk.machine_scope"
+msgid "These keys go to the machine host keys, which the global drives use."
+msgstr "Estas claves van a las claves de host de la máquina, que usan las unidades globales."
+
+#. Printed (exit 3) by hostkey add --machine when no machine profile of the service uses the host and port. {host} is the host as typed.
+msgctxt "cli.error.hk_no_profile"
+msgid "No machine profile of this service uses {host} and its port. Create the profile first, then add its host keys."
+msgstr "Ningún perfil de máquina de este servicio usa {host} ni su puerto. Creá primero el perfil y después agregá sus claves de host."

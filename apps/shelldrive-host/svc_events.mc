@@ -52,3 +52,8 @@ MessageId=1200 Severity=Informational SymbolicName=SVC_MSG_AUDIT
 Language=English
 Change through the global drive for profile %1 by %3 (SID %2): %4 %5.
 .
+
+MessageId=2300 Severity=Warning SymbolicName=SVC_MSG_HOSTKEYS_ANNOUNCED
+Language=English
+A server announced host keys for %1 (new: %2; no longer offered: %3). The machine host keys are not changed until an administrator accepts them with shelldrive hostkey list --announced --machine.
+.

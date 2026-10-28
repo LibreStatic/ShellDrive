@@ -897,7 +897,8 @@ static void on_ready(sd_mount *m)
 
 static int try_autofill(sd_mount *m, const sd_mount_prompt *mp);
 static int take_prompt_by_id(sd_mount *m, uint32_t id, sd_prompt **p, sd_mount_prompt_kind *kind, pending_prompt *copy);
-static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, const sd_mount_announcement *a, int add_only);
+static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, sd_kh_store_kind target,
+                       const sd_mount_announcement *a, int add_only);
 
 static void run_item(void *arg)
 {
@@ -1002,7 +1003,7 @@ static void run_item(void *arg)
       if (it->ann) {
         sd_mount_announcement *a = it->ann;
         if (a->mode == SD_HKU_YES && m->kh && m->be->kh_apply_hostkeys) {
-          sd_err ae = apply_on(m->be, m->kh, a, 1);    /* removals always need the review (5.6) */
+          sd_err ae = apply_on(m->be, m->kh, SD_KH_STORE_USER, a, 1);   /* removals always need the review (5.6) */
           SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %s saved (%s)", (int)m->letter,
                   (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
           if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 1, ae);
@@ -2155,7 +2156,8 @@ sd_err sd_mount_answer_ex(sd_mount *m, uint32_t prompt_id, sd_mount_answer_kind 
 
 /* ---- UpdateHostKeys (5.6) ---- */
 
-static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, const sd_mount_announcement *a, int add_only)
+static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, sd_kh_store_kind target,
+                       const sd_mount_announcement *a, int add_only)
 {
   sd_hk_key add[SD_MOUNT_ANNOUNCE_MAX], rem[SD_MOUNT_ANNOUNCE_MAX];
   uint32_t i, na = 0, nr = 0;
@@ -2173,11 +2175,11 @@ static sd_err apply_on(const sd_mount_backend *be, sd_known_hosts *kh, const sd_
     rem[nr].type = a->remove[i].type; rem[nr].fp_sha256 = a->remove[i].fp_sha256;
     nr++;
   }
-  return be->kh_apply_hostkeys(kh, SD_KH_STORE_USER, a->lookup_name, na ? add : NULL, na, nr ? rem : NULL, nr);
+  return be->kh_apply_hostkeys(kh, target, a->lookup_name, na ? add : NULL, na, nr ? rem : NULL, nr);
 }
 
-sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
-                               const sd_mount_announcement *a, int add_only)
+sd_err sd_mount_apply_hostkeys_to(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
+                                  sd_kh_store_kind target, const sd_mount_announcement *a, int add_only)
 {
   sd_known_hosts *kh = NULL;
   sd_err e;
@@ -2187,9 +2189,15 @@ sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *st
     return SD_E_UNSUPPORTED;
   if ((e = be->kh_open(stores, store_count, &kh)) != SD_OK)
     return e;
-  e = apply_on(be, kh, a, add_only);
+  e = apply_on(be, kh, target, a, add_only);
   be->kh_close(kh);
   return e;
+}
+
+sd_err sd_mount_apply_hostkeys(const sd_mount_backend *be, const sd_kh_store *stores, uint32_t store_count,
+                               const sd_mount_announcement *a, int add_only)
+{
+  return sd_mount_apply_hostkeys_to(be, stores, store_count, SD_KH_STORE_USER, a, add_only);
 }
 
 sd_err sd_mount_get_hostkeys(const sd_mount *cm, sd_mount_hk_fetch *out)

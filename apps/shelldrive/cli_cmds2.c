@@ -630,14 +630,21 @@ static void print_announced(const sd_json *res)
   }
 }
 
-static int hk_announced(const cli_args *a)
+/* hostkey list --announced [--machine] (03 §5.6, §6.1): the offers the agent holds, or with --machine the service's
+   (elevated; the caller checked). Without a service the machine list cannot be read: exit 8, as service status. */
+static int hk_announced(const cli_args *a, int machine)
 {
   sd_ipc_hello hello;
   sd_ipc_conn *c = NULL;
   sd_ipc_error err;
   sd_json *res = NULL;
   int rc = 0;
-  if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
+  if (machine) {
+    if (!connect_service(&c)) {
+      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+      return 8;
+    }
+  } else if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
     /* no agent: nobody holds an announcement */
     if (a->json) {
       static const char k[] = "{\"ok\":true,\"result\":{\"announcements\":[]}}";
@@ -886,7 +893,9 @@ static int hk_remove(const cli_args *a, const char *lookup)
   return 0;
 }
 
-static int hk_accept(const cli_args *a)
+/* accept-announced <id> [--add-only] [--machine] (5.6): the agent's offer into the user store, or the service's into the
+   machine store (--machine, elevated; the caller checked). */
+static int hk_accept(const cli_args *a, int machine)
 {
   sd_ipc_hello hello;
   sd_ipc_conn *c = NULL;
@@ -897,8 +906,14 @@ static int hk_accept(const cli_args *a)
   char *id = NULL;
   int rc;
   sd_err e;
-  if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK)
+  if (machine) {
+    if (!connect_service(&c)) {
+      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+      return 8;
+    }
+  } else if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
     return fail_code(a, "agent_unavailable", "cannot connect to the agent", NULL);
+  }
   if (sd_wide_to_utf8_alloc(a->arg2, (size_t)-1, SD_UTF_STRICT, &id) != SD_OK) {
     sd_ipc_close(c);
     return fail_code(a, "usage", "invalid announcement id", NULL);
@@ -953,19 +968,6 @@ static int hk_machine_denied(const cli_args *a)
   return 9;
 }
 
-/* hostkey add --from-server and accept-announced --machine need the service connect path and the machine
-   store writer, which this build does not have yet (docs/dev/m5-notes.md, "Left"). Exit 1. */
-static int hk_not_built(const cli_args *a)
-{
-  if (a->json)
-    json_err("not_implemented", "not part of this build yet", 1);
-  else
-    say(SD_MSG_CLI_HK_NOT_BUILT, NULL, 0, 1);
-  return 1;
-}
-
-/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] [--machine] (03 §6.1). The parser has
-   checked the options; --machine is refused unless the console is elevated. */
 /* Prints "Updated the host keys of ..." from a hostkey.announced.accept or hostkey.add (--expect) reply. */
 static void print_applied(const sd_json *res)
 {
@@ -983,8 +985,9 @@ static void print_applied(const sd_json *res)
   sd_free(wh);
 }
 
-/* hostkey.announced.accept {id, add_only: true} for an offer of hostkey add: stores the offered keys. */
-static int hk_accept_offer(const cli_args *a, const char *id)
+/* hostkey.announced.accept {id, add_only: true} for an offer of hostkey add: stores the offered keys (the agent's user
+   store, or the service's machine store with machine). */
+static int hk_accept_offer(const cli_args *a, const char *id, int machine)
 {
   sd_ipc_conn *c = NULL;
   sd_ipc_error err;
@@ -993,9 +996,16 @@ static int hk_accept_offer(const cli_args *a, const char *id)
   sd_json_writer jw;
   sd_err e;
   int rc;
-  rc = connect_agent(a, 1, &c, NULL);
-  if (rc != 0)
-    return rc;
+  if (machine) {
+    if (!connect_service(&c)) {
+      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+      return 8;
+    }
+  } else {
+    rc = connect_agent(a, 1, &c, NULL);
+    if (rc != 0)
+      return rc;
+  }
   sd_wr_init(&w, 1024);
   sd_jw_init(&jw, &w);
   sd_jw_obj_begin(&jw);
@@ -1020,13 +1030,14 @@ static int hk_accept_offer(const cli_args *a, const char *id)
   return 0;
 }
 
-/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] (03 §6.1, 5.2, TM-R04) without --machine.
-   The agent connects offering only the stored key types of the host and collects the other keys inside that
-   connection (hostkey.add). --expect stores the one key with that fingerprint, with no question (scripts). Otherwise
-   the keys are offered: a first contact asks about the one key the server presented (5.2); a host with stored keys
-   asks about the others. "yes" stores them (hostkey.announced.accept, add only); anything else exits 5. JSON only
-   offers: the id is for "hostkey accept-announced <id> --add-only". */
-static int hk_add_user(const cli_args *a)
+/* hostkey add --from-server host[:port] [--type T] [--expect SHA256:...] (03 §6.1, 5.2, TM-R04). Without --machine the
+   agent connects offering only the stored key types of the host and collects the other keys inside that connection
+   (hostkey.add). With --machine (03 §2.6 rule 2) the service does the same with the machine profile of that host and
+   port, and the keys go to the machine store (the caller checked the elevation). --expect stores the one key with that
+   fingerprint, with no question (scripts). Otherwise the keys are offered: a first contact asks about the one key the
+   server presented (5.2); a host with stored keys asks about the others. "yes" stores them (hostkey.announced.accept,
+   add only); anything else exits 5. JSON only offers: the id is for "hostkey accept-announced <id> --add-only". */
+static int hk_add_user(const cli_args *a, int machine)
 {
   char lookup[320], user[128], host[256];
   uint16_t port = 22;
@@ -1055,11 +1066,20 @@ static int hk_add_user(const cli_args *a)
   }
   memset(&ec, 0, sizeof(ec));
   ec.host = host;                                         /* UTF-8, for {host} */
-  rc = connect_agent(a, 1, &c, &ec);
-  if (rc != 0) {
-    sd_free(type8);
-    sd_free(expect8);
-    return rc;
+  if (machine) {
+    if (!connect_service(&c)) {
+      sd_free(type8);
+      sd_free(expect8);
+      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+      return 8;
+    }
+  } else {
+    rc = connect_agent(a, 1, &c, &ec);
+    if (rc != 0) {
+      sd_free(type8);
+      sd_free(expect8);
+      return rc;
+    }
   }
   sd_wr_init(&w, 2048);
   sd_jw_init(&jw, &w);
@@ -1081,10 +1101,12 @@ static int hk_add_user(const cli_args *a)
   memset(&ec, 0, sizeof(ec));
   ec.host = host;                                         /* UTF-8, for {host} */
   if (e != SD_OK) {
-    if (!a->json && strcmp(err.code, "not_implemented") == 0)
-      rc = hk_not_built(a);
-    else
+    if (machine && !a->json && strcmp(err.code, "profile_not_found") == 0) {
+      say1(SD_MSG_CLI_ERROR_HK_NO_PROFILE, "host", host, 1);
+      rc = 3;
+    } else {
       rc = fail_ipc(a, &err, &ec);
+    }
     sd_json_free(res);
     sd_free(wh);
     return rc;
@@ -1113,6 +1135,8 @@ static int hk_add_user(const cli_args *a)
     return 0;
   }
   sd_json_get_bool(res, "verified", &verified);
+  if (machine && !a->json)
+    say(SD_MSG_CLI_HK_MACHINE_SCOPE, NULL, 0, 1);
   if (!verified) {
     /* first contact (5.2): the one key the server presented, shown like the TOFU question */
     sd_arg args[2];
@@ -1158,7 +1182,7 @@ static int hk_add_user(const cli_args *a)
   res = NULL;
   if (cli_read_line(line, sizeof(line), 1, a->use_stdin) &&
       answer_is(line, SD_MSG_CLI_HK_LETTER_YES, SD_MSG_CLI_HK_WORD_YES))
-    rc = hk_accept_offer(a, idc);
+    rc = hk_accept_offer(a, idc, machine);
   else
     rc = fail_code(a, "host_key_rejected", "the offered keys were not added", &ec);
   sd_free(idc);
@@ -1171,23 +1195,23 @@ static int hk_add_user(const cli_args *a)
 static int hk_add(const cli_args *a)
 {
   if (a->machine)
-    return cli_is_elevated() ? hk_not_built(a) : hk_machine_denied(a);
-  return hk_add_user(a);
+    return cli_is_elevated() ? hk_add_user(a, 1) : hk_machine_denied(a);
+  return hk_add_user(a, 0);
 }
 
 int cli_run_hostkey(const cli_args *a)
 {
   char lookup[320];
   if (a->announced)
-    return hk_announced(a);
+    return a->machine ? (cli_is_elevated() ? hk_announced(a, 1) : hk_machine_denied(a)) : hk_announced(a, 0);
   if (wcscmp(a->positional, L"import") == 0)
     return hk_import(a);
   if (wcscmp(a->positional, L"add") == 0)
     return hk_add(a);
   if (wcscmp(a->positional, L"accept-announced") == 0) {
     if (a->machine)
-      return cli_is_elevated() ? hk_not_built(a) : hk_machine_denied(a);
-    return hk_accept(a);
+      return cli_is_elevated() ? hk_accept(a, 1) : hk_machine_denied(a);
+    return hk_accept(a, 0);
   }
   if (!lookup_name_of(a->arg2, lookup, sizeof(lookup)))
     return fail_code(a, "usage", "invalid host", NULL);

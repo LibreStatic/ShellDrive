@@ -40,6 +40,12 @@ DWORD svc_folder_inspect(HANDLE h, int want_dir, svc_owner_fn owner_ok, void *ct
    differs. Returns 0, or the Win32 error (a refusal: the caller reports SVC_FOLDER_ACL). */
 DWORD svc_folder_apply_dacl(HANDLE h, const wchar_t *sddl, int *changed);
 
+/* Checks a store file the service writes (the machine known_hosts, 5.1, 5.6, TM-R27) before it is changed: opened
+   without following a link, a plain file whose owner is trusted and whose DACL grants no write to an untrusted
+   principal. A missing file is trusted (the write creates it in the checked data folder). Returns 0 with *why set, or
+   the Win32 error of the open. */
+DWORD svc_store_check(const wchar_t *path, svc_owner_fn owner_ok, void *ctx, svc_folder_reason *why);
+
 /* Reads a key file the service loads (identity and certificate files, 2.6 rule 1, TM-R27). path must be under base
    (the machine service folder). Every folder between base and the file is checked (reparse point, owner, DACL) by
    handle; the file is opened without following a link, checked on that same handle (plain file, owner, DACL) and read

@@ -202,6 +202,9 @@ SD_TEST(cli_parse_hostkey_add_machine)
   SD_CHECK(parse_line(L"sd hostkey add --from-server h --from putty", &a) == CLI_E_UNKNOWN_OPTION);
   SD_CHECK(parse_line(L"sd hostkey add --from-server h --add-only", &a) == CLI_E_UNKNOWN_OPTION);
   SD_CHECK(parse_line(L"sd hostkey list h --machine", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--machine") == 0);
+  /* the service's pending list (M5): list --announced --machine, without a host */
+  SD_CHECK(parse_line(L"sd hostkey list --announced --machine", &a) == CLI_OK && a.announced && a.machine);
+  SD_CHECK(parse_line(L"sd hostkey list --machine", &a) == CLI_E_MISSING_ARGUMENT);
   SD_CHECK(parse_line(L"sd hostkey remove h --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);
   SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --machine", &a) == CLI_OK && a.machine);
   SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);

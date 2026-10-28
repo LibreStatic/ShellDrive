@@ -88,6 +88,7 @@ static sd_vfs_identity g_vfs_ident;
 /* M2 */
 static fake_hop g_last_hops[FAKE_MAX_HOPS];
 static uint32_t g_last_nhops, g_last_connections, g_store_answers, g_applied_add, g_applied_remove, g_apply_calls;
+static uint32_t g_apply_machine_calls;
 static int g_last_legacy;
 static char g_applied_name[300];
 static char g_last_new_password[256];
@@ -112,6 +113,7 @@ void fake_backend_reset(void)
   g_vfs_cb = NULL;
   memset(&g_vfs_ident, 0, sizeof(g_vfs_ident));
   g_last_nhops = g_last_connections = g_store_answers = g_applied_add = g_applied_remove = g_apply_calls = 0;
+  g_apply_machine_calls = 0;
   g_applied_name[0] = g_last_new_password[0] = 0;
   g_refresh_calls = g_cache_clears = g_clear_disk = g_wb_dirty = 0;
   g_quiesce_budget = -1;
@@ -135,6 +137,7 @@ uint32_t fake_backend_applied(uint32_t *removed, const char **name)
   return g_applied_add;
 }
 uint32_t fake_backend_apply_calls(void) { return g_apply_calls; }
+uint32_t fake_backend_apply_machine_calls(void) { return g_apply_machine_calls; }
 const char *fake_backend_last_new_password(void) { return g_last_new_password; }
 
 void fake_backend_drop(int fail) { InterlockedExchange(&g_drop_req, fail ? 1 : 0); }
@@ -783,12 +786,15 @@ static sd_err f_kh_apply(sd_known_hosts *kh, sd_kh_store_kind target, const char
   SD_UNUSED(kh);
   SD_UNUSED(add);
   SD_UNUSED(remove);
-  if (target != SD_KH_STORE_USER)
+  /* the user store (5.6) and, for the service (M5 hostkey add), the machine store; anything else is refused */
+  if (target != SD_KH_STORE_USER && target != SD_KH_STORE_MACHINE)
     return SD_E_ACCESS_DENIED;
   sd_mutex_lock(&g_lock);
   g_applied_add += add_count;
   g_applied_remove += remove_count;
   g_apply_calls++;
+  if (target == SD_KH_STORE_MACHINE)
+    g_apply_machine_calls++;
   strncpy_s(g_applied_name, sizeof(g_applied_name), name ? name : "", _TRUNCATE);
   sd_mutex_unlock(&g_lock);
   if (add_count) trust(name);
@@ -1128,4 +1134,158 @@ const sd_mount_backend *fake_backend(void)
 {
   ensure();
   return &k_fake;
+}
+
+/* ---- M5 hostkey add (tests/unit/sd_svc): the fake table plus a scripted hostkey connection ----
+   Scripted by the host name, as tests/apps/host_fake_backend.c does for the smoke tests:
+   *.known.test    a stored key verifies the connection; the server has an ECDSA and an ssh-rsa key besides it
+   *.changed.test  the stored key does not match (SD_E_HOSTKEY_MISMATCH)
+   anything else   first contact: the server presents one ssh-ed25519 key (TOFU, 5.2, taken by the mount) */
+
+typedef struct fake_hk {
+  char host[256];
+  sd_ssh_callbacks cb;
+  int first;
+  int changed;
+  uint8_t ed[4 + 11 + 4 + 32];
+  size_t ed_len;
+  char ed_fp[64];
+} fake_hk;
+
+static char k_fake_hk_marker;                          /* the prompt object the hostkey connection raises */
+static sd_mount_backend k_fake_hk_table;
+static int k_fake_hk_ready;
+
+static void fk_u32(uint8_t *p, uint32_t v)
+{
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
+static size_t fk_str(uint8_t *p, size_t at, const void *s, size_t n)
+{
+  fk_u32(p + at, (uint32_t)n);
+  memcpy(p + at + 4, s, n);
+  return at + 4 + n;
+}
+
+static int fk_ends_with(const char *s, const char *suffix)
+{
+  size_t n = strlen(s), m = strlen(suffix);
+  return n >= m && _stricmp(s + n - m, suffix) == 0;
+}
+
+static sd_err fk_prompt_answer_hostkey(sd_prompt *p, sd_hostkey_decision d)
+{
+  if ((void *)p == (void *)&k_fake_hk_marker)
+    return SD_OK;
+  return f_prompt_answer_hostkey(p, d);
+}
+
+static sd_err fk_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
+{
+  fake_hk *c = (fake_hk *)sd_calloc(1, sizeof(*c));
+  const sd_ssh_hop *last;
+  uint8_t pk[32];
+  if (c == NULL)
+    return SD_E_NO_MEMORY;
+  last = &cfg->hops[cfg->hop_count - 1];
+  WideCharToMultiByte(CP_UTF8, 0, last->host, -1, c->host, sizeof(c->host), NULL, NULL);
+  c->cb = *cb;
+  c->changed = fk_ends_with(c->host, ".changed.test");
+  c->first = !c->changed && !fk_ends_with(c->host, ".known.test");
+  memset(pk, 0x33, sizeof(pk));
+  c->ed_len = fk_str(c->ed, 0, "ssh-ed25519", 11);
+  c->ed_len = fk_str(c->ed, c->ed_len, pk, sizeof(pk));
+  /* a label only: the service recomputes every fingerprint from the blob (sd_ssh is not linked into this fake) */
+  strcpy_s(c->ed_fp, sizeof(c->ed_fp), "SHA256:ed25519-fake");
+  *out = (sd_ssh_conn *)c;
+  return SD_OK;
+}
+
+static sd_err fk_connect(sd_ssh_conn *cc, sd_ssh_done_cb done, void *ctx)
+{
+  fake_hk *c = (fake_hk *)cc;
+  if (c->changed) {
+    done(ctx, SD_E_HOSTKEY_MISMATCH, 0);
+    return SD_OK;
+  }
+  if (c->first) {
+    sd_hostkey_prompt_info hk;
+    memset(&hk, 0, sizeof(hk));
+    hk.host = c->host;
+    hk.port = 22;
+    hk.lookup_name = c->host;
+    hk.key_type = "ssh-ed25519";
+    hk.key_bits = 256;
+    hk.fp_sha256 = c->ed_fp;
+    hk.fp_md5 = "";
+    hk.status = SD_HK_NEW;
+    hk.blob = c->ed;
+    hk.blob_len = c->ed_len;
+    c->cb.on_prompt(c->cb.ctx, (sd_prompt *)&k_fake_hk_marker, NULL, &hk);
+  }
+  done(ctx, SD_OK, 0);
+  return SD_OK;
+}
+
+static sd_err fk_fetch(sd_ssh_conn *cc, uint32_t hop, const char *const *types, uint32_t ntypes,
+                       sd_ssh_hostkeys_cb done, void *ctx)
+{
+  static uint8_t blob_ec[600], blob_rsa[600];
+  static sd_hk_key keys[2];
+  static const char *const fp_ec = "SHA256:ecdsa-fake", *const fp_rsa = "SHA256:rsa-fake";
+  static const uint8_t e65537[3] = { 0x01, 0x00, 0x01 };
+  uint8_t pt[65], mod[256];
+  fake_hk *c = (fake_hk *)cc;
+  size_t n;
+  uint32_t i, k = 0, want_ec = 1, want_rsa = 1;
+  SD_UNUSED(hop);
+  if (c->first) {
+    done(ctx, SD_E_HOSTKEY_REJECTED, NULL, 0);
+    return SD_OK;
+  }
+  if (ntypes) {
+    want_ec = want_rsa = 0;
+    for (i = 0; i < ntypes; i++) {
+      if (strcmp(types[i], "ecdsa-sha2-nistp256") == 0) want_ec = 1;
+      if (strcmp(types[i], "ssh-rsa") == 0) want_rsa = 1;
+    }
+  }
+  memset(pt, 0x11, sizeof(pt));
+  pt[0] = 0x04;
+  n = fk_str(blob_ec, 0, "ecdsa-sha2-nistp256", 19);
+  n = fk_str(blob_ec, n, "nistp256", 8);
+  n = fk_str(blob_ec, n, pt, sizeof(pt));
+  if (want_ec) {
+    keys[k].blob = blob_ec; keys[k].len = n; keys[k].type = "ecdsa-sha2-nistp256"; keys[k].fp_sha256 = fp_ec; k++;
+  }
+  memset(mod, 0x5a, sizeof(mod));
+  n = fk_str(blob_rsa, 0, "ssh-rsa", 7);
+  n = fk_str(blob_rsa, n, e65537, sizeof(e65537));
+  n = fk_str(blob_rsa, n, mod, sizeof(mod));
+  if (want_rsa) {
+    keys[k].blob = blob_rsa; keys[k].len = n; keys[k].type = "ssh-rsa"; keys[k].fp_sha256 = fp_rsa; k++;
+  }
+  done(ctx, SD_OK, keys, k);
+  return SD_OK;
+}
+
+static void fk_destroy(sd_ssh_conn *cc)
+{
+  sd_free(cc);
+}
+
+const sd_mount_backend *fake_backend_hostkeys(void)
+{
+  ensure();
+  if (!k_fake_hk_ready) {
+    k_fake_hk_table = k_fake;
+    k_fake_hk_table.prompt_answer_hostkey = fk_prompt_answer_hostkey;
+    k_fake_hk_table.hk_conn_create = fk_create;
+    k_fake_hk_table.hk_conn_connect = fk_connect;
+    k_fake_hk_table.hk_conn_fetch = fk_fetch;
+    k_fake_hk_table.hk_conn_destroy = fk_destroy;
+    k_fake_hk_ready = 1;
+  }
+  return &k_fake_hk_table;
 }

@@ -68,6 +68,10 @@ static int owner_trust_none(void *ctx, PSID owner)
 #define T_ID_PWPROMPT "00000000000000000000000000000004"
 #define T_ID_PAGEANT  "00000000000000000000000000000005"
 #define T_ID_ADMINONLY "00000000000000000000000000000006"
+#define T_ID_HK_KNOWN  "0000000000000000000000000000000a"
+#define T_ID_HK_CHANGED "0000000000000000000000000000000b"
+#define T_ID_HK_FIRST  "0000000000000000000000000000000c"
+#define T_ID_ROTATE    "0000000000000000000000000000000d"
 
 static wchar_t g_root[MAX_PATH];
 static HANDLE g_thread;
@@ -188,10 +192,29 @@ static int make_fixture(void)
   p.service_access[0] = 0;
   if (!write_profile(L"g-user.ini", &p)) return 0;
 
+  /* M5 hostkey add: the hk.* hosts are scripted by name (the hostkey connection of fake_backend_hostkeys) */
+  p = base_profile(T_ID_HK_KNOWN, "hkknown", "hk.known.test");
+  identity_of(&p);
+  if (!write_profile(L"h-hkknown.ini", &p)) return 0;
+
+  p = base_profile(T_ID_HK_CHANGED, "hkchanged", "hk.changed.test");
+  identity_of(&p);
+  if (!write_profile(L"i-hkchanged.ini", &p)) return 0;
+
+  p = base_profile(T_ID_HK_FIRST, "hkfirst", "hk.first.test");
+  identity_of(&p);
+  if (!write_profile(L"j-hkfirst.ini", &p)) return 0;
+
+  /* M5 announcements: a mount of rotate.example raises one UpdateHostKeys announcement after it is ready */
+  p = base_profile(T_ID_ROTATE, "rotate", "rotate.example");
+  identity_of(&p);
+  if (!write_profile(L"k-rotate.ini", &p)) return 0;
+
   fake_backend_pre_trust("trusted.example");
   fake_backend_pre_trust("trusted3.example");
   fake_backend_pre_trust("pw.example");
   fake_backend_pre_trust("pw2.example");
+  fake_backend_pre_trust("rotate.example");
   return 1;
 }
 
@@ -223,7 +246,7 @@ static int ensure_core(void)
   sd_ipc_test_set_expected_owner(sid);
   sd_ipc_test_set_service_owner(sid);
   memset(&o, 0, sizeof(o));
-  o.backend = fake_backend();
+  o.backend = fake_backend_hostkeys();            /* the fake table plus the hostkey connection (M5) */
   o.machine_root = g_root;
   o.open_log = 0;
   o.on_running = on_running;
@@ -392,14 +415,15 @@ SD_TEST(svc_loads_only_valid_service_profiles)
   const sd_json *loaded;
   SD_REQUIRE(ensure_core());
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
-  /* 5 valid: mounted, nosub, tofu, pwprompt, adminonly. Refused: pageant (D17). Not loaded: the user profile. */
+  /* 9 valid: mounted, nosub, tofu, pwprompt, adminonly and the M5 hostkey and rotate profiles. Refused: pageant (D17).
+     Not loaded: the user profile. */
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
   loaded = sd_json_get(res, "profiles");
   {
     int64_t n = -1;
     SD_CHECK(sd_json_get_int64(loaded, "loaded", &n));
-    SD_CHECK_EQ_INT(n, 5);
+    SD_CHECK_EQ_INT(n, 9);
   }
   sd_json_free(res);
   sd_ipc_close(c);
@@ -851,6 +875,253 @@ SD_TEST(svc_pipe_caps_and_reserved_admin_instances)
   for (i = 0; i < (size_t)nraw; i++)
     CloseHandle(raw[i]);
   free(big);
+}
+
+/* ---- M5 hostkey add and the machine announcements (03 §2.4, §2.6 rule 2, §5.6) ----
+   The hostkey connection of the fake is scripted by the host name (fake_backend_hostkeys): hk.known.test verifies
+   against a stored key and offers an ECDSA and an ssh-rsa key besides it, hk.changed.test mismatches, hk.first.test is a
+   first contact (one ssh-ed25519 key). The machine store is never a file here: the fake counts its writes. */
+
+static sd_json *hk_add_call(sd_ipc_conn *c, const char *host, const char *type, const char *expect, sd_ipc_error *err,
+                            sd_err *rc)
+{
+  char type_part[96] = "", expect_part[160] = "", params[512];
+  if (type)
+    _snprintf_s(type_part, sizeof(type_part), _TRUNCATE, ",\"type\":\"%s\"", type);
+  if (expect)
+    _snprintf_s(expect_part, sizeof(expect_part), _TRUNCATE, ",\"expect\":\"%s\"", expect);
+  _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"host\":\"%s\",\"port\":22,\"lookup\":\"%s\"%s%s}", host, host,
+              type_part, expect_part);
+  return call(c, "hostkey.add", params, err, rc);
+}
+
+/* The announcement with this id in a hostkey.announced.list reply, or NULL. */
+static const sd_json *announcement_with_id(const sd_json *res, const char *id)
+{
+  const sd_json *arr = sd_json_get(res, "announcements");
+  size_t i;
+  for (i = 0; i < sd_json_count(arr); i++) {
+    const sd_json *x = sd_json_at(arr, i);
+    const char *v = sd_json_get_str(x, "id");
+    if (v && strcmp(v, id) == 0)
+      return x;
+  }
+  return NULL;
+}
+
+/* Waits (up to 5 s) for the announcement of a mount: its id and the counts of new and removed keys. */
+static int announcement_of_mount(sd_ipc_conn *c, const char *mount_id, char *id_out, size_t cap, size_t *nadd,
+                                 size_t *nremove)
+{
+  uint32_t waited;
+  for (waited = 0; waited <= 5000; waited += 100) {
+    sd_ipc_error err;
+    sd_err e;
+    sd_json *res = call(c, "hostkey.announced.list", NULL, &err, &e);
+    if (res) {
+      const sd_json *arr = sd_json_get(res, "announcements");
+      size_t i;
+      for (i = 0; i < sd_json_count(arr); i++) {
+        const sd_json *x = sd_json_at(arr, i);
+        const char *m = sd_json_get_str(x, "mount_id");
+        if (m && strcmp(m, mount_id) == 0) {
+          copy_str(id_out, cap, sd_json_get_str(x, "id"));
+          *nadd = sd_json_count(sd_json_get(x, "add"));
+          *nremove = sd_json_count(sd_json_get(x, "remove"));
+          sd_json_free(res);
+          return 1;
+        }
+      }
+      sd_json_free(res);
+    }
+    Sleep(100);
+  }
+  return 0;
+}
+
+SD_TEST(svc_hostkey_add_offers_then_accept_writes_the_machine_store)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  char id[16] = "", params[96];
+  uint32_t before;
+  int64_t added = -1, removed = -1;
+  int verified = 0;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+
+  /* a type restriction asks for that key only */
+  res = hk_add_call(c, "hk.known.test", "ssh-rsa", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_count(sd_json_get(res, "keys")) == 1);
+  sd_json_free(res);
+
+  before = fake_backend_apply_machine_calls();
+  res = hk_add_call(c, "hk.known.test", NULL, NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_bool(res, "verified", &verified) && verified);
+  SD_CHECK(sd_json_count(sd_json_get(res, "keys")) == 2);       /* the ECDSA and the ssh-rsa key */
+  copy_str(id, sizeof(id), sd_json_get_str(res, "id"));
+  sd_json_free(res);
+  SD_CHECK(id[0] != 0);
+  SD_CHECK(before == fake_backend_apply_machine_calls());        /* offered for review, not stored */
+
+  res = call(c, "hostkey.announced.list", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(announcement_with_id(res, id) != NULL);
+  sd_json_free(res);
+
+  _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"id\":\"%s\",\"add_only\":true}", id);
+  res = call(c, "hostkey.announced.accept", params, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_int64(res, "added", &added) && added == 2);
+  SD_CHECK(sd_json_get_int64(res, "removed", &removed) && removed == 0);
+  sd_json_free(res);
+  SD_CHECK(fake_backend_apply_machine_calls() == before + 1);
+
+  res = call(c, "hostkey.announced.list", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(announcement_with_id(res, id) == NULL);               /* taken out of the list */
+  sd_json_free(res);
+  res = call(c, "hostkey.announced.accept", params, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "announcement_not_found");
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_hostkey_first_contact_is_offered_and_expect_stores_it)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  char fp[96] = "", id[16] = "";
+  uint32_t before;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+
+  /* first contact (5.2): the one key the server presented, offered for review, nothing stored */
+  before = fake_backend_apply_machine_calls();
+  res = hk_add_call(c, "hk.first.test", NULL, NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  {
+    int verified = 1;
+    SD_CHECK(sd_json_get_bool(res, "verified", &verified) && !verified);
+  }
+  SD_CHECK(sd_json_count(sd_json_get(res, "keys")) == 1);
+  copy_str(id, sizeof(id), sd_json_get_str(res, "id"));
+  copy_str(fp, sizeof(fp), sd_json_get_str(sd_json_at(sd_json_get(res, "keys"), 0), "fingerprint"));
+  sd_json_free(res);
+  SD_CHECK(id[0] != 0 && fp[0] != 0);
+  SD_CHECK(before == fake_backend_apply_machine_calls());
+
+  /* --expect with a fingerprint that matches nothing: refused (exit 5), nothing stored */
+  res = hk_add_call(c, "hk.first.test", NULL, "SHA256:nothing-matches", &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "host_key_rejected");
+  SD_CHECK(before == fake_backend_apply_machine_calls());
+
+  /* --expect with the presented fingerprint: stored with no question, so no announcement id comes back */
+  res = hk_add_call(c, "hk.first.test", NULL, fp, &err, &e);
+  SD_REQUIRE(res != NULL);
+  {
+    int64_t added = -1;
+    SD_CHECK(sd_json_get_int64(res, "added", &added) && added == 1);
+  }
+  SD_CHECK(sd_json_get_str(res, "id") == NULL);
+  sd_json_free(res);
+  SD_CHECK(before + 1 == fake_backend_apply_machine_calls());
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_hostkey_add_refuses_a_changed_key_and_an_unknown_host)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  uint32_t before;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  before = fake_backend_apply_machine_calls();
+  /* the stored key does not match: a mismatch fails (6.2), as for a mount, and nothing is offered */
+  res = hk_add_call(c, "hk.changed.test", NULL, NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "host_key_mismatch");
+  /* no machine profile of scope service uses this host: nothing connects */
+  res = hk_add_call(c, "nobody.example", NULL, NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "profile_not_found");
+  SD_CHECK(before == fake_backend_apply_machine_calls());
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_hostkey_methods_are_for_elevated_admins)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  int has_token = 0;
+  SD_REQUIRE(ensure_core());
+  e = connect_restricted(&c, &has_token);
+  if (e != SD_OK) {
+    /* as svc_non_admin_token_cannot_call_admin_methods: the refusal may be the connect itself */
+    SD_CHECK(has_token == 0 || e == SD_E_ACCESS_DENIED || e == SD_E_CONN_REFUSED || e == SD_E_BUSY);
+    return;
+  }
+  res = hk_add_call(c, "hk.known.test", NULL, NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "access_denied");
+  res = call(c, "hostkey.announced.list", NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "access_denied");
+  res = call(c, "hostkey.announced.accept", "{\"id\":\"a-1\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "access_denied");
+  sd_ipc_close(c);
+}
+
+/* A mount whose host announces new keys (UpdateHostKeys, policy ask, 5.6): the announcement is kept for review with the
+   mount's id, Event 2300 is raised, and accepting it writes the change to the machine store (removals included). */
+SD_TEST(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "", id[16] = "", params[96];
+  size_t nadd = 0, nremove = 0;
+  uint32_t before;
+  int64_t removed = -1;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  before = fake_backend_apply_machine_calls();
+  res = mount_profile(c, "rotate", &err, &e);
+  SD_REQUIRE(res != NULL);
+  copy_str(mid, sizeof(mid), sd_json_get_str(res, "mount_id"));
+  sd_json_free(res);
+  SD_REQUIRE(mid[0] != 0);
+  SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
+  if (st)
+    sd_json_free(st);
+  SD_REQUIRE(announcement_of_mount(c, mid, id, sizeof(id), &nadd, &nremove));
+  SD_CHECK(nadd == 1 && nremove == 1);
+  SD_CHECK(saw_event(SVC_MSG_HOSTKEYS_ANNOUNCED));
+  SD_CHECK(before == fake_backend_apply_machine_calls());        /* kept, not applied */
+
+  _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"id\":\"%s\"}", id);
+  res = call(c, "hostkey.announced.accept", params, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_int64(res, "removed", &removed) && removed == 1);
+  sd_json_free(res);
+  SD_CHECK(fake_backend_apply_machine_calls() == before + 1);
+
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
 }
 
 SD_TEST(svc_core_stops_and_leaves_nothing_behind)

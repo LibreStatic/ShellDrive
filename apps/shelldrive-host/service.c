@@ -7,7 +7,13 @@
  * Methods (2.4): list and status (filtered, 2.2), selftest and hello are open to every client; mount, unmount,
  * secret.set, secret.delete, config.reload, prompt.list and prompt.answer need an elevated administrator. Topics prompt,
  * log and hostkeys are refused to non-admins (topic gate). A service prompt is shown only to an elevated administrator
- * that subscribed to `prompt`; without one the mount fails with prompt_unavailable (2.6 rule 3). */
+ * that subscribed to `prompt`; without one the mount fails with prompt_unavailable (2.6 rule 3).
+ *
+ * Host keys of the machine store (M5, 03 §2.6 rule 2, §5.6, §6.1): hostkey.add connects a hostkey mount with a machine
+ * profile's own service credentials (no prompt is answered: the connection is refused every prompt except the
+ * host-key question, which sd_mount takes itself), keeps the offered keys as announcements, and
+ * hostkey.announced.accept writes them to the machine known_hosts after svc_store_check. Mount announcements (UpdateHostKeys
+ * ask) are kept the same way and raise Event 2300. */
 #include <windows.h>
 #include <sddl.h>
 #include <shlobj.h>
@@ -56,6 +62,8 @@
 #define SVC_RESERVED_ADMIN_INSTANCES 2u   /* 2.2, TM-R25: of the 32 pipe instances, these are kept for elevated admins */
 #define SVC_IDLE_MS      60000u           /* 2.2: idle timeout of a non-subscribed client */
 #define SVC_SHUTDOWN_MS  15000u
+#define SVC_MAX_HK        2u              /* hostkey.add connections at once (each holds one sd_ssh connection) */
+#define SVC_MAX_ANNOUNCE  32u             /* kept announcements (hostkey.announced.list); the oldest goes when full */
 
 /* ---- records ---- */
 
@@ -96,6 +104,31 @@ typedef struct svc_job {
   int force;
 } svc_job;
 
+/* A host key kept for review: an UpdateHostKeys announcement of a global mount (mount_id set) or the keys of a
+   hostkey.add offer (mount_id ""). hostkey.announced.accept writes it to the machine store (5.6). */
+typedef struct svc_ann {
+  struct svc_ann *next;
+  char id[16];                      /* "a-<n>" on the wire */
+  char mount_id[16];
+  sd_mount_announcement a;
+} svc_ann;
+
+/* One hostkey.add request: a connect-only hostkey mount on the control thread. The reply is deferred (sd_ipc_defer) and
+   sent once, when the mount is final (svc_hk_reply); the record is released by svc_tick after that. */
+typedef struct svc_hk {
+  struct svc_hk *next;
+  sd_mount *m;                      /* control thread only; NULL when the mount was never created */
+  svc_prof *prof;                   /* a copy of the machine profile (control thread only) */
+  uint64_t defer_cid;
+  int64_t defer_rid;
+  int replied;                      /* control thread only: the reply is sent, the record can be released */
+  char host[256];
+  uint16_t port;
+  char lookup[300];
+  char type[64];
+  char expect[96];
+} svc_hk;
+
 typedef struct svc_work {
   struct svc_work *next;
   void (*fn)(void *arg);
@@ -122,6 +155,10 @@ static struct svc_state {
   svc_mount *mounts[SVC_MAX_MOUNTS];
   uint32_t next_mount, next_prompt;
   svc_prompt prompts[SVC_MAX_PROMPTS];
+  svc_ann *anns;                    /* kept host keys (g.lock); nann counts them */
+  uint32_t nann, next_ann;
+  svc_hk *hks;                      /* hostkey.add requests in flight (g.lock); nhk counts them */
+  uint32_t nhk;
   svc_work *qh, *qt;
   svc_refuse_entry refuse[SVC_REFUSE_SLOTS];   /* Event 3101 throttle; written on the pipe thread only */
 } g;
@@ -1013,14 +1050,505 @@ static void svc_on_notice(void *ctx, sd_mount *m, const char *code, const char *
   SD_LOGI("svc", "notice %s %s", code ? code : "", detail ? detail : "");
 }
 
+/* 2.6 rule 1, TM-R27: the profile's identity file as the one hop's key blob. The file is checked and read through one
+   handle (svc_file_read_trusted); the bytes come back in *keybuf (sd_secure_free) and sd_mount copies them. Returns NULL
+   with the hop set up, or the refusal (a refused file is also written as Event 3102). */
+static const char *svc_identity_hop(const sd_profile *p, const wchar_t *hostw, uint16_t port, uint32_t methods,
+                                    sd_hku_mode hku, sd_mount_hop *hop, unsigned char **keybuf, DWORD *keylen,
+                                    char *keylabel, size_t keycap)
+{
+  wchar_t identw[MAX_PATH];
+  svc_folder_reason fr = SVC_FOLDER_OK;
+  DWORD fe;
+  *keybuf = NULL;
+  *keylen = 0;
+  if (sd_config_expand_path(p->identity, identw, SD_COUNTOF(identw)) != SD_OK ||
+      !svc_path_under(identw, g.service_dir))
+    return "identity file outside the service folder (TM-R27)";
+  fe = svc_file_read_trusted(g.service_dir, identw, g.owner_trusted, NULL, keybuf, keylen, &fr);
+  if (fe != 0)
+    return "identity file cannot be read (TM-R27)";
+  if (fr != SVC_FOLDER_OK) {
+    svc_event_key_refused(identw, fr);
+    return "identity file refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
+  }
+  memset(hop, 0, sizeof(*hop));
+  utf8_from_wide(identw, keylabel, keycap);
+  hop->host = hostw;
+  hop->port = port;
+  hop->user = p->user;
+  hop->key_blob = *keybuf;
+  hop->key_blob_len = *keylen;
+  hop->key_label = keylabel;
+  hop->identities_only = 1;                 /* D37: the key given is the only one offered */
+  hop->auth_methods = methods;
+  hop->update_host_keys = hku;
+  return NULL;
+}
+
+/* ---- host keys kept for review (M5, 03 §5.6, §6.1) ---- */
+
+static void write_keys_json(sd_json_writer *jw, const char *key, const sd_mount_hostkey *k, uint32_t n)
+{
+  uint32_t i;
+  sd_jw_key(jw, key);
+  sd_jw_arr_begin(jw);
+  for (i = 0; i < n; i++) {
+    sd_jw_obj_begin(jw);
+    sd_jw_key(jw, "type"); sd_jw_cstr(jw, k[i].type);
+    sd_jw_key(jw, "fingerprint"); sd_jw_cstr(jw, k[i].fp_sha256);
+    sd_jw_obj_end(jw);
+  }
+  sd_jw_arr_end(jw);
+}
+
+/* One announcement as hostkey.announced.list and the hostkeys.announced event show it (5.6). */
+static void write_ann_obj(sd_json_writer *jw, const char *id, const char *mount_id, const sd_mount_announcement *a)
+{
+  sd_jw_obj_begin(jw);
+  sd_jw_key(jw, "id"); sd_jw_cstr(jw, id);
+  sd_jw_key(jw, "mount_id"); sd_jw_cstr(jw, mount_id);
+  sd_jw_key(jw, "host"); sd_jw_cstr(jw, a->host);
+  sd_jw_key(jw, "lookup_name"); sd_jw_cstr(jw, a->lookup_name);
+  sd_jw_key(jw, "hop"); sd_jw_int(jw, (int64_t)a->hop_index + 1);
+  write_keys_json(jw, "add", a->add, a->add_count);
+  write_keys_json(jw, "remove", a->remove, a->remove_count);
+  sd_jw_obj_end(jw);
+}
+
+/* Keeps an announcement for review, newest first. When SVC_MAX_ANNOUNCE are kept the oldest is dropped. The id is copied
+   to id_out under g.lock. Returns 0 only when the record cannot be allocated. */
+static int ann_keep(const char *mount_id, const sd_mount_announcement *a, char *id_out, size_t cap)
+{
+  svc_ann *x = (svc_ann *)sd_calloc(1, sizeof(*x));
+  svc_ann *last, *prev = NULL;
+  if (x == NULL)
+    return 0;
+  x->a = *a;
+  strcpy_s(x->mount_id, sizeof(x->mount_id), mount_id ? mount_id : "");
+  sd_mutex_lock(&g.lock);
+  g.next_ann++;
+  _snprintf_s(x->id, sizeof(x->id), _TRUNCATE, "a-%u", (unsigned)g.next_ann);
+  x->next = g.anns;
+  g.anns = x;
+  g.nann++;
+  if (g.nann > SVC_MAX_ANNOUNCE) {
+    for (last = g.anns; last->next != NULL; last = last->next)
+      prev = last;
+    if (prev != NULL) prev->next = NULL; else g.anns = NULL;
+    g.nann--;
+    SD_LOGW("svc", "%u host key announcements are kept: the oldest one (%s) was dropped", (unsigned)SVC_MAX_ANNOUNCE,
+            last->id);
+    sd_free(last);
+  }
+  strcpy_s(id_out, cap, x->id);
+  sd_mutex_unlock(&g.lock);
+  return 1;
+}
+
+/* The fingerprints of n keys, comma separated, into out ("-" when there are none). */
+static void join_fps(const sd_mount_hostkey *k, uint32_t n, wchar_t *out, size_t cch)
+{
+  uint32_t i;
+  out[0] = 0;
+  for (i = 0; i < n && i < SD_MOUNT_ANNOUNCE_MAX; i++) {
+    wchar_t w[96];
+    if (i)
+      wcsncat_s(out, cch, L", ", _TRUNCATE);
+    wide_from_utf8(k[i].fp_sha256, w, SD_COUNTOF(w));
+    wcsncat_s(out, cch, w, _TRUNCATE);
+  }
+  if (out[0] == 0)
+    wcsncpy_s(out, cch, L"-", _TRUNCATE);
+}
+
+/* Event 2300 (10.3): %1 host, %2 the new fingerprints, %3 the ones no longer offered. */
+static void svc_event_announced(const sd_mount_announcement *a)
+{
+  wchar_t host[256], added[512], removed[512];
+  const wchar_t *args[3];
+  wide_from_utf8(a->host, host, SD_COUNTOF(host));
+  join_fps(a->add, a->add_count, added, SD_COUNTOF(added));
+  join_fps(a->remove, a->remove_count, removed, SD_COUNTOF(removed));
+  args[0] = host;
+  args[1] = added;
+  args[2] = removed;
+  svc_event(SVC_MSG_HOSTKEYS_ANNOUNCED, args, 3);
+}
+
+/* UpdateHostKeys (5.6) of a global mount, policy ask: the announcement is kept for an administrator and announced
+   (Event 2300, topic hostkeys). The machine store is not changed here. */
 static void svc_on_hostkeys(void *ctx, sd_mount *m, const sd_mount_announcement *a, int applied, sd_err err)
 {
+  char mid[16] = "", id[16] = "";
+  svc_mount *r;
+  sd_wr d;
+  sd_json_writer jw;
   (void)ctx;
-  (void)m;
-  (void)a;
-  (void)applied;
-  SD_LOGW("svc", "host keys were announced for a global mount; the machine store is not updated in this build (%s)",
-          sd_err_name(err));
+  (void)err;
+  if (applied) {
+    /* only UpdateHostKeys = 2 (not in this build) applies an announcement by itself */
+    SD_LOGW("svc", "an applied host key announcement was reported for a service mount; nothing is changed");
+    return;
+  }
+  sd_mutex_lock(&g.lock);
+  r = find_by_m_locked(m);
+  if (r != NULL)
+    strcpy_s(mid, sizeof(mid), r->id);
+  sd_mutex_unlock(&g.lock);
+  if (!ann_keep(mid, a, id, sizeof(id))) {
+    SD_LOGW("svc", "host keys announced for %s were not kept (out of memory)", a->lookup_name);
+    return;
+  }
+  SD_LOGI("svc", "host keys announced for %s kept for review (%s)", a->lookup_name, id);
+  svc_event_announced(a);
+  sd_wr_init(&d, 4096);
+  sd_jw_init(&jw, &d);
+  write_ann_obj(&jw, id, mid, a);
+  if (sd_jw_finish(&jw) == SD_OK)
+    broadcast_event("hostkeys", "hostkeys.announced", &d);
+  sd_wr_free(&d);
+}
+
+/* Writes an announcement to the machine known_hosts (5.6, TM-R27). The file is checked first (owner and DACL, on its
+   handle); a refused file is not changed. Runs on the control thread or on the pipe thread (hostkey.announced.accept),
+   never with g.lock held. */
+static sd_err svc_machine_apply(const sd_mount_announcement *a, int add_only)
+{
+  sd_kh_store st;
+  svc_folder_reason why = SVC_FOLDER_OK;
+  DWORD e;
+  if (g.kh[0] == 0)
+    return SD_E_FAILURE;
+  e = svc_store_check(g.kh, g.owner_trusted, NULL, &why);
+  if (e != 0 || why != SVC_FOLDER_OK) {
+    SD_LOGW("svc", "the machine known_hosts is refused (win32 %lu, reason %d): not changed", (unsigned long)e, (int)why);
+    return SD_E_ACCESS_DENIED;
+  }
+  memset(&st, 0, sizeof(st));
+  st.kind = SD_KH_STORE_MACHINE;
+  st.path = g.kh;
+  st.writable = 1;
+  return sd_mount_apply_hostkeys_to(g.be, &st, 1, SD_KH_STORE_MACHINE, a, add_only);
+}
+
+/* ---- hostkey add: the connect-only hostkey mount (M5, 03 §2.6 rule 2, §6.1) ---- */
+
+static int hk_type_ok(const char *t)
+{
+  size_t i, n = strlen(t);
+  if (n == 0 || n >= 64) return 0;
+  for (i = 0; i < n; i++)
+    if (!((t[i] >= 'a' && t[i] <= 'z') || (t[i] >= '0' && t[i] <= '9') || t[i] == '-' || t[i] == '@' || t[i] == '.'))
+      return 0;
+  return 1;
+}
+
+/* The IPC code and the English detail of a failed hostkey connection (the CLI maps the code to its text). */
+static void hk_error_text(sd_err e, const char *mount_code, const char **code, char *detail, size_t cap)
+{
+  *code = "connect_failed";
+  strcpy_s(detail, cap, "cannot get the host keys of the server");
+  if (e == SD_E_UNSUPPORTED) {
+    *code = "not_implemented";
+    strcpy_s(detail, cap, "hostkey add is not available on this backend");
+  } else if (e == SD_E_HOSTKEY_MISMATCH) {
+    *code = "host_key_mismatch";
+    strcpy_s(detail, cap, "the server's host key does not match the stored one");
+  } else if (e == SD_E_HOSTKEY_TYPE_UNAVAILABLE) {
+    *code = "host_key_type_unavailable";
+    strcpy_s(detail, cap, "the server offers none of the key types stored for it");
+  } else if (e == SD_E_HOSTKEY_REJECTED) {
+    *code = "host_key_rejected";
+    strcpy_s(detail, cap, "the host key was not accepted");
+  } else if (e == SD_E_INVALID_PARAM) {
+    *code = "usage";
+    strcpy_s(detail, cap, "invalid host");
+  } else if (e == SD_E_NO_MEMORY) {
+    *code = NULL;
+    strcpy_s(detail, cap, "out of memory");
+  } else if (mount_code != NULL) {
+    *code = mount_code;
+  }
+}
+
+/* Sends the deferred reply of a hostkey.add once (control thread). */
+static void svc_hk_send(svc_hk *hk, sd_err e, const char *code, const char *detail, const char *json, size_t len)
+{
+  sd_err se;
+  if (hk->replied)
+    return;
+  hk->replied = 1;
+  if (g.srv == NULL)
+    return;
+  se = sd_ipc_reply_deferred(g.srv, hk->defer_cid, hk->defer_rid, e, code, detail, json, len);
+  if (se != SD_OK && se != SD_E_NOT_FOUND)
+    SD_LOGW("svc", "hostkey add reply for %s not sent (%s)", hk->lookup, sd_err_name(se));
+}
+
+/* The keys of a finished hostkey connection: the requested type only, fingerprints recomputed from the blobs. With
+   expect the one key with that fingerprint goes to the machine store with no question (scripts); otherwise the keys are
+   kept as an announcement (hostkey.announced.accept {id, add_only: true} stores them after the administrator's yes).
+   Writes the reply members into jw (the caller opened and closes the object); on failure sets *code and detail. */
+static sd_err svc_hk_complete(sd_json_writer *jw, const svc_hk *hk, sd_mount_hk_fetch *f, const char **code, char *detail,
+                              size_t cap)
+{
+  uint32_t i, n = 0;
+  int found = -1;
+  const char *type = hk->type[0] ? hk->type : NULL;
+  const char *expect = hk->expect[0] ? hk->expect : NULL;
+  int verified = f->verified != 0;
+  for (i = 0; i < f->count; i++) {
+    if (type != NULL && strcmp(f->keys[i].type, type) != 0)
+      continue;
+    if (sd_hostkey_fingerprint_sha256(f->keys[i].blob, f->keys[i].len, f->keys[i].fp_sha256) != SD_OK)
+      continue;
+    if (n != i)
+      f->keys[n] = f->keys[i];
+    n++;
+  }
+  f->count = n;
+  sd_jw_key(jw, "host"); sd_jw_cstr(jw, hk->host);
+  sd_jw_key(jw, "lookup_name"); sd_jw_cstr(jw, hk->lookup);
+  sd_jw_key(jw, "verified"); sd_jw_bool(jw, verified);
+  if (expect != NULL) {
+    sd_mount_announcement *a;
+    sd_err e;
+    for (i = 0; i < n; i++)
+      if (strcmp(f->keys[i].fp_sha256, expect) == 0) { found = (int)i; break; }
+    if (found < 0) {
+      *code = verified ? "host_key_mismatch" : "host_key_rejected";
+      strcpy_s(detail, cap, "no key of the server has that fingerprint");
+      return verified ? SD_E_HOSTKEY_MISMATCH : SD_E_HOSTKEY_REJECTED;
+    }
+    a = (sd_mount_announcement *)sd_calloc(1, sizeof(*a));
+    if (a == NULL) {
+      *code = NULL;
+      strcpy_s(detail, cap, "out of memory");
+      return SD_E_NO_MEMORY;
+    }
+    a->add[0] = f->keys[found];
+    a->add_count = 1;
+    strcpy_s(a->host, sizeof(a->host), hk->host);
+    strcpy_s(a->lookup_name, sizeof(a->lookup_name), hk->lookup);
+    e = svc_machine_apply(a, 1);
+    sd_free(a);
+    if (e != SD_OK) {
+      *code = NULL;
+      strcpy_s(detail, cap, "cannot update known_hosts");
+      return e;
+    }
+    SD_LOGI("svc", "hostkey add: stored one key of %s (%s)", hk->lookup, verified ? "verified" : "first contact");
+    sd_jw_key(jw, "added"); sd_jw_int(jw, 1);
+    sd_jw_key(jw, "removed"); sd_jw_int(jw, 0);
+    write_keys_json(jw, "keys", f->keys, n);
+    return SD_OK;
+  }
+  write_keys_json(jw, "keys", f->keys, n);
+  if (n > 0) {
+    sd_mount_announcement *a = (sd_mount_announcement *)sd_calloc(1, sizeof(*a));
+    char id[16];
+    if (a == NULL) {
+      *code = NULL;
+      strcpy_s(detail, cap, "out of memory");
+      return SD_E_NO_MEMORY;
+    }
+    memcpy(a->add, f->keys, n * sizeof(f->keys[0]));
+    a->add_count = n;
+    strcpy_s(a->host, sizeof(a->host), hk->host);
+    strcpy_s(a->lookup_name, sizeof(a->lookup_name), hk->lookup);
+    if (!ann_keep("", a, id, sizeof(id))) {
+      sd_free(a);
+      *code = NULL;
+      strcpy_s(detail, cap, "out of memory");
+      return SD_E_NO_MEMORY;
+    }
+    sd_free(a);
+    sd_jw_key(jw, "id"); sd_jw_cstr(jw, id);
+    SD_LOGI("svc", "hostkey add: %s offers %u key(s), kept for review (%s)", hk->lookup, (unsigned)n, id);
+  }
+  return SD_OK;
+}
+
+/* Control thread: the hostkey mount ended (final); the deferred hostkey.add request is answered once. */
+static void svc_hk_reply(svc_hk *hk, sd_mount *m, sd_err why)
+{
+  sd_mount_hk_fetch *f = NULL;
+  sd_mount_failure fl;
+  sd_wr d;
+  sd_json_writer jw;
+  const char *code = NULL;
+  char detail[256];
+  sd_err e = why;
+  int ok = 0;
+  detail[0] = 0;
+  if (why == SD_OK) {
+    f = (sd_mount_hk_fetch *)sd_calloc(1, sizeof(*f));
+    e = f == NULL ? SD_E_NO_MEMORY : sd_mount_get_hostkeys(m, f);
+    /* a connection that ended before the keys were read (a stop) is a failure, not an empty answer */
+    if (e == SD_OK && f->verified == 0 && f->count == 0)
+      e = SD_E_FAILURE;
+  }
+  if (e == SD_OK) {
+    sd_wr_init(&d, 16 * 1024);
+    sd_jw_init(&jw, &d);
+    sd_jw_obj_begin(&jw);
+    e = svc_hk_complete(&jw, hk, f, &code, detail, sizeof(detail));
+    if (e == SD_OK) {
+      sd_jw_obj_end(&jw);
+      if (sd_jw_finish(&jw) == SD_OK) {
+        ok = 1;
+      } else {
+        e = SD_E_INTERNAL;
+        code = NULL;
+        strcpy_s(detail, sizeof(detail), "reply too large");
+      }
+    }
+    if (ok)
+      svc_hk_send(hk, SD_OK, NULL, NULL, (const char *)d.p, d.len);
+    sd_wr_free(&d);
+  }
+  if (!ok) {
+    /* the mount's recorded failure decides the code, whatever the state's reason says (the failure may be reported
+       with SD_OK as its reason) */
+    memset(&fl, 0, sizeof(fl));
+    sd_mount_get_failure(m, &fl);
+    if (fl.err != SD_OK || why != SD_OK) {
+      if (fl.err != SD_OK)
+        e = fl.err;
+      code = NULL;
+      detail[0] = 0;
+      hk_error_text(e, fl.code, &code, detail, sizeof(detail));
+      if (fl.detail[0] != 0 && code != NULL && strcmp(code, "connect_failed") == 0)
+        strcpy_s(detail, sizeof(detail), fl.detail);
+    } else if (code == NULL && detail[0] == 0) {
+      code = "connect_failed";
+      strcpy_s(detail, sizeof(detail), "cannot get the host keys of the server");
+    }
+    svc_hk_send(hk, e, code, detail, NULL, 0);
+  }
+  sd_free(f);
+}
+
+static void svc_hk_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
+{
+  svc_hk *hk = (svc_hk *)ctx;
+  if (hk == NULL || hk->replied)
+    return;
+  if (st != SD_MOUNT_UNMOUNTED && st != SD_MOUNT_FAILED)
+    return;
+  if (!sd_mount_is_final(m))
+    return;
+  svc_hk_reply(hk, m, why);
+}
+
+/* A hostkey connection raises no routed prompt: the host-key question is taken by sd_mount itself (first contact, 5.2),
+   and every other prompt (a password or a passphrase the service cannot ask for, 2.6) is refused. */
+static void svc_hk_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
+{
+  svc_hk *hk = (svc_hk *)ctx;
+  SD_LOGW("svc", "hostkey add for %s asked for a %s prompt: refused (no one can answer it)",
+          hk ? hk->lookup : "", sd_mount_prompt_kind_name(p->kind));
+  (void)sd_mount_answer(m, p->id, SD_MA_REJECT, 0, NULL);
+}
+
+/* Control thread: starts the connect-only mount of one hostkey.add with the machine profile's service credentials. */
+static void job_hk_start(void *arg)
+{
+  svc_hk *hk = (svc_hk *)arg;
+  sd_mount_params pr;
+  sd_mount_callbacks cb;
+  sd_mount *m = NULL;
+  wchar_t hostw[256], namew[160];
+  sd_mount_hop hop;
+  unsigned char *keybuf = NULL;     /* identity bytes (TM-R27), wiped after sd_mount_create copied them */
+  DWORD keylen = 0;
+  char keylabel[MAX_PATH * 3];
+  sd_kh_store store;
+  const sd_profile *p = &hk->prof->p;
+  const char *why = NULL;
+  uint32_t methods = 0;
+  sd_err e = SD_OK;
+
+  memset(&pr, 0, sizeof(pr));
+  pr.struct_size = sizeof(pr);
+  wide_from_utf8(p->host, hostw, SD_COUNTOF(hostw));
+  pr.host = hostw;
+  pr.port = p->port ? p->port : 22;
+  pr.user = p->user;
+  if (p->user[0] == 0)
+    why = "service profile without a user";
+  if (p->auth_methods & SD_PROFILE_AUTH_PUBLICKEY) methods |= SD_AUTH_PUBLICKEY;
+  if (p->auth_methods & SD_PROFILE_AUTH_PASSWORD) methods |= SD_AUTH_PASSWORD;
+  if (methods == 0 && why == NULL)
+    why = "no non-interactive authentication method";
+  pr.auth_methods = methods;
+  if (why == NULL && p->identity[0]) {
+    why = svc_identity_hop(p, hostw, pr.port, methods, SD_HKU_NO, &hop, &keybuf, &keylen, keylabel, sizeof(keylabel));
+    if (why == NULL) {
+      pr.hops = &hop;
+      pr.hop_count = 1;
+    }
+  }
+  if (why == NULL) {
+    /* the machine store is read here (the stored types decide what the server offers); writes are the accept's (5.6) */
+    memset(&store, 0, sizeof(store));
+    store.kind = SD_KH_STORE_MACHINE;
+    store.path = g.kh;
+    store.writable = 0;
+    pr.kh_stores = &store;
+    pr.kh_store_count = 1;
+    pr.hostkey_fetch = 1;                       /* connect-only: no sftp, no vfs, no drive (03 §6.1) */
+    pr.hostkey_type = hk->type[0] ? hk->type : NULL;
+    wide_from_utf8(p->name, namew, SD_COUNTOF(namew));
+    pr.profile_name = namew;
+    pr.backend = SD_MOUNT_BACKEND_DOKANY;
+    pr.global_mount = 0;
+    pr.letter = L'Z';                           /* sd_mount_create wants a letter; a hostkey mount never mounts a drive */
+    pr.connections = 1;
+    pr.no_secret_cache = 1;                     /* the service never keeps a secret it was given (2.5) */
+    pr.legacy_policy = p->legacy_algorithms;
+    pr.refuse_terrapin_exposed = p->refuse_terrapin_exposed;
+    memset(&cb, 0, sizeof(cb));
+    cb.ctx = hk;
+    cb.post = svc_post;
+    cb.on_state = svc_hk_on_state;
+    cb.on_prompt = svc_hk_on_prompt;
+    cb.secret_get = svc_secret_get;
+    cb.on_warning = svc_on_warning;
+    cb.on_notice = svc_on_notice;
+    e = sd_mount_create(g.be, &pr, &cb, &m);
+  }
+  sd_secure_free(keybuf, keylen);
+  if (why != NULL) {
+    SD_LOGW("svc", "hostkey add for %s refused: %s", hk->lookup, why);
+    svc_hk_send(hk, SD_E_INVALID_PARAM, "usage", why, NULL, 0);
+    return;
+  }
+  if (e != SD_OK) {
+    SD_LOGW("svc", "hostkey add for %s: the connection cannot start (%s)", hk->lookup, sd_err_name(e));
+    svc_hk_send(hk, e, "connect_failed", "cannot start the connection", NULL, 0);
+    return;
+  }
+  hk->m = m;
+  (void)sd_mount_start(m);       /* the reply comes through svc_hk_on_state */
+}
+
+/* Control thread, from svc_tick: a request whose reply is sent. Its mount is destroyed and the record leaves the list. */
+static void svc_hk_release(svc_hk *hk)
+{
+  sd_mount *m = hk->m;
+  svc_hk **pp;
+  sd_mutex_lock(&g.lock);
+  for (pp = &g.hks; *pp; pp = &(*pp)->next)
+    if (*pp == hk) { *pp = hk->next; break; }
+  g.nhk--;
+  sd_mutex_unlock(&g.lock);
+  hk->m = NULL;
+  if (m)
+    sd_mount_destroy(m);
+  sd_free(hk->prof);
+  sd_free(hk);
 }
 
 /* ---- control-thread jobs ---- */
@@ -1032,7 +1560,7 @@ static void job_start(void *arg)
   sd_mount_params pr;
   sd_mount_callbacks cb;
   sd_mount *m = NULL;
-  wchar_t hostw[256], labelw[160], namew[160], identw[MAX_PATH], fsw[32];
+  wchar_t hostw[256], labelw[160], namew[160], fsw[32];
   wchar_t wsddl_buf[1024];
   char sddl[1024];
   PSECURITY_DESCRIPTOR sd_bytes = NULL;
@@ -1072,34 +1600,12 @@ static void job_start(void *arg)
     if (methods == 0) why = "no non-interactive authentication method";
     pr.auth_methods = methods;
     if (p->identity[0] && why == NULL) {
-      if (sd_config_expand_path(p->identity, identw, SD_COUNTOF(identw)) != SD_OK ||
-          !svc_path_under(identw, g.service_dir)) {
-        why = "identity file outside the service folder (TM-R27)";
-      } else {
-        /* 2.6 rule 1, TM-R27: the file is checked and read through one handle (svc_file_read_trusted); the bytes go to
-           sd_mount as a key blob (the hop path), so the mount never opens the path again */
-        svc_folder_reason fr = SVC_FOLDER_OK;
-        DWORD fe = svc_file_read_trusted(g.service_dir, identw, g.owner_trusted, NULL, &keybuf, &keylen, &fr);
-        if (fe != 0) {
-          why = "identity file cannot be read (TM-R27)";
-        } else if (fr != SVC_FOLDER_OK) {
-          svc_event_key_refused(identw, fr);
-          why = "identity file refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
-        } else {
-          memset(&hop, 0, sizeof(hop));
-          utf8_from_wide(identw, keylabel, sizeof(keylabel));
-          hop.host = hostw;
-          hop.port = pr.port;
-          hop.user = p->user;
-          hop.key_blob = keybuf;
-          hop.key_blob_len = keylen;
-          hop.key_label = keylabel;
-          hop.identities_only = 1;                 /* D37: the key given is the only one offered */
-          hop.auth_methods = pr.auth_methods;
-          hop.update_host_keys = SD_HKU_ASK;
-          pr.hops = &hop;
-          pr.hop_count = 1;
-        }
+      /* 2.6 rule 1, TM-R27: the key bytes go to sd_mount as a key blob, so the mount never opens the path again */
+      why = svc_identity_hop(p, hostw, pr.port, pr.auth_methods, SD_HKU_ASK, &hop, &keybuf, &keylen, keylabel,
+                             sizeof(keylabel));
+      if (why == NULL) {
+        pr.hops = &hop;
+        pr.hop_count = 1;
       }
     }
     pr.remote_path = p->remote_path;
@@ -1322,6 +1828,19 @@ static void svc_tick(void)
     if (r->m == NULL || sd_mount_is_final(r->m))
       reap_mount(r);
   }
+  /* hostkey requests whose reply went out: their mounts are final, so they are destroyed here (control thread) */
+  {
+    svc_hk *done[SVC_MAX_HK];
+    svc_hk *h;
+    uint32_t nd = 0;
+    sd_mutex_lock(&g.lock);
+    for (h = g.hks; h != NULL && nd < SVC_MAX_HK; h = h->next)
+      if (h->replied)
+        done[nd++] = h;
+    sd_mutex_unlock(&g.lock);
+    for (i = 0; i < nd; i++)
+      svc_hk_release(done[i]);
+  }
 }
 
 static void svc_shutdown_all(void)
@@ -1344,6 +1863,19 @@ static void svc_shutdown_all(void)
     if (j)
       job_stop(j);
   }
+  /* hostkey connections still open are stopped; their replies go out as they end (svc_hk_on_state) */
+  {
+    sd_mount *hm[SVC_MAX_HK];
+    svc_hk *h;
+    uint32_t nh = 0;
+    sd_mutex_lock(&g.lock);
+    for (h = g.hks; h != NULL && nh < SVC_MAX_HK; h = h->next)
+      if (h->m != NULL && !h->replied)
+        hm[nh++] = h->m;
+    sd_mutex_unlock(&g.lock);
+    for (i = 0; i < nh; i++)
+      (void)sd_mount_stop_ex(hm[i], 1);
+  }
   /* run the teardown: the control loop is gone, so pump the queue and the tick here */
   while (waited < SVC_SHUTDOWN_MS) {
     int pending = 0;
@@ -1352,6 +1884,8 @@ static void svc_shutdown_all(void)
     sd_mutex_lock(&g.lock);
     for (i = 0; i < SVC_MAX_MOUNTS; i++)
       if (g.mounts[i]) pending = 1;
+    if (g.nhk > 0)
+      pending = 1;
     sd_mutex_unlock(&g.lock);
     if (!pending)
       break;
@@ -1799,11 +2333,171 @@ static sd_err handle_config_reload(sd_ipc_client *c, sd_json_writer *res, sd_ipc
   return SD_OK;
 }
 
+/* hostkey.add {host, port, lookup, type?, expect?, profile?} (03 §2.4, §6.1): the machine profile whose host and port
+   match (or the one named by profile) connects through a hostkey mount with its service credentials. The reply is
+   deferred until the connection ends; it is the agent's reply shape (host, lookup_name, verified, keys, id or added). */
+static sd_err handle_hk_add(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *host = sd_json_get_str(params, "host");
+  const char *lookup = sd_json_get_str(params, "lookup");
+  const char *type = sd_json_get_str(params, "type");
+  const char *expect = sd_json_get_str(params, "expect");
+  const char *key = sd_json_get_str(params, "profile");
+  const char *bad = NULL, *why = NULL;
+  int64_t port = 22;
+  svc_prof *src = NULL, *copy;
+  svc_hk *hk;
+  sd_err e = need_admin(c, err);
+  uint32_t i;
+  char detail[200];
+  if (e != SD_OK)
+    return e;
+  sd_json_get_int64(params, "port", &port);
+  if (host == NULL || host[0] == 0 || lookup == NULL || lookup[0] == 0 || port < 1 || port > 65535)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "host, port and lookup required");
+  if (strlen(host) >= 256 || strlen(lookup) >= 300)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "host or lookup too long");
+  if (type != NULL && !hk_type_ok(type))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid key type");
+  if (expect != NULL && strlen(expect) >= 96)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "invalid fingerprint");
+  if (sd_event_wait(&g.stop, 0) == SD_OK)
+    return fail(err, SD_E_BUSY, "busy", "the service is stopping");
+  copy = (svc_prof *)sd_alloc(sizeof(*copy));
+  if (copy == NULL)
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  sd_mutex_lock(&g.lock);
+  if (g.nhk >= SVC_MAX_HK) {
+    sd_mutex_unlock(&g.lock);
+    sd_free(copy);
+    return fail(err, SD_E_BUSY, "busy", "too many host key requests");
+  }
+  for (i = 0; i < g.nprofs && src == NULL; i++) {
+    const svc_prof *q = g.profs[i];
+    uint16_t qp = q->p.port ? q->p.port : 22;
+    if (_stricmp(q->p.host, host) != 0 || qp != (uint16_t)port)
+      continue;
+    if (key == NULL || strcmp(q->p.id, key) == 0 || _stricmp(q->p.name, key) == 0)
+      src = g.profs[i];
+  }
+  if (src == NULL) {
+    sd_mutex_unlock(&g.lock);
+    sd_free(copy);
+    return fail(err, SD_E_NOT_FOUND, "profile_not_found", "no machine profile of scope service uses this host and port");
+  }
+  memcpy(copy, src, sizeof(*copy));
+  sd_mutex_unlock(&g.lock);
+  if (svc_validate_profile(&copy->p, &bad, &why) != SD_OK) {
+    sd_free(copy);
+    _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
+    return fail(err, SD_E_INVALID_PARAM, "usage", detail);
+  }
+  hk = (svc_hk *)sd_calloc(1, sizeof(*hk));
+  if (hk == NULL) {
+    sd_free(copy);
+    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+  }
+  hk->prof = copy;
+  hk->port = (uint16_t)port;
+  strcpy_s(hk->host, sizeof(hk->host), host);
+  strcpy_s(hk->lookup, sizeof(hk->lookup), lookup);
+  if (type != NULL)
+    strcpy_s(hk->type, sizeof(hk->type), type);
+  if (expect != NULL)
+    strcpy_s(hk->expect, sizeof(hk->expect), expect);
+  /* the request is answered when its connection ends (svc_hk_reply); taken before the record is linked */
+  if (!sd_ipc_defer(c, &hk->defer_rid)) {
+    sd_free(copy);
+    sd_free(hk);
+    return fail(err, SD_E_INTERNAL, NULL, "hostkey.add outside a request");
+  }
+  hk->defer_cid = sd_ipc_client_id(c);
+  sd_mutex_lock(&g.lock);
+  if (g.nhk >= SVC_MAX_HK) {
+    sd_mutex_unlock(&g.lock);
+    (void)sd_ipc_reply_deferred(g.srv, hk->defer_cid, hk->defer_rid, SD_E_BUSY, "busy", "too many host key requests",
+                                NULL, 0);
+    sd_free(copy);
+    sd_free(hk);
+    return SD_OK;
+  }
+  hk->next = g.hks;
+  g.hks = hk;
+  g.nhk++;
+  sd_mutex_unlock(&g.lock);
+  SD_LOGI("svc", "hostkey add for %s queued", lookup);
+  svc_enqueue(job_hk_start, hk);
+  (void)res;
+  return SD_OK;
+}
+
+/* hostkey.announced.list (03 §2.4): the kept host keys, for an elevated administrator. */
+static sd_err handle_hk_list(sd_ipc_client *c, sd_json_writer *res, sd_ipc_error *err)
+{
+  svc_ann *x;
+  sd_err e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  sd_jw_key(res, "announcements");
+  sd_jw_arr_begin(res);
+  sd_mutex_lock(&g.lock);
+  for (x = g.anns; x != NULL; x = x->next)
+    write_ann_obj(res, x->id, x->mount_id, &x->a);
+  sd_mutex_unlock(&g.lock);
+  sd_jw_arr_end(res);
+  return SD_OK;
+}
+
+/* hostkey.announced.accept {id, add_only} (5.6, 03 §2.4): writes a kept announcement to the machine known_hosts. The
+   record leaves the list while it is written and returns to it when the write fails. */
+static sd_err handle_hk_accept(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *id = sd_json_get_str(params, "id");
+  int add_only = 0;
+  svc_ann **pp, *x = NULL;
+  sd_err e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  sd_json_get_bool(params, "add_only", &add_only);
+  if (id == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "id required");
+  sd_mutex_lock(&g.lock);
+  for (pp = &g.anns; *pp != NULL; pp = &(*pp)->next)
+    if (strcmp((*pp)->id, id) == 0) {
+      x = *pp;
+      *pp = x->next;
+      g.nann--;
+      break;
+    }
+  sd_mutex_unlock(&g.lock);
+  if (x == NULL)
+    return fail(err, SD_E_NOT_FOUND, "announcement_not_found", "no such announcement");
+  e = svc_machine_apply(&x->a, add_only);
+  if (e != SD_OK) {
+    sd_mutex_lock(&g.lock);                      /* keep it for another try */
+    x->next = g.anns;
+    g.anns = x;
+    g.nann++;
+    sd_mutex_unlock(&g.lock);
+    return fail(err, e, NULL, "cannot update known_hosts");
+  }
+  SD_LOGI("svc", "machine host keys of %s updated (%u added, %u removed)", x->a.lookup_name,
+          (unsigned)x->a.add_count, add_only ? 0u : (unsigned)x->a.remove_count);
+  sd_jw_key(res, "host"); sd_jw_cstr(res, x->a.host);
+  sd_jw_key(res, "added"); sd_jw_int(res, x->a.add_count);
+  sd_jw_key(res, "removed"); sd_jw_int(res, add_only ? 0 : x->a.remove_count);
+  sd_free(x);
+  return SD_OK;
+}
+
 static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                               sd_json_writer *res, sd_ipc_error *err)
 {
   (void)ctx;
   if (strcmp(method, "list") == 0) return handle_list(client, res);
+  if (strcmp(method, "hostkey.add") == 0) return handle_hk_add(client, params, res, err);
+  if (strcmp(method, "hostkey.announced.list") == 0) return handle_hk_list(client, res, err);
+  if (strcmp(method, "hostkey.announced.accept") == 0) return handle_hk_accept(client, params, res, err);
   if (strcmp(method, "status") == 0) return handle_status(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(client, params, res, err);
@@ -1867,7 +2561,8 @@ static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 
 static const char *const k_service_features[] = {
   "list", "status", "mount", "unmount", "selftest", "secret.set", "secret.delete", "prompt.list",
-  "prompt.answer", "config.reload", "prompt.routing", NULL
+  "prompt.answer", "config.reload", "prompt.routing", "hostkey.add", "hostkey.announced.list",
+  "hostkey.announced.accept", NULL
 };
 
 /* ---- the core ---- */
