@@ -28,6 +28,7 @@ SD_TEST_DECL(profile_m3_legacy_cache_names);
 SD_TEST_DECL(profile_m3_round_trip);
 SD_TEST_DECL(menu_entry_sanitizing);
 SD_TEST_DECL(menu_format_layout);
+SD_TEST_DECL(profile_templates_machine_scope_users);
 SD_TEST_DECL(menu_format_caps);
 SD_TEST_DECL(menu_writer_through_profile_store);
 SD_TEST_DECL(settings_m4_defaults);
@@ -76,6 +77,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(profile_m4_write_mode_key_round_trip),
   SD_TEST_ENTRY(settings_m4_privacy_policy_override),
   SD_TEST_ENTRY(settings_m4_save_round_trip_and_run_condition),
+  SD_TEST_ENTRY(profile_templates_machine_scope_users),
 };
 
 int main(int argc, char **argv)

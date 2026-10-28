@@ -140,6 +140,44 @@ SD_TEST(hmac_rfc4231)
              "95e64f73f63f0aec8b915a985d786598");
 }
 
+/* MD5 (RFC 1321 appendix A.5) and HMAC-MD5 (RFC 2202 cases 1 and 2). */
+SD_TEST(md5_rfc1321)
+{
+  static const char m7[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  static const char m8[] = "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+  sd_hash_ctx c;
+  uint8_t d[16], want[16];
+  size_t i;
+  check_hash(sd_t_, SD_HASH_MD5, "", 0, "d41d8cd98f00b204e9800998ecf8427e");
+  check_hash(sd_t_, SD_HASH_MD5, "a", 1, "0cc175b9c0f1b6a831c399e269772661");
+  check_hash(sd_t_, SD_HASH_MD5, "abc", 3, "900150983cd24fb0d6963f7d28e17f72");
+  check_hash(sd_t_, SD_HASH_MD5, "message digest", 14, "f96b697d7cb7938d525a2f31aaf161d0");
+  check_hash(sd_t_, SD_HASH_MD5, "abcdefghijklmnopqrstuvwxyz", 26, "c3fcd3d76192e4007dfb496cca67e13b");
+  check_hash(sd_t_, SD_HASH_MD5, m7, strlen(m7), "d174ab98d277d9f5a5611c2c9f419d9f");
+  check_hash(sd_t_, SD_HASH_MD5, m8, strlen(m8), "57edf4a22be3c955ac49da2e2107b67a");
+  SD_CHECK_EQ_U64(sd_hash_len(SD_HASH_MD5), 16);
+  SD_CHECK_EQ_U64(sd_hash_block_len(SD_HASH_MD5), 64);
+  /* byte-at-a-time and across the 64-byte block boundary */
+  for (i = 0; i <= 200; i++) {
+    uint8_t msg[200];
+    size_t k;
+    for (k = 0; k < sizeof(msg); k++) msg[k] = (uint8_t)(k * 31 + 7);
+    sd_hash(SD_HASH_MD5, msg, i, want);
+    sd_hash_init(&c, SD_HASH_MD5);
+    for (k = 0; k < i; k++) sd_hash_update(&c, msg + k, 1);
+    sd_hash_final(&c, d);
+    SD_CHECK_MEM(d, want, 16);
+  }
+  /* HMAC-MD5 (RFC 2202 test cases 1 and 2) */
+  {
+    uint8_t k1[16];
+    memset(k1, 0x0b, sizeof(k1));
+    check_hmac(sd_t_, SD_HASH_MD5, k1, 16, "Hi There", 8, "9294727a3638bb1c13f48ef8158bfc9d");
+    check_hmac(sd_t_, SD_HASH_MD5, (const uint8_t *)"Jefe", 4, "what do ya want for nothing?", 28,
+               "750c783e6ab0b503eaa86e310a5db738");
+  }
+}
+
 SD_TEST(pbkdf2_rfc7914)
 {
   uint8_t want[64], got[64];

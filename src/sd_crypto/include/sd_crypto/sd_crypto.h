@@ -33,7 +33,10 @@ sd_err sd_random(void *buf, size_t len);
 
 /* ---- hashes and HMAC: fixed-size contexts, no allocation ---- */
 
-/* Values 0 and 1 are reserved for MD5 and SHA-1 (fingerprints, legacy; later milestones). */
+/* Value 0 is MD5 (RFC 1321) and value 1 is SHA-1 (sd_crypto_pk.h). MD5 is legacy: the MD5:xx:xx fingerprint shown
+   next to the SHA-256 one, and EVP_BytesToKey of encrypted PEM keys. Never for new protocol or integrity uses. */
+#define SD_HASH_MD5   ((sd_hash_alg)0)
+#define SD_MD5_LEN    16
 typedef enum sd_hash_alg { SD_HASH_SHA256 = 2, SD_HASH_SHA384 = 3, SD_HASH_SHA512 = 4 } sd_hash_alg;
 #define SD_HASH_MAX_LEN   64
 #define SD_HASH_MAX_BLOCK 128

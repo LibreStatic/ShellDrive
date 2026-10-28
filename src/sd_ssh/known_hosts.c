@@ -182,6 +182,7 @@ typedef struct kh_line {
   const char *pat; size_t pat_len;
   const char *type; size_t type_len;
   const char *b64; size_t b64_len;
+  const char *cmt; size_t cmt_len;     /* trailing text after the key, trimmed (may be empty) */
 } kh_line;
 
 static int is_ws(char c) { return c == ' ' || c == '\t'; }
@@ -214,6 +215,10 @@ static int parse_line(const char *s, size_t n, kh_line *l)
   p = next_field(p, end, &l->type, &l->type_len);
   p = next_field(p, end, &l->b64, &l->b64_len);
   if (!l->pat_len || !l->type_len || !l->b64_len) return -1;
+  while (p < end && is_ws(*p)) p++;
+  l->cmt = p;
+  while (end > p && is_ws(end[-1])) end--;
+  l->cmt_len = (size_t)(end - p);
   return 1;
 }
 
@@ -510,6 +515,23 @@ sd_err sd_hostkey_fingerprint_sha256(const uint8_t *blob, size_t len, char out[6
   return SD_OK;
 }
 
+sd_err sd_hostkey_fingerprint_md5(const uint8_t *blob, size_t len, char out[64])
+{
+  static const char k_hex[] = "0123456789abcdef";
+  uint8_t h[SD_MD5_LEN];
+  size_t i;
+  if (!blob || !len || !out) return SD_E_INVALID_PARAM;
+  if (!ssh_crypto_ready()) { out[0] = '\0'; return SD_E_UNSUPPORTED; }
+  sd_hash(SD_HASH_MD5, blob, len, h);
+  memcpy(out, "MD5:", 4);
+  for (i = 0; i < SD_MD5_LEN; i++) {
+    out[4 + 3 * i] = k_hex[h[i] >> 4];
+    out[5 + 3 * i] = k_hex[h[i] & 15];
+    out[6 + 3 * i] = i + 1 < SD_MD5_LEN ? ':' : '\0';
+  }
+  return SD_OK;
+}
+
 /* ---- files ---- */
 
 static sd_err read_file(const wchar_t *path, char **text, size_t *len)
@@ -791,12 +813,70 @@ typedef struct kh_all_ctx {
   int stop;
 } kh_all_ctx;
 
+/* The comment of a line (03 §5.1): the members our writers and the importers add. "imported-from=putty|openssh"
+   and "updated-by=..." name the source; "by=shelldrive" or a bare "added=" (our own writers) mean ShellDrive; any
+   other comment, or none, is OTHER. The added= date is copied only when it has the YYYY-MM-DD shape. */
+static int tok_value(const char *t, size_t n, const char *key, const char **v, size_t *vl)
+{
+  size_t kl = strlen(key);
+  if (n < kl || memcmp(t, key, kl) != 0) return 0;
+  *v = t + kl;
+  *vl = n - kl;
+  return 1;
+}
+
+static int date_shape_ok(const char *v, size_t n)
+{
+  size_t i;
+  if (n != 10) return 0;
+  for (i = 0; i < n; i++) {
+    if (i == 4 || i == 7) { if (v[i] != '-') return 0; }
+    else if (v[i] < '0' || v[i] > '9') return 0;
+  }
+  return 1;
+}
+
+static sd_kh_origin kh_origin(const char *c, size_t n, char *added, size_t acap)
+{
+  sd_kh_origin origin = SD_KH_ORIGIN_OTHER;
+  int source = 0, ours = 0;
+  size_t i = 0;
+  added[0] = '\0';
+  while (i < n) {
+    const char *v;
+    size_t b, e, vl;
+    while (i < n && (is_ws(c[i]) || c[i] == '#')) i++;
+    b = i;
+    while (i < n && !is_ws(c[i]) && c[i] != '#') i++;
+    e = i;
+    if (e == b) break;
+    if (tok_value(c + b, e - b, "imported-from=", &v, &vl) && !source) {
+      source = 1;
+      origin = vl == 5 && memcmp(v, "putty", 5) == 0 ? SD_KH_ORIGIN_PUTTY
+             : vl == 7 && memcmp(v, "openssh", 7) == 0 ? SD_KH_ORIGIN_OPENSSH : SD_KH_ORIGIN_OTHER;
+    } else if (tok_value(c + b, e - b, "updated-by=", &v, &vl) && !source) {
+      source = 1;
+      origin = SD_KH_ORIGIN_SERVER;
+    } else if (e - b == 14 && memcmp(c + b, "by=shelldrive", 14) == 0) {
+      ours = 1;
+    } else if (tok_value(c + b, e - b, "added=", &v, &vl)) {
+      ours = 1;
+      if (date_shape_ok(v, vl) && vl < acap) {
+        memcpy(added, v, vl);
+        added[vl] = '\0';
+      }
+    }
+  }
+  if (source) return origin;
+  return ours ? SD_KH_ORIGIN_SHELLDRIVE : SD_KH_ORIGIN_OTHER;
+}
+
 static int all_line(void *vctx, const char *s, size_t n, uint32_t no)
 {
   kh_all_ctx *c = (kh_all_ctx *)vctx;
   kh_line l;
   size_t blen;
-  char type[64], pat[256];
+  char type[64], pat[256], cmt[256], added[16];
   sd_kh_all_entry e;
   if (parse_line(s, n, &l) <= 0 || l.marker != KH_PLAIN) return 0;
   if (l.pat_len >= sizeof(pat) || l.type_len >= sizeof(type)) return 0;
@@ -805,12 +885,20 @@ static int all_line(void *vctx, const char *s, size_t n, uint32_t no)
   pat[l.pat_len] = '\0';
   memcpy(type, l.type, l.type_len);
   type[l.type_len] = '\0';
+  {
+    size_t cl = SD_MIN(l.cmt_len, sizeof(cmt) - 1);
+    memcpy(cmt, l.cmt, cl);
+    cmt[cl] = '\0';
+  }
   e.pattern = pat;
   e.blob = c->tmp;
   e.len = blen;
   e.type = type;
   e.line = no;
   e.hashed = l.pat[0] == '|';
+  e.comment = cmt;
+  e.origin = kh_origin(l.cmt, l.cmt_len, added, sizeof(added));
+  e.added = added;
   if (c->cb(c->ctx, &e)) { c->stop = 1; return 1; }
   return 0;
 }

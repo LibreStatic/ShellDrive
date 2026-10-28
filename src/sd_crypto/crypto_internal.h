@@ -7,6 +7,11 @@
 #include "sd_base/sd_err.h"
 #include "sd_crypto/sd_crypto.h"
 
+/* ---- MD5 state behind sd_hash_ctx (md5.c; hash.c dispatches SD_HASH_MD5 here) ---- */
+void sd_md5_state_init(uint64_t *opaque);
+void sd_md5_state_update(uint64_t *opaque, const uint8_t *p, size_t n);
+void sd_md5_state_final(uint64_t *opaque, uint8_t out[16]);
+
 /* ---- init state ---- */
 
 /* Runs sd_crypto_init(0) if nobody did yet; returns the effective flags. */

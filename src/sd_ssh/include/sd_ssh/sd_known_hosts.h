@@ -116,6 +116,13 @@ sd_err sd_known_hosts_list(sd_known_hosts *kh, sd_kh_store_kind store, const cha
    "|1|salt|hash" when hashed is set). No name filter; @revoked and @cert-authority lines are not listed.
    Live sources are not enumerated (SD_E_INVALID_PARAM). Return nonzero from the callback to stop. Pointers
    are valid during the callback only. SD_E_NOT_FOUND when the store has no file. */
+typedef enum sd_kh_origin {
+  SD_KH_ORIGIN_OTHER = 0,      /* no source comment we know (another tool, or a hand-written line) */
+  SD_KH_ORIGIN_SHELLDRIVE,     /* "by=shelldrive" or a bare "added=" (our own writers, 5.1) */
+  SD_KH_ORIGIN_PUTTY,          /* "imported-from=putty" (D7 copy, "Copied from PuTTY") */
+  SD_KH_ORIGIN_OPENSSH,        /* "imported-from=openssh" ("Copied from OpenSSH") */
+  SD_KH_ORIGIN_SERVER          /* "updated-by=hostkeys-00" (UpdateHostKeys, 5.6, "Updated by server") */
+} sd_kh_origin;
 typedef struct sd_kh_all_entry {
   const char *pattern;     /* NUL-terminated copy, at most 255 bytes */
   const uint8_t *blob;
@@ -123,6 +130,9 @@ typedef struct sd_kh_all_entry {
   const char *type;
   uint32_t line;
   int hashed;
+  const char *comment;     /* the trailing text of the line after the key, trimmed, at most 255 bytes ("" if none) */
+  const char *added;       /* "YYYY-MM-DD" from the added= member of the comment, or "" */
+  sd_kh_origin origin;     /* see sd_kh_origin */
 } sd_kh_all_entry;
 typedef int (*sd_kh_all_cb)(void *ctx, const sd_kh_all_entry *e);
 sd_err sd_known_hosts_list_all(sd_known_hosts *kh, sd_kh_store_kind store, sd_kh_all_cb cb, void *ctx);
@@ -149,5 +159,8 @@ sd_err sd_known_hosts_source_state(sd_known_hosts *kh, sd_kh_store_kind source, 
 
 /* "SHA256:<base64 without padding>" of a public key blob; out must hold 64 bytes. */
 sd_err sd_hostkey_fingerprint_sha256(const uint8_t *blob, size_t len, char out[64]);
+/* "MD5:xx:xx:..." (16 bytes, lowercase hex, colon separated; the legacy form PuTTY shows, 5.2). Secondary display
+   only. out must hold 64 bytes. */
+sd_err sd_hostkey_fingerprint_md5(const uint8_t *blob, size_t len, char out[64]);
 
 #endif /* SD_KNOWN_HOSTS_H */

@@ -1387,3 +1387,64 @@ SD_TEST(agent_shutdown_event_stops_agent)
   SD_CHECK(gone);      /* the agent exited after the event: its session mutex is released with the process */
   sd_ipc_close(c);
 }
+
+/* A string member of a JSON object, or "" when absent. */
+static const char *ev_text(const sd_json *o, const char *key)
+{
+  const char *s = sd_json_get_str(o, key);
+  return s ? s : "";
+}
+
+/* events.recent (03 §2.4): the history of the events the clients get, oldest first, seq increasing, last_seq the newest,
+   the limit (1 to 200) and the features that advertise it. The ring overflow itself (200 records) is not driven here. */
+SD_TEST(m4_events_recent_history_and_limits)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog l;
+  const sd_json *evs, *e;
+  size_t n, i;
+  int64_t seq = 0, prev = 0, last = 0;
+  int saw_mounted = 0;
+  memset(&l, 0, sizeof(l));
+  SD_REQUIRE(setup_agent(L"evrc", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &c) == SD_OK);
+  SD_CHECK(sd_ipc_conn_has_feature(c, "events.recent"));
+  SD_CHECK(sd_ipc_conn_has_feature(c, "diag.collect"));
+  subscribe(c, "\"prompt\",\"mount\"");
+  SD_REQUIRE(mount_stat_host(c, &l, "ev1.test"));
+
+  SD_REQUIRE(call(c, "events.recent", "{}", &res, &err) == SD_OK);
+  evs = sd_json_get(res, "events");
+  n = sd_json_count(evs);
+  SD_CHECK(n >= 1 && n <= 200);
+  for (i = 0; i < n; i++) {
+    e = sd_json_at(evs, i);
+    SD_REQUIRE(sd_json_get_int64(e, "seq", &seq));
+    SD_CHECK(seq > prev);
+    prev = seq;
+    if (strcmp(ev_text(e, "event"), "mount.state") == 0 && strcmp(ev_text(e, "state"), "mounted") == 0 &&
+        strcmp(ev_text(e, "mount_id"), "m-1") == 0)
+      saw_mounted = 1;
+  }
+  SD_CHECK(saw_mounted);
+  SD_REQUIRE(sd_json_get_int64(res, "last_seq", &last));
+  SD_CHECK(last == prev);
+  sd_json_free(res);
+  res = NULL;
+
+  SD_REQUIRE(call(c, "events.recent", "{\"limit\":1}", &res, &err) == SD_OK);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(res, "events")), 1);
+  SD_REQUIRE(sd_json_get_int64(sd_json_at(sd_json_get(res, "events"), 0), "seq", &seq));
+  SD_CHECK(seq == last);
+  sd_json_free(res);
+  res = NULL;
+
+  SD_CHECK(call(c, "events.recent", "{\"limit\":0}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  SD_CHECK(call(c, "events.recent", "{\"limit\":201}", &res, &err) != SD_OK);
+  SD_CHECK_STR(err.code, "usage");
+  shutdown_agent(c);
+  sd_ipc_close(c);
+}
