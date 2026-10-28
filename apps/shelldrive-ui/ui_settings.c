@@ -60,6 +60,14 @@
 #define ST_ID_LBL_WC     4433
 #define ST_ID_VAL_WC     4434
 #define ST_ID_NOTE_LANG  4435
+#define ST_ID_AGENT_LOGON 4436
+#define ST_ID_LBL_WRITE  4437
+#define ST_ID_WRITE      4438
+#define ST_ID_NOTE_WRITE 4439
+#define ST_ID_CHK_PRIVACY 4440
+#define ST_ID_NOTE_PRIVACY 4441
+#define ST_ID_HINT_KINDS 4442
+#define ST_ID_KIND_BASE  4450       /* + sd_notify_kind */
 #define ST_CLIENT_H      800
 
 #define ST_RUN_KEY   L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
@@ -71,12 +79,23 @@ static const wchar_t *const k_lang_names[UI_SET_LANG_COUNT] = {
   NULL, L"English", L"Espa\x00f1ol", L"Fran\x00e7" L"ais", L"Portugu\x00ea" L"s (Brasil)", L"Italiano", L"Deutsch"
 };
 
+/* Label of each notification kind switch, in sd_notify_kind order (03 7.7). */
+static const sd_msg_id k_kind_label[SD_NOTIFY_COUNT] = {
+  SD_MSG_UI_SETTINGS_NK_CONNECTION_LOST, SD_MSG_UI_SETTINGS_NK_RECONNECTED, SD_MSG_UI_SETTINGS_NK_MOUNT_FAILED,
+  SD_MSG_UI_SETTINGS_NK_MOUNTED, SD_MSG_UI_SETTINGS_NK_LEGACY_ALGORITHMS, SD_MSG_UI_SETTINGS_NK_HOSTKEYS_OFFERED,
+  SD_MSG_UI_SETTINGS_NK_HOSTKEYS_SAVED, SD_MSG_UI_SETTINGS_NK_PROXY_PASSWORD, SD_MSG_UI_SETTINGS_NK_POOL_LIMITED,
+  SD_MSG_UI_SETTINGS_NK_SERVICE_ATTENTION, SD_MSG_UI_SETTINGS_NK_UPDATE_AVAILABLE, SD_MSG_UI_SETTINGS_NK_UPDATE_STALE,
+  SD_MSG_UI_SETTINGS_NK_TERRAPIN, SD_MSG_UI_SETTINGS_NK_HOSTKEYS_SOURCE, SD_MSG_UI_SETTINGS_NK_DISK_CACHE
+};
+
 static struct {
   HWND wnd, lang, notify, logon, backend, cache, status;
   HWND lbl_lang, lbl_back, lbl_cache, hint_cache, note_upd, note_rest, grp_upd, btn_save, btn_cancel;
   HWND channel, lbl_channel, note_policy, upd_status, upd_stale, btn_check, btn_install, btn_notes;
   HWND tab, chk_openssh, chk_putty, note_openssh, note_putty, chk_roam, hint_roam, lbl_wc, val_wc;
   HWND note_lang;
+  HWND agent_logon, lbl_write, write, note_write, chk_privacy, note_privacy, hint_kinds;
+  HWND kind[SD_NOTIFY_COUNT];         /* [ui] notify_<kind> switches (Notifications page) */
   ui_set_policy policy;               /* the Group Policy values read when the window opened (03 §3.5) */
   unsigned locked;                    /* UI_SET_F_* fields the policies lock */
   HFONT font;
@@ -191,6 +210,12 @@ static void policy_read(ui_set_policy *p)
   }
   if (sd_policy_get_dword(SD_POLICY_DISABLEKNOWNHOSTSSOURCES, &dw) && dw == 1)
     p->sources_disabled = 1;
+  if (sd_policy_get_dword(SD_POLICY_FORCEWRITETHROUGH, &dw) && dw != 0)
+    p->force_through = 1;
+  if (sd_policy_get_dword(SD_POLICY_LOGPRIVACY, &dw) && (dw == 0 || dw == 1)) {
+    p->privacy_set = 1;
+    p->privacy_strict = dw == 1 ? 1 : 0;
+  }
 }
 
 /* State of a live host key source (TM-R06), read-only: a file that other users can write reads as INSECURE. */
@@ -240,6 +265,7 @@ static void webclient_refresh(void)
 /* Shows m in the controls and disables the locked ones (a policy value is read-only). */
 static void show_model(const ui_settings_model *m, unsigned locked, int openssh_state, int putty_state)
 {
+  int k;
   SendMessageW(g_st.lang, CB_SETCURSEL, ui_settings_lang_index(m->language), 0);
   EnableWindow(g_st.lang, (locked & UI_SET_F_LANGUAGE) ? FALSE : TRUE);
   SetWindowTextW(g_st.note_lang, (locked & UI_SET_F_LANGUAGE) ? note_text(UI_SET_NOTE_MANAGED) : L"");
@@ -252,6 +278,27 @@ static void show_model(const ui_settings_model *m, unsigned locked, int openssh_
   SetWindowTextW(g_st.note_putty,
                  note_text(ui_settings_source_note(m->putty_source, (locked & UI_SET_F_PUTTY) != 0, putty_state)));
   SendMessageW(g_st.chk_roam, BM_SETCHECK, m->roam_credentials ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_st.agent_logon, BM_SETCHECK, m->agent_logon ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_st.write, CB_SETCURSEL, m->write_mode == SD_PROFILE_WRITE_BEHIND ? 1 : 0, 0);
+  EnableWindow(g_st.write, (locked & UI_SET_F_WRITE) ? FALSE : TRUE);
+  SetWindowTextW(g_st.note_write, (locked & UI_SET_F_WRITE) ? note_text(UI_SET_NOTE_MANAGED) : L"");
+  SendMessageW(g_st.chk_privacy, BM_SETCHECK, m->log_strict ? BST_CHECKED : BST_UNCHECKED, 0);
+  EnableWindow(g_st.chk_privacy, (locked & UI_SET_F_PRIVACY) ? FALSE : TRUE);
+  SetWindowTextW(g_st.note_privacy, (locked & UI_SET_F_PRIVACY) ? note_text(UI_SET_NOTE_MANAGED) : L"");
+  SendMessageW(g_st.notify, BM_SETCHECK, m->notify ? BST_CHECKED : BST_UNCHECKED, 0);
+  for (k = 0; k < SD_NOTIFY_COUNT; k++) {
+    SendMessageW(g_st.kind[k], BM_SETCHECK, (m->notify_kinds & (1u << k)) ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(g_st.kind[k], m->notify ? TRUE : FALSE);    /* the kinds sit under the master switch */
+  }
+}
+
+/* The kind switches follow the master switch: they are disabled (not cleared) while notifications are off. */
+static void kinds_follow_master(void)
+{
+  BOOL on = SendMessageW(g_st.notify, BM_GETCHECK, 0, 0) == BST_CHECKED ? TRUE : FALSE;
+  int k;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    EnableWindow(g_st.kind[k], on);
 }
 
 
@@ -264,9 +311,17 @@ static void fill_lang(void)
     SendMessageW(g_st.lang, CB_ADDSTRING, 0, (LPARAM)k_lang_names[i]);
 }
 
+static void populate_write(void)
+{
+  SendMessageW(g_st.write, CB_RESETCONTENT, 0, 0);
+  SendMessageW(g_st.write, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_THROUGH));
+  SendMessageW(g_st.write, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_BEHIND));
+}
+
 static void populate(void)
 {
   fill_lang();
+  populate_write();
 
   SendMessageW(g_st.notify, BM_SETCHECK, g_st.model.notify ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_st.logon, BM_SETCHECK, g_st.model.start_at_logon ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -322,6 +377,7 @@ static void on_save(void)
   unsigned changed;
   int lang_index;
   int chan_changed = 0;
+  int k;
 
   GetWindowTextW(g_st.cache, cache, SD_COUNTOF(cache));
   if (ui_settings_parse_cache(cache, &mb) != SD_OK) {
@@ -343,6 +399,12 @@ static void on_save(void)
   m.openssh_source = SendMessageW(g_st.chk_openssh, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
   m.putty_source = SendMessageW(g_st.chk_putty, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
   m.roam_credentials = SendMessageW(g_st.chk_roam, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  m.agent_logon = SendMessageW(g_st.agent_logon, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  m.write_mode = SendMessageW(g_st.write, CB_GETCURSEL, 0, 0) == 1 ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
+  m.log_strict = SendMessageW(g_st.chk_privacy, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    if (SendMessageW(g_st.kind[k], BM_GETCHECK, 0, 0) == BST_CHECKED)
+      m.notify_kinds |= 1u << k;
 
   s = g_st.loaded;
   ui_settings_to_sd_masked(&m, g_st.locked, &s);
@@ -426,6 +488,56 @@ int ui_settings_update_controls_ok(void)
          g_st.btn_install && g_st.btn_notes && g_st.note_upd;
 }
 
+/* --test-windows: the round 17 controls (default write mode, log privacy, agent start, per-kind switches) exist, show
+   a model, follow the master switch and the policy locks. Synthetic model and policy, nothing is read or written. */
+static int settings_r17_smoke(void)
+{
+  ui_settings_model m;
+  ui_set_policy pol;
+  unsigned locked;
+  int k, ok;
+  if (!(g_st.agent_logon && g_st.lbl_write && g_st.write && g_st.note_write && g_st.chk_privacy && g_st.note_privacy &&
+        g_st.hint_kinds))
+    return 0;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++)
+    if (g_st.kind[k] == NULL)
+      return 0;
+  memset(&m, 0, sizeof(m));
+  memset(&pol, 0, sizeof(pol));
+  populate_write();
+  m.notify = 1;
+  m.write_mode = SD_PROFILE_WRITE_BEHIND;
+  m.log_strict = 1;
+  m.agent_logon = 1;
+  m.notify_kinds = (1u << SD_NOTIFY_CONNECTION_LOST) | (1u << SD_NOTIFY_TERRAPIN);
+  show_model(&m, 0, 0, 0);
+  ok = IsWindowEnabled(g_st.write) && IsWindowEnabled(g_st.chk_privacy) &&
+       SendMessageW(g_st.write, CB_GETCOUNT, 0, 0) == 2 &&
+       SendMessageW(g_st.write, CB_GETCURSEL, 0, 0) == 1 &&
+       SendMessageW(g_st.chk_privacy, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+       SendMessageW(g_st.agent_logon, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+       SendMessageW(g_st.kind[SD_NOTIFY_CONNECTION_LOST], BM_GETCHECK, 0, 0) == BST_CHECKED &&
+       SendMessageW(g_st.kind[SD_NOTIFY_MOUNTED], BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+       IsWindowEnabled(g_st.kind[SD_NOTIFY_TERRAPIN]) && GetWindowTextLengthW(g_st.note_write) == 0;
+  /* the master switch off disables the kind switches without clearing them */
+  m.notify = 0;
+  show_model(&m, 0, 0, 0);
+  ok = ok && !IsWindowEnabled(g_st.kind[SD_NOTIFY_TERRAPIN]) &&
+       SendMessageW(g_st.kind[SD_NOTIFY_TERRAPIN], BM_GETCHECK, 0, 0) == BST_CHECKED;
+  /* policies: the write mode shows through and the privacy shows the policy value, both read-only with the note */
+  m.notify = 1;
+  pol.force_through = 1;
+  pol.privacy_set = 1;
+  pol.privacy_strict = 0;
+  locked = ui_settings_apply_policy(&m, &pol);
+  show_model(&m, locked, 0, 0);
+  ok = ok && !IsWindowEnabled(g_st.write) && !IsWindowEnabled(g_st.chk_privacy) &&
+       SendMessageW(g_st.write, CB_GETCURSEL, 0, 0) == 0 &&
+       SendMessageW(g_st.chk_privacy, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+       GetWindowTextLengthW(g_st.note_write) > 0 && GetWindowTextLengthW(g_st.note_privacy) > 0;
+  return ok ? 1 : 0;
+}
+
 /* --test-windows: the security controls exist, and a policy lock disables them and shows the policy value. The
    controls are driven with a synthetic model and policy; nothing is read from or written to the machine. */
 int ui_settings_security_smoke(void)
@@ -464,7 +576,7 @@ int ui_settings_security_smoke(void)
   /* the read-only WebClient status text */
   webclient_refresh();
   ok = ok && GetWindowTextLengthW(g_st.val_wc) > 0;
-  return ok ? 1 : 0;
+  return ok && settings_r17_smoke() ? 1 : 0;
 }
 
 void ui_settings_on_reply(int kind, sd_err err, const sd_json *result)
@@ -485,12 +597,13 @@ static void place(HWND c, int x, int y, int w, int h)
 
 /* The pages of the tab control (General, Security, Updates). The controls are siblings of the tab; a page shows
    its own controls and hides the others. */
-enum { ST_PAGE_GENERAL = 0, ST_PAGE_SECURITY, ST_PAGE_UPDATES, ST_PAGE_COUNT };
+enum { ST_PAGE_GENERAL = 0, ST_PAGE_SECURITY, ST_PAGE_NOTIFY, ST_PAGE_UPDATES, ST_PAGE_COUNT };
 
 static void show_page(int page)
 {
-  HWND general[12], security[6], updates[10];
-  const size_t ng = SD_COUNTOF(general), ns = SD_COUNTOF(security), nu = SD_COUNTOF(updates);
+  HWND general[16], security[8], notify[1 + SD_NOTIFY_COUNT], updates[10];
+  const size_t ng = SD_COUNTOF(general), ns = SD_COUNTOF(security), nn = SD_COUNTOF(notify),
+               nu = SD_COUNTOF(updates);
   size_t i;
   general[0] = g_st.lbl_lang;   general[1] = g_st.lang;       general[2] = g_st.note_lang;
   general[3] = g_st.notify;     general[4] = g_st.logon;      general[5] = g_st.lbl_back;
@@ -498,6 +611,12 @@ static void show_page(int page)
   general[9] = g_st.hint_cache; general[10] = g_st.lbl_wc;    general[11] = g_st.val_wc;
   security[0] = g_st.chk_openssh; security[1] = g_st.note_openssh; security[2] = g_st.chk_putty;
   security[3] = g_st.note_putty;  security[4] = g_st.chk_roam;     security[5] = g_st.hint_roam;
+  security[6] = g_st.chk_privacy; security[7] = g_st.note_privacy;
+  general[12] = g_st.agent_logon; general[13] = g_st.lbl_write;    general[14] = g_st.write;
+  general[15] = g_st.note_write;
+  notify[0] = g_st.hint_kinds;
+  for (i = 0; i < SD_NOTIFY_COUNT; i++)
+    notify[1 + i] = g_st.kind[i];
   updates[0] = g_st.grp_upd;      updates[1] = g_st.lbl_channel;   updates[2] = g_st.channel;
   updates[3] = g_st.note_policy;  updates[4] = g_st.upd_status;    updates[5] = g_st.upd_stale;
   updates[6] = g_st.btn_check;    updates[7] = g_st.btn_install;   updates[8] = g_st.btn_notes;
@@ -506,6 +625,8 @@ static void show_page(int page)
     if (general[i]) ShowWindow(general[i], page == ST_PAGE_GENERAL ? SW_SHOW : SW_HIDE);
   for (i = 0; i < ns; i++)
     if (security[i]) ShowWindow(security[i], page == ST_PAGE_SECURITY ? SW_SHOW : SW_HIDE);
+  for (i = 0; i < nn; i++)
+    if (notify[i]) ShowWindow(notify[i], page == ST_PAGE_NOTIFY ? SW_SHOW : SW_HIDE);
   for (i = 0; i < nu; i++)
     if (updates[i]) ShowWindow(updates[i], page == ST_PAGE_UPDATES ? SW_SHOW : SW_HIDE);
 }
@@ -514,7 +635,7 @@ static void layout(HWND hwnd)
 {
   RECT rc, ir;
   int m, rh, gap, W, H, y, lw, cw, x, bw1, bw2, by, sh, note_h, bw, xp, x0, pw, nh, tabh;
-  int lw_a, lw_b, lw_c, lw_d;
+  int lw_a, lw_b, lw_c, lw_d, lw_e, k;
   if (!g_st.lang)
     return;
   GetClientRect(hwnd, &rc);
@@ -534,6 +655,8 @@ static void layout(HWND hwnd)
   if (lw_b > lw) lw = lw_b;
   if (lw_c > lw) lw = lw_c;
   if (lw_d > lw) lw = lw_d;
+  lw_e = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_DEFAULT));
+  if (lw_e > lw) lw = lw_e;
   lw += dpx(12);
   cw = dpx(260);
 
@@ -557,9 +680,17 @@ static void layout(HWND hwnd)
   place(g_st.notify, x0, y, pw, rh);
   y += rh + gap / 2;
   place(g_st.logon, x0, y, pw, rh);
+  y += rh + gap / 2;
+  place(g_st.agent_logon, x0, y, pw, rh);
   y += rh + gap;
   place(g_st.lbl_back, x0, y + dpx(4), lw, rh);
   place(g_st.backend, x0 + lw, y, cw, dpx(200));
+  y += rh + gap;
+  place(g_st.lbl_write, x0, y + dpx(4), lw, rh);
+  place(g_st.write, x0 + lw, y, cw, dpx(200));
+  SendMessageW(g_st.write, CB_SETDROPPEDWIDTH, (WPARAM)(pw - lw > cw ? pw - lw : cw), 0);
+  xp = x0 + lw + cw + gap;
+  place(g_st.note_write, xp, y + dpx(4), x0 + pw - xp, rh);
   y += rh + gap;
   place(g_st.lbl_cache, x0, y + dpx(4), lw, rh);
   place(g_st.cache, x0 + lw, y, dpx(100), rh);
@@ -582,6 +713,19 @@ static void layout(HWND hwnd)
   place(g_st.chk_roam, x0, y, pw, rh);
   y += rh;
   place(g_st.hint_roam, x0 + dpx(20), y, pw - dpx(20), note_h);
+  y += note_h + gap;
+  place(g_st.chk_privacy, x0, y, pw, rh);
+  y += rh;
+  place(g_st.note_privacy, x0 + dpx(20), y, pw - dpx(20), sh);
+
+  /* Notifications */
+  y = m + ir.top + gap;
+  place(g_st.hint_kinds, x0, y, pw, note_h);
+  y += note_h + gap / 2;
+  for (k = 0; k < SD_NOTIFY_COUNT; k++) {
+    place(g_st.kind[k], x0, y, pw, rh);
+    y += rh + 2;
+  }
 
   /* Updates */
   y = m + ir.top + gap;
@@ -617,6 +761,8 @@ static void on_command(WORD id, WORD code)
 {
   if (id == ST_ID_SAVE && code == BN_CLICKED)
     on_save();
+  else if (id == ST_ID_NOTIFY && code == BN_CLICKED)
+    kinds_follow_master();
   else if (id == ST_ID_CANCEL && code == BN_CLICKED)
     DestroyWindow(g_st.wnd);
   else if (id == ST_ID_UPD_CHECK && code == BN_CLICKED)
@@ -637,6 +783,7 @@ static void create_children(HWND hwnd)
 {
   TCITEMW ti;
   static const sd_msg_id tabs[ST_PAGE_COUNT] = { SD_MSG_UI_SETTINGS_TAB_GENERAL, SD_MSG_UI_SETTINGS_TAB_SECURITY,
+                                                 SD_MSG_UI_SETTINGS_TAB_NOTIFICATIONS,
                                                  SD_MSG_UI_SETTINGS_GROUP_UPDATES };
   int i;
   g_st.tab = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS, 0, 0, 10,
@@ -658,6 +805,20 @@ static void create_children(HWND hwnd)
                              ST_ID_CHK_ROAM, hwnd);
   g_st.hint_roam = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_ROAM_HINT), SS_LEFT | SS_NOPREFIX,
                               ST_ID_HINT_ROAM, hwnd);
+  g_st.agent_logon = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_AGENT_LOGON),
+                                WS_TABSTOP | BS_AUTOCHECKBOX, ST_ID_AGENT_LOGON, hwnd);
+  g_st.lbl_write = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_DEFAULT), SS_LEFT | SS_NOPREFIX,
+                              ST_ID_LBL_WRITE, hwnd);
+  g_st.write = make_child(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, ST_ID_WRITE, hwnd);
+  g_st.note_write = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_WRITE, hwnd);
+  g_st.chk_privacy = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_LOG_PRIVACY),
+                                WS_TABSTOP | BS_AUTOCHECKBOX, ST_ID_CHK_PRIVACY, hwnd);
+  g_st.note_privacy = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_PRIVACY, hwnd);
+  g_st.hint_kinds = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_NOTIFY_HINT), SS_LEFT | SS_NOPREFIX,
+                               ST_ID_HINT_KINDS, hwnd);
+  for (i = 0; i < SD_NOTIFY_COUNT; i++)
+    g_st.kind[i] = make_child(L"BUTTON", sd_l10n_get(k_kind_label[i]), WS_TABSTOP | BS_AUTOCHECKBOX,
+                              ST_ID_KIND_BASE + i, hwnd);
   g_st.lbl_wc = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_WEBCLIENT), SS_LEFT | SS_NOPREFIX,
                            ST_ID_LBL_WC, hwnd);
   g_st.val_wc = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_VAL_WC, hwnd);

@@ -254,3 +254,44 @@ SD_TEST(json_escape_and_mount_params)
   SD_CHECK_EQ_INT(ui_mount_params_json(&p, 1, "E:", 0, NULL, params, 20), SD_E_INVALID_PARAM);
   SD_CHECK(params[0] == 0);
 }
+
+SD_TEST(profile_editor_write_mode_shows_the_effective_default)
+{
+  sd_profile p;
+  sd_settings s;
+  int locked = 7, shown;
+  sd_profile_defaults(&p);
+  sd_settings_defaults(&s);
+  SD_CHECK_EQ_INT(p.write_mode_set, 0);
+
+  /* an unset profile shows the global default, not a fixed through */
+  shown = ui_pform_write_mode_shown(&p, &s, 0, &locked);
+  SD_CHECK_EQ_INT(shown, SD_PROFILE_WRITE_THROUGH);
+  SD_CHECK_EQ_INT(locked, 0);
+  s.default_write_mode = SD_PROFILE_WRITE_BEHIND;
+  shown = ui_pform_write_mode_shown(&p, &s, 0, &locked);
+  SD_CHECK_EQ_INT(shown, SD_PROFILE_WRITE_BEHIND);
+
+  /* leaving the list alone keeps the key absent; changing it makes it explicit */
+  ui_pform_write_mode_commit(&p, shown, shown, locked);
+  SD_CHECK_EQ_INT(p.write_mode_set, 0);
+  ui_pform_write_mode_commit(&p, shown, SD_PROFILE_WRITE_THROUGH, locked);
+  SD_CHECK_EQ_INT(p.write_mode_set, 1);
+  SD_CHECK_EQ_INT(p.write_mode, SD_PROFILE_WRITE_THROUGH);
+  shown = ui_pform_write_mode_shown(&p, &s, 0, &locked);
+  SD_CHECK_EQ_INT(shown, SD_PROFILE_WRITE_THROUGH);               /* explicit wins over the default */
+
+  /* ForceWriteThrough: the default is clamped, an explicit behind shows through, and nothing is written */
+  sd_profile_defaults(&p);
+  shown = ui_pform_write_mode_shown(&p, &s, 1, &locked);
+  SD_CHECK_EQ_INT(shown, SD_PROFILE_WRITE_THROUGH);
+  SD_CHECK_EQ_INT(locked, 1);
+  ui_pform_write_mode_commit(&p, shown, SD_PROFILE_WRITE_BEHIND, locked);
+  SD_CHECK_EQ_INT(p.write_mode_set, 0);
+  p.write_mode = SD_PROFILE_WRITE_BEHIND;
+  p.write_mode_set = 1;
+  shown = ui_pform_write_mode_shown(&p, &s, 1, &locked);
+  SD_CHECK_EQ_INT(shown, SD_PROFILE_WRITE_THROUGH);
+  ui_pform_write_mode_commit(&p, shown, SD_PROFILE_WRITE_THROUGH, locked);
+  SD_CHECK_EQ_INT(p.write_mode, SD_PROFILE_WRITE_BEHIND);          /* the file's value is kept */
+}
