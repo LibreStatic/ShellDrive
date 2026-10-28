@@ -161,6 +161,15 @@ static const sd_bn_limb k_p256_gx_m[4] = {
 static const sd_bn_limb k_p256_gy_m[4] = {
   0xddf25357ce95560aull, 0x8b4ab8e4ba19e45cull, 0xd2e88688dd21f325ull, 0x8571ff1825885d85ull,
 };
+static const sd_bn_limb k_p256_b[4] = {
+  0x3bce3c3e27d2604bull, 0x651d06b0cc53b0f6ull, 0xb3ebbd55769886bcull, 0x5ac635d8aa3a93e7ull,
+};
+static const sd_bn_limb k_p256_gx[4] = {
+  0xf4a13945d898c296ull, 0x77037d812deb33a0ull, 0xf8bce6e563a440f2ull, 0x6b17d1f2e12c4247ull,
+};
+static const sd_bn_limb k_p256_gy[4] = {
+  0xcbb6406837bf51f5ull, 0x2bce33576b315eceull, 0x8ee7eb4a7c0f9e16ull, 0x4fe342e2fe1a7f9bull,
+};
 #define K_P256_LIMBS 4
 static const sd_bn_limb k_p384_p[6] = {
   0x00000000ffffffffull, 0xffffffff00000000ull, 0xfffffffffffffffeull, 0xffffffffffffffffull,
@@ -203,6 +212,18 @@ static const sd_bn_limb k_p384_gx_m[6] = {
 static const sd_bn_limb k_p384_gy_m[6] = {
   0x23043dad4b03a4feull, 0xa1bfa8bf7bb4a9acull, 0x8bade7562e83b050ull, 0xc6c3521968f4ffd9ull,
   0xdd8002263969a840ull, 0x2b78abc25a15c5e9ull,
+};
+static const sd_bn_limb k_p384_b[6] = {
+  0x2a85c8edd3ec2aefull, 0xc656398d8a2ed19dull, 0x0314088f5013875aull, 0x181d9c6efe814112ull,
+  0x988e056be3f82d19ull, 0xb3312fa7e23ee7e4ull,
+};
+static const sd_bn_limb k_p384_gx[6] = {
+  0x3a545e3872760ab7ull, 0x5502f25dbf55296cull, 0x59f741e082542a38ull, 0x6e1d3b628ba79b98ull,
+  0x8eb1c71ef320ad74ull, 0xaa87ca22be8b0537ull,
+};
+static const sd_bn_limb k_p384_gy[6] = {
+  0x7a431d7c90ea0e5full, 0x0a60b1ce1d7e819dull, 0xe9da3113b5f0b8c0ull, 0xf8f41dbd289a147cull,
+  0x5d9e98bf9292dc29ull, 0x3617de4a96262c6full,
 };
 #define K_P384_LIMBS 6
 static const sd_bn_limb k_p521_p[9] = {
@@ -257,6 +278,21 @@ static const sd_bn_limb k_p521_gy_m[9] = {
   0x164bf7394caf7a13ull, 0x340bd7de8b939f33ull, 0xeccc7aa224abcda2ull, 0x022e452fda163e8dull,
   0x00000000000001e0ull,
 };
+static const sd_bn_limb k_p521_b[9] = {
+  0xef451fd46b503f00ull, 0x3573df883d2c34f1ull, 0x1652c0bd3bb1bf07ull, 0x56193951ec7e937bull,
+  0xb8b489918ef109e1ull, 0xa2da725b99b315f3ull, 0x929a21a0b68540eeull, 0x953eb9618e1c9a1full,
+  0x0000000000000051ull,
+};
+static const sd_bn_limb k_p521_gx[9] = {
+  0xf97e7e31c2e5bd66ull, 0x3348b3c1856a429bull, 0xfe1dc127a2ffa8deull, 0xa14b5e77efe75928ull,
+  0xf828af606b4d3dbaull, 0x9c648139053fb521ull, 0x9e3ecb662395b442ull, 0x858e06b70404e9cdull,
+  0x00000000000000c6ull,
+};
+static const sd_bn_limb k_p521_gy[9] = {
+  0x88be94769fd16650ull, 0x353c7086a272c240ull, 0xc550b9013fad0761ull, 0x97ee72995ef42640ull,
+  0x17afbd17273e662cull, 0x98f54449579b4468ull, 0x5c8a5fb42c7d1bd9ull, 0x39296a789a3bc004ull,
+  0x0000000000000118ull,
+};
 #define K_P521_LIMBS 9
 #endif
 
@@ -303,6 +339,18 @@ static const sd_bn_limb k_p256_gy_m[8] = {
   0xce95560au, 0xddf25357u, 0xba19e45cu, 0x8b4ab8e4u, 0xdd21f325u, 0xd2e88688u,
   0x25885d85u, 0x8571ff18u,
 };
+static const sd_bn_limb k_p256_b[8] = {
+  0x27d2604bu, 0x3bce3c3eu, 0xcc53b0f6u, 0x651d06b0u, 0x769886bcu, 0xb3ebbd55u,
+  0xaa3a93e7u, 0x5ac635d8u,
+};
+static const sd_bn_limb k_p256_gx[8] = {
+  0xd898c296u, 0xf4a13945u, 0x2deb33a0u, 0x77037d81u, 0x63a440f2u, 0xf8bce6e5u,
+  0xe12c4247u, 0x6b17d1f2u,
+};
+static const sd_bn_limb k_p256_gy[8] = {
+  0x37bf51f5u, 0xcbb64068u, 0x6b315eceu, 0x2bce3357u, 0x7c0f9e16u, 0x8ee7eb4au,
+  0xfe1a7f9bu, 0x4fe342e2u,
+};
 #define K_P256_LIMBS 8
 static const sd_bn_limb k_p384_p[12] = {
   0xffffffffu, 0x00000000u, 0x00000000u, 0xffffffffu, 0xfffffffeu, 0xffffffffu,
@@ -345,6 +393,18 @@ static const sd_bn_limb k_p384_gx_m[12] = {
 static const sd_bn_limb k_p384_gy_m[12] = {
   0x4b03a4feu, 0x23043dadu, 0x7bb4a9acu, 0xa1bfa8bfu, 0x2e83b050u, 0x8bade756u,
   0x68f4ffd9u, 0xc6c35219u, 0x3969a840u, 0xdd800226u, 0x5a15c5e9u, 0x2b78abc2u,
+};
+static const sd_bn_limb k_p384_b[12] = {
+  0xd3ec2aefu, 0x2a85c8edu, 0x8a2ed19du, 0xc656398du, 0x5013875au, 0x0314088fu,
+  0xfe814112u, 0x181d9c6eu, 0xe3f82d19u, 0x988e056bu, 0xe23ee7e4u, 0xb3312fa7u,
+};
+static const sd_bn_limb k_p384_gx[12] = {
+  0x72760ab7u, 0x3a545e38u, 0xbf55296cu, 0x5502f25du, 0x82542a38u, 0x59f741e0u,
+  0x8ba79b98u, 0x6e1d3b62u, 0xf320ad74u, 0x8eb1c71eu, 0xbe8b0537u, 0xaa87ca22u,
+};
+static const sd_bn_limb k_p384_gy[12] = {
+  0x90ea0e5fu, 0x7a431d7cu, 0x1d7e819du, 0x0a60b1ceu, 0xb5f0b8c0u, 0xe9da3113u,
+  0x289a147cu, 0xf8f41dbdu, 0x9292dc29u, 0x5d9e98bfu, 0x96262c6fu, 0x3617de4au,
 };
 #define K_P384_LIMBS 12
 static const sd_bn_limb k_p521_p[17] = {
@@ -398,6 +458,21 @@ static const sd_bn_limb k_p521_gy_m[17] = {
   0x28460e4au, 0x3b4fe8b3u, 0x20445f4au, 0x43513961u, 0xb09a9e38u, 0x809fd683u,
   0x2062a85cu, 0x4caf7a13u, 0x164bf739u, 0x8b939f33u, 0x340bd7deu, 0x24abcda2u,
   0xeccc7aa2u, 0xda163e8du, 0x022e452fu, 0x3c4d1de0u, 0x000000b5u,
+};
+static const sd_bn_limb k_p521_b[17] = {
+  0x6b503f00u, 0xef451fd4u, 0x3d2c34f1u, 0x3573df88u, 0x3bb1bf07u, 0x1652c0bdu,
+  0xec7e937bu, 0x56193951u, 0x8ef109e1u, 0xb8b48991u, 0x99b315f3u, 0xa2da725bu,
+  0xb68540eeu, 0x929a21a0u, 0x8e1c9a1fu, 0x953eb961u, 0x00000051u,
+};
+static const sd_bn_limb k_p521_gx[17] = {
+  0xc2e5bd66u, 0xf97e7e31u, 0x856a429bu, 0x3348b3c1u, 0xa2ffa8deu, 0xfe1dc127u,
+  0xefe75928u, 0xa14b5e77u, 0x6b4d3dbau, 0xf828af60u, 0x053fb521u, 0x9c648139u,
+  0x2395b442u, 0x9e3ecb66u, 0x0404e9cdu, 0x858e06b7u, 0x000000c6u,
+};
+static const sd_bn_limb k_p521_gy[17] = {
+  0x9fd16650u, 0x88be9476u, 0xa272c240u, 0x353c7086u, 0x3fad0761u, 0xc550b901u,
+  0x5ef42640u, 0x97ee7299u, 0x273e662cu, 0x17afbd17u, 0x579b4468u, 0x98f54449u,
+  0x2c7d1bd9u, 0x5c8a5fb4u, 0x9a3bc004u, 0x39296a78u, 0x00000118u,
 };
 #define K_P521_LIMBS 17
 #endif

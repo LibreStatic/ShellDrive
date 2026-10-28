@@ -1,7 +1,9 @@
 /* ECDH and ECDSA over NIST P-256, P-384 and P-521 (FIPS 186-4, SEC 1 v2, RFC 5656 for SSH; 01 §2.8.2).
  *
- * Field and scalar arithmetic: the generic Montgomery engine of bn.c with a fixed limb count per curve
- * (constants in pk_consts.inc, generated from RFC 5903 by gen_pk_consts.py).
+ * Field arithmetic: normal-form limbs; products are reduced by the curve-specific NIST reductions of this file
+ * (FIPS 186-4 D.2 for P-256 and P-384, a Mersenne-type fold for P-521; section "field multiplication").
+ * Scalar arithmetic (group order n): the generic Montgomery engine of bn.c with a fixed limb count per curve.
+ * Constants: pk_consts.inc, generated from RFC 5903 by gen_pk_consts.py.
  * Points: homogeneous projective coordinates with the complete addition (Algorithm 4) and doubling
  * (Algorithm 6) formulas for a = -3 of Renes, Costello and Batina, "Complete addition formulas for prime
  * order elliptic curves" (EUROCRYPT 2016): no exceptional cases, so no branches on point values.
@@ -15,6 +17,7 @@
 #include "pk_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_crypto/sd_ct.h"
+#include "sd_ct64.h"
 
 #include "pk_consts.inc"
 
@@ -24,22 +27,66 @@
 #define EC_MAXL 17
 #endif
 
+/* Field representation per curve and limb size (chosen at compile time; see the M7 notes in docs/dev/m7-notes.md).
+   1: normal form, NIST reduction (fe_mul_nist). 0: Montgomery form, CIOS (fe_mul_mont), the previous path.
+   Both paths are compiled into every build and tested on every curve. */
+#if SD_LIMB_BITS == 64
+#define EC_NIST_P256 0
+#define EC_NIST_P384 0
+#define EC_NIST_P521 1
+#else
+#define EC_NIST_P256 0
+#define EC_NIST_P384 0
+#define EC_NIST_P521 1
+#endif
+
+#if EC_NIST_P256
+#define P256_B k_p256_b
+#define P256_GX k_p256_gx
+#define P256_GY k_p256_gy
+#else
+#define P256_B k_p256_b_m
+#define P256_GX k_p256_gx_m
+#define P256_GY k_p256_gy_m
+#endif
+#if EC_NIST_P384
+#define P384_B k_p384_b
+#define P384_GX k_p384_gx
+#define P384_GY k_p384_gy
+#else
+#define P384_B k_p384_b_m
+#define P384_GX k_p384_gx_m
+#define P384_GY k_p384_gy_m
+#endif
+#if EC_NIST_P521
+#define P521_B k_p521_b
+#define P521_GX k_p521_gx
+#define P521_GY k_p521_gy
+#else
+#define P521_B k_p521_b_m
+#define P521_GX k_p521_gx_m
+#define P521_GY k_p521_gy_m
+#endif
+
 typedef struct ec_curve {
   sd_curve id;
   size_t nl, flen;
   uint32_t bits;             /* bits of p and of n */
   sd_hash_alg hash;
-  const sd_limb *p, *p_r2, *p_one, *n, *n_r2, *n_one, *b_m, *gx_m, *gy_m;
+  int nist;                  /* 1: normal form and fe_mul_nist; 0: Montgomery form and fe_mul_mont */
+  /* p, p_r2, p_one and p_m0i: Montgomery constants (p_r2, p_one, p_m0i are also used by the Montgomery path
+     and the tests). b, gx, gy: in the curve's field representation. */
+  const sd_limb *p, *p_r2, *p_one, *n, *n_r2, *n_one, *b, *gx, *gy;
   sd_limb p_m0i, n_m0i;
 } ec_curve;
 
 static const ec_curve k_curves[3] = {
-  { SD_CURVE_P256, K_P256_LIMBS, 32, 256, SD_HASH_SHA256, k_p256_p, k_p256_p_r2, k_p256_p_one, k_p256_n,
-    k_p256_n_r2, k_p256_n_one, k_p256_b_m, k_p256_gx_m, k_p256_gy_m, K_P256_P_M0I, K_P256_N_M0I },
-  { SD_CURVE_P384, K_P384_LIMBS, 48, 384, SD_HASH_SHA384, k_p384_p, k_p384_p_r2, k_p384_p_one, k_p384_n,
-    k_p384_n_r2, k_p384_n_one, k_p384_b_m, k_p384_gx_m, k_p384_gy_m, K_P384_P_M0I, K_P384_N_M0I },
-  { SD_CURVE_P521, K_P521_LIMBS, 66, 521, SD_HASH_SHA512, k_p521_p, k_p521_p_r2, k_p521_p_one, k_p521_n,
-    k_p521_n_r2, k_p521_n_one, k_p521_b_m, k_p521_gx_m, k_p521_gy_m, K_P521_P_M0I, K_P521_N_M0I },
+  { SD_CURVE_P256, K_P256_LIMBS, 32, 256, SD_HASH_SHA256, EC_NIST_P256, k_p256_p, k_p256_p_r2, k_p256_p_one,
+    k_p256_n, k_p256_n_r2, k_p256_n_one, P256_B, P256_GX, P256_GY, K_P256_P_M0I, K_P256_N_M0I },
+  { SD_CURVE_P384, K_P384_LIMBS, 48, 384, SD_HASH_SHA384, EC_NIST_P384, k_p384_p, k_p384_p_r2, k_p384_p_one,
+    k_p384_n, k_p384_n_r2, k_p384_n_one, P384_B, P384_GX, P384_GY, K_P384_P_M0I, K_P384_N_M0I },
+  { SD_CURVE_P521, K_P521_LIMBS, 66, 521, SD_HASH_SHA512, EC_NIST_P521, k_p521_p, k_p521_p_r2, k_p521_p_one,
+    k_p521_n, k_p521_n_r2, k_p521_n_one, P521_B, P521_GX, P521_GY, K_P521_P_M0I, K_P521_N_M0I },
 };
 
 static const ec_curve *curve_get(sd_curve c)
@@ -60,24 +107,310 @@ struct sd_ec_key {
   uint8_t pub[SD_EC_MAX_POINT_LEN];
 };
 
-#define MUL(r, a, b) sd_mp_montmul((r), (a), (b), c->p, c->p_m0i, c->nl)
+/* ---- field multiplication (01 §2.8.2; FIPS 186-4 D.2 for P-256 and P-384, Mersenne-type for P-521) ----
+ * Field elements are normal-form limbs in [0, p). A product is a schoolbook sd_mp_mul over the limbs; the
+ * reduction then works on 32-bit words whatever the limb size, so both builds run the same code. The
+ * reductions are Solinas-type: 2^256 = 2^224 - 2^192 - 2^96 + 1 (P-256, one pass as in D.2.3),
+ * 2^384 = 2^128 + 2^96 - 2^32 + 1 (P-384, two folds), 2^521 = 1 (P-521, one fold). Sums are signed 64-bit
+ * additions of 32-bit words with constant shifts: no multiplication, no secret-dependent branch, index or
+ * division. Every result is brought into [0, p) by conditional subtractions with masks.
+ * Operands must be below 2^(bits) of the curve field (true for every operand: all are reduced), and the
+ * P-521 fold assumes operands below 2^521. */
+#define EC_W32_MAX  17             /* 32-bit words of a P-521 field element */
+#define EC_PROD_W32 36             /* 32-bit words of a product (2 * 9 limbs * 2) */
+
+/* p, 2p, 4p, 5p, 8p (P-256, 9 words) and p (P-384 with a zero top word; P-521, 17 words), least significant
+   word first. Generated from the field primes (gen_pk_consts.py documents the primes). */
+static const uint32_t k_w32_p256_1p[9] = {
+  0xffffffffu, 0xffffffffu, 0xffffffffu, 0x00000000u, 0x00000000u, 0x00000000u,
+  0x00000001u, 0xffffffffu, 0x00000000u,
+};
+static const uint32_t k_w32_p256_2p[9] = {
+  0xfffffffeu, 0xffffffffu, 0xffffffffu, 0x00000001u, 0x00000000u, 0x00000000u,
+  0x00000002u, 0xfffffffeu, 0x00000001u,
+};
+static const uint32_t k_w32_p256_4p[9] = {
+  0xfffffffcu, 0xffffffffu, 0xffffffffu, 0x00000003u, 0x00000000u, 0x00000000u,
+  0x00000004u, 0xfffffffcu, 0x00000003u,
+};
+static const uint32_t k_w32_p256_5p[9] = {
+  0xfffffffbu, 0xffffffffu, 0xffffffffu, 0x00000004u, 0x00000000u, 0x00000000u,
+  0x00000005u, 0xfffffffbu, 0x00000004u,
+};
+static const uint32_t k_w32_p256_8p[9] = {
+  0xfffffff8u, 0xffffffffu, 0xffffffffu, 0x00000007u, 0x00000000u, 0x00000000u,
+  0x00000008u, 0xfffffff8u, 0x00000007u,
+};
+static const uint32_t k_w32_p384_p[13] = {
+  0xffffffffu, 0x00000000u, 0x00000000u, 0xffffffffu, 0xfffffffeu, 0xffffffffu,
+  0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+  0x00000000u,
+};
+static const uint32_t k_w32_p521_p[17] = {
+  0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+  0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+  0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0x000001ffu,
+};
+
+static void w32_from_limbs(uint32_t *w, const sd_limb *a, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) {
+#if SD_LIMB_BITS == 64
+    w[2 * i] = (uint32_t)a[i];
+    w[2 * i + 1] = (uint32_t)(a[i] >> 32);
+#else
+    w[i] = (uint32_t)a[i];
+#endif
+  }
+}
+
+static void w32_to_limbs(sd_limb *a, const uint32_t *w, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) {
+#if SD_LIMB_BITS == 64
+    a[i] = (uint64_t)w[2 * i] | ((uint64_t)w[2 * i + 1] << 32);
+#else
+    a[i] = w[i];
+#endif
+  }
+}
+
+/* Carry propagation of signed column sums into n words. Returns the signed carry out of the top word. */
+static int64_t w32_norm(uint32_t *out, const int64_t *acc, size_t n)
+{
+  int64_t c = 0;
+  size_t i;
+  SD_CT_NO_VECTOR
+  for (i = 0; i < n; i++) {
+    int64_t v = acc[i] + c;
+    out[i] = (uint32_t)v;
+    c = v >> 32;
+  }
+  return c;
+}
+
+/* x = x - m if x >= m, for x < 2m (n words). Constant time. */
+static void w32_csub(uint32_t *x, const uint32_t *m, size_t n)
+{
+  uint32_t t[EC_W32_MAX], keep, borrow = 0;
+  size_t i;
+  SD_CT_NO_VECTOR
+  for (i = 0; i < n; i++) {
+    int64_t d = (int64_t)x[i] - (int64_t)m[i] - (int64_t)borrow;
+    t[i] = (uint32_t)d;
+    borrow = (uint32_t)(((uint64_t)d >> 63) & 1u);
+  }
+  keep = (uint32_t)0 - (borrow ^ 1u);       /* all ones when x >= m */
+  SD_CT_NO_VECTOR
+  for (i = 0; i < n; i++)
+    x[i] = (t[i] & keep) | (x[i] & ~keep);
+}
+
+/* P-256, FIPS 186-4 D.2.3: c0..c15 are the product words. Vector j lists, least significant word first,
+   which c_k fills word k (index 16 is a zero word). The result is s0 + 2 s1 + 2 s2 + s3 + s4 - s5 - s6 - s7
+   - s8 (mod p). The sum lies in (-4 2^256, 7 2^256); 5p makes it non-negative and below 13p. */
+static void red_p256(uint32_t *r, const uint32_t *t)
+{
+  static const uint8_t s0[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+  static const uint8_t s1[8] = {16, 16, 16, 11, 12, 13, 14, 15};
+  static const uint8_t s2[8] = {16, 16, 16, 12, 13, 14, 15, 16};
+  static const uint8_t s3[8] = {8, 9, 10, 16, 16, 16, 14, 15};
+  static const uint8_t s4[8] = {9, 10, 11, 13, 14, 15, 13, 8};
+  static const uint8_t s5[8] = {11, 12, 13, 16, 16, 16, 8, 10};
+  static const uint8_t s6[8] = {12, 13, 14, 15, 16, 16, 9, 11};
+  static const uint8_t s7[8] = {13, 14, 15, 8, 9, 10, 16, 12};
+  static const uint8_t s8[8] = {14, 15, 16, 9, 10, 11, 16, 13};
+  uint32_t tz[17], x[9];
+  int64_t acc[9];
+  size_t k;
+  memcpy(tz, t, 16 * sizeof(uint32_t));
+  tz[16] = 0;
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 9; k++)
+    acc[k] = (int64_t)k_w32_p256_5p[k];
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 8; k++) {
+    acc[k] += (int64_t)tz[s0[k]];
+    acc[k] += (int64_t)tz[s1[k]] << 1;
+    acc[k] += (int64_t)tz[s2[k]] << 1;
+    acc[k] += (int64_t)tz[s3[k]];
+    acc[k] += (int64_t)tz[s4[k]];
+    acc[k] -= (int64_t)tz[s5[k]];
+    acc[k] -= (int64_t)tz[s6[k]];
+    acc[k] -= (int64_t)tz[s7[k]];
+    acc[k] -= (int64_t)tz[s8[k]];
+  }
+  (void)w32_norm(x, acc, 9);            /* 0 <= value < 13p < 2^260: nine words, no carry out */
+  w32_csub(x, k_w32_p256_8p, 9);
+  w32_csub(x, k_w32_p256_4p, 9);
+  w32_csub(x, k_w32_p256_2p, 9);
+  w32_csub(x, k_w32_p256_1p, 9);
+  memcpy(r, x, 8 * sizeof(uint32_t));
+}
+
+/* P-384: 2^384 = 2^128 + 2^96 - 2^32 + 1 (mod p). Fold the high 12 words twice (the first fold leaves a value
+   below 2^513, the second below 2^385), then once more for the single carry word, and subtract p once.
+   Each fold is a signed sum of four shifted copies of the high words. */
+static void red_p384(uint32_t *r, const uint32_t *t)
+{
+  uint32_t tz[24], w[17], z[13], y[13];
+  int64_t acc[17], acc2[13], acc3[12], hh, t3;
+  size_t i, k;
+  memcpy(tz, t, 24 * sizeof(uint32_t));
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 17; k++)
+    acc[k] = (k < 12) ? (int64_t)tz[k] : 0;
+  SD_CT_NO_VECTOR
+  for (i = 0; i < 12; i++) {
+    hh = (int64_t)tz[12 + i];
+    acc[i + 4] += hh;
+    acc[i + 3] += hh;
+    acc[i + 1] -= hh;
+    acc[i] += hh;
+  }
+  (void)w32_norm(w, acc, 17);
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 13; k++)
+    acc2[k] = (k < 12) ? (int64_t)w[k] : 0;
+  SD_CT_NO_VECTOR
+  for (i = 0; i < 5; i++) {
+    hh = (int64_t)w[12 + i];
+    acc2[i + 4] += hh;
+    acc2[i + 3] += hh;
+    acc2[i + 1] -= hh;
+    acc2[i] += hh;
+  }
+  (void)w32_norm(z, acc2, 13);          /* z[12] is 0 or 1 */
+  t3 = (int64_t)z[12];
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 12; k++)
+    acc3[k] = (int64_t)z[k];
+  acc3[0] += t3;
+  acc3[1] -= t3;
+  acc3[3] += t3;
+  acc3[4] += t3;
+  y[12] = (uint32_t)w32_norm(y, acc3, 12);  /* value < 2^384 + 2^129 < 2p */
+  w32_csub(y, k_w32_p384_p, 13);
+  memcpy(r, y, 12 * sizeof(uint32_t));
+}
+
+/* P-521: 2^521 = 1 (mod p). With V < 2^1042: V = lo + hi 2^521 gives lo + hi < 2^522; folding bit 521 once
+   more gives T < 2^521 + 2 < 2p, and one conditional subtraction of p finishes. */
+static void red_p521(uint32_t *r, const uint32_t *t)
+{
+  uint32_t lo[17], hi[17], s[17], top;
+  uint64_t v, cc = 0;
+  size_t k;
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 16; k++)
+    lo[k] = t[k];
+  lo[16] = t[16] & 0x1ffu;
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 17; k++)
+    hi[k] = (t[16 + k] >> 9) | (t[17 + k] << 23);
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 17; k++) {
+    v = (uint64_t)lo[k] + hi[k] + cc;
+    s[k] = (uint32_t)v;
+    cc = v >> 32;
+  }
+  top = s[16] >> 9;                     /* bit 521 of the sum */
+  s[16] &= 0x1ffu;
+  cc = top;
+  SD_CT_NO_VECTOR
+  for (k = 0; k < 17; k++) {
+    v = (uint64_t)s[k] + cc;
+    s[k] = (uint32_t)v;
+    cc = v >> 32;
+  }
+  w32_csub(s, k_w32_p521_p, 17);
+  memcpy(r, s, 17 * sizeof(uint32_t));
+  r[17] = 0;                            /* the 18th word of a 64-bit-limb element */
+}
+
+/* r = a * b mod p, normal form. r may alias a or b. */
+static void fe_mul_nist(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+{
+  sd_limb prod[2 * EC_MAXL];
+  uint32_t t[EC_PROD_W32], w[EC_PROD_W32];
+  sd_mp_mul(prod, a, c->nl, b, c->nl);
+  w32_from_limbs(t, prod, 2 * c->nl);
+  switch (c->id) {
+  case SD_CURVE_P256: red_p256(w, t); break;
+  case SD_CURVE_P384: red_p384(w, t); break;
+  default: red_p521(w, t); break;
+  }
+  w32_to_limbs(r, w, c->nl);
+}
+
+/* Montgomery product: r = a * b * R^-1 mod p (operands below p). */
+static void fe_mul_mont(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+{
+  sd_mp_montmul(r, a, b, c->p, c->p_m0i, c->nl);
+}
+
+/* Field product in the curve's representation. c->nist is a public table entry, not secret data. */
+static void fe_mul(const ec_curve *c, sd_limb *r, const sd_limb *a, const sd_limb *b)
+{
+  if (c->nist)
+    fe_mul_nist(c, r, a, b);
+  else
+    fe_mul_mont(c, r, a, b);
+}
+
+/* Plain value -> field representation, and back. */
+static void fe_to_rep(const ec_curve *c, sd_limb *r, const sd_limb *a)
+{
+  if (c->nist) {
+    memcpy(r, a, c->nl * sizeof(sd_limb));
+  } else {
+    sd_mp_montmul(r, a, c->p_r2, c->p, c->p_m0i, c->nl);   /* a R^2 R^-1 = a R */
+  }
+}
+
+static void fe_from_rep(const ec_curve *c, sd_limb *r, const sd_limb *a)
+{
+  if (c->nist) {
+    memcpy(r, a, c->nl * sizeof(sd_limb));
+  } else {
+    sd_limb one[EC_MAXL];
+    memset(one, 0, sizeof(one));
+    one[0] = 1;
+    sd_mp_montmul(r, a, one, c->p, c->p_m0i, c->nl);       /* a R R^-1 = a */
+    sd_secure_zero(one, sizeof(one));
+  }
+}
+
+#define MUL(r, a, b) fe_mul(c, (r), (a), (b))
 #define ADD(r, a, b) sd_mp_modadd((r), (a), (b), c->p, c->nl)
 #define SUB(r, a, b) sd_mp_modsub((r), (a), (b), c->p, c->nl)
 
 /* ---- points ---- */
 
+static void fe_one(const ec_curve *c, sd_limb *r)
+{
+  if (c->nist) {
+    memset(r, 0, c->nl * sizeof(sd_limb));
+    r[0] = 1;
+  } else {
+    memcpy(r, c->p_one, c->nl * sizeof(sd_limb));
+  }
+}
+
 static void pt_set_inf(const ec_curve *c, ec_pt *r)
 {
   memset(r, 0, sizeof(*r));
-  memcpy(r->y, c->p_one, c->nl * sizeof(sd_limb));
+  fe_one(c, r->y);
 }
 
 static void pt_set_g(const ec_curve *c, ec_pt *r)
 {
   memset(r, 0, sizeof(*r));
-  memcpy(r->x, c->gx_m, c->nl * sizeof(sd_limb));
-  memcpy(r->y, c->gy_m, c->nl * sizeof(sd_limb));
-  memcpy(r->z, c->p_one, c->nl * sizeof(sd_limb));
+  memcpy(r->x, c->gx, c->nl * sizeof(sd_limb));
+  memcpy(r->y, c->gy, c->nl * sizeof(sd_limb));
+  fe_one(c, r->z);
 }
 
 /* RCB Algorithm 4 (complete addition, a = -3). r may alias p or q. */
@@ -85,7 +418,7 @@ static void pt_add(const ec_curve *c, ec_pt *r, const ec_pt *p, const ec_pt *q)
 {
   sd_limb t0[EC_MAXL], t1[EC_MAXL], t2[EC_MAXL], t3[EC_MAXL], t4[EC_MAXL];
   sd_limb x3[EC_MAXL], y3[EC_MAXL], z3[EC_MAXL];
-  const sd_limb *b = c->b_m;
+  const sd_limb *b = c->b;
   MUL(t0, p->x, q->x);
   MUL(t1, p->y, q->y);
   MUL(t2, p->z, q->z);
@@ -139,7 +472,7 @@ static void pt_dbl(const ec_curve *c, ec_pt *r, const ec_pt *p)
 {
   sd_limb t0[EC_MAXL], t1[EC_MAXL], t2[EC_MAXL], t3[EC_MAXL];
   sd_limb x3[EC_MAXL], y3[EC_MAXL], z3[EC_MAXL];
-  const sd_limb *b = c->b_m;
+  const sd_limb *b = c->b;
   MUL(t0, p->x, p->x);
   MUL(t1, p->y, p->y);
   MUL(t2, p->z, p->z);
@@ -212,21 +545,20 @@ static void pt_mul(const ec_curve *c, ec_pt *r, const sd_limb *k, const ec_pt *p
   sd_secure_zero(&acc, sizeof(acc));
 }
 
-/* Affine coordinates in normal (non-Montgomery) form. Returns an all-ones mask unless p is infinity. */
+/* Affine coordinates (normal form). Returns an all-ones mask unless p is infinity. */
 static sd_limb pt_affine(const ec_curve *c, sd_limb *x, sd_limb *y, const ec_pt *p)
 {
-  sd_limb z[EC_MAXL], zi[EC_MAXL], one[EC_MAXL], work[SD_MP_MODINV_WORK(EC_MAXL)], ok;
+  sd_limb zn[EC_MAXL], zi[EC_MAXL], work[SD_MP_MODINV_WORK(EC_MAXL)], ok;
   size_t nl = c->nl;
-  memset(one, 0, sizeof(one));
-  one[0] = 1;
-  MUL(z, p->z, one);
-  ok = ~sd_mp_is_zero(z, nl);
-  (void)sd_mp_modinv_ct(zi, z, c->p, nl, work);
-  MUL(x, p->x, zi);          /* (X R) * Z^-1 * R^-1 = X / Z */
+  fe_from_rep(c, zn, p->z);  /* Z as a plain value */
+  ok = ~sd_mp_is_zero(zn, nl);
+  (void)sd_mp_modinv_ct(zi, zn, c->p, nl, work);
+  MUL(x, p->x, zi);          /* X * Z^-1 (Montgomery: (X R) * Z^-1 * R^-1) */
   if (y)
     MUL(y, p->y, zi);
-  sd_secure_zero(z, sizeof(z));
+  sd_secure_zero(zn, sizeof(zn));
   sd_secure_zero(zi, sizeof(zi));
+  sd_secure_zero(work, sizeof(work));
   return ok;
 }
 
@@ -249,9 +581,9 @@ static sd_err decode_point(const ec_curve *c, ec_pt *r, const uint8_t *in, size_
   if (sd_mp_vt_cmp(x, nl, c->p, nl) >= 0 || sd_mp_vt_cmp(y, nl, c->p, nl) >= 0)
     return SD_E_CRYPTO;
   memset(r, 0, sizeof(*r));
-  MUL(r->x, x, c->p_r2);
-  MUL(r->y, y, c->p_r2);
-  memcpy(r->z, c->p_one, nl * sizeof(sd_limb));
+  fe_to_rep(c, r->x, x);
+  fe_to_rep(c, r->y, y);
+  fe_one(c, r->z);
   /* y^2 == x^3 - 3x + b */
   MUL(lhs, r->y, r->y);
   MUL(t, r->x, r->x);
@@ -259,7 +591,7 @@ static sd_err decode_point(const ec_curve *c, ec_pt *r, const uint8_t *in, size_
   SUB(rhs, rhs, r->x);
   SUB(rhs, rhs, r->x);
   SUB(rhs, rhs, r->x);
-  ADD(rhs, rhs, c->b_m);
+  ADD(rhs, rhs, c->b);
   if (sd_mp_vt_cmp(lhs, nl, rhs, nl) != 0)
     return SD_E_CRYPTO;
   return SD_OK;
@@ -693,6 +1025,58 @@ sd_err sd_ec_test_dbl(sd_curve cid, const uint8_t *pa, uint8_t *out)
     return SD_E_CRYPTO;
   encode_point(c, out, x, y);
   return SD_OK;
+}
+
+/* Field multiplication: a, b are big-endian field_len bytes (inputs must be below the field bound of the
+   curve, see the field multiplication section); out receives the product mod p. Three implementations:
+   the NIST reduction (fe_mul), a bit-serial reference (sd_mp_mod of the schoolbook product), and the
+   previous Montgomery path (two montmul calls against R^2 mod p; inputs below p). */
+static sd_err fe_test_io(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out, int mode)
+{
+  const ec_curve *c = curve_get(cid);
+  sd_limb x[EC_MAXL], y[EC_MAXL], r[EC_MAXL], prod[2 * EC_MAXL], t[EC_MAXL];
+  if (c == NULL || a == NULL || b == NULL || out == NULL)
+    return SD_E_INVALID_PARAM;
+  sd_mp_from_be(x, c->nl, a, c->flen);
+  sd_mp_from_be(y, c->nl, b, c->flen);
+  if (mode == 0) {
+    fe_mul_nist(c, r, x, y);
+  } else if (mode == 3) {
+    /* the selected path as the point code uses it: operands into the representation, product, back */
+    sd_limb xr[EC_MAXL], yr[EC_MAXL], rr[EC_MAXL];
+    fe_to_rep(c, xr, x);
+    fe_to_rep(c, yr, y);
+    fe_mul(c, rr, xr, yr);
+    fe_from_rep(c, r, rr);
+  } else if (mode == 1) {
+    sd_mp_mul(prod, x, c->nl, y, c->nl);
+    sd_mp_mod(r, prod, 2 * c->nl, c->p, c->nl);
+  } else {
+    sd_mp_montmul(t, x, y, c->p, c->p_m0i, c->nl);
+    sd_mp_montmul(r, t, c->p_r2, c->p, c->p_m0i, c->nl);
+  }
+  sd_mp_to_be(out, c->flen, r, c->nl);
+  return SD_OK;
+}
+
+sd_err sd_ec_test_fe_nist(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+  return fe_test_io(cid, a, b, out, 0);
+}
+
+sd_err sd_ec_test_fe_sel(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+  return fe_test_io(cid, a, b, out, 3);
+}
+
+sd_err sd_ec_test_fe_ref(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+  return fe_test_io(cid, a, b, out, 1);
+}
+
+sd_err sd_ec_test_fe_mont(sd_curve cid, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+  return fe_test_io(cid, a, b, out, 2);
 }
 
 #endif /* SD_EC_TEST_HOOKS */

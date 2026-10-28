@@ -187,6 +187,10 @@ def main():
             out.append(c_array("k_%s_b3_m" % name, limbs(3 * b * R % p, w, nl), w))
             out.append(c_array("k_%s_gx_m" % name, limbs(gx * R % p, w, nl), w))
             out.append(c_array("k_%s_gy_m" % name, limbs(gy * R % p, w, nl), w))
+            # Plain (normal-form) b, G for the NIST field code of ec_p.c (the reductions work on normal form).
+            out.append(c_array("k_%s_b" % name, limbs(b, w, nl), w))
+            out.append(c_array("k_%s_gx" % name, limbs(gx, w, nl), w))
+            out.append(c_array("k_%s_gy" % name, limbs(gy, w, nl), w))
             out.append("#define K_%s_LIMBS %d\n" % (name.upper(), nl))
         out.append("#endif\n")
     with open(outp, "w", encoding="ascii", newline="\n") as f:
