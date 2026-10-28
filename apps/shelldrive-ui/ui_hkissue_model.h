@@ -1,12 +1,13 @@
 /* shelldrive-ui: the model of the changed-key and wrong-key-type notifications (03 §5.2, §5.4, TM-R04).
  *
  * The agent reports a failed mount in the `error` object of a mount.state event (03 §2.4): for host_key_mismatch it
- * carries host, stored_type, stored_fp, offered_type, offered_fp, store_path and store_line; for
- * host_key_type_unavailable it carries the code and the detail only (the stored and offered types are not reported
- * yet, so a message that names them is used only when the agent sends `stored_type`). This module reads that object,
- * decides where the old key lives from the file path (the event has no store kind) and what the user can do about
- * it. There is no "connect anyway" anywhere (5.4): the dialog offers the host key manager, the file location of a
- * read-only source and "Stop using keys from this source".
+ * carries host, lookup_name, stored_type, stored_fp, offered_type, offered_fp, store_path, store_line and store_kind
+ * (machine, user, openssh, putty); for host_key_type_unavailable it carries host, lookup_name, stored_types[] and
+ * offered_types[] (the server's host key algorithms) and, when the server presented a key, offered_type and
+ * offered_fp. This module reads that object, decides where the old key lives (store_kind; an agent that does not send
+ * it falls back to the file path) and what the user can do about it. There is no "connect anyway" anywhere (5.4): the
+ * dialog offers the host key manager, the file location of a read-only source and "Stop using keys from this source";
+ * the key type dialog (5.2) offers the manager and "Add key from server...".
  *
  * Pure: no window or process calls, so the unit tests (tests/ui) build this file on its own. */
 #ifndef SD_UI_HKISSUE_MODEL_H
@@ -23,6 +24,9 @@
 #define UI_HKI_FP_MAX   64
 #define UI_HKI_PATH_MAX 260
 #define UI_HKI_ID_MAX   40
+#define UI_HKI_STORED_MAX  8           /* stored key types kept */
+#define UI_HKI_OFFERED_MAX 16          /* offered host key algorithms kept */
+#define UI_HKI_KIND_MAX    16
 
 typedef enum ui_hki_kind {
   UI_HKI_NONE = 0,
@@ -39,10 +43,20 @@ typedef enum ui_hki_source {
   UI_HKI_SRC_FILE            /* some other file */
 } ui_hki_source;
 
+/* The store_kind token of a mismatch: where the old key lives, as the agent reports it. */
+typedef enum ui_hki_store { UI_HKI_STORE_UNKNOWN = 0, UI_HKI_STORE_MACHINE, UI_HKI_STORE_USER, UI_HKI_STORE_OPENSSH,
+                            UI_HKI_STORE_PUTTY } ui_hki_store;
+
 typedef struct ui_hki {
   ui_hki_kind kind;
   char mount_id[UI_HKI_ID_MAX];
   char host[UI_HKI_HOST_MAX];            /* printable ASCII */
+  char lookup_name[UI_HKI_HOST_MAX];     /* the name the key was looked up under; "" when not sent */
+  ui_hki_store store;                    /* store_kind of a mismatch; UNKNOWN when the agent did not send it */
+  char stored_types[UI_HKI_STORED_MAX][UI_HKI_TYPE_MAX];    /* type-unavailable: the types stored for the name */
+  size_t n_stored;
+  char offered_types[UI_HKI_OFFERED_MAX][UI_HKI_TYPE_MAX];  /* type-unavailable: what the server offers */
+  size_t n_offered;
   char stored_type[UI_HKI_TYPE_MAX];
   char stored_fp[UI_HKI_FP_MAX];
   char offered_type[UI_HKI_TYPE_MAX];
@@ -55,6 +69,18 @@ typedef struct ui_hki {
    is used when the error names no host (the host of the mount). Text is reduced to printable ASCII ('?' for the
    rest); the path loses control characters. */
 ui_hki_kind ui_hki_parse(const sd_json *data, const char *fallback_host, ui_hki *out);
+
+/* Where the old key of a mismatch lives: store_kind when the agent sent it, otherwise classified from the path
+   (ui_hki_classify). */
+ui_hki_source ui_hki_source_of(const ui_hki *h, const wchar_t *user_store);
+
+/* The types as "a, b, c" (printable ASCII, cut at cap - 1). Returns the number of types written. */
+size_t ui_hki_stored_list(const ui_hki *h, char *out, size_t cap);
+size_t ui_hki_offered_list(const ui_hki *h, char *out, size_t cap);
+/* 1 when the server presented a key (offered_type and offered_fp are known). */
+int ui_hki_has_offered_key(const ui_hki *h);
+/* The name to prefill "Add key from server": lookup_name when the agent sent one, otherwise host. */
+const char *ui_hki_add_target(const ui_hki *h);
 
 /* Classifies the file of the old key. user_store: the path of ShellDrive's own known_hosts of this user (NULL when
    unknown). An empty path or a PuTTY registry subkey is PuTTY. */
@@ -78,7 +104,8 @@ typedef enum ui_hki_todo { UI_HKI_TODO_USER = 0, UI_HKI_TODO_MACHINE, UI_HKI_TOD
 ui_hki_where ui_hki_where_of(ui_hki_source s);
 ui_hki_todo  ui_hki_todo_of(ui_hki_source s);
 
-/* 1 when the agent reported a stored key type (the type-unavailable notification then names it). */
+/* 1 when the agent reported a stored key type (the type-unavailable notification then names it). It counts both the
+   stored_types array and the comma-joined stored_type. */
 int ui_hki_has_stored_type(const ui_hki *h);
 
 #endif /* SD_UI_HKISSUE_MODEL_H */

@@ -146,13 +146,27 @@ void ui_model_set_list(ui_model *m, const sd_json *result)
       it->host[k] = 0;
     }
     read_connection(mo, it);
-    it->sec = ui_mv_sec_from_warnings(warnings, it->id);
-    if (old != NULL) {
+    {
+      /* the security state comes from the mount (round 17, valid after a UI restart and for the current connection);
+         an agent without those fields is served by the warnings ring and by what the UI saw in events */
+      ui_mv_security sec;
+      ui_mv_security_from_mount(mo, warnings, it->id, &sec);
+      it->sec = sec.sec;
+      it->sec_from_list = sec.from_mount;
+      it->scope = ui_mv_scope_of_token(sd_json_get_str(mo, "scope"));
+      if (sec.from_mount && sec.n_algos > 0) {
+        strcpy_s(it->algos, sizeof(it->algos), sec.algos);
+        memcpy(it->algo_cat, sec.cats, sizeof(it->algo_cat));
+      }
+    }
+    if (old != NULL && !it->sec_from_list) {
       size_t k;
       for (k = 0; k < old->count; k++) {
         if (strcmp(old->items[k].id, it->id) == 0) {
-          if (it->sec & UI_MV_SEC_LEGACY)
+          if (it->sec & UI_MV_SEC_LEGACY) {
             strcpy_s(it->algos, sizeof(it->algos), old->items[k].algos);
+            memcpy(it->algo_cat, old->items[k].algo_cat, sizeof(it->algo_cat));
+          }
           it->sec |= old->items[k].sec;
           break;
         }

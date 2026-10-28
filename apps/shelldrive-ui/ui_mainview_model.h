@@ -2,9 +2,11 @@
  * column (legacy encryption, Terrapin), the ListView group a row belongs to and the description of an outdated
  * algorithm for the security details dialog.
  *
- * The agent reports the warnings of its mounts in `list` (`warnings`: code and mount_id of the last 32 warnings) and in
- * `warning` events (`data.algorithms` for legacy_algorithms). Neither carries the negotiated algorithm list of a
- * mount that was warned about before this UI started, so the dialog can name the algorithms only for warnings it saw.
+ * The agent reports the security state of every mount in `list` (round 17): `legacy`, `legacy_algorithms`
+ * (`[{category, name}]`) and `terrapin_exposed` for the current connection, and `scope` (`user`, `machine_template`,
+ * `global`). They are valid after a UI restart, so the Security column, the details dialog and the groups come from
+ * them. An agent that does not send them is still served by the `warnings` ring of `list` (code and mount_id) and by
+ * `warning` events (`data.algorithms`), which name the algorithms only for warnings the UI saw.
  *
  * Pure: no window or process calls, so the unit tests (tests/ui) build this file on its own. */
 #ifndef SD_UI_MAINVIEW_MODEL_H
@@ -36,6 +38,27 @@ size_t ui_mv_algos_join(const sd_json *data, char *csv, size_t cap);
 /* The legacy_accepted value of 7.6 for a comma-joined list: "sha256:<hex>" of the sorted list (sd_legacy_set_hash).
    Returns 0 for an empty list. */
 int ui_mv_algos_hash(const char *csv, char out[80]);
+
+/* ---- the security state of a mount in `list` ---- */
+
+#define UI_MV_ALGOS_N 16
+
+typedef struct ui_mv_security {
+  unsigned sec;                          /* UI_MV_SEC_* bits */
+  int from_mount;                        /* 1 when the mount object carried legacy or terrapin_exposed (valid for the
+                                            current connection), 0 when the bits come from the warnings ring */
+  size_t n_algos;
+  char algos[UI_MV_ALGOS_MAX];           /* comma-joined names, as ui_mv_algos_join */
+  unsigned char cats[UI_MV_ALGOS_N];     /* ui_mv_cat of the name at the same position; OTHER when not reported */
+} ui_mv_security;
+
+/* Reads one item of `list.mounts`: `legacy`, `legacy_algorithms` and `terrapin_exposed` when present, otherwise the
+   bits of the `warnings` ring for mount_id (the list's top-level array, may be NULL). */
+void ui_mv_security_from_mount(const sd_json *mount, const sd_json *warnings, const char *mount_id, ui_mv_security *out);
+
+/* The agent's scope token of a mount ("user", "machine_template", "global") as SD_PROFILE_SCOPE_*; -1 for a missing or
+   unknown token. */
+int ui_mv_scope_of_token(const char *token);
 
 /* ---- status ---- */
 
@@ -72,6 +95,9 @@ typedef enum ui_mv_why {
 } ui_mv_why;
 
 void ui_mv_algo_info(const char *name, ui_mv_cat *cat, ui_mv_why *why);
+
+/* The category token of `legacy_algorithms` ("kex", "hostkey", "cipher", "mac"); OTHER for anything else. */
+ui_mv_cat ui_mv_cat_of_token(const char *token);
 
 /* Splits csv at ',' into at most cap names (each at most 63 characters). Returns the count. */
 size_t ui_mv_algos_split(const char *csv, char names[][64], size_t cap);

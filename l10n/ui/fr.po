@@ -94,8 +94,8 @@ msgstr[2] "{count} lecteurs montés."
 
 #. Status bar when the agent is not running.
 msgctxt "ui.status.agent_down"
-msgid "ShellDrive is not running."
-msgstr "ShellDrive n'est pas en cours d'exécution."
+msgid "ShellDrive is not running. Click here to start it."
+msgstr "ShellDrive n'est pas en cours d'exécution. Cliquez ici pour le démarrer."
 
 #. Mount state in the list: the agent is opening the connection.
 msgctxt "ui.state.connecting"
@@ -2773,3 +2773,96 @@ msgstr "Un fichier de clés d'hôte a été ignoré car d'autres utilisateurs pe
 msgctxt "ui.settings.nk_disk_cache"
 msgid "Disk cache refused on a volume without permissions"
 msgstr "Cache disque refusé sur un volume sans permissions"
+
+#. Status bar while ShellDrive is being started after a click on the not-running text.
+msgctxt "ui.status.agent_starting"
+msgid "Starting ShellDrive…"
+msgstr "Démarrage de ShellDrive…"
+
+#. Message when the click on the status bar could not start ShellDrive. {code} is the error name.
+msgctxt "ui.status.agent_start_failed"
+msgid "ShellDrive could not be started ({code}). Try again in a moment."
+msgstr "Impossible de démarrer ShellDrive ({code}). Réessayez dans un instant."
+
+#. Balloon: a mounted drive lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.lost"
+msgid "{name}: the connection was lost. ShellDrive is trying to reconnect."
+msgstr "{name} : la connexion a été perdue. ShellDrive essaie de se reconnecter."
+
+#. Balloon: a drive is connected again after it lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected"
+msgid "{name}: connected again."
+msgstr "{name} : de nouveau connecté."
+
+#. Balloon: a drive could not be connected (03 7.7). {name} is the drive letter or the connection name, {code} the error name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mount_failed"
+msgid "ShellDrive could not connect {name} ({code}). Open ShellDrive for details."
+msgstr "ShellDrive n'a pas pu connecter {name} ({code}). Ouvrez ShellDrive pour voir les détails."
+
+#. Balloon: a drive is connected (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mounted"
+msgid "{name}: connected."
+msgstr "{name} : connecté."
+
+#. Balloon: the proxy of a connection receives the proxy password unencrypted (03 3.8, 7.7). {name} is the connection, {proxy} the proxy as host:port.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.proxy_password"
+msgid "{name}: the proxy {proxy} receives your proxy password unencrypted."
+msgstr "{name} : le proxy {proxy} reçoit votre mot de passe de proxy sans chiffrement."
+
+#. Balloon: extra connections of a drive are not used because signing in needs typing (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.pool_limited"
+msgid "{name}: extra connections are not used because signing in needs you to type."
+msgstr "{name} : les connexions supplémentaires ne sont pas utilisées, car l'authentification nécessite une saisie de votre part."
+
+#. Balloon: ShellDrive saved new host keys of a server by itself (03 5.6, 7.7). {host} is the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkeys_saved"
+msgid "ShellDrive saved new host keys for {host}."
+msgstr "ShellDrive a enregistré de nouvelles clés d'hôte pour {host}."
+
+#. Balloon: the disk cache was not used because its folder is on a volume without file permissions (03 1.9, 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.disk_cache"
+msgid "{name}: ShellDrive did not use the disk cache because its folder is on a volume without file permissions."
+msgstr "{name} : ShellDrive n'a pas utilisé le cache disque, car son dossier se trouve sur un volume sans autorisations de fichier."
+
+#. Title of the dialog that explains a wrong host key type (03 5.2).
+msgctxt "ui.hki.type_title"
+msgid "Host key type not offered"
+msgstr "Type de clé d'hôte non proposé"
+
+#. Wrong host key type dialog: what happened. {host} is the server. Nothing is trusted automatically.
+msgctxt "ui.hki.type_intro"
+msgid "ShellDrive stopped the connection to {host} because the server did not offer any of the host key types ShellDrive has stored for it. The server may have been reinstalled or upgraded, or someone may be intercepting your connection. ShellDrive does not trust a key of another type by itself."
+msgstr "ShellDrive a arrêté la connexion à {host}, car le serveur n'a proposé aucun des types de clé d'hôte que ShellDrive a enregistrés pour lui. Le serveur a peut-être été réinstallé ou mis à jour, ou quelqu'un intercepte peut-être votre connexion. ShellDrive ne fait pas confiance de lui-même à une clé d'un autre type."
+
+#. Wrong host key type dialog: the key types stored for the server. {types} is a comma separated list.
+msgctxt "ui.hki.line_stored_types"
+msgid "Stored key types: {types}"
+msgstr "Types de clé enregistrés : {types}"
+
+#. Wrong host key type dialog: the host key types the server offers. {types} is a comma separated list.
+msgctxt "ui.hki.line_offered_types"
+msgid "Types the server offers: {types}"
+msgstr "Types proposés par le serveur : {types}"
+
+#. Wrong host key type dialog: shown in place of the list of key types when there is none.
+msgctxt "ui.hki.types_none"
+msgid "none"
+msgstr "aucun"
+
+#. Wrong host key type dialog: what to do. It names the button Add key from server.
+msgctxt "ui.hki.type_todo"
+msgid "If you expected this change, check the new fingerprint with the server's administrator, then add the key with the Add key from server button. If you did not expect it, do not connect."
+msgstr "Si vous attendiez ce changement, vérifiez la nouvelle empreinte auprès de l'administrateur du serveur, puis ajoutez la clé avec le bouton Ajouter une clé depuis le serveur. Si vous ne l'attendiez pas, ne vous connectez pas."
+
+#. Wrong host key type dialog button: opens the host key manager and the review of the server's keys. The ellipsis marks a window.
+msgctxt "ui.hki.btn_add"
+msgid "&Add key from server…"
+msgstr "&Ajouter une clé depuis le serveur…"

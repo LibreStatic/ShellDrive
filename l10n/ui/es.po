@@ -94,8 +94,8 @@ msgstr[2] "{count} unidades montadas."
 
 #. Status bar when the agent is not running.
 msgctxt "ui.status.agent_down"
-msgid "ShellDrive is not running."
-msgstr "ShellDrive no está en ejecución."
+msgid "ShellDrive is not running. Click here to start it."
+msgstr "ShellDrive no se está ejecutando. Hacé clic acá para iniciarlo."
 
 #. Mount state in the list: the agent is opening the connection.
 msgctxt "ui.state.connecting"
@@ -2773,3 +2773,96 @@ msgstr "Se ignoró un archivo de claves de host porque otros usuarios pueden mod
 msgctxt "ui.settings.nk_disk_cache"
 msgid "Disk cache refused on a volume without permissions"
 msgstr "Se rechazó la caché en disco en un volumen sin permisos"
+
+#. Status bar while ShellDrive is being started after a click on the not-running text.
+msgctxt "ui.status.agent_starting"
+msgid "Starting ShellDrive…"
+msgstr "Iniciando ShellDrive…"
+
+#. Message when the click on the status bar could not start ShellDrive. {code} is the error name.
+msgctxt "ui.status.agent_start_failed"
+msgid "ShellDrive could not be started ({code}). Try again in a moment."
+msgstr "No se pudo iniciar ShellDrive ({code}). Probá de nuevo en un momento."
+
+#. Balloon: a mounted drive lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.lost"
+msgid "{name}: the connection was lost. ShellDrive is trying to reconnect."
+msgstr "{name}: se perdió la conexión. ShellDrive está intentando reconectar."
+
+#. Balloon: a drive is connected again after it lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected"
+msgid "{name}: connected again."
+msgstr "{name}: conectado de nuevo."
+
+#. Balloon: a drive could not be connected (03 7.7). {name} is the drive letter or the connection name, {code} the error name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mount_failed"
+msgid "ShellDrive could not connect {name} ({code}). Open ShellDrive for details."
+msgstr "ShellDrive no pudo conectar {name} ({code}). Abrí ShellDrive para ver los detalles."
+
+#. Balloon: a drive is connected (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mounted"
+msgid "{name}: connected."
+msgstr "{name}: conectado."
+
+#. Balloon: the proxy of a connection receives the proxy password unencrypted (03 3.8, 7.7). {name} is the connection, {proxy} the proxy as host:port.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.proxy_password"
+msgid "{name}: the proxy {proxy} receives your proxy password unencrypted."
+msgstr "{name}: el proxy {proxy} recibe tu contraseña de proxy sin cifrar."
+
+#. Balloon: extra connections of a drive are not used because signing in needs typing (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.pool_limited"
+msgid "{name}: extra connections are not used because signing in needs you to type."
+msgstr "{name}: no se usan conexiones adicionales porque iniciar sesión requiere que escribas tus datos."
+
+#. Balloon: ShellDrive saved new host keys of a server by itself (03 5.6, 7.7). {host} is the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkeys_saved"
+msgid "ShellDrive saved new host keys for {host}."
+msgstr "ShellDrive guardó claves de host nuevas de {host}."
+
+#. Balloon: the disk cache was not used because its folder is on a volume without file permissions (03 1.9, 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.disk_cache"
+msgid "{name}: ShellDrive did not use the disk cache because its folder is on a volume without file permissions."
+msgstr "{name}: ShellDrive no usó la caché de disco porque su carpeta está en un volumen sin permisos de archivo."
+
+#. Title of the dialog that explains a wrong host key type (03 5.2).
+msgctxt "ui.hki.type_title"
+msgid "Host key type not offered"
+msgstr "Tipo de clave de host no ofrecido"
+
+#. Wrong host key type dialog: what happened. {host} is the server. Nothing is trusted automatically.
+msgctxt "ui.hki.type_intro"
+msgid "ShellDrive stopped the connection to {host} because the server did not offer any of the host key types ShellDrive has stored for it. The server may have been reinstalled or upgraded, or someone may be intercepting your connection. ShellDrive does not trust a key of another type by itself."
+msgstr "ShellDrive detuvo la conexión con {host} porque el servidor no ofreció ninguno de los tipos de clave de host que ShellDrive tiene guardados para él. Puede que el servidor se haya reinstalado o actualizado, o que alguien esté interceptando tu conexión. ShellDrive no confía por sí solo en una clave de otro tipo."
+
+#. Wrong host key type dialog: the key types stored for the server. {types} is a comma separated list.
+msgctxt "ui.hki.line_stored_types"
+msgid "Stored key types: {types}"
+msgstr "Tipos de clave guardados: {types}"
+
+#. Wrong host key type dialog: the host key types the server offers. {types} is a comma separated list.
+msgctxt "ui.hki.line_offered_types"
+msgid "Types the server offers: {types}"
+msgstr "Tipos que ofrece el servidor: {types}"
+
+#. Wrong host key type dialog: shown in place of the list of key types when there is none.
+msgctxt "ui.hki.types_none"
+msgid "none"
+msgstr "ninguno"
+
+#. Wrong host key type dialog: what to do. It names the button Add key from server.
+msgctxt "ui.hki.type_todo"
+msgid "If you expected this change, check the new fingerprint with the server's administrator, then add the key with the Add key from server button. If you did not expect it, do not connect."
+msgstr "Si esperabas este cambio, comprobá la huella nueva con el administrador del servidor y después agregá la clave con el botón Agregar clave desde el servidor. Si no lo esperabas, no te conectes."
+
+#. Wrong host key type dialog button: opens the host key manager and the review of the server's keys. The ellipsis marks a window.
+msgctxt "ui.hki.btn_add"
+msgid "&Add key from server…"
+msgstr "Agre&gar clave desde el servidor…"

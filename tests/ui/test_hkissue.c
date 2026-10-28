@@ -144,3 +144,105 @@ SD_TEST(hkissue_explorer_arguments_are_safe)
   /* a buffer that is too small is refused, not truncated */
   SD_CHECK_EQ_INT(ui_hki_select_args(L"C:\\Users\\a\\.ssh\\known_hosts", out, 12), 0);
 }
+
+SD_TEST(hkissue_type_unavailable_lists_stored_and_offered_types)
+{
+  static const char ev[] =
+      "{\"mount_id\":\"m-7\",\"state\":\"failed\",\"error\":{\"code\":\"host_key_type_unavailable\",\"detail\":\"d\","
+      "\"exit_code\":6,\"host\":\"example.org\",\"lookup_name\":\"[example.org]:2222\","
+      "\"stored_type\":\"ssh-ed25519,ssh-rsa\",\"stored_types\":[\"ssh-ed25519\",\"ssh-rsa\"],"
+      "\"offered_types\":[\"ecdsa-sha2-nistp256\",\"\",\"rsa-sha2-512\"],"
+      "\"offered_type\":\"ecdsa-sha2-nistp256\",\"offered_fp\":\"SHA256:abc\"}}";
+  sd_json *j = parse(ev);
+  ui_hki h;
+  char list[200];
+  SD_CHECK(j != NULL);
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "other", &h), (int)UI_HKI_TYPE_UNAVAILABLE);
+  SD_CHECK_STR(h.host, "example.org");
+  SD_CHECK_STR(h.lookup_name, "[example.org]:2222");
+  SD_CHECK_EQ_INT((int)h.n_stored, 2);
+  SD_CHECK_EQ_INT((int)h.n_offered, 2);              /* the empty name is skipped */
+  SD_CHECK_EQ_INT((int)ui_hki_stored_list(&h, list, sizeof(list)), 2);
+  SD_CHECK_STR(list, "ssh-ed25519, ssh-rsa");
+  SD_CHECK_EQ_INT((int)ui_hki_offered_list(&h, list, sizeof(list)), 2);
+  SD_CHECK_STR(list, "ecdsa-sha2-nistp256, rsa-sha2-512");
+  SD_CHECK_EQ_INT(ui_hki_has_offered_key(&h), 1);
+  SD_CHECK_STR(h.offered_fp, "SHA256:abc");
+  SD_CHECK_EQ_INT(ui_hki_has_stored_type(&h), 1);
+  /* "Add key from server" starts with the name the key was looked up under */
+  SD_CHECK_STR(ui_hki_add_target(&h), "[example.org]:2222");
+  sd_json_free(j);
+}
+
+SD_TEST(hkissue_type_unavailable_without_offered_key_or_arrays)
+{
+  /* the server presented no key: no offered_type; an agent that sends only the comma-joined stored_type */
+  sd_json *j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_type_unavailable\","
+                     "\"host\":\"h.example\",\"stored_type\":\"ssh-rsa, ssh-ed25519\",\"offered_types\":[]}}");
+  ui_hki h;
+  char list[100];
+  SD_CHECK(j != NULL);
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, NULL, &h), (int)UI_HKI_TYPE_UNAVAILABLE);
+  SD_CHECK_EQ_INT(ui_hki_has_offered_key(&h), 0);
+  SD_CHECK_EQ_INT((int)h.n_offered, 0);
+  SD_CHECK_EQ_INT((int)h.n_stored, 2);
+  SD_CHECK_EQ_INT((int)ui_hki_stored_list(&h, list, sizeof(list)), 2);
+  SD_CHECK_STR(list, "ssh-rsa, ssh-ed25519");
+  SD_CHECK_EQ_INT((int)ui_hki_offered_list(&h, list, sizeof(list)), 0);
+  SD_CHECK_STR(list, "");
+  SD_CHECK_STR(ui_hki_add_target(&h), "h.example");   /* no lookup_name: the host */
+  /* a list that does not fit is cut at a whole name */
+  SD_CHECK_EQ_INT((int)ui_hki_stored_list(&h, list, 12), 1);
+  SD_CHECK_STR(list, "ssh-rsa");
+  sd_json_free(j);
+}
+
+SD_TEST(hkissue_names_are_reduced_to_printable_ascii_and_capped)
+{
+  sd_json *j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_type_unavailable\","
+                     "\"stored_types\":[\"ssh-\\u202eed\\u0007\"],\"offered_types\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\","
+                     "\"g\",\"h\",\"i\",\"j\",\"k\",\"l\",\"m\",\"n\",\"o\",\"p\",\"q\",\"r\"]}}");
+  ui_hki h;
+  size_t i;
+  SD_CHECK(j != NULL);
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, NULL, &h), (int)UI_HKI_TYPE_UNAVAILABLE);
+  for (i = 0; h.stored_types[0][i] != 0; i++)
+    SD_CHECK((unsigned char)h.stored_types[0][i] >= 0x20 && (unsigned char)h.stored_types[0][i] < 0x7f);
+  SD_CHECK_EQ_INT((int)h.n_offered, UI_HKI_OFFERED_MAX);   /* 18 sent, 16 kept */
+  sd_json_free(j);
+}
+
+SD_TEST(hkissue_store_kind_decides_the_source)
+{
+  const wchar_t *user = L"C:\\Users\\a\\AppData\\Roaming\\LibreStatic\\ShellDrive\\known_hosts";
+  sd_json *j;
+  ui_hki h;
+  /* store_kind wins over the path, which says OpenSSH here */
+  j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_mismatch\",\"store_kind\":\"machine\","
+            "\"store_path\":\"C:\\\\Users\\\\a\\\\.ssh\\\\known_hosts\"}}");
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "h", &h), (int)UI_HKI_CHANGED);
+  SD_CHECK_EQ_INT((int)h.store, (int)UI_HKI_STORE_MACHINE);
+  SD_CHECK_EQ_INT((int)ui_hki_source_of(&h, user), (int)UI_HKI_SRC_MACHINE);
+  sd_json_free(j);
+  j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_mismatch\",\"store_kind\":\"user\"}}");
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "h", &h), (int)UI_HKI_CHANGED);
+  SD_CHECK_EQ_INT((int)ui_hki_source_of(&h, user), (int)UI_HKI_SRC_USER);   /* no path needed */
+  sd_json_free(j);
+  j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_mismatch\",\"store_kind\":\"putty\","
+            "\"store_path\":\"\",\"store_line\":0}}");
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "h", &h), (int)UI_HKI_CHANGED);
+  SD_CHECK_EQ_INT((int)ui_hki_source_of(&h, user), (int)UI_HKI_SRC_PUTTY);
+  sd_json_free(j);
+  j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_mismatch\",\"store_kind\":\"openssh\","
+            "\"store_path\":\"D:\\\\keys\\\\kh\"}}");
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "h", &h), (int)UI_HKI_CHANGED);
+  SD_CHECK_EQ_INT((int)ui_hki_source_of(&h, user), (int)UI_HKI_SRC_OPENSSH);   /* a path that classify would call a file */
+  sd_json_free(j);
+  /* an unknown token and an agent without store_kind fall back to the path */
+  j = parse("{\"mount_id\":\"m\",\"error\":{\"code\":\"host_key_mismatch\",\"store_kind\":\"floppy\","
+            "\"store_path\":\"C:\\\\Users\\\\a\\\\.ssh\\\\known_hosts\"}}");
+  SD_CHECK_EQ_INT((int)ui_hki_parse(j, "h", &h), (int)UI_HKI_CHANGED);
+  SD_CHECK_EQ_INT((int)h.store, (int)UI_HKI_STORE_UNKNOWN);
+  SD_CHECK_EQ_INT((int)ui_hki_source_of(&h, user), (int)UI_HKI_SRC_OPENSSH);
+  sd_json_free(j);
+}

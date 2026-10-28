@@ -5,8 +5,9 @@
  * (category, name and a one-line reason each) and the Terrapin text. Buttons: "Don't warn again for this server" (stores
  * legacy_accepted = sha256 of the sorted algorithm list in the profile; a different set warns again; it never silences
  * Terrapin), "Refuse outdated algorithms for this server" (sets legacy_algorithms = refuse and offers to reconnect) and
- * Close. The two settings need the saved profile of the mount and, for the first, the algorithm names, which the agent
- * sends only with the warning event (a list of a UI that started later has the code only, see ui_mainview_model.h). */
+ * Close. The two settings need the saved profile of the mount and, for the first, the algorithm names. The agent
+ * reports them (with their category) in `list` for the current connection, so the dialog works after a UI restart;
+ * an older agent sends them only with the warning event (see ui_mainview_model.h). */
 #include <windows.h>
 #include <string.h>
 #include <wchar.h>
@@ -34,6 +35,7 @@ typedef struct sec_dlg {
   char profile_id[33];
   wchar_t drive[3];
   char algos[UI_MV_ALGOS_MAX];
+  unsigned char cats[UI_MV_ALGOS_N];
   unsigned sec;
 } sec_dlg;
 
@@ -68,7 +70,7 @@ static sd_msg_id why_msg(ui_mv_why w)
 }
 
 /* One line per outdated algorithm: "Cipher: 3des-cbc (CBC cipher mode, ...)". */
-static void algo_lines(const char *csv, wchar_t *out, size_t cap)
+static void algo_lines(const char *csv, const unsigned char *cats, wchar_t *out, size_t cap)
 {
   char names[SEC_MAX_ALGOS][64];
   size_t i, n = ui_mv_algos_split(csv, names, SEC_MAX_ALGOS);
@@ -80,6 +82,8 @@ static void algo_lines(const char *csv, wchar_t *out, size_t cap)
     wchar_t *line;
     sd_arg a[3];
     ui_mv_algo_info(names[i], &cat, &why);
+    if (cats != NULL && i < UI_MV_ALGOS_N && cats[i] != (unsigned char)UI_MV_CAT_OTHER)
+      cat = (ui_mv_cat)cats[i];                 /* the category the agent reported wins over the one derived from the name */
     widen(names[i], wname, SD_COUNTOF(wname));
     a[0].name = "category";
     a[0].type = SD_ARG_STR;
@@ -101,8 +105,8 @@ static void algo_lines(const char *csv, wchar_t *out, size_t cap)
 }
 
 /* Template of the dialog for a mount. Release *blob with sd_free. */
-static sd_err build_dialog(const char *host, unsigned sec, const char *algos, int can_keep, int can_refuse,
-                           unsigned char **blob, size_t *len)
+static sd_err build_dialog(const char *host, unsigned sec, const char *algos, const unsigned char *cats, int can_keep,
+                           int can_refuse, unsigned char **blob, size_t *len)
 {
   WORD ids[3];
   const wchar_t *texts[3];
@@ -129,7 +133,7 @@ static sd_err build_dialog(const char *host, unsigned sec, const char *algos, in
   if (sec & UI_MV_SEC_TERRAPIN)
     terrapin = sd_l10n_format_alloc(SD_MSG_UI_SECDLG_TERRAPIN, a, 1);
   if (have_list)
-    algo_lines(algos, lines, SD_COUNTOF(lines));
+    algo_lines(algos, cats, lines, SD_COUNTOF(lines));
   ui_message_font(face, &points, &dpi);
   ui_measure_init(&m, face, points, dpi);
   if (can_keep) { ids[nb] = SEC_ID_KEEP; texts[nb++] = sd_l10n_get(SD_MSG_UI_SECDLG_BTN_KEEP); }
@@ -249,11 +253,12 @@ void ui_secdlg_open(HWND owner, const wchar_t *drive)
   strcpy_s(c.profile_id, sizeof(c.profile_id), m->profile_id);
   wcscpy_s(c.drive, SD_COUNTOF(c.drive), m->drive);
   strcpy_s(c.algos, sizeof(c.algos), m->algos);
+  memcpy(c.cats, m->algo_cat, sizeof(c.cats));
   c.sec = m->sec;
   /* both settings are stored in the saved profile; "Don't warn again" also needs the algorithm names */
   can_refuse = (m->sec & UI_MV_SEC_LEGACY) && ui_profiles_find_id(m->profile_id) != NULL;
   can_keep = can_refuse && m->algos[0] != 0;
-  if (build_dialog(m->host, m->sec, m->algos, can_keep, can_refuse, &blob, &len) == SD_OK && blob != NULL)
+  if (build_dialog(m->host, m->sec, m->algos, m->algo_cat, can_keep, can_refuse, &blob, &len) == SD_OK && blob != NULL)
     DialogBoxIndirectParamW(g_app.inst, (LPCDLGTEMPLATEW)blob, owner, sec_proc, (LPARAM)&c);
   sd_free(blob);
 }
@@ -273,6 +278,7 @@ int ui_secdlg_smoke(void)
   static const unsigned k_sec[] = { UI_MV_SEC_LEGACY, UI_MV_SEC_TERRAPIN, UI_MV_SEC_LEGACY | UI_MV_SEC_TERRAPIN,
                                     UI_MV_SEC_LEGACY };
   static const char *const k_algos[] = { "3des-cbc,hmac-sha1,diffie-hellman-group1-sha1,ssh-rsa", "", "hmac-sha1", "" };
+  static const unsigned char k_cats[UI_MV_ALGOS_N] = { UI_MV_CAT_CIPHER, UI_MV_CAT_MAC, UI_MV_CAT_KEX, UI_MV_CAT_HOSTKEY };
   size_t i, count = 0, offs[UI_DLG_MAX_ITEMS];
   int ok = 1;
   for (i = 0; i < SD_COUNTOF(k_sec) && ok; i++) {
@@ -284,7 +290,7 @@ int ui_secdlg_smoke(void)
     /* texts: terrapin and legacy intros as present; the list label and edit with names, one text without; buttons */
     size_t want = ((k_sec[i] & UI_MV_SEC_TERRAPIN) ? 1u : 0u) + (legacy ? 1u : 0u) + (legacy ? (named ? 2u : 1u) : 0u) +
                   (keep ? 1u : 0u) + (refuse ? 1u : 0u) + 1u;
-    ok = build_dialog("example.org", k_sec[i], k_algos[i], keep, refuse, &blob, &len) == SD_OK && blob != NULL &&
+    ok = build_dialog("example.org", k_sec[i], k_algos[i], k_cats, keep, refuse, &blob, &len) == SD_OK && blob != NULL &&
          ui_dlg_parse_check(blob, len, &count, offs, SD_COUNTOF(offs)) == SD_OK && count == want;
     sd_free(blob);
   }

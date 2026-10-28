@@ -42,6 +42,7 @@ static struct {
   HANDLE thread;
   HANDLE stop;
   HANDLE wake;
+  HANDLE start;                 /* "Agent not running - Start" (ui_ipc_start_agent): connect now and start the agent */
   CRITICAL_SECTION cs;
   int cs_ready;
   ui_ipc_req queue[UI_IPC_QUEUE];
@@ -221,6 +222,7 @@ static DWORD WINAPI ipc_thread(void *arg)
 {
   int first = 1;
   int failures = 0;
+  int want_start = 0;
   (void)arg;
   for (;;) {
     sd_ipc_conn *c = NULL;
@@ -236,13 +238,21 @@ static DWORD WINAPI ipc_thread(void *arg)
 
     /* PROMPT-HOST RULE (03 §1.4): a --prompt-host process never starts the agent. The agent starts us, not
        the other way round. */
-    e = sd_ipc_connect(SD_IPC_AGENT, &hello, first && !g_app.prompt_host, UI_IPC_CONNECT_MS, &c);
+    if (want_start && !g_app.prompt_host) {
+      /* the user asked for it in the status bar: the same start and connect as the CLI (03 §7.5) */
+      e = sd_ipc_connect_agent_or_start(&hello, &c);
+      post_reply(UI_IPC_AGENT_START, e, NULL, NULL);
+    } else {
+      e = sd_ipc_connect(SD_IPC_AGENT, &hello, first && !g_app.prompt_host, UI_IPC_CONNECT_MS, &c);
+    }
+    want_start = 0;
     first = 0;
     if (e == SD_OK) {
       sd_json *res = NULL;
       sd_ipc_error err;
       failures = 0;
       memset(&err, 0, sizeof(err));
+      ResetEvent(g_ipc.start);          /* a click that came while we were connecting is answered by the connection */
       InterlockedExchange((volatile LONG *)&g_app.agent_features, features_of(c));
       post_state(1);
       if (subscribe_topics(c) == SD_OK &&
@@ -276,8 +286,17 @@ static DWORD WINAPI ipc_thread(void *arg)
     }
     if (stop)
       break;
-    if (WaitForSingleObject(g_ipc.stop, UI_IPC_RETRY_MS) == WAIT_OBJECT_0)
-      break;
+    {
+      HANDLE w[2];
+      DWORD r;
+      w[0] = g_ipc.stop;
+      w[1] = g_ipc.start;
+      r = WaitForMultipleObjects(2, w, FALSE, UI_IPC_RETRY_MS);
+      if (r == WAIT_OBJECT_0)
+        break;
+      if (r == WAIT_OBJECT_0 + 1)
+        want_start = 1;                 /* a request that arrived while connected was dropped at the connect below */
+    }
   }
   fail_queued();
   return 0;
@@ -327,7 +346,8 @@ sd_err ui_ipc_start(void)
   g_ipc.cs_ready = 1;
   g_ipc.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
   g_ipc.wake = CreateEventW(NULL, FALSE, FALSE, NULL);
-  if (g_ipc.stop == NULL || g_ipc.wake == NULL)
+  g_ipc.start = CreateEventW(NULL, FALSE, FALSE, NULL);
+  if (g_ipc.stop == NULL || g_ipc.wake == NULL || g_ipc.start == NULL)
     return SD_E_NO_MEMORY;
   g_ipc.thread = CreateThread(NULL, 0, ipc_thread, NULL, 0, NULL);
   if (g_ipc.thread == NULL)
@@ -347,6 +367,8 @@ void ui_ipc_stop(void)
     CloseHandle(g_ipc.stop);
   if (g_ipc.wake)
     CloseHandle(g_ipc.wake);
+  if (g_ipc.start)
+    CloseHandle(g_ipc.start);
   if (g_ipc.cs_ready)
     DeleteCriticalSection(&g_ipc.cs);
   memset(&g_ipc, 0, sizeof(g_ipc));
@@ -411,4 +433,17 @@ sd_err ui_ipc_call(ui_ipc_kind kind, const char *method, const char *params)
   if (method == NULL)
     return SD_E_INVALID_PARAM;
   return enqueue(kind, method, params, NULL);
+}
+
+/* The status bar's "Agent not running - Start" (03 §7.5): the thread connects at once and starts the agent when it is
+   not running. The result comes back as UI_IPC_AGENT_START (error only; success is the agent state going up). A prompt
+   host never starts an agent (1.4). Returns SD_E_SHUTDOWN when the thread is not running. */
+sd_err ui_ipc_start_agent(void)
+{
+  if (g_ipc.thread == NULL || g_ipc.start == NULL)
+    return SD_E_SHUTDOWN;
+  if (g_app.prompt_host)
+    return SD_E_ACCESS_DENIED;
+  SetEvent(g_ipc.start);
+  return SD_OK;
 }

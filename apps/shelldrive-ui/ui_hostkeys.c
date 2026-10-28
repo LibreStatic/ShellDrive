@@ -787,6 +787,8 @@ typedef struct hk_ask {
   ui_hk_target target;               /* the validated server, set on OK */
 } hk_ask;
 
+static wchar_t g_ask_prefill[UI_HK_SPEC_MAX];   /* the server the next "Add key from server" dialog starts with */
+
 static INT_PTR CALLBACK ask_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
   hk_ask *c = (hk_ask *)GetWindowLongPtrW(hwnd, DWLP_USER);
@@ -794,6 +796,10 @@ static INT_PTR CALLBACK ask_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   case WM_INITDIALOG:
     SetWindowLongPtrW(hwnd, DWLP_USER, (LONG_PTR)lp);
     SendDlgItemMessageW(hwnd, HK_DLG_HOST, EM_LIMITTEXT, UI_HK_SPEC_MAX - 1, 0);
+    if (g_ask_prefill[0] != 0) {
+      SetDlgItemTextW(hwnd, HK_DLG_HOST, g_ask_prefill);
+      g_ask_prefill[0] = 0;
+    }
     return TRUE;
   case WM_COMMAND:
     if (c == NULL)
@@ -1399,6 +1405,20 @@ void ui_hostkeys_open_for(const char *host)
     SendMessageW(g_hk.tab, TCM_SETCURSEL, HK_TAB_KNOWN, 0);
     show_tab();
   }
+}
+
+/* The wrong key type dialog (5.2): opens the manager at host and starts "Add key from server" for target (the name the
+   key was looked up under, or the host). The review runs after this call returns, so a modal dialog that called it is
+   closed first. */
+void ui_hostkeys_add_for(const char *host, const char *target)
+{
+  ui_hostkeys_open_for(host);
+  if (g_hk.wnd == NULL || !IsWindow(g_hk.wnd))
+    return;
+  g_ask_prefill[0] = 0;
+  if (target != NULL && target[0] != 0)
+    ui_text_utf8(target, g_ask_prefill, SD_COUNTOF(g_ask_prefill));
+  PostMessageW(g_hk.wnd, WM_COMMAND, MAKEWPARAM(HK_ID_SERVER, BN_CLICKED), 0);
 }
 
 void ui_hostkeys_close(void)
