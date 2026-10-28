@@ -16,10 +16,12 @@
 #include "sd_ssh/sd_ssh.h"
 #include "ssh_internal.h"
 #include "proxy_internal.h"
+#include "channel_window.h"
 
 #define SSH_MAX_CHANNELS   64u
-#define SSH_CH_WINDOW      (2u * 1024u * 1024u)
+#define SSH_CH_WINDOW      SSH_WIN_INITIAL   /* 2 MiB initial window (01 4.8, channel_window.h) */
 #define SSH_CH_MAXPKT      32768u
+#define SSH_CH_ADAPTIVE    1                 /* adaptive receive windows (M7); 0 keeps the fixed window */
 #define SSH_OUT_BUDGET     (1024u * 1024u)    /* queued-but-unsent bytes we accept channel data for */
 #define SSH_MAX_ADDRS      16u
 #define SSH_KA_RING        8u
@@ -134,7 +136,7 @@ struct sd_ssh_channel {
   int have_remote;
   int opened;                 /* on_open(SD_OK) delivered */
   int close_sent, close_recv, eof_recv, close_wanted, refused;
-  uint32_t local_window, consumed_unacked;
+  ssh_win win;                /* receive window: allowance granted to the peer, growth (M7) */
   uint32_t remote_window, remote_max_packet;
   int want_writable;
   uint64_t deadline;

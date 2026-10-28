@@ -7,6 +7,7 @@ set(SD_SSH_SOURCES
     auth.c
     base64.c
     channel.c
+    channel_window.c
     conn.c
     crypto_init.c
     kex.c

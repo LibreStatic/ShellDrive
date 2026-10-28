@@ -162,3 +162,72 @@ after the selection change (its P-256/P-384 entries use Montgomery in the final 
 - No `Compression` line in the fixture's `sshd_config`; the default `delayed` is relied on.
 - Bit-by-bit Huffman decoding: measure against the 256 KiB output budget before any table-driven version.
 - Zero-length (or flush-only) packets are not produced by the encoder and are refused by the decoder.
+
+# M7 notes: adaptive channel windows (01 section 4.8)
+
+## What exists
+
+- `src/sd_ssh/channel_window.h` / `channel_window.c`: the receive window of one channel as a pure state machine.
+  No socket and no clock: the caller passes the time in milliseconds, so tests run on a virtual clock.
+  `ssh_win_on_data` accounts peer data and returns a growth grant; `ssh_win_on_consumed` returns the WINDOW_ADJUST
+  amount once the consumer has freed half of the target.
+- `src/sd_ssh/channel.c`: each channel carries an `ssh_win` (`ch->win`). CHANNEL_DATA and EXTENDED_DATA are checked
+  against `win.allow`, a growth grant is sent as WINDOW_ADJUST while the channel is open and not closing, and
+  `sd_ssh_channel_consumed` sends the half-window adjusts. The open message still advertises the 2 MiB initial window.
+- `SSH_CH_ADAPTIVE` (`conn_internal.h`) is 1. Set it to 0 to get the fixed 2 MiB window back. The module keeps the
+  same accounting in both modes.
+
+## Algorithm and limits
+
+- Initial allowance and floor: 2 MiB (`SSH_WIN_INITIAL`). The target never shrinks, and the allowance only grows through
+  grants and consumption, so the peer is never told a smaller window than it may already use.
+- Cap per channel: 16 MiB (`SSH_WIN_MAX`), doubling steps.
+- Cap per connection: 32 MiB summed over the targets of the channels of one connection (`SSH_WIN_SESSION_CAP`). The
+  value is ours: 01 4.8 gives no per-session figure. Growth is refused beyond it. The sum is computed from
+  `c->ch[]` when a growth is decided, so no bookkeeping can drift.
+- RTT: `srtt` from section 4.6 when a sample exists, otherwise `SSH_WIN_RTT_DEFAULT_MS` (500 ms). Ours, not in the doc.
+- WINDOW_ADJUST threshold: half of the current target (it was half of the fixed 2 MiB).
+
+## Growth trigger: deviation from 01 4.8 (read this before changing it)
+
+01 4.8 says: double the window when the sender stalled (the allowance was exhausted) twice within one RTT estimate.
+With `sd_sftp` consuming every byte at once, the receiver sends WINDOW_ADJUST as soon as half of the target is freed.
+The allowance then never falls below half of the target, so it never reaches zero and the stated trigger can never
+fire. Growth would never happen for SFTP.
+
+The implementation uses the bandwidth-delay equivalent instead:
+
+- An RTT epoch is one RTT estimate long. Peer bytes received in an epoch are summed.
+- An epoch in which the peer delivered at least half the target was window-limited (throughput x RTT is close to the
+  window). Two such epochs in a row double the target (`streak` in `ssh_win`).
+- An epoch with less data resets the streak.
+
+Recommended doc change (not made here, the task limits 01 edits to the status line): restate 4.8 with this trigger, or
+keep the stall wording and have the consumer hold back credit to make a stall observable. The first is the honest
+option.
+
+## Tests
+
+- `unit.ssh_window` (`tests/unit/sd_ssh/test_window.c`, sd-test-ssh_window.exe, no network). The link is simulated:
+  a virtual clock advances 1 ms per step, the peer obeys its advertised allowance, data and WINDOW_ADJUST arrive after a
+  fixed one-way delay, and the consumer frees everything at once. Every step checks the invariants: data never
+  exceeds the allowance, `allow == granted - received`, the target never shrinks and stays within 2 MiB..16 MiB, and
+  the session sum stays within 32 MiB.
+  - unit level: half-target credit threshold, overrun refused, one window-limited epoch does not grow, the fixed mode
+    never changes.
+  - simulated transport: fixed window stays at 2 MiB on a high-BDP link (10 MB/s, RTT 200 ms); the adaptive window grows
+    and finishes no later (simulated time) than the fixed one; a 250 ms link saturates at 16 MiB and not beyond; a
+    low-RTT link (RTT 4 ms) never grows; three channels on one connection respect the 32 MiB budget; throughput that
+    alternates between a trickle and a burst keeps the protocol invariants.
+- Simulated times are model values, not wall-clock measurements. No timing is asserted against the real machine.
+- Benchmarks: `bench.vfs_pool` and the sftp throughput tests were not run for this change. Before/after numbers are not
+  recorded, since the real window effect needs a WAN-like link that the lab does not have.
+
+## Open items
+
+- Not wired to a profile key: the fixed window exists as the `SSH_CH_ADAPTIVE` switch only. Add a `connection.*` setting
+  if a user-visible control is wanted.
+- The 32 MiB session budget and the 500 ms default RTT are our values, to be confirmed in 01 4.8.
+- The growth trigger deviates from the doc (see above). Decide the doc wording before 1.0.
+- No WSL sshd interop test for growth yet: that needs a transfer large enough to fill a 2 MiB window on the fixture.
+  The gate ran with `-NoFixture`.
