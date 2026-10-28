@@ -2,7 +2,8 @@
  *
  * Exclusive and shared write locks with timeouts (<= 3600 s). Keyed by vfs path (case-insensitive,
  * like the default case-insensitive view); MOVE re-keys them so renames carry locks. Expired locks are
- * dropped lazily on every access. Not propagated to SFTP. */
+ * dropped lazily on every access. Not propagated to SFTP. Keys are paths, not vfs nodes: a plain MOVE
+ * re-keys the locks below the source, and a replacing MOVE follows wd_lock_replace. */
 #include <windows.h>
 #include <string.h>
 #include <wchar.h>
@@ -194,6 +195,69 @@ void wd_lock_move(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to)
         l->path = np;
       }
     }
+  }
+  sd_mutex_unlock(&ex->lock_mu);
+}
+
+/* Locks strictly below path: the children of a collection that a replacing COPY deletes. The lock on
+   path itself is left alone. */
+void wd_lock_drop_below(sd_webdav_export *ex, const WCHAR *path)
+{
+  wd_lock **pp = &ex->locks;
+  size_t pl = wcslen(path);
+  sd_mutex_lock(&ex->lock_mu);
+  while (*pp) {
+    wd_lock *d = *pp;
+    if (wcslen(d->path) > pl && under(d->path, path)) {
+      *pp = d->next;
+      lock_free(d);
+    } else {
+      pp = &d->next;
+    }
+  }
+  sd_mutex_unlock(&ex->lock_mu);
+}
+
+/* Replacing MOVE (Overwrite: T) of from onto to, after the vfs rename succeeded (RFC 4918 §9.9.3; 02 §7.5).
+   The resource at to is gone, so locks below to go with it. A lock on the URL to itself survives: the client
+   holds it (Office and LibreOffice save: LOCK doc, MOVE temp -> doc with If: (<token>), UNLOCK doc), and the
+   URL now names the moved resource, so the lock and its token carry over. Locks on from move with the
+   resource, unless to already has its own lock: two locks on one URL would need two tokens in If:, so the
+   destination lock wins and the moved one is dropped. */
+void wd_lock_replace(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to)
+{
+  wd_lock **pp = &ex->locks;
+  size_t fl = wcslen(from), tl = wcslen(to);
+  wd_lock *l;
+  int keep_dest = 0;
+  sd_mutex_lock(&ex->lock_mu);
+  for (l = ex->locks; l; l = l->next)
+    if (_wcsicmp(l->path, to) == 0) keep_dest = 1;
+  while (*pp) {
+    wd_lock *d = *pp;
+    if (wcslen(d->path) > tl && under(d->path, to)) {        /* below the replaced resource */
+      *pp = d->next;
+      lock_free(d);
+      continue;
+    }
+    if (under(d->path, from)) {
+      if (keep_dest) {
+        *pp = d->next;
+        lock_free(d);
+        continue;
+      }
+      {
+        size_t rest = wcslen(d->path) - fl;
+        WCHAR *np = (WCHAR *)sd_alloc((tl + rest + 1) * sizeof(WCHAR));
+        if (np) {
+          memcpy(np, to, tl * sizeof(WCHAR));
+          memcpy(np + tl, d->path + fl, (rest + 1) * sizeof(WCHAR));
+          sd_free(d->path);
+          d->path = np;
+        }
+      }
+    }
+    pp = &d->next;
   }
   sd_mutex_unlock(&ex->lock_mu);
 }

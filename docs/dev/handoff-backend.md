@@ -462,8 +462,12 @@ reconnect, meta/bulk channels, caches and read-ahead, write-behind opt-in, `sd_w
 - WebDAV with sshd killed mid-copy (not yet tested).
 - TM-R19 token-only WebDAV mode + WinHTTP self-test, so non-redirector clients (LibreOffice opening files) work;
   policy `AllowWebDavTokenOnly` (03 §3.5).
-- Replacing MOVE drops the destination lock (final UNLOCK gets 409): decide and fix per 02 §7.
-- Document/mitigate the redirector's ~60 s negative cache after a failed lookup.
+- [done, r13 `wip/r13-davmove`] Replacing MOVE drops the destination lock (final UNLOCK gets 409): the destination
+  URL keeps its lock across a replacing MOVE, decided in 02 §7.5; tests `webdav_server_office_save_sequence` and
+  `webdav_server_replacing_move_drops_replaced_children_locks`. Lab re-check with Office is open (`m1-notes`).
+- [partly done, r13] Document/mitigate the redirector's ~60 s negative cache after a failed lookup: a link-down miss
+  is 503 (test `webdav_server_link_down_miss_is_503_not_404`); the vfs-served 404 while the link is down needs
+  session state in `sd_webdav_export_cfg` (open, sd_mount); the rest is documented in 02 §7.6 and `m1-notes`.
 - sd_vfs offline waits: switch from 50 ms polling to `SD_SFTP_REQ_WAIT_READY` (needs a cancel path).
 - TM-R17 watchers for long-running clients (crash filter and stop cleanup already done).
 

@@ -1507,18 +1507,36 @@ with checked arithmetic.
 | `PUT` | `FILE_OVERWRITE_IF` (`If-None-Match: *` → `FILE_CREATE`). The **body is streamed into vfs writes** as it arrives, with TCP backpressure from a bounded window (16 MiB, in both write modes: the PUT response is the point where the redirector learns the outcome, 4.4). The final drain and fsync happen right after the last byte, so the response follows within at most one window (≤ 16 MiB) of acknowledgements, well inside the 60 s timeout. `201` if created, `204` if replaced. Lock token enforcement (below). Content length > 0xFFFFFFFF is impossible from the redirector. Option `atomic_put` (default off): write to `.<name>.sd-<rand>` and `posix-rename` over the target, with the original mode copied. |
 | `DELETE` | 2.4. Files: remove. Collections: recursive, `207` on partial failure. |
 | `MKCOL` | `mkdir`. Body present → `415`. Parent missing → `409`. Exists → `405`. |
-| `MOVE` | `Destination` (absolute URI; must have the same authority and token prefix, else `502`), `Overwrite: T` (default) → replace semantics, `F` → no-replace (`412` if exists). `201` new / `204` replaced. Directories in one rename. |
-| `COPY` | Depth `0` / `infinity`. Files: `copy-data` SFTP extension when advertised (server-side), else stream read → write through the vfs. Collections: recursive. Same `Overwrite` rules. |
+| `MOVE` | `Destination` (absolute URI; must have the same authority and token prefix, else `502`), `Overwrite: T` (default) → replace semantics, `F` → no-replace (`412` if exists). `201` new / `204` replaced. Directories in one rename. Lock effect of a replacing MOVE: decided in **"Locks across a replacing MOVE"** below. |
+| `COPY` | Depth `0` / `infinity`. Files: `copy-data` SFTP extension when advertised (server-side), else stream read → write through the vfs. Collections: recursive. Same `Overwrite` rules. A replaced destination keeps its own lock on the URL; locks below a replaced collection are dropped. |
 | `LOCK` | Exclusive and shared write locks, `Timeout: Second-n` capped at 3600, `Infinite` → 3600. Lock token `opaquelocktoken:<uuid>`. LOCK on an unmapped URL creates an empty file (RFC 4918 locked empty resource) → `201`. Refresh via `If` header with no body. Depth 0 only for files; depth infinity on collections is accepted and recorded. Read-only mount → `403` (Office then opens read-only). |
 | `UNLOCK` | `Lock-Token` header → `204`; unknown → `409`. |
 | others (`POST`, `PATCH`, `SEARCH`, `REPORT`, ...) | `405` / `501` |
 | any mutating method on a global mount by a caller without the write right (7.7) | `403`; `LOCK` → `403` as on a read-only mount, so Office opens read-only |
 
-**Lock manager**: in memory per server. Locks are keyed by vfs node, so renames carry them. While a
+**Lock manager**: in memory per server. Locks are keyed by the vfs path (case-insensitive), not by vfs node:
+a plain rename re-keys the locks at and below its source, so the lock follows the resource. While a
 resource is locked, mutating requests without a matching token in `If:` → `423 Locked`. Locks are
 **not** propagated to SFTP (there is nothing to propagate to). They do take a vfs share registration
 (deny-write) so that a Dokany mount of the same remote path in this process respects Office's lock.
 Expired locks are swept every 30 s.
+
+**Locks across a replacing MOVE (decision, M1 remainder).** Office and LibreOffice save with: `LOCK doc`,
+write a temp file, `MOVE temp → doc` with `Overwrite: T` and `If: (<token of doc>)`, then `UNLOCK doc`.
+The final `UNLOCK` must succeed (`204`): the client still holds the lock on that URL, and the URL now names
+the moved resource. So a replacing MOVE keeps the lock on the destination URL (the same token, the same
+timeout), and `UNLOCK` of the destination afterwards is `204`. Rules, applied after the vfs rename succeeded
+(`wd_lock_replace`):
+- the lock exactly on the destination URL survives and covers the moved resource;
+- locks strictly below a replaced collection go with the replaced children (their resources no longer exist);
+- a lock on the source URL moves with the resource, unless the destination already has its own lock: two
+  locks on one URL would need two tokens in `If:`, so the destination's lock wins and the moved one is dropped;
+- a MOVE or COPY without the destination token still gets `423` (checked before the rename), and a plain
+  `PUT` after `UNLOCK` is allowed.
+A COPY with `Overwrite: T` keeps the destination lock the same way and drops only the locks below the
+replaced tree. (The earlier implementation dropped every lock under the destination, so the final `UNLOCK`
+got `409`.) Real Office/LibreOffice clients are not yet on the lab list, so whether they accept the `204`
+the same way is `[lab-verify]`.
 
 **Error mapping** (`sd_vfs_status` → HTTP): NOT_FOUND / PATH_NOT_FOUND 404 (409 for a missing parent on
 PUT/MKCOL/MOVE), EXISTS 405/412, ACCESS_DENIED 403, READ_ONLY 403, SHARING / LOCKED 423, NO_SPACE 507,
@@ -1543,6 +1561,23 @@ other 500. This table and the NTSTATUS table in 8 are normative; 01 §10.9's hin
   - the 4 GiB − 1 hard cap (7.1).
 
   These make WebDAV the compatibility backend, not the performance backend.
+- **Negative cache (`FileNotFoundCacheLifeTimeInSec`, 60 s, decision M1 remainder).** After a failed lookup
+  the redirector answers "not found" for that name from its own cache for about 60 s without sending a
+  request (seen in acceptance: a rename that succeeded on the server still looked missing on `P:` for 60 s).
+  The server cannot clear that cache (WebDAV has no push channel), so the mitigations are about what the server
+  answers:
+  - A miss that is really "the link is down" is `503` + `Retry-After` (vfs `DISCONNECTED`), never `404`, so the
+    redirector retries instead of caching a miss. Test `webdav_server_link_down_miss_is_503_not_404`.
+  - A `404` is sent only for a name the vfs reports as absent while it is connected; probes of names the user
+    does not have (Explorer, Office) stay fast `404`s (4.1), as the Office and FrontPage probes do.
+  - Our own flows never depend on a name that was missed just before: the create sequence (`PUT` 0 bytes,
+    `PROPPATCH`, `LOCK`, `PUT`) and the save sequence (temp file, `MOVE`) create the names they then look up.
+  - Remaining, not fixable in the server: (a) a `404` from a negative entry that the vfs serves while the link is
+    down (the vfs answers from its cache, 4.1, and reports `NOT_FOUND`, not `DISCONNECTED`); the HTTP layer has
+    no link state (sd_vfs exposes none per connection), so this case still reaches the redirector as `404`.
+    Closing it needs the session state in `sd_webdav_export_cfg` (`sd_sftp_session_state`), an open item for
+    `sd_mount`; (b) a `404` the redirector caches for a name that the user creates right after: that stays
+    stale for up to 60 s. The user-facing wait and the CLI/agent avoidance are in `docs/dev/m1-notes.md`.
 - Typical create sequence (Vista+): `PUT` (0 bytes) → `PROPPATCH` (Win32 times/attrs) → `LOCK` → ... →
   `PUT` (content) → `PROPPATCH` → `UNLOCK`. Every step must succeed quickly.
 - **Explorer**: heavy `PROPFIND depth 1` on every folder view, and probes for `desktop.ini`,

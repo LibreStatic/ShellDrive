@@ -22,6 +22,9 @@ SD_TEST_DECL(webdav_token_only_gate_per_mode);
 SD_TEST_DECL(webdav_token_only_selftest);
 SD_TEST_DECL(webdav_token_only_mount_refused);
 SD_TEST_DECL(webdav_server_ipv6_loopback);
+SD_TEST_DECL(webdav_server_office_save_sequence);
+SD_TEST_DECL(webdav_server_replacing_move_drops_replaced_children_locks);
+SD_TEST_DECL(webdav_server_link_down_miss_is_503_not_404);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(webdav_http_parses_request),
@@ -41,6 +44,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(webdav_server_read_only_export),
   SD_TEST_ENTRY(webdav_server_slowloris_and_quotas),
   SD_TEST_ENTRY(webdav_server_ipv6_loopback),
+  SD_TEST_ENTRY(webdav_server_office_save_sequence),
+  SD_TEST_ENTRY(webdav_server_replacing_move_drops_replaced_children_locks),
+  SD_TEST_ENTRY(webdav_server_link_down_miss_is_503_not_404),
   SD_TEST_ENTRY(webdav_token_only_decision_matrix),
   SD_TEST_ENTRY(webdav_token_selftest_verdict),
   SD_TEST_ENTRY(webdav_token_only_gate_per_mode),
