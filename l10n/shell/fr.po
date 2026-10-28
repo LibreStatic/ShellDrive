@@ -42,3 +42,57 @@ msgstr "Déconnecter ce lecteur ShellDrive."
 msgctxt "shell.help.reconnect"
 msgid "Reconnect this ShellDrive drive."
 msgstr "Reconnecter ce lecteur ShellDrive."
+
+#. Explorer context menu on a file or folder inside a ShellDrive drive, and on the drive: copies the remote location (sftp:// URL) to the clipboard.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.copy_remote_path"
+msgid "Copy remote path"
+msgstr "Copier le chemin distant"
+
+#. Status bar help text for the Copy remote path item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.copy_remote_path"
+msgid "Copy the remote location of this item to the clipboard."
+msgstr "Copier l'emplacement distant de cet élément dans le presse-papiers."
+
+#. Explorer context menu on This PC: submenu that lists the user's ShellDrive connections to mount.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.mount_submenu"
+msgid "Mount with ShellDrive"
+msgstr "Monter avec ShellDrive"
+
+#. Status bar help text for the Mount with ShellDrive submenu.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.mount_submenu"
+msgid "Connect one of your ShellDrive connections."
+msgstr "Connectez l'une de vos connexions ShellDrive."
+
+#. Status bar help text for one connection in the Mount with ShellDrive submenu.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.mount_profile"
+msgid "Connect this connection with ShellDrive."
+msgstr "Connectez cette connexion avec ShellDrive."
+
+#. Disabled item of the Mount with ShellDrive submenu when the user has no connections yet.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.no_profiles"
+msgid "No connections set up"
+msgstr "Aucune connexion configurée"
+
+#. Last item of the Mount with ShellDrive submenu when there are more connections than fit: opens the ShellDrive window.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.more_profiles"
+msgid "More connections..."
+msgstr "Plus de connexions..."
+
+#. Explorer context menu on This PC: opens the ShellDrive window.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.open_shelldrive"
+msgid "Open ShellDrive"
+msgstr "Ouvrir ShellDrive"
+
+#. Status bar help text for the Open ShellDrive item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.open_shelldrive"
+msgid "Open the ShellDrive window."
+msgstr "Ouvrir la fenêtre de ShellDrive."

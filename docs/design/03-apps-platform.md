@@ -1920,6 +1920,36 @@ Version skew: a reader of layout N accepts N-1 and N+1 (where it can read the v1
 add fields in reserved areas or after the entry tail). A non-additive change needs a new magic and a `.v2` section name.
 The DLL reads the same layout on every architecture (fixed widths, no pointers).
 
+#### 8.2.2 menu.cache v1 and the menu items (R16, specification and implementation notes)
+
+`%LOCALAPPDATA%\LibreStatic\ShellDrive\state\menu.cache` lists the profiles of the This PC submenu. It is plain UTF-8
+(a BOM is allowed; LF or CRLF line ends), at most 64 KiB and 256 profiles. First line `SDMENU 1`; then one profile per
+line, `<32 lowercase hex digits of the profile id><TAB><display name>`. Blank lines and lines starting with `#` are
+skipped. A malformed line (id not 32 lowercase hex digits, no TAB, empty name, name over 128 UTF-16 units, invalid UTF-8,
+control characters) or a repeated id is dropped on its own; a wrong first line or a file over the cap is no data. The
+shell extension opens it read-only and only when its owner is the user (or the default owner of the user's token); the
+parser is `shx_menucache_parse` (`shellext_model.c`). Its writer is the agent or the UI (backend: not implemented on this
+branch, see `docs/dev/handoff-frontend.md`); the file must be rewritten atomically (write a temporary file in the same
+folder, then replace) whenever a profile is added, renamed or removed.
+
+Items, by class (the two classes of the DLL are `SHX_CLSID_CONTEXT_MENU` for Drive, Directory and `*`, and
+`SHX_CLSID_COMPUTER_MENU` for This PC; the second keeps the code from guessing which menu Explorer asked for):
+
+| Selection | Items |
+|---|---|
+| Root of a ShellDrive drive | Open in ShellDrive; Unmount and Reconnect (per-user entries, by state); Copy remote path (entry has `HAS_REMOTE_URL`) |
+| File or folder inside a ShellDrive drive | Copy remote path (same condition) |
+| This PC | Submenu "Mount with ShellDrive" (up to 32 profiles from `menu.cache`, then "More connections..." which opens the window; a disabled "No connections set up" without data), and "Open ShellDrive" |
+
+**Copy remote path** puts `remote_url` of the drive's entry, plus the path below the drive root, on the clipboard as text,
+in process (no UI process). The base URL is used as the agent wrote it; each component of the appended path is
+percent-encoded as UTF-8 (`sftp://user@host:22/var/www` + `my docs\a b.txt` gives
+`sftp://user@host:22/var/www/my%20docs/a%20b.txt`). `.` and `..` components, a URL that is not `sftp://`, or one with control,
+bidi or zero-width characters give no item. Global drives of callers outside `service_access` carry no URL, so they get no
+Copy item. Profile names in the submenu have bidi and control characters removed and `&` doubled, so a name never
+creates a mnemonic; the items have no mnemonics of their own, so none can collide in any locale. Selecting several items
+gives no items.
+
 ### 8.3 Drive labels and icons
 
 Written by whoever owns the mount (agent for per-user, service for global), removed on unmount, and reconciled at

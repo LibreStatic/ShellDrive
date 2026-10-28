@@ -16,7 +16,7 @@ target_compile_definitions(sd-test-shellext-dll PRIVATE SD_SHELLEXT_TEST=1)
 set_target_properties(sd-test-shellext-dll PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(shellext
-  SOURCES test_shellext.c ${_shx_dir}/shellext_snapshot.c
+  SOURCES test_shellext.c test_shellext_model.c ${_shx_dir}/shellext_snapshot.c ${_shx_dir}/shellext_model.c
   DEPS sd_ipc sd_platform sd_base advapi32 ole32 shell32 user32)
 target_compile_definitions(sd-test-shellext PRIVATE SD_SHELLEXT_TEST=1)
 target_include_directories(sd-test-shellext PRIVATE "${_shx_dir}")

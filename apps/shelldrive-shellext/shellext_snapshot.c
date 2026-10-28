@@ -121,6 +121,11 @@ static int sx_parse_entry(const unsigned char *e, shx_entry *o)
   o->backend = backend;
   o->mount_num = rd32(e + 12);
   o->letter = (WCHAR)letter;
+  /* The URL slot was validated as well-formed UTF-16 above; a full slot without NUL gets one here. */
+  memcpy(o->remote_url, e + SHX_SLOT_URL, 320u * sizeof(WCHAR));
+  o->remote_url[320] = 0;
+  if ((flags & SHX_F_HAS_REMOTE_URL) == 0)
+    o->remote_url[0] = 0;
   return 1;
 }
 
