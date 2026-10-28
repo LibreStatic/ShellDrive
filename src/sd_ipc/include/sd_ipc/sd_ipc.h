@@ -75,6 +75,11 @@ sd_err sd_ipc_current_identity(wchar_t *sid_out, size_t sid_cch, DWORD *session_
    (unelevated if the caller is elevated, 03 §1.7.2). */
 sd_err sd_ipc_connect(sd_ipc_endpoint ep, const sd_ipc_hello *hello, int start_if_missing,
                       DWORD timeout_ms, sd_ipc_conn **out);
+/* The agent is not running: start it and connect, exactly as the CLI's connect_agent does (same spawn, same
+   timeout SD_IPC_AGENT_START_TIMEOUT_MS). For the UI's "Agent not running - Start" (03 §7.5). No UI code here.
+   Errors: SD_E_NOT_FOUND (the agent could not be started), SD_E_TIMEOUT, SD_E_ACCESS_DENIED (owner check). */
+#define SD_IPC_AGENT_START_TIMEOUT_MS 10000u
+sd_err sd_ipc_connect_agent_or_start(const sd_ipc_hello *hello, sd_ipc_conn **out);
 sd_err sd_ipc_call(sd_ipc_conn *c, const char *method, const sd_json *params,
                    DWORD timeout_ms, sd_json **result, sd_ipc_error *err);
 /* Same, with params given as an already-encoded JSON object (UTF-8). */

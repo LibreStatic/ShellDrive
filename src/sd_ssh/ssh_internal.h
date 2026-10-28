@@ -20,6 +20,7 @@
 #include "sd_base/sd_err.h"
 #include "sd_crypto/sd_crypto.h"
 #include "sd_ssh/sd_known_hosts.h"
+#include "sd_ssh/sd_ssh.h"
 #include "ssh_zlib.h"
 
 /* ---- message numbers (RFC 4250 §4.1, RFC 8308, OpenSSH PROTOCOL) ---- */
@@ -47,22 +48,6 @@ enum {
 #define SSH_MAX_PACKET_LEN   (256u * 1024u)    /* inbound packet_length limit (01 §4.1) */
 #define SSH_HOSTKEY_BUF      8192u             /* K_S / host certificate kept per connection */
 #define SSH_MAX_PAYLOAD_OUT  (SSH_MAX_PACKET_LEN - 1024u)
-
-/* legacy_mask bits (01 §4.3). The UI warns for every bit except SD_LEGACY_MAC_NON_ETM (D33). */
-enum {
-  SD_LEGACY_KEX_SHA1         = 1u << 0,   /* group1 / group14-sha1 / gex-sha1 */
-  SD_LEGACY_DH_1024          = 1u << 1,   /* group1 */
-  SD_LEGACY_DH_SMALL         = 1u << 2,   /* GEX group < 2048 bits */
-  SD_LEGACY_CIPHER_CBC       = 1u << 3,
-  SD_LEGACY_CIPHER_3DES      = 1u << 4,
-  SD_LEGACY_MAC_SHA1         = 1u << 5,
-  SD_LEGACY_MAC_NON_ETM      = 1u << 6,   /* informational only */
-  SD_LEGACY_HOSTKEY_SHA1     = 1u << 7,   /* ssh-rsa host key signature */
-  SD_LEGACY_USERAUTH_SHA1    = 1u << 8,   /* we signed with ssh-rsa (auth) */
-  SD_LEGACY_RSA_SHORT        = 1u << 9,   /* RSA key < 2048 bits (host or user) */
-  SD_LEGACY_NO_STRICT_KEX    = 1u << 10,
-  SD_LEGACY_TERRAPIN_EXPOSED = 1u << 11
-};
 
 /* ---- crypto availability (crypto_init.c) ---- */
 

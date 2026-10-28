@@ -435,6 +435,39 @@ SD_TEST(mount_m2_legacy_warn_ask_refuse)
   done(&h);
 }
 
+/* 03 §7.6, 2.4: the current security state of a mount, independent of the warnings and of the legacy policy.
+   Outdated names come with their category (cipher and mac on both directions, deduplicated); Terrapin is its own
+   flag and is not a legacy algorithm. */
+SD_TEST(mount_m2_security_state)
+{
+  static h2 h;   /* big harness: off the stack */
+  sd_mount_security sec;
+  init(&h);
+  fake_backend_reset();
+  SD_CHECK(sd_mount_get_security(NULL, &sec) == 0);
+  SD_REQUIRE(create1(&h, L"legacy.test", "dan", L'P', SD_LEGACY_ALLOW, 1, SD_HKU_ASK) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_CHECK(h.nwarn == 0);                         /* allowed: no warning, the state is still reported */
+  SD_REQUIRE(sd_mount_get_security(h.m, &sec));
+  SD_CHECK_EQ_INT(sec.legacy, 1);
+  SD_CHECK_EQ_INT(sec.terrapin_exposed, 0);
+  SD_CHECK_EQ_INT(sec.legacy_count, 2);
+  SD_CHECK_STR(sec.legacy_algs[0].category, "cipher");
+  SD_CHECK_STR(sec.legacy_algs[0].name, "3des-cbc");
+  SD_CHECK_STR(sec.legacy_algs[1].category, "mac");
+  SD_CHECK_STR(sec.legacy_algs[1].name, "hmac-sha1");
+  stop(&h);
+  SD_REQUIRE(create1(&h, L"terrapin.test", "dan", L'P', SD_LEGACY_WARN, 1, SD_HKU_ASK) == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until(&h, SD_MOUNT_MOUNTED, 5000));
+  SD_REQUIRE(sd_mount_get_security(h.m, &sec));
+  SD_CHECK_EQ_INT(sec.terrapin_exposed, 1);
+  SD_CHECK_EQ_INT(sec.legacy, 0);                 /* Terrapin alone is not an outdated algorithm */
+  SD_CHECK_EQ_INT(sec.legacy_count, 0);
+  done(&h);
+}
+
 SD_TEST(mount_m2_password_change)
 {
   static h2 h;   /* big harness: off the stack */

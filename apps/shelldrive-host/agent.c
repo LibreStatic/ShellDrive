@@ -115,6 +115,7 @@ typedef struct host_mount {
   /* M2 */
   host_chain *chain;            /* owned until sd_mount_create */
   char legacy_accepted[80];     /* security.legacy_accepted of the profile */
+  int scope;                    /* SD_PROFILE_SCOPE_* of the profile: `list` scope */
   wchar_t save_comment[256];    /* Credential Manager comment, localized by the client */
   uint32_t hop_count;
   /* M3 */
@@ -366,6 +367,64 @@ static void write_conn_json(sd_json_writer *jw, host_mount *h)
   }
 }
 
+/* `list` scope (03 §2.3): user (the user's own profile), machine_template (scope = users, read-only templates
+   from sd_config) or global (scope = service, the Global drives group). */
+static const char *scope_name(int scope)
+{
+  switch (scope) {
+  case SD_PROFILE_SCOPE_USERS: return "machine_template";
+  case SD_PROFILE_SCOPE_SERVICE: return "global";
+  default: return "user";
+  }
+}
+
+/* Names of the store kinds of a host key (03 §2.4 error.store_kind, 5.4): machine, user, openssh, putty. */
+static const char *store_kind_name(sd_kh_store_kind k)
+{
+  switch (k) {
+  case SD_KH_STORE_MACHINE: return "machine";
+  case SD_KH_STORE_USER: return "user";
+  case SD_KH_SRC_OPENSSH: return "openssh";
+  case SD_KH_SRC_PUTTY: return "putty";
+  }
+  return "unknown";
+}
+
+/* A comma list as a JSON array of its non-empty items (stored and offered key types). */
+static void write_csv_array(sd_json_writer *jw, const char *key, const char *csv)
+{
+  char buf[256];
+  char *t, *ctx = NULL;
+  sd_jw_key(jw, key);
+  sd_jw_arr_begin(jw);
+  scopy(buf, sizeof(buf), csv ? csv : "");
+  for (t = strtok_s(buf, ",", &ctx); t; t = strtok_s(NULL, ",", &ctx))
+    if (t[0]) sd_jw_cstr(jw, t);
+  sd_jw_arr_end(jw);
+}
+
+/* The Security state of the current connection (03 §7.6, 2.4), not the warnings ring: legacy (the flag),
+   legacy_algorithms ([{category, name}]) and terrapin_exposed. g.lock held. */
+static void write_security_json(sd_json_writer *jw, host_mount *h)
+{
+  sd_mount_security sec;
+  uint32_t i;
+  memset(&sec, 0, sizeof(sec));
+  if (h->m)
+    sd_mount_get_security(h->m, &sec);
+  sd_jw_key(jw, "legacy"); sd_jw_bool(jw, sec.legacy);
+  sd_jw_key(jw, "legacy_algorithms");
+  sd_jw_arr_begin(jw);
+  for (i = 0; i < sec.legacy_count; i++) {
+    sd_jw_obj_begin(jw);
+    sd_jw_key(jw, "category"); sd_jw_cstr(jw, sec.legacy_algs[i].category);
+    sd_jw_key(jw, "name"); sd_jw_cstr(jw, sec.legacy_algs[i].name);
+    sd_jw_obj_end(jw);
+  }
+  sd_jw_arr_end(jw);
+  sd_jw_key(jw, "terrapin_exposed"); sd_jw_bool(jw, sec.terrapin_exposed);
+}
+
 static void write_mount_json(sd_json_writer *jw, host_mount *h)
 {
   sd_jw_obj_begin(jw);
@@ -380,6 +439,8 @@ static void write_mount_json(sd_json_writer *jw, host_mount *h)
   sd_jw_key(jw, "port"); sd_jw_int(jw, h->port);
   sd_jw_key(jw, "user"); sd_jw_cstr(jw, h->user);
   sd_jw_key(jw, "read_only"); sd_jw_bool(jw, h->read_only);
+  sd_jw_key(jw, "scope"); sd_jw_cstr(jw, scope_name(h->scope));
+  write_security_json(jw, h);
   write_conn_json(jw, h);
   sd_jw_obj_end(jw);
 }
@@ -407,14 +468,26 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
     sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, code);
     sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, f.detail);
     sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, sd_ipc_exit_code_for_code(code));
-    if (f.err == SD_E_HOSTKEY_MISMATCH) {
+    if (f.err == SD_E_HOSTKEY_MISMATCH || f.err == SD_E_HOSTKEY_TYPE_UNAVAILABLE) {
       sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, h->host);
+      if (f.lookup_name[0]) { sd_jw_key(&jw, "lookup_name"); sd_jw_cstr(&jw, f.lookup_name); }
+    }
+    if (f.err == SD_E_HOSTKEY_MISMATCH) {
       sd_jw_key(&jw, "stored_type"); sd_jw_cstr(&jw, f.stored_type);
       sd_jw_key(&jw, "stored_fp"); sd_jw_cstr(&jw, f.stored_fp);
       sd_jw_key(&jw, "offered_type"); sd_jw_cstr(&jw, f.offered_type);
       sd_jw_key(&jw, "offered_fp"); sd_jw_cstr(&jw, f.offered_fp);
       sd_jw_key(&jw, "store_path"); jw_wstr(&jw, f.store_path);
       sd_jw_key(&jw, "store_line"); sd_jw_int(&jw, f.store_line);
+      if (f.has_store_kind) { sd_jw_key(&jw, "store_kind"); sd_jw_cstr(&jw, store_kind_name(f.store_kind)); }
+    } else if (f.err == SD_E_HOSTKEY_TYPE_UNAVAILABLE) {
+      /* the stored types (comma list, also in stored_type for clients that show one string) and the server's
+         offered algorithms; the offered key and its fingerprint when the server presented one (03 §5.2) */
+      sd_jw_key(&jw, "stored_type"); sd_jw_cstr(&jw, f.stored_types);
+      write_csv_array(&jw, "stored_types", f.stored_types);
+      write_csv_array(&jw, "offered_types", f.offered_types);
+      sd_jw_key(&jw, "offered_type"); sd_jw_cstr(&jw, f.offered_type);
+      sd_jw_key(&jw, "offered_fp"); sd_jw_cstr(&jw, f.offered_fp);
     }
     sd_jw_obj_end(&jw);
   }
@@ -544,11 +617,29 @@ static void mount_changed_locked(const host_mount *h)
 
 /* ---- sd_mount callbacks (control thread) ---- */
 
+/* The recent warnings of a mount that is gone leave the ring, the others keep their order (g.lock held). The
+   ring is rewritten from slot 0 so that warn_next = warn_count again. */
+static void forget_warnings_locked(const char *mount_id)
+{
+  host_warn kept[WARN_RING];
+  uint32_t i, start, n = 0;
+  start = (g.warn_next + WARN_RING - g.warn_count) % WARN_RING;
+  for (i = 0; i < g.warn_count; i++) {
+    const host_warn *w = &g.warns[(start + i) % WARN_RING];
+    if (strcmp(w->mount_id, mount_id) != 0)
+      kept[n++] = *w;
+  }
+  memcpy(g.warns, kept, n * sizeof(kept[0]));
+  g.warn_count = n;
+  g.warn_next = n % WARN_RING;
+}
+
 static void destroy_record_locked(host_mount *h)
 {
   host_mount **pp;
   for (pp = &g.mounts; *pp; pp = &(*pp)->next)
     if (*pp == h) { *pp = h->next; break; }
+  forget_warnings_locked(h->id);
   mount_changed_locked(h);
   if (h->m) {
     prompt_drop_mount(h->m);
@@ -1828,6 +1919,7 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
     return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
   scopy(h->profile_name, sizeof(h->profile_name), prof->name);
   scopy(h->profile_id, sizeof(h->profile_id), prof->id);
+  h->scope = prof->scope;
   scopy(h->host, sizeof(h->host), prof->host);
   scopy(h->user, sizeof(h->user), prof->user);
   scopy(h->remote, sizeof(h->remote), prof->remote_path);

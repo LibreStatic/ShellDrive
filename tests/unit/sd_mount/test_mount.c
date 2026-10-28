@@ -329,6 +329,34 @@ SD_TEST(mount_mismatch_is_hard_failure_with_details)
   SD_CHECK_STR(f.offered_fp, FAKE_FP);
   SD_CHECK_STR(f.stored_type, "ssh-ed25519");
   SD_CHECK_EQ_INT(f.store_line, 3);
+  SD_CHECK_STR(f.lookup_name, "mismatch.test");
+  SD_CHECK_EQ_INT(f.has_store_kind, 1);           /* the old key's store kind (03 §5.4) */
+  SD_CHECK_EQ_INT(f.store_kind, SD_KH_STORE_USER);
+  sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+/* host_key_type_unavailable (03 §5.2, TM-R04): the stored types and the offered key reach the failure record;
+   no store kind (there is no old key). */
+SD_TEST(mount_type_unavailable_details)
+{
+  harness h;
+  sd_mount_failure f;
+  h_init(&h);
+  fake_backend_reset();
+  SD_REQUIRE(h_create(&h, L"typeunavail.test", NULL, L'U') == SD_OK);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
+  SD_CHECK_EQ_INT(h.nprompts, 0);                 /* never a prompt (TM-R04) */
+  sd_mount_get_failure(h.m, &f);
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_TYPE_UNAVAILABLE);
+  SD_CHECK_STR(f.lookup_name, "typeunavail.test");
+  SD_CHECK_STR(f.stored_types, "ssh-rsa,ecdsa-sha2-nistp256");
+  SD_CHECK_STR(f.offered_types, "ssh-ed25519");
+  SD_CHECK_STR(f.offered_type, "ssh-ed25519");
+  SD_CHECK_STR(f.offered_fp, FAKE_FP);
+  SD_CHECK_EQ_INT(f.has_store_kind, 0);
   sd_mount_destroy(h.m);
   h_free(&h);
 }

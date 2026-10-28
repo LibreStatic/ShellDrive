@@ -220,21 +220,20 @@ new dialogs in the lab, XP behaviour of anything (no lab).
 
 ### Backend missing (not invented in the UI)
 
-- `host_key_type_unavailable`: the `mount.state` error has only `code`, `detail` and `exit_code`. It has no `host`, no stored
-  or offered key types and no fingerprints (agent.c writes them only for `SD_E_HOSTKEY_MISMATCH`). The UI uses the host of
-  the mount and names the stored type only if the agent sends `stored_type`; the 5.2 details dialog that lists stored
-  types next to the offered ones cannot be built until it does.
-- `host_key_mismatch`: the error has `store_path` and `store_line` but no store kind. For PuTTY `store_path` is the registry
-  subkey (`known_hosts.c` default_path), while the `sd_hk_result` comment says it is empty; the UI accepts both.
-- Legacy and Terrapin: `list` mounts have no security flags and no algorithm names. The `warnings` ring holds the last 32
-  warnings of all mounts and nothing removes a mount's entries. The algorithm names come only from the `legacy_algorithms`
-  warning event, so a UI that starts after the warning shows the Security column but cannot list the algorithms (the dialog
-  says so, and "Don't warn again" is off then). The categories and reasons of the algorithms are derived from their names in
-  the UI. A `list` field with the negotiated algorithms and the `legacy` flag (as `profile.test` already returns) would fix it.
-- Groups: `list` mounts have no `scope`, and `sd_profile_enum` reads the per-user store only, so no machine template
-  (`scope = users`) or service profile reaches the list. "Provided by your organization" and "Global drives" are ready
-  (`ui_mv_group_of_scope`) but stay empty until the profile enumeration and the service mounts exist.
-- Status bar "Agent not running - Start": no component has a helper that starts the agent (03 1.4 says the UI does). The status
-  bar shows the text only.
+- DONE (round 17, branch `wip/r17-uidata`) `host_key_type_unavailable`: `mount.state` error has `host`, `lookup_name`,
+  `stored_types` and `offered_types` (arrays; `stored_type` is the comma-joined list) and `offered_type`/`offered_fp` when the
+  server presented a key. **Not sent: fingerprints of the stored keys** (`sd_kh_types` holds type names only), so the 5.2
+  dialog can list stored types next to the offered ones but not stored fingerprints.
+- DONE (round 17) `host_key_mismatch`: `error.store_kind` (`machine`, `user`, `openssh`, `putty`) next to `store_path` and
+  `store_line`, plus `lookup_name`. PuTTY now reports `store_path` "" and `store_line` 0, as the `sd_hk_result` comment says
+  (`known_hosts.c` `loc_to_res`). The UI still accepts the old subkey value for other builds.
+- DONE (round 17) Legacy and Terrapin in `list`: each mount has `legacy` (bool), `legacy_algorithms` (`[{category, name}]`),
+  `terrapin_exposed` (current connection, from `sd_mount_get_security`, not the ring). The `warnings` ring drops a mount's
+  entries when the mount is destroyed. The UI can stop deriving categories from names.
+- DONE (round 17) Groups, backend side: `list` mounts have `scope` (`user`, `machine_template`, `global`). **Still open:**
+  `sd_profile_enum` reads the per-user store only, so machine templates and service profiles are not enumerated for the UI
+  ("Provided by your organization" and "Global drives" stay empty).
+- DONE (round 17, backend) "Agent not running - Start": `sd_ipc_connect_agent_or_start` (`src/sd_ipc`) starts and connects
+  like the CLI's `connect_agent`. **Still open (UI):** the status bar must call it on the Start action.
 - Still open: the event list of 7.7 (item 6), the other host key manager details (item 7), Logs viewer extras (item 8).
 

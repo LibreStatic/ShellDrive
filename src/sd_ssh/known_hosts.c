@@ -329,12 +329,14 @@ static int eval_line(void *vctx, const char *s, size_t n, uint32_t no)
   return 0;
 }
 
+/* sd_hk_result: path is the file of the deciding entry, "" for the PuTTY registry (its subkey is not a file
+   and has no lines), and line is 0 when not applicable. */
 static void loc_to_res(const kh_loc *l, sd_hk_result *res)
 {
   res->store = l->kind;
-  res->line = l->line;
+  res->line = l->kind == SD_KH_SRC_PUTTY ? 0 : l->line;
   res->path[0] = L'\0';
-  if (l->path && wcslen(l->path) < SD_COUNTOF(res->path))
+  if (l->path && l->kind != SD_KH_SRC_PUTTY && wcslen(l->path) < SD_COUNTOF(res->path))
     memcpy(res->path, l->path, (wcslen(l->path) + 1) * sizeof(wchar_t));
 }
 

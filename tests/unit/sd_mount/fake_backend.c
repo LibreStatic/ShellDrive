@@ -493,6 +493,20 @@ static unsigned __stdcall session_thread(void *arg)
     if (s->cb.on_hostkey_event)
       s->cb.on_hostkey_event(s->cb.ctx, &he);
     fail = SD_E_HOSTKEY_MISMATCH;
+  } else if (starts_with(s->host, "typeunavail")) {
+    /* 5.2: the name has keys of two other types; the server presents an ed25519 key (not stored) */
+    sd_hostkey_event he;
+    sd_hk_key newk;
+    memset(&he, 0, sizeof(he));
+    newk.blob = NULL; newk.len = 0; newk.type = "ssh-ed25519"; newk.fp_sha256 = FAKE_FP;
+    he.kind = SD_HKEV_TYPE_UNAVAILABLE;
+    he.lookup_name = s->host;
+    he.new_key = &newk;
+    he.stored_types = "ssh-rsa,ecdsa-sha2-nistp256";
+    he.offered_types = "ssh-ed25519";
+    if (s->cb.on_hostkey_event)
+      s->cb.on_hostkey_event(s->cb.ctx, &he);
+    fail = SD_E_HOSTKEY_TYPE_UNAVAILABLE;
   } else {
     /* every hop: proxy password (leg with a proxy user), TOFU, legacy ack, then authentication */
     int just_accepted = 0;
@@ -546,6 +560,8 @@ static unsigned __stdcall session_thread(void *arg)
         n.cipher_c2s = n.cipher_s2c = target && starts_with(h->host, "legacy") ? "3des-cbc" : "aes256-gcm@openssh.com";
         n.mac_c2s = n.mac_s2c = target && starts_with(h->host, "legacy") ? "hmac-sha1" : "";
         n.legacy_mask = target && starts_with(h->host, "legacy") ? 3u : 0u;
+        if (target && starts_with(h->host, "terrapin"))  /* Terrapin-exposed, no outdated names (03 §7.6) */
+          n.legacy_mask |= SD_LEGACY_TERRAPIN_EXPOSED;
         n.hostkey_fp_sha256 = FAKE_FP;
         if (s->cb.on_negotiated)
           s->cb.on_negotiated(s->cb.ctx, &n);
