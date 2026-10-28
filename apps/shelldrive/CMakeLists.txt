@@ -16,7 +16,10 @@ set(SD_CLI_SOURCES
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.h
   # service repair-data (M5, 3.2, TM-R34): the machine data folder repair; the tests call it on a temp folder.
   ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.c
-  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.h)
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.h
+  # the machine folder checks (3.2, TM-R34), shared by the service start and the repair.
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.h)
 set(SD_CLI_SOURCES ${SD_CLI_SOURCES} PARENT_SCOPE)
 
 # sd_ssh: the host key commands run sd_known_hosts in the CLI process (03 §5: the CLI and UI link

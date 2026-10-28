@@ -45,6 +45,22 @@ static int saw_event(DWORD msg_id)
   return 0;
 }
 
+/* Owner seams (svc_opts.owner_trusted): the fixture's folders are owned by this process, so the shared core trusts every
+   owner; the start-refusal test trusts none and checks the refusal the shipping rule would give a foreign owner. */
+static int owner_trust_all(void *ctx, PSID owner)
+{
+  (void)ctx;
+  (void)owner;
+  return 1;
+}
+
+static int owner_trust_none(void *ctx, PSID owner)
+{
+  (void)ctx;
+  (void)owner;
+  return 0;
+}
+
 #define T_ID_MOUNTED  "00000000000000000000000000000001"
 #define T_ID_NOSUB    "00000000000000000000000000000002"
 #define T_ID_TOFU     "00000000000000000000000000000003"
@@ -208,6 +224,7 @@ static int ensure_core(void)
   o.open_log = 0;
   o.on_running = on_running;
   o.test_all_admin = 1;
+  o.owner_trusted = owner_trust_all;
   o.event = test_event;
   o.event_ctx = NULL;
   g_running = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -731,9 +748,116 @@ SD_TEST(svc_core_stops_and_leaves_nothing_behind)
   SD_CHECK(saw_event(SVC_MSG_UNMOUNTED));
   SD_CHECK(saw_event(SVC_MSG_MOUNT_FAILED));
   SD_CHECK(g_ev_ids[g_ev_n - 1] == SVC_MSG_STOPPED);
+  /* every machine folder of the fixture was trusted: no 3102 */
+  SD_CHECK(!saw_event(SVC_MSG_UNTRUSTED_FOLDER));
   /* the pipe is gone with the core */
   SD_CHECK(connect_as("testadmin", 0, &c) != SD_OK);
   CloseHandle(g_running);
   g_running = NULL;
   g_started = 0;
+}
+
+/* ---- start refusal of a machine folder (3.2, TM-R34, Event 3102) ----
+   Each run here is a core of its own (the core is process-wide; the one above has stopped). The owner seam trusts no
+   owner, so the first machine folder checked, the root itself, is refused: the core stays up and idle, and Event 3102
+   names the folder and the reason. The sink is a test sink: no Event Log write. */
+
+static int g_ref_n;
+static wchar_t g_ref_path[MAX_PATH];
+static wchar_t g_ref_reason[64];
+static int g_run_rc = -1;
+
+static void refusal_event(void *ctx, DWORD msg_id, const wchar_t **args, size_t nargs)
+{
+  (void)ctx;
+  if (msg_id != SVC_MSG_UNTRUSTED_FOLDER || nargs != 2)
+    return;
+  if (g_ref_n == 0) {
+    _snwprintf_s(g_ref_path, MAX_PATH, _TRUNCATE, L"%s", args[0]);
+    _snwprintf_s(g_ref_reason, SD_COUNTOF(g_ref_reason), _TRUNCATE, L"%s", args[1]);
+  }
+  g_ref_n++;
+}
+
+static void refusal_running(void *ctx)
+{
+  SetEvent((HANDLE)ctx);
+}
+
+static DWORD WINAPI refusal_core_main(LPVOID arg)
+{
+  g_run_rc = svc_run((svc_opts *)arg);
+  return 0;
+}
+
+/* Runs one core with o until it listens, then stops it and waits for it. Returns 1 when it listened; *rc is svc_run's
+   result. The pipe identity is set the same way as ensure_core does (process-wide, idempotent). */
+static int run_one_core(svc_opts *o, int *rc)
+{
+  HANDLE running, thread = NULL;
+  wchar_t sid[256], suffix[64];
+  int listened = 0;
+  running = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (running == NULL)
+    return 0;
+  if (sd_ipc_current_identity(sid, SD_COUNTOF(sid), NULL) == SD_OK) {
+    _snwprintf_s(suffix, SD_COUNTOF(suffix), _TRUNCATE, L"svc%lu", (unsigned long)GetCurrentProcessId());
+    sd_ipc_set_instance_suffix(suffix);
+    sd_ipc_test_set_expected_owner(sid);
+    sd_ipc_test_set_service_owner(sid);
+  }
+  o->on_running = refusal_running;
+  o->ctx = running;
+  g_run_rc = -1;
+  thread = CreateThread(NULL, 0, refusal_core_main, o, 0, NULL);
+  if (thread != NULL) {
+    listened = WaitForSingleObject(running, 15000) == WAIT_OBJECT_0;
+    svc_request_stop();
+    WaitForSingleObject(thread, 30000);
+    CloseHandle(thread);
+  }
+  CloseHandle(running);
+  *rc = g_run_rc;
+  return listened;
+}
+
+/* A fresh folder under %TEMP% for one run; the core is given it as its machine root. */
+static int make_run_root(wchar_t *root, size_t cch)
+{
+  wchar_t tmp[MAX_PATH];
+  LARGE_INTEGER qpc;
+  if (GetTempPathW(MAX_PATH, tmp) == 0)
+    return 0;
+  QueryPerformanceCounter(&qpc);
+  _snwprintf_s(root, cch, _TRUNCATE, L"%ssdsvc-own-%lu-%lu", tmp, (unsigned long)GetCurrentProcessId(),
+               (unsigned long)qpc.LowPart);
+  return CreateDirectoryW(root, NULL) ? 1 : 0;
+}
+
+SD_TEST(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start)
+{
+  static svc_opts o;
+  wchar_t root[MAX_PATH], sub[MAX_PATH];
+  int rc = -1;
+  SD_REQUIRE(make_run_root(root, SD_COUNTOF(root)));
+  memset(&o, 0, sizeof(o));
+  o.backend = fake_backend();
+  o.machine_root = root;
+  o.open_log = 0;
+  o.event = refusal_event;
+  o.owner_trusted = owner_trust_none;
+  g_ref_n = 0;
+  g_ref_path[0] = 0;
+  g_ref_reason[0] = 0;
+  SD_REQUIRE(run_one_core(&o, &rc));
+  SD_CHECK_EQ_INT(rc, 0);
+  /* the root is the first folder checked: one event names it and the owner reason; nothing was created below it */
+  SD_CHECK_EQ_INT(g_ref_n, 1);
+  SD_CHECK(lstrcmpW(g_ref_path, root) == 0);
+  SD_CHECK(lstrcmpW(g_ref_reason, L"owner") == 0);
+  _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s\\logs", root);
+  SD_CHECK(GetFileAttributesW(sub) == INVALID_FILE_ATTRIBUTES);
+  _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s\\profiles", root);
+  SD_CHECK(GetFileAttributesW(sub) == INVALID_FILE_ATTRIBUTES);
+  RemoveDirectoryW(root);
 }

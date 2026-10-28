@@ -168,8 +168,9 @@ Why these four and not one:
 - The service logs to `<machine root>\logs\service.log`. Its console and SCM text is localized in the `svc` domain
   (03 §9.1); its log lines and codes stay English.
 - Global mounts are Dokany only in this part. Startup creates the machine folders with the DACLs of 3.2 when they
-  are missing and refuses the whole tree (idle service) when a folder is a reparse point. Existing folders are not
-  re-ACLed and their owner is not checked yet (left, 3.2).
+  are missing and refuses the whole tree (idle service) when a folder is a reparse point or has a foreign owner, and
+  logs Event 3102 for the first one refused. Existing folders are not re-ACLed yet (left, 3.2); `service repair-data`
+  does the repair.
 - A `scope = service` profile is loaded only when it validates: a user is named, `auth.agent` is not `pageant` or
   `openssh` (D17), `kbdint` is not offered, no jump hosts or proxies (not in this part), no WebDAV backend (D11), and
   every `service_access` entry resolves. Other machine profiles load without a warning.

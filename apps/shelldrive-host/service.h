@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "sd_mount/sd_mount.h"
+#include "svc_folder.h"
 
 #define SVC_SERVICE_NAME L"ShellDriveSvc"
 
@@ -24,6 +25,7 @@ typedef struct svc_opts {
   void *ctx;
   svc_event_fn event;                /* NULL = no Event Log writes (console mode, tests); SCM: svc_eventlog_write */
   void *event_ctx;
+  svc_owner_fn owner_trusted;        /* NULL = the shipping owner rule (3.2): SYSTEM or Administrators; tests replace it */
   int test_all_admin;                /* SD_SVC_TEST_HOOKS builds only: every client counts as an elevated admin */
 } svc_opts;
 

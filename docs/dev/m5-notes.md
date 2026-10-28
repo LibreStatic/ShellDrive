@@ -242,19 +242,57 @@ Manual check (read-only, not elevated, no service installed on this machine): `s
 `shelldrive --json service status` gives `installed: false`; `shelldrive service repair-data` exits 9 without changing
 anything.
 
+## Part 4: machine folder check at start and Event 3102
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/svc_folder.c`, `svc_folder.h` | the machine folder trust check shared by the service start and `svc_repair`: open with `FILE_FLAG_OPEN_REPARSE_POINT`, reparse point, kind, owner (`GetSecurityInfo` on the handle); the shipping owner rule (SYSTEM or BUILTIN\Administrators, `svc_folder_owner_shipping`); reason text for the event |
+| `apps/shelldrive-host/service.c`, `service.h` | `svc_ensure_layout` checks each existing machine folder through `svc_folder` (the vendor folder too, default location only); the first refusal is logged and written as Event 3102; `svc_opts.owner_trusted` (NULL = shipping rule) |
+| `apps/shelldrive-host/svc_repair.c` | uses `svc_folder` instead of its own open/owner code (same rules, same results) |
+| `apps/shelldrive-host/svc_events.mc` | message 3102 (warning): `%1` folder, `%2` reason |
+| `tests/unit/sd_svc/test_service.c` | fixture trusts every owner (the temp folders belong to this process); one new core run refuses the root on owner and checks the 3102 insert strings and that nothing was created |
+| `tests/unit/sd_svc/test_repair.c` | one new test: reparse point, file where a folder belongs, owner decision, store file (no owner rule), missing path |
+| `tests/unit/sd_svc/main.c`, `CMakeLists.txt` (`sd_svc`, `shelldrive`, `shelldrive-host`) | the new tests; `svc_folder.c` is compiled into the three targets |
+
+**Decisions taken in this part**
+
+- At start the service stays idle (no repair) when a machine folder is a reparse point or its owner is not SYSTEM or
+  Administrators. The check order per folder: open (never follows a link), reparse point, folder kind, owner. An
+  existing folder that cannot be opened or checked is refused too (reason `acl`). A missing folder is created with its
+  3.2 DACL as before.
+- Checked at start: `%ProgramData%\LibreStatic` (default location only), `ShellDrive`, `logs`, `profiles`, `service`,
+  `service\secrets`, `service\keys`. Store files (`known_hosts`, `settings.ini`) are not checked at start, as before.
+- Event 3102 is written once per start, for the first refused folder: `%1` the folder path, `%2` the reason. Its
+  severity is Warning. The message is English only (10.3, and AGENTS.md: event log payloads are English).
+- Deviation from 10.3: the reason vocabulary is `owner`, `reparse_point`, `acl` (as in the spec) plus `not_directory`
+  for a file where a folder belongs. The spec does not list it; it is left as a question for the design owner.
+- Tests never write to the Event Log: the sink is a seam (`svc_opts.event`). Tests never touch `%ProgramData%`.
+- The owner seam (`svc_opts.owner_trusted`) is for tests only in practice: the SCM path leaves it NULL.
+
+**Tests and verification**
+
+| Check | Result |
+|---|---|
+| `unit.svc` (`sd-test-svc.exe`): new `svc_refuses_a_machine_folder_with_a_foreign_owner_at_start` and `folder_check_reports_reparse_kind_and_owner`; `svc_core_stops_and_leaves_nothing_behind` also checks that no 3102 was written for the trusted fixture | see the build result in the report |
+
+The reparse-point start refusal (a junction at a machine folder) has the same code path as the owner refusal and the
+shared check tests, but no end-to-end test of its own (the junction helper lives in `test_repair.c`).
+
 ## Left (not in this part)
 
 - Global WebDAV (D11 spike, `system` / `link` / `attach` modes, 03 §1.3).
 - The display name as an indirect string (`@<path>,-<id>`, Vista+); the service's own re-set of the description at
-  first start (1.3); the Event Log 3100 and 3101 to 3102 and the other 2xxx/3xxx ids of 10.3 that depend on features
-  not in this part. Event 3102 (machine folder refused) is not written yet; the service only logs it.
+  first start (1.3); the Event Log 3100 and 3101 and the other 2xxx/3xxx ids of 10.3 that depend on features not in
+  this part. Event 3102 is written (part 4).
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store).
 - Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
   in this part with `usage`).
 - Identity files: only the path rule (under `<machine root>\service\`). The ACL and handle-based checks of TM-R27 are not
   done. Passphrase secrets and `identity_store` keys for service profiles are not wired.
-- The owner check of the machine folders at service start (3.2, TM-R34, Event 3102). Today a reparse point on a machine
-  folder makes the service idle; a foreign owner does not. `service repair-data` (part 3) does both checks and the repair.
+- Re-applying the 3.2 DACLs of existing machine folders at service start (3.2). The start check (part 4) only refuses;
+  `service repair-data` (part 3) is still the one that fixes folders.
 - Non-admin 64 KiB cap separate from the admin cap, and the two reserved administrator slots of the service pipe
   (2.2, TM-R25). One 64 KiB cap applies to every client; the 4-per-SID and 10-per-second limits are in place.
 - Per-request access check in `sd_vfs` (`access_sids` / `write_sids` are passed in the options but not enforced); the

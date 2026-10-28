@@ -13,6 +13,7 @@ sd_add_unit_test(svc
   SOURCES main.c test_access.c test_service.c test_scm.c test_gw.c test_repair.c
           "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_scm.c"
           "${_host_dir}/svc_gw.c" "${_host_dir}/svc_gw_attach.c" "${_host_dir}/svc_repair.c"
+          "${_host_dir}/svc_folder.c"
           "${_host_dir}/backend_unavailable.c"
   DEPS sd_mount_fake_backend sd_mount sd_ipc sd_secret sd_config sd_l10n sd_l10n_catalog_svc sd_ssh sd_platform
        sd_base ole32 shell32 user32 advapi32 mpr)

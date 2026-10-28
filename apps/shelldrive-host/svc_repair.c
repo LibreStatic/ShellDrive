@@ -1,16 +1,17 @@
 /* Machine data folder repair (03 §3.2, TM-R34; 04 §6.4). See svc_repair.h.
  *
- * Rules: a folder is trusted when it is a directory, not a reparse point, and owned by a trusted SID. Each check and
- * each security change goes through one handle opened with FILE_FLAG_OPEN_REPARSE_POINT, so a link is never followed.
- * The tree below the data folder is scanned without following links: a link, a foreign-owned folder or a failed open
- * anywhere in it makes the whole tree untrusted (fail closed). Only the CLI links this file (through shelldrive.exe)
- * and the unit tests. */
+ * Rules: a folder is trusted when it is a directory, not a reparse point, and owned by a trusted SID (svc_folder.c, the
+ * same check the service runs at start). Each check and each security change goes through one handle opened with
+ * FILE_FLAG_OPEN_REPARSE_POINT, so a link is never followed. The tree below the data folder is scanned without following
+ * links: a link, a foreign-owned folder or a failed open anywhere in it makes the whole tree untrusted (fail closed).
+ * The CLI and the service link this file (through shelldrive.exe and shelldrive-host.exe), and so do the unit tests. */
 #include <windows.h>
 #include <aclapi.h>
 #include <sddl.h>
 #include <strsafe.h>
 #include <string.h>
 
+#include "svc_folder.h"
 #include "svc_repair.h"
 
 #define REP_VENDOR L"LibreStatic"
@@ -45,19 +46,13 @@ static const rep_item k_files[] = {
 
 enum { REP_MISSING = 0, REP_TRUSTED, REP_UNTRUSTED };
 
-/* ---- seam: the shipping owner rule ---- */
-
-static int real_owner_trusted(void *ctx, PSID owner)
-{
-  (void)ctx;
-  return IsWellKnownSid(owner, WinLocalSystemSid) || IsWellKnownSid(owner, WinBuiltinAdministratorsSid);
-}
+/* ---- seam: the shipping owner rule (svc_folder.c) ---- */
 
 int svc_repair_real_ops(svc_repair_ops *out)
 {
   memset(out, 0, sizeof(*out));
   out->ctx = NULL;
-  out->owner_trusted = real_owner_trusted;
+  out->owner_trusted = svc_folder_owner_shipping;
   out->extra_ace = NULL;
   return 0;
 }
@@ -72,36 +67,9 @@ static int compose_sddl(const svc_repair_ops *ops, const wchar_t *sddl, wchar_t 
   return 1;
 }
 
-/* ---- handles (never follow a link) ---- */
-
-static DWORD open_entry(const wchar_t *path, DWORD access, HANDLE *h)
-{
-  *h = CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                   FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
-  if (*h == INVALID_HANDLE_VALUE) {
-    *h = NULL;
-    return GetLastError();
-  }
-  return 0;
-}
-
 static int is_missing(DWORD e)
 {
   return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND;
-}
-
-/* 1 when the owner of the open handle is trusted. Fails closed. */
-static int owner_is_trusted(const svc_repair_ops *ops, HANDLE h)
-{
-  PSID owner = NULL;
-  PSECURITY_DESCRIPTOR sd = NULL;
-  int r = 0;
-  if (GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &sd) != ERROR_SUCCESS)
-    return 0;
-  r = (owner != NULL && ops->owner_trusted(ops->ctx, owner)) ? 1 : 0;
-  if (sd != NULL)
-    LocalFree(sd);
-  return r;
 }
 
 /* Sets a protected DACL on an open handle (SetSecurityInfo on the handle, never on a path). */
@@ -125,18 +93,17 @@ static DWORD set_dacl_on(HANDLE h, const wchar_t *sddl)
   return e;
 }
 
-/* Checks one entry through a single handle. want_dir = 1: a folder (owner checked too); 0: a store file. A link, a
-   wrong kind or an untrusted owner is REP_UNTRUSTED. When sddl is not NULL and the entry is trusted, the DACL is set
-   on that same handle. A missing entry is REP_MISSING. */
+/* Checks one entry through a single handle (svc_folder_inspect). want_dir = 1: a folder (owner checked too); 0: a store
+   file. A link, a wrong kind or an untrusted owner is REP_UNTRUSTED. When sddl is not NULL and the entry is trusted, the
+   DACL is set on that same handle. A missing entry is REP_MISSING. */
 static DWORD check_entry(const svc_repair_ops *ops, const wchar_t *path, const wchar_t *sddl, int want_dir, int *state)
 {
   HANDLE h = NULL;
-  BY_HANDLE_FILE_INFORMATION info;
+  svc_folder_reason why = SVC_FOLDER_OK;
   DWORD e, access;
-  int trusted;
   *state = REP_UNTRUSTED;
   access = READ_CONTROL | FILE_READ_ATTRIBUTES | (sddl != NULL ? WRITE_DAC : 0);
-  e = open_entry(path, access, &h);
+  e = svc_folder_open(path, access, &h);
   if (e != 0) {
     if (is_missing(e)) {
       *state = REP_MISSING;
@@ -144,17 +111,12 @@ static DWORD check_entry(const svc_repair_ops *ops, const wchar_t *path, const w
     }
     return e;
   }
-  if (!GetFileInformationByHandle(h, &info)) {
-    e = GetLastError();
+  e = svc_folder_inspect(h, want_dir, ops->owner_trusted, ops->ctx, &why);
+  if (e != 0) {
     CloseHandle(h);
     return e;
   }
-  trusted = !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
-  if (want_dir != ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0))
-    trusted = 0;
-  if (trusted && want_dir)
-    trusted = owner_is_trusted(ops, h);
-  if (trusted) {
+  if (why == SVC_FOLDER_OK) {
     *state = REP_TRUSTED;
     if (sddl != NULL) {
       wchar_t full[512];
@@ -282,7 +244,7 @@ DWORD svc_repair_data(const svc_repair_ops *ops, const wchar_t *base, svc_repair
 {
   wchar_t root[MAX_PATH], vendor[MAX_PATH], data[MAX_PATH], path[MAX_PATH];
   HANDLE h = NULL;
-  BY_HANDLE_FILE_INFORMATION info;
+  svc_folder_reason why = SVC_FOLDER_OK;
   size_t i, n;
   DWORD e;
   int state;
@@ -296,21 +258,19 @@ DWORD svc_repair_data(const svc_repair_ops *ops, const wchar_t *base, svc_repair
     root[--n] = 0;
 
   /* The base folder itself (%ProgramData%) is never renamed: a link there refuses the whole repair. */
-  e = open_entry(root, FILE_READ_ATTRIBUTES, &h);
+  e = svc_folder_open(root, FILE_READ_ATTRIBUTES, &h);
   if (e != 0)
     return e;
-  if (!GetFileInformationByHandle(h, &info)) {
-    e = GetLastError();
-    CloseHandle(h);
-    return e;
-  }
+  e = svc_folder_inspect(h, 1, NULL, NULL, &why);
   CloseHandle(h);
-  if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+  if (e != 0)
+    return e;
+  if (why == SVC_FOLDER_REPARSE) {
     out->refused = 1;
     (void)StringCchCopyW(out->path, REP_COUNT(out->path), root);
     return ERROR_ACCESS_DENIED;
   }
-  if (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+  if (why == SVC_FOLDER_KIND)
     return ERROR_DIRECTORY;
 
   if (FAILED(StringCchPrintfW(vendor, REP_COUNT(vendor), L"%s\\%s", root, REP_VENDOR)) ||
