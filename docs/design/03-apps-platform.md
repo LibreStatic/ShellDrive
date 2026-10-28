@@ -439,8 +439,11 @@ Server side:
   interactive user, so it is rationed:
   - At most **4 concurrent instances per client user SID** (checked at `hello`; the 5th is closed with
     `too_many_connections`), and **2 of the 32 instances are reserved** for elevated administrators: once 30
-    instances are in use, a new client that is not an elevated admin is closed at `hello`. The listener always keeps
-    one pending instance so that an admin can reach `hello`.
+    instances are in use, a new client that is not an elevated admin is refused as it connects (reply
+    `too_many_connections`, then closed; the class is read from the client token at connect, not at `hello`). The
+    listener always keeps one pending instance so that an admin can reach `hello`.
+  - A non-admin instance that does not send `hello` within **5 s** of connecting is closed (the hello deadline; 03 does not
+    give a value, 5 s is this build's choice). Admin instances keep the 60 s idle timeout.
   - Clients that are not elevated admins: request cap **64 KiB** (instead of 1 MiB), at most 10 requests per second
     per connection (excess requests get `rate_limited`), idle timeout **60 s** for non-subscribed connections, and
     at most one subscription per connection. A connection that sends malformed JSON is closed.
@@ -531,6 +534,7 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `agent.shutdown {unmount?}` | x | — | stops the agent; every mount is unmounted (1.2) |
 | `hostkey.announced.list` | x | x (admin, M5) | `{announcements:[{id, mount_id, host, lookup_name, hop, add, remove}]}` |
 | `hostkey.announced.accept {id, add_only}` | x | x (admin, elevated, M5) | applies an announcement (5.6). The argument shape is `{id, add_only}` (`add_only: true` skips the removals) |
+| `hostkey.announced.reject {id}` | x | x (admin, elevated, M5 follow-up) | drops a kept announcement (an offer of `hostkey add` or an UpdateHostKeys review) without changing any store. Reply `{host, rejected: true}`. `announcement_not_found` (exit 3) for an unknown or already answered id. The CLI sends it when the user answers no to a `hostkey add` offer (6.1, docs/dev/m5-notes.md part 10), so a refused offer leaves `hostkey list --announced` at once. The UI's "Don't add" does not send it yet (open, m5-notes part 10) |
 | `hostkey.add {host, port, lookup, type?, expect?, profile?}` | x | x (admin, elevated, M5) | per-user `hostkey add --from-server` (6.1, part 6 of docs/dev/m5-notes.md): connects offering only the stored key types, collects the other keys inside that connection, and either stores the `expect` key or keeps them as an announcement (`id`) for `hostkey.announced.accept {id, add_only: true}`. Service (part 9 of docs/dev/m5-notes.md, `hostkey add --machine`): the machine profile whose host and port match (or the one named by `profile`) connects with its service credentials only (every prompt except the host-key question is refused), the keys are read from and the `expect` key is written to the machine store (5.6, owner and DACL checked first); the deferred reply is the same shape. `profile_not_found` (exit 3) when no service profile uses the host and port. Reply `{host, lookup_name, verified, keys[{type, fingerprint}], id?, added?, removed?}`. `host_key_mismatch` (exit 6) for a stored key that does not match, `host_key_rejected` (exit 5) for an `expect` that matches nothing on first contact; `not_implemented` only when the backend has no hostkey connection (the real connect: docs/dev/m5-notes.md part 8) |
 | `update.check`, `update.apply` | x | — | M4 (the updater engine, 04 §9). Settings shows the update group disabled while `update.check` is missing from `features` |
 | `service.status` | — | x | the facts of `shelldrive service status --json` as the service sees them (`svc_status.c`, one writer for both): `installed`, `state` (`running`, `stopped`, `starting`, `stopping`, `paused`, `unknown`), `start_type`, `program {path, check: ok\|unquoted\|other\|unknown}`, `event_source {state: registered\|missing\|other\|unknown, message_file}`, `pipe {reachable: true, healthy, global_drives, prompts}`, and `machine {state: ok\|refused, reason?: owner\|reparse_point\|not_directory\|acl\|not_file, path?, profiles}` (the machine data folder as found at start, 3.2; `path`, the first refused folder, only for an elevated administrator). Open to every client; no secrets |
@@ -1451,7 +1455,9 @@ here:
     host keys for example.org." (default on, can be turned off). Removals still need the review dialog.
   - `no`: announcements are logged at info and ignored.
 - **Machine store:** never updated from a user's connection. The service updates the machine store only when the
-  policy `UpdateHostKeys = 2` is set; otherwise it writes Event Log warning 2300 and publishes `hostkeys.announced`
+  policy `UpdateHostKeys = 2` is set (read at each announcement; HKLM wins). Then the proven new keys are added to the
+  machine known_hosts at once (add only, the checks of the accept: the file is checked on its handle first), and the
+  removals are kept for review as usual. Otherwise (policy 0, 1 or unset) it writes Event Log warning 2300 and publishes `hostkeys.announced`
   on the service pipe, and an elevated admin can apply it from the "A global ShellDrive drive needs attention"
   flow (2.6) or `shelldrive hostkey list --announced --machine` / `hostkey accept-announced <id> --machine`.
 - If the verifying key matched a live read-only source only (it was just copied, 5.1), additions go to the user

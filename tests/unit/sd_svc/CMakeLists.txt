@@ -15,7 +15,7 @@ sd_add_unit_test(svc
           "${_host_dir}/svc_gw.c" "${_host_dir}/svc_gw_attach.c" "${_host_dir}/svc_repair.c"
           "${_host_dir}/svc_folder.c" "${_host_dir}/svc_status.c"
           "${_host_dir}/backend_unavailable.c"
-  DEPS sd_mount_fake_backend sd_mount sd_ipc sd_secret sd_config sd_l10n sd_l10n_catalog_svc sd_ssh sd_platform
+  DEPS sd_mount_fake_backend sd_mount sd_ipc sd_secret sd_config sd_policy sd_l10n sd_l10n_catalog_svc sd_ssh sd_platform
        sd_base ole32 shell32 user32 advapi32 mpr)
 target_include_directories(sd-test-svc PRIVATE "${_host_dir}" "${_fake_dir}" "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
 add_dependencies(sd-test-svc sd_svc_events)

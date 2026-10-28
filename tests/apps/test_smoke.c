@@ -766,6 +766,9 @@ SD_TEST(smoke_hostkey_add_offers)
          "first contact refused with no");
   EXPECT(RUN(L"hostkey list refused.test", NULL) == 0 && strstr(r.out, "No host key is stored") != NULL,
          "refused key not stored");
+  /* the refused offer is rejected in the agent (hostkey.announced.reject): it is no longer listed for review */
+  EXPECT(RUN(L"hostkey list --announced --json", NULL) == 0 && strstr(r.out, "refused.test") == NULL,
+         "a refused offer leaves the announcement list");
 
   /* the server offers no key of the requested type: nothing to add */
   EXPECT(RUN(L"hostkey add --from-server tofu.test --type ssh-rsa --json", NULL) == 0 &&

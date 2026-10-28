@@ -840,3 +840,94 @@ or UAC prompt (no real service in the test runs); the elevated relaunch is cover
 that moves the folder needs the log and secret handles of the service closed: the service closes its own log, but a
 second process holding a file under the folder (an antivirus scan, a CLI) makes the rename fail with `io_error`; the page
 shows the generic failure with the Win32 or IPC code.
+
+## Part 10: hostkey reject, UpdateHostKeys under policy, the pipe class at connect, checked reads (`wip/r16-hkpolicy`)
+
+Closes four follow-ups: the refused offer that stays listed (Parts 6 and 9), the machine store update under policy
+(Part 9, "Open"), the hello-less instances of the service pipe (Service pipe section, "Open items") and the file checks of
+the service's reads (Part 6, "Not done").
+
+**1. `hostkey.announced.reject {id}`** (03 §2.4). Agent and service, the same reply `{host, rejected: true}`. It drops the
+announcement and changes no store. An unknown or already answered id is `announcement_not_found` (exit 3). The service
+method needs an elevated administrator (`need_admin`), as `hostkey.announced.accept` does. The CLI sends it on the "no"
+branch of `hostkey add` (`hk_reject_offer` in `cli_cmds2.c`, through the agent or, with `--machine`, the service). The exit
+stays 5 (`host_key_rejected`). A failed reject is not reported: the offer then stays listed, as before this part.
+
+**2. UpdateHostKeys under policy** (03 §3.5, §5.6; 01 §7.5 step 4). `svc_policy_hk_accept()` (`service.c`) reads the
+policy `UpdateHostKeys` through `sd_policy_get_dword` at each announcement. Only the value 2 acts. With 2, and an
+announcement with new keys, the proven new keys go to the machine known_hosts at once through `svc_machine_apply(a, 1)`:
+the accept's checked write (`svc_store_check` on the handle), add only. On success, the removals, if any, stay in the list
+as an announcement with no additions (Event 2300 as usual). On a failed write the whole announcement is kept for review.
+With 0, 1 or no value nothing changes (kept for review, Event 2300). A service mount's hop stays `ask`: the mount never
+writes the machine store itself, the service does.
+
+**3. The pipe class at connect and the hello deadline** (03 §2.2, TM-R25; `src/sd_ipc/ipc_server.c`).
+- `on_connected` reads the client token before the first read (`classify_at_connect`, the same impersonation as
+  `check_client_token`): the user SID (per-SID quota, Event 3101) and the admin class (`token_admin_class`: a member of
+  BUILTIN\Administrators, elevated on Vista+). The class is `c->conn_admin`. Only the service sets the rules that use it
+  (`reserved_admin_instances` or `hello_timeout_ms`), so the agent never impersonates at connect.
+- The reserved rule moved from `handle_hello` to connect. When the other non-closing instances reach
+  `max_instances - reserved` (30 of 32), a non-admin is refused at once: `too_many_connections` is the only message it gets,
+  the refusal is counted as `reserved` (Event 3101 through `on_refused`), and nothing is read from the instance.
+- `idle_sweep` closes a non-admin instance that has not sent hello within `hello_timeout_ms`, 5 s (`SVC_HELLO_MS`; 03 gives
+  no value). Admin instances keep the 60 s idle timeout.
+- `sd_ipc_server_cfg` gets `hello_timeout_ms` and `admin_at_connect` (a callback that forces the connect class; the service
+  returns 0 in shipping builds, so the token decides). Both are zero in the agent.
+- Unchanged: the request caps (before hello the non-admin cap applies), the per-SID quota (still checked at hello, with the
+  SID read at connect), the rate limit, and the `testadmin` override of the service tests (at hello).
+
+**4. Checked reads of the service's files** (TM-R27, 2.6 rule 1).
+- Machine profiles: `svc_profile_read` (`service.c`) reads each `*.ini` through `svc_file_read_trusted(g.root, ...)`. Every
+  folder from the machine root to the file and the file itself are checked on their handles (reparse point, owner, DACL,
+  size); then the bytes are parsed with `sd_ini_parse` and `sd_profile_from_ini`. A refused file is logged and not loaded;
+  the others load. The service no longer calls `sd_profile_load_file`.
+- Machine known_hosts, reads: `svc_kh_read_check()` runs `svc_store_check` on the file before the two places that hand the
+  file to sd_mount (the mount start and the hostkey connection). A refused file fails the request with `usage` ("machine
+  known_hosts refused ... (TM-R27)"). A missing file is accepted (no stored key). The mount opens the file itself, so a
+  change between the check and that open is not excluded (open items).
+- `settings.ini`: **the service does not read it.** Nothing in the service reads the file: `svc_gw_mode_parse` and
+  `svc_gw_decide` have no caller in the service, and `svc_repair.c` only lists its ACL. No read was added, because a check
+  on a read that does not exist would be a fake. The check belongs to the change that makes the service read the file.
+
+**Test seams** (`SD_SVC_TEST_HOOKS` only, `service.h`): `svc_test_hk_policy(forced, value)` replaces the registry value;
+`svc_test_connect_admin(on)` counts every new connection as an admin at connect. The reserved-instance test uses the second
+for its 30 raw instances and its administrator, since an unelevated test process is not an admin by its token.
+
+**Tests** (`tests/unit/sd_svc`: `test_service.c`, `main.c`; `tests/apps`: `test_smoke.c`):
+- `svc_hostkey_offer_can_be_rejected`: a refused offer leaves the list and nothing is stored; a second reject and an accept
+  of the same id are `announcement_not_found`; a restricted-token client is refused with `access_denied`.
+- `svc_mount_announcement_under_policy_writes_the_machine_store_only_with_accept`: policy 2 stores the new key once (add
+  only), keeps the removal for review, and raises Event 2300. One mount only (see the open items for why). The ask case
+  (policy 1: kept, nothing stored) is the existing `svc_mount_announcement_is_kept_and_accepted_into_the_machine_store`.
+- `svc_profile_file_with_an_open_acl_is_not_loaded`: a profile file whose DACL gives Everyone write is not loaded
+  (`config.reload` counts 8 instead of 9); its DACL is set back and the count returns to 9.
+- `svc_non_admin_that_never_says_hello_is_closed_in_time`: a restricted-token instance that never says hello is closed after
+  the deadline (7 s wait, `PeekNamedPipe`); an administrator-class instance is still open after the same wait.
+- `svc_pipe_caps_and_reserved_admin_instances` (updated): the 30 raw instances and the administrator count as admin at
+  connect; the restricted clients are refused at connect.
+- `smoke_hostkey_add_offers` (`tests/apps/test_smoke.c`): after a "no" answer, `hostkey list --announced --json` does not
+  list the host.
+
+**Open items**
+- The UI's "Don't add" (`ui_hostkeys.c`) does not call `hostkey.announced.reject` yet: its refused offer stays listed until
+  the agent or the service restarts. The CLI path is done.
+- `settings.ini` has no read in the service, so the file check is not applied to it (see above).
+- Between the handle check and the mount's own open of the machine known_hosts, the file can change. Closing it needs the
+  mount to take the bytes, or to keep the checked handle. Not done. (Profiles are parsed from the checked bytes: no gap.)
+- The policy is read through `sd_policy`, which reads HKLM, then HKCU. For the service (LocalSystem) HKCU is the SYSTEM
+  profile, not a user's setting, but 03 §3.5 says HKLM wins; a machine-only read would be stricter. Not changed.
+- The connect refusal writes `too_many_connections` before the client has sent hello. A client whose hello write lands after
+  the server closed the instance sees a pipe error, not the code (the CLI then reports the busy exit). Not checked against
+  a real client race.
+- The hello deadline (5 s) is this build's choice; 03 §2.2 gives none. A slow client on a loaded machine is the case to
+  measure in the lab (TST-23 in 05 §7).
+- **Heap corruption on a second mount of the same profile (unit test, not isolated).** In `unit.svc`, two mounts of the
+  `rotate` profile one after the other (each raising an UpdateHostKeys announcement, each then unmounted) end the test
+  process with 0xC0000374 after the second announcement callback, before the second `wait_state`. It happens with the
+  policy ask (1) in both mounts, with no reject, and with the machine-store write stubbed out, so it is not the
+  announcement code of this part; the trigger is the second mount of the profile (fake backend, sd_mount teardown or the
+  svc mount slot). Not checked against the code before this part. The policy test mounts once for that reason. Next step:
+  a run under the debug CRT (or a page-heap run) of the double mount, then the owner of the corruption.
+- Verified in this part with a single run of `sd-test-svc.exe` (81 tests, all pass). The x86-ia32 build was not run: this
+  part adds no Win32 import to a shipping binary (the SDDL and SetNamedSecurityInfo calls are in the test only).
+- Not run on a real elevated administrator token or on XP (TST-23 in 05 §7).

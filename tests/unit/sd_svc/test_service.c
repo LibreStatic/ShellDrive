@@ -6,6 +6,8 @@
    The restricted-token client impersonates a token with BUILTIN\Administrators disabled (CreateRestrictedToken), which
    is the non-admin case the pipe must refuse (03 §2.2). */
 #include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -882,12 +884,17 @@ SD_TEST(svc_pipe_caps_and_reserved_admin_instances)
   SD_CHECK(res != NULL);
   if (res) sd_json_free(res);
 
-  /* 30 raw instances: the instances left are the two for administrators */
+  /* 30 raw instances: the instances left are the two for administrators. The raw instances of this process count as
+     administrators at connect (svc_test_connect_admin): the class of an unelevated test process is not one. */
+  svc_test_connect_admin(1);
   for (nraw = 0; nraw < 30; nraw++)
     if (!open_raw_instance(&raw[nraw]))
       break;
   SD_REQUIRE(nraw == 30);
+  Sleep(300);            /* the server takes the connect on its own thread: the class flag must outlive that */
 
+  /* the class is decided at connect (2.2): a non-admin is refused when it connects, before hello */
+  svc_test_connect_admin(0);
   ev0 = count_event(SVC_MSG_CLIENT_REFUSED);
   for (r = 0; r < 2; r++) {
     sd_ipc_conn *u = NULL;
@@ -905,15 +912,55 @@ SD_TEST(svc_pipe_caps_and_reserved_admin_instances)
   /* an administrator still connects while the 30 are held */
   sd_ipc_close(adm);
   adm = NULL;
+  svc_test_connect_admin(1);
   SD_REQUIRE(connect_as("testadmin", 0, &adm) == SD_OK);
   res = call(adm, "list", NULL, &err, &rc);
   SD_CHECK(res != NULL);
   if (res) sd_json_free(res);
 
+  svc_test_connect_admin(0);
   sd_ipc_close(adm);
   for (i = 0; i < (size_t)nraw; i++)
     CloseHandle(raw[i]);
   free(big);
+}
+
+/* A restricted-token client that connects and never says hello is closed by the hello deadline (2.2, SVC_HELLO_MS).
+   The instance is looked at with PeekNamedPipe after the deadline: a closed instance has no pipe to peek. The same wait
+   leaves an instance of the administrator class open. Skipped when the process has no restricted token to use. */
+static HANDLE raw_restricted_instance(void)
+{
+  HANDLE rt = restricted_token();
+  HANDLE h = NULL;
+  if (rt == NULL)
+    return NULL;
+  if (ImpersonateLoggedOnUser(rt)) {
+    if (!open_raw_instance(&h))
+      h = NULL;
+    RevertToSelf();
+  }
+  CloseHandle(rt);
+  return h;
+}
+
+SD_TEST(svc_non_admin_that_never_says_hello_is_closed_in_time)
+{
+  HANDLE raw = NULL;
+  SD_REQUIRE(ensure_core());
+  svc_test_connect_admin(0);
+  raw = raw_restricted_instance();
+  if (raw != NULL) {
+    Sleep(7000);
+    SD_CHECK(PeekNamedPipe(raw, NULL, 0, NULL, NULL, NULL) == 0);     /* closed by the server */
+    CloseHandle(raw);
+  }
+  svc_test_connect_admin(1);
+  SD_REQUIRE(open_raw_instance(&raw));
+  Sleep(300);            /* the server takes the connect on its own thread: the class flag must outlive that */
+  svc_test_connect_admin(0);
+  Sleep(7000);
+  SD_CHECK(PeekNamedPipe(raw, NULL, 0, NULL, NULL, NULL) != 0);       /* the administrator class is not on the deadline */
+  CloseHandle(raw);
 }
 
 /* ---- M5 hostkey add and the machine announcements (03 §2.4, §2.6 rule 2, §5.6) ----
@@ -1160,6 +1207,134 @@ SD_TEST(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store)
 
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+/* hostkey.announced.reject (03 §2.4, M5 follow-up): a refused offer leaves the list and stores nothing; the id is then
+   unknown to accept and to reject; a non-admin cannot reject. */
+SD_TEST(svc_hostkey_offer_can_be_rejected)
+{
+  sd_ipc_conn *c = NULL, *user = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  char id[16] = "", params[96];
+  uint32_t before;
+  int has_token = 0;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+
+  before = fake_backend_apply_machine_calls();
+  res = hk_add_call(c, "hk.known.test", NULL, NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  copy_str(id, sizeof(id), sd_json_get_str(res, "id"));
+  sd_json_free(res);
+  SD_REQUIRE(id[0] != 0);
+
+  _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"id\":\"%s\"}", id);
+  if (connect_restricted(&user, &has_token) == SD_OK) {
+    res = call(user, "hostkey.announced.reject", params, &err, &e);
+    SD_CHECK(res == NULL);
+    SD_CHECK_STR(err.code, "access_denied");
+    sd_ipc_close(user);
+  }
+
+  res = call(c, "hostkey.announced.reject", params, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get(res, "rejected") != NULL);
+  sd_json_free(res);
+
+  res = call(c, "hostkey.announced.list", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(announcement_with_id(res, id) == NULL);
+  sd_json_free(res);
+  SD_CHECK(before == fake_backend_apply_machine_calls());        /* nothing stored */
+
+  res = call(c, "hostkey.announced.reject", params, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "announcement_not_found");
+  res = call(c, "hostkey.announced.accept", params, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "announcement_not_found");
+  sd_ipc_close(c);
+}
+/* UpdateHostKeys under policy 2 (03 §3.5, 5.6): the proven new key of an announcement goes to the machine store at once
+   (add only), and the removal stays for review. The registry is not touched: the test forces the value
+   (svc_test_hk_policy). The ask case (policy 1, announcement kept, nothing stored) is the one of
+   svc_mount_announcement_is_kept_and_accepted_into_the_machine_store. One mount only: a second mount of the same profile
+   in this test process ends with heap corruption (0xc0000374) after its announcement (open item, m5-notes part 10). */
+SD_TEST(svc_mount_announcement_under_policy_writes_the_machine_store_only_with_accept)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "", id[16] = "";
+  size_t nadd = 0, nremove = 0;
+  uint32_t before;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+
+  svc_test_hk_policy(1, 2);
+  before = fake_backend_apply_machine_calls();
+  res = mount_profile(c, "rotate", &err, &e);
+  SD_REQUIRE(res != NULL);
+  copy_str(mid, sizeof(mid), sd_json_get_str(res, "mount_id"));
+  sd_json_free(res);
+  SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
+  if (st)
+    sd_json_free(st);
+  SD_REQUIRE(announcement_of_mount(c, mid, id, sizeof(id), &nadd, &nremove));
+  SD_CHECK(nadd == 0 && nremove == 1);                  /* the addition is stored, the removal waits */
+  SD_CHECK(before + 1 == fake_backend_apply_machine_calls());
+  SD_CHECK(saw_event(SVC_MSG_HOSTKEYS_ANNOUNCED));
+
+  svc_test_hk_policy(0, 0);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+/* A machine profile whose file is writable by an untrusted principal is not loaded (2.6 rule 1, TM-R27): the file is
+   checked on its handle at every load. config.reload counts the profiles: one less while the file is open to Everyone,
+   the full count again once the file is back to the 3.2 rule. */
+SD_TEST(svc_profile_file_with_an_open_acl_is_not_loaded)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  wchar_t path[MAX_PATH];
+  PSECURITY_DESCRIPTOR open_sd = NULL, closed_sd = NULL;
+  PACL open_dacl = NULL, closed_dacl = NULL;
+  BOOL present = FALSE, defaulted = FALSE;
+  int64_t n = -1;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\profiles\\a-mounted.ini", g_root);
+  /* the owner keeps its own ACE in the closed DACL: the test process is the owner, and it must still read the file */
+  SD_REQUIRE(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;FA;;;WD)", SDDL_REVISION_1, &open_sd, NULL));
+  SD_REQUIRE(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:PAI(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)",
+                                                                 SDDL_REVISION_1, &closed_sd, NULL));
+  SD_REQUIRE(GetSecurityDescriptorDacl(open_sd, &present, &open_dacl, &defaulted) && present);
+  SD_REQUIRE(GetSecurityDescriptorDacl(closed_sd, &present, &closed_dacl, &defaulted) && present);
+
+  SD_REQUIRE(SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                   NULL, NULL, open_dacl, NULL) == ERROR_SUCCESS);
+  res = call(c, "config.reload", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == 8);
+  sd_json_free(res);
+
+  SD_CHECK(SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                 NULL, NULL, closed_dacl, NULL) == ERROR_SUCCESS);
+  n = -1;
+  res = call(c, "config.reload", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK(sd_json_get_int64(sd_json_get(res, "profiles"), "loaded", &n) && n == 9);
+  sd_json_free(res);
+  LocalFree(open_sd);
+  LocalFree(closed_sd);
   sd_ipc_close(c);
 }
 
