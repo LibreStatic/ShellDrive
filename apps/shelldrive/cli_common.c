@@ -202,6 +202,9 @@ void print_error(const cli_args *a, const char *code, const char *detail, int ex
   else if (is(code, "backend_unavailable") && detail && strstr(detail, "WebClient"))
     say(SD_MSG_CLI_ERROR_WEBDAV_UNAVAILABLE, NULL, 0, 1);
   else if (is(code, "backend_unavailable")) say(SD_MSG_CLI_ERROR_BACKEND_UNAVAILABLE, NULL, 0, 1);
+  else if (is(code, "location_policy")) say(SD_MSG_CLI_LOCATION_POLICY, NULL, 0, 1);
+  else if (is(code, "location_service")) say1w(SD_MSG_CLI_LOCATION_SERVICE, "name", ec ? ec->name : NULL, 1);
+  else if (is(code, "location_failed")) say(SD_MSG_CLI_LOCATION_FAILED, NULL, 0, 1);
   else if (is(code, "elevation_required")) say(SD_MSG_CLI_DIAG_ELEVATION_REQUIRED, NULL, 0, 1);
   else if (is(code, "policy_denied")) say(SD_MSG_CLI_DIAG_FIX_POLICY, NULL, 0, 1);
   else say1(SD_MSG_CLI_ERROR_GENERIC, "code", code, 1);

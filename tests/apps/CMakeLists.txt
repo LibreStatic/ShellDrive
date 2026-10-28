@@ -22,10 +22,12 @@ target_link_libraries(sd-test-host-fake PRIVATE sd_headers sd_mount_fake_backend
 set_target_properties(sd-test-host-fake PROPERTIES FOLDER "tests")
 
 add_executable(sd-test-cli "${_cli_dir}/main.c" ${SD_CLI_SOURCES})
-target_compile_definitions(sd-test-cli PRIVATE SD_CLI_TEST_HOOKS=1)
+# SD_HOST_TEST_HOOKS: explorer_data.c (compiled into the CLI for location add|remove|repair) reads the NetHood test
+# override SHELLDRIVE_TEST_NETHOOD only in this build; the shipping shelldrive.exe always uses the real NetHood.
+target_compile_definitions(sd-test-cli PRIVATE SD_CLI_TEST_HOOKS=1 SD_HOST_TEST_HOOKS=1)
 target_include_directories(sd-test-cli PRIVATE "${_cli_dir}" "${_host_dir}")
 target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform
-                      sd_base sd_ssh sd_crypto sd_policy advapi32 version)
+                      sd_base sd_ssh sd_crypto sd_policy advapi32 version ole32 shell32)
 set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps
