@@ -114,7 +114,13 @@ foreach ($preset in $Presets) {
 
     if (-not $TestOnly) {
       Write-Host "== [$preset] configure"
-      & $cmake --preset $preset | Out-Host
+      # The per-machine MSI (04 section 8) and its table/admin-image tests are built on one x86 and one x64 flavour
+      # when WiX 3.14 is installed; without this the msi.* tests are not even registered.
+      $cfgArgs = @('--preset', $preset)
+      if ($preset -in @('x86-ia32', 'x64-modern') -and (Test-Path (Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14\bin\candle.exe'))) {
+        $cfgArgs += '-DSD_BUILD_MSI=ON'
+      }
+      & $cmake @cfgArgs | Out-Host
       if ($LASTEXITCODE) { throw 'configure failed' }
     }
 
