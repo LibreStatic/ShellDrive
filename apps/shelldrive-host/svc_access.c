@@ -113,6 +113,78 @@ sd_err svc_acl_build(const sd_profile *p, svc_resolve_fn resolve, void *ctx, svc
   return SD_OK;
 }
 
+sd_err svc_chain_hop_check(const sd_chain_hop *h, const char **bad_key, const char **why)
+{
+  const char *k = NULL, *w = NULL;
+  if (h == NULL)
+    return SD_E_INVALID_PARAM;
+  if (h->identity_count > 1) {
+    k = "auth.identity";
+    w = "one identity file per service hop (the hop takes one key blob)";
+  } else if (h->certificate[0] != 0) {
+    k = "auth.certificate";
+    w = "certificate files are not loaded for service profiles";
+  } else if (h->identity_store[0] != 0) {
+    k = "auth.identity_store";
+    w = "a user-kept key cannot be used by the service (service secrets only)";
+  } else if (h->agent == SD_PROFILE_AGENT_PAGEANT || h->agent == SD_PROFILE_AGENT_OPENSSH) {
+    k = "auth.agent";
+    w = "agents are not available to the service (D17)";
+  } else if (h->agent_keys[0] != 0) {
+    k = "auth.agent_keys";
+    w = "agent keys are not available to the service (D17)";
+  } else if (h->auth_methods & SD_PROFILE_AUTH_KBDINT) {
+    k = "auth.methods";
+    w = "keyboard-interactive needs a user at the console (2.6)";
+  } else if ((h->auth_methods & (SD_PROFILE_AUTH_PUBLICKEY | SD_PROFILE_AUTH_PASSWORD)) == 0) {
+    k = "auth.methods";
+    w = "no non-interactive authentication method";
+  }
+  if (k != NULL) {
+    if (bad_key) *bad_key = k;
+    if (why) *why = w;
+    return SD_E_INVALID_PARAM;
+  }
+  if (bad_key) *bad_key = NULL;
+  if (why) *why = NULL;
+  return SD_OK;
+}
+
+sd_err svc_proxy_leg_check(const sd_proxy_spec *x, int proxy_auth, int secret_present, const char **bad_key,
+                           const char **why)
+{
+  const char *k = NULL, *w = NULL;
+  int needs_secret;
+  if (x == NULL)
+    return SD_E_INVALID_PARAM;
+  if (x->kind == SD_PROFILE_PROXY_SYSTEM) {
+    if (proxy_auth == SD_PROFILE_PROXY_AUTH_BASIC || proxy_auth == SD_PROFILE_PROXY_AUTH_NEGOTIATE) {
+      k = "proxy.proxy_auth";
+      w = "the system proxy has no credentials (TM-R10): use auto or none";
+    }
+  } else if (x->kind == SD_PROFILE_PROXY_HTTP || x->kind == SD_PROFILE_PROXY_SOCKS5) {
+    if (proxy_auth == SD_PROFILE_PROXY_AUTH_BASIC && x->user[0] == 0) {
+      k = "proxy.proxy_auth";
+      w = "basic proxy authentication needs a user";
+    }
+    /* SOCKS5 username/password, and HTTP with a user unless auth is none, sends a password: a service secret only */
+    needs_secret = x->user[0] != 0 &&
+                   (x->kind == SD_PROFILE_PROXY_SOCKS5 || proxy_auth != SD_PROFILE_PROXY_AUTH_NONE);
+    if (k == NULL && needs_secret && !secret_present) {
+      k = "proxy.proxy_auth";
+      w = "this proxy needs a password: store a proxy secret in the service secret store";
+    }
+  }
+  if (k != NULL) {
+    if (bad_key) *bad_key = k;
+    if (why) *why = w;
+    return SD_E_INVALID_PARAM;
+  }
+  if (bad_key) *bad_key = NULL;
+  if (why) *why = NULL;
+  return SD_OK;
+}
+
 sd_err svc_validate_profile(const sd_profile *p, const char **bad_key, const char **why)
 {
   const char *k = NULL, *w = NULL;
@@ -133,12 +205,6 @@ sd_err svc_validate_profile(const sd_profile *p, const char **bad_key, const cha
   } else if (p->auth_methods & SD_PROFILE_AUTH_KBDINT) {
     k = "auth.methods";
     w = "keyboard-interactive needs a user at the console (2.6)";
-  } else if (p->jump[0] != 0) {
-    k = "proxy.jump";
-    w = "jump hosts are not supported for service profiles in this build";
-  } else if (p->proxy[0].kind != SD_PROFILE_PROXY_NONE) {
-    k = "proxy.proxy";
-    w = "proxies are not supported for service profiles in this build";
   } else if (p->backend == SD_PROFILE_BACKEND_WEBDAV) {
     k = "mount.backend";
     w = "global WebDAV drives are not in this build (D11)";

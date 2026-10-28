@@ -57,9 +57,23 @@ sd_err svc_acl_build(const sd_profile *p, svc_resolve_fn resolve, void *ctx, svc
 
 /* Machine profile checks at load and before every mount (2.6 rule 1, D17, 03 §3.4.1). Returns SD_OK, or SD_E_INVALID_PARAM
    with *bad_key naming the offending key and *why a short English reason (for logs). Refused: scope other than service,
-   no user, agent-based authentication (auth.agent = pageant or openssh, D17), kbdint (2.6), jump hosts and proxies (not
-   in this build), WebDAV backend (the global WebDAV spike is not in this build, D11). */
+   no user, agent-based authentication (auth.agent = pageant or openssh, D17), kbdint (2.6), WebDAV backend (the global
+   WebDAV spike is not in this build, D11). Jump hosts and proxies are checked per hop when the chain is built
+   (svc_chain_hop_check, svc_proxy_leg_check). */
 sd_err svc_validate_profile(const sd_profile *p, const char **bad_key, const char **why);
+
+/* One hop of a service chain (2.6 rule 1, M5, 3.4.1): the service rules of the hop. Refused: more than one identity
+   file (a hop takes one key blob), a certificate, identity_store (a user-kept key, service secrets only), an agent
+   (Pageant or OpenSSH, D17), agent_keys, keyboard-interactive, and no publickey or password method. */
+sd_err svc_chain_hop_check(const sd_chain_hop *h, const char **bad_key, const char **why);
+
+/* One proxy leg of a service chain (2.6 rule 1, 3.8). proxy_auth is the profile's SD_PROFILE_PROXY_AUTH_*;
+   secret_present says whether a proxy secret for this leg is in the service secret store. Allowed: no proxy; a
+   proxy with no user (Negotiate through SSPI with the machine account; auto is Kerberos only); a user (HTTP Basic or
+   SOCKS5 username and password) only with a service secret. Refused: basic without a user or without the secret, and
+   proxy = system with basic or negotiate (the machine configuration has no credentials, TM-R10). */
+sd_err svc_proxy_leg_check(const sd_proxy_spec *x, int proxy_auth, int secret_present, const char **bad_key,
+                           const char **why);
 
 /* Volume security descriptor of a global mount, SDDL: SYSTEM and Administrators full control, each access entry
    read/traverse (FRFX), each write entry full control (FA), all inherited to containers and objects. Writes

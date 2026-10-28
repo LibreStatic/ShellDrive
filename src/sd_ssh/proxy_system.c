@@ -212,6 +212,31 @@ done:
   return e;
 }
 
+/* M5 service seam (03 3.8): the machine configuration only, through the same resolver as the service path. */
+sd_err sd_ssh_proxy_machine(const wchar_t *host, uint16_t port, sd_proxy_kind *kind, wchar_t host_out[256],
+                            uint16_t *port_out)
+{
+  ssh_sysproxy r;
+  sd_err e;
+  if (host == NULL || kind == NULL || host_out == NULL || port_out == NULL)
+    return SD_E_INVALID_PARAM;
+  *kind = SD_PROXY_NONE;
+  host_out[0] = 0;
+  *port_out = 0;
+  memset(&r, 0, sizeof(r));
+  e = ssh_sysproxy_resolve(host, port ? port : 22, 1, &r);
+  if (e != SD_OK)
+    return e;
+  if (r.kind == SD_PROXY_NONE)
+    return SD_OK;
+  if (r.kind != SD_PROXY_HTTP && r.kind != SD_PROXY_SOCKS5)
+    return SD_E_PROXY;
+  wcscpy_s(host_out, 256, r.host);
+  *port_out = r.port;
+  *kind = r.kind;
+  return SD_OK;
+}
+
 /* The opt-in decision (01 §5.2, 03 §3.5/§3.8, TM-R10). See proxy_internal.h. */
 sd_err ssh_sysproxy_decide(int opt_in, int policy_system, int policy_sspi,
                            const ssh_sysproxy *res, ssh_sys_decision *out)

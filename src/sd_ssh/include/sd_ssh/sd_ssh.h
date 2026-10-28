@@ -116,6 +116,13 @@ typedef struct sd_proxy_cfg {           /* M2 (D20) */
   int fallback_direct;                  /* SD_PROXY_SYSTEM: connect directly if discovery fails */
 } sd_proxy_cfg;
 
+/* M5 (03 3.8, service): the WinHTTP machine configuration (WinHttpGetDefaultProxyConfiguration) for host:port, the
+   static answer only (the default configuration has no WPAD and no PAC). *kind is SD_PROXY_NONE (no proxy configured,
+   or the bypass list matches), SD_PROXY_HTTP or SD_PROXY_SOCKS5, with the proxy in host_out and *port_out. Returns
+   SD_E_PROXY when the configuration cannot be read. Blocking: worker or control thread only. */
+sd_err sd_ssh_proxy_machine(const wchar_t *host, uint16_t port, sd_proxy_kind *kind, wchar_t host_out[256],
+                            uint16_t *port_out);
+
 typedef enum sd_legacy_policy { SD_LEGACY_ALLOW, SD_LEGACY_WARN, SD_LEGACY_ASK, SD_LEGACY_REFUSE } sd_legacy_policy;
 typedef enum sd_hku_mode { SD_HKU_YES, SD_HKU_ASK, SD_HKU_NO } sd_hku_mode;
 
