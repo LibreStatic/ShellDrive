@@ -66,6 +66,7 @@ void   ui_hostkeys_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_hostkeys_on_event(void);
 void   ui_hostkeys_on_agent_state(int up);
 HWND   ui_hostkeys_create_hidden(void);
+int    ui_hostkeys_dialogs_smoke(void);   /* --test-windows: the two Add key from server dialogs build */
 
 /* ---- ui_logs.c: the Logs viewer (03 §10, §2.4.1) ---- */
 void   ui_logs_open(void);

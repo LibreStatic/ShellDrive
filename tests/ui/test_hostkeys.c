@@ -201,3 +201,193 @@ SD_TEST(hk_store_enumeration_and_remove)
   sd_known_hosts_close(kh);
   DeleteFileW(path);
 }
+
+/* ---- "Add key from server..." model ---- */
+
+SD_TEST(hk_target_parse_forms)
+{
+  ui_hk_target t;
+  SD_CHECK(ui_hk_target_parse("Example.ORG", &t));
+  SD_CHECK_STR(t.host, "example.org");
+  SD_CHECK_EQ_INT((int)t.port, 22);
+  SD_CHECK_STR(t.lookup, "example.org");
+
+  SD_CHECK(ui_hk_target_parse("  example.org:2222 \t", &t));
+  SD_CHECK_STR(t.host, "example.org");
+  SD_CHECK_EQ_INT((int)t.port, 2222);
+  SD_CHECK_STR(t.lookup, "[example.org]:2222");
+
+  SD_CHECK(ui_hk_target_parse("example.org:22", &t));                 /* the default port keeps the plain name */
+  SD_CHECK_STR(t.lookup, "example.org");
+
+  SD_CHECK(ui_hk_target_parse("[::1]:2200", &t));
+  SD_CHECK_STR(t.host, "::1");
+  SD_CHECK_EQ_INT((int)t.port, 2200);
+  SD_CHECK_STR(t.lookup, "[::1]:2200");
+  SD_CHECK(ui_hk_target_parse("[fe80::1]", &t));
+  SD_CHECK_STR(t.lookup, "fe80::1");
+  SD_CHECK(ui_hk_target_parse("2001:db8::7", &t));                    /* bare IPv6: no port */
+  SD_CHECK_EQ_INT((int)t.port, 22);
+  SD_CHECK_STR(t.host, "2001:db8::7");
+  SD_CHECK(ui_hk_target_parse("192.168.0.5", &t));
+  SD_CHECK(ui_hk_target_parse("xn--bcher-kva.example", &t));
+  SD_CHECK(ui_hk_target_parse("my_host-1.lan", &t));
+}
+
+SD_TEST(hk_target_parse_refusals)
+{
+  ui_hk_target t;
+  char longname[400];
+  SD_CHECK(!ui_hk_target_parse(NULL, &t));
+  SD_CHECK(!ui_hk_target_parse("", &t));
+  SD_CHECK(!ui_hk_target_parse("   ", &t));
+  SD_CHECK(!ui_hk_target_parse("user@example.org", &t));
+  SD_CHECK(!ui_hk_target_parse("example.org:0", &t));
+  SD_CHECK(!ui_hk_target_parse("example.org:65536", &t));
+  SD_CHECK(!ui_hk_target_parse("example.org:", &t));
+  SD_CHECK(!ui_hk_target_parse("example.org:22x", &t));
+  SD_CHECK(!ui_hk_target_parse("exa mple.org", &t));
+  SD_CHECK(!ui_hk_target_parse("ex?mple.org", &t));                   /* a non-ASCII character reaches here as a question mark */
+  SD_CHECK(!ui_hk_target_parse("\"quote\".org", &t));
+  SD_CHECK(!ui_hk_target_parse("a\\b", &t));
+  SD_CHECK(!ui_hk_target_parse("[::1", &t));
+  SD_CHECK(!ui_hk_target_parse("[]:22", &t));
+  SD_CHECK(!ui_hk_target_parse("[::1]x", &t));
+  SD_CHECK(!ui_hk_target_parse("-leading.example", &t));
+  SD_CHECK(!ui_hk_target_parse(".leading.example", &t));
+  memset(longname, 'a', sizeof(longname) - 1);
+  longname[sizeof(longname) - 1] = '\0';
+  SD_CHECK(!ui_hk_target_parse(longname, &t));
+  SD_CHECK(t.host[0] == '\0');                                        /* a refusal leaves nothing behind */
+}
+
+SD_TEST(hk_add_params_json)
+{
+  ui_hk_target t;
+  char buf[256], tiny[16];
+  sd_json *j = NULL;
+  int64_t port = 0;
+  SD_REQUIRE(ui_hk_target_parse("Example.org:2222", &t));
+  SD_CHECK(ui_hk_add_params(&t, NULL, buf, sizeof(buf)) == SD_OK);
+  SD_CHECK_STR(buf, "{\"host\":\"example.org\",\"port\":2222,\"lookup\":\"[example.org]:2222\"}");
+  SD_REQUIRE(sd_json_parse(buf, strlen(buf), 8, &j) == SD_OK);          /* the agent can read it */
+  SD_CHECK_STR(sd_json_get_str(j, "lookup"), "[example.org]:2222");
+  SD_CHECK(sd_json_get_int64(j, "port", &port) && port == 2222);
+  sd_json_free(j);
+
+  SD_CHECK(ui_hk_add_params(&t, "ssh-ed25519", buf, sizeof(buf)) == SD_OK);
+  SD_CHECK(strstr(buf, "\"type\":\"ssh-ed25519\"") != NULL);
+  SD_CHECK(ui_hk_add_params(&t, "", buf, sizeof(buf)) == SD_OK);
+  SD_CHECK(strstr(buf, "\"type\"") == NULL);
+
+  SD_CHECK(ui_hk_add_params(&t, "SSH\"", buf, sizeof(buf)) == SD_E_INVALID_PARAM);
+  SD_CHECK(buf[0] == '\0');
+  SD_CHECK(ui_hk_add_params(&t, NULL, tiny, sizeof(tiny)) == SD_E_INVALID_PARAM);
+  SD_CHECK(ui_hk_add_params(NULL, NULL, buf, sizeof(buf)) == SD_E_INVALID_PARAM);
+  memset(&t, 0, sizeof(t));
+  SD_CHECK(ui_hk_add_params(&t, NULL, buf, sizeof(buf)) == SD_E_INVALID_PARAM);
+
+  SD_CHECK(ui_hk_type_ok("ecdsa-sha2-nistp256"));
+  SD_CHECK(ui_hk_type_ok("ssh-ed25519"));
+  SD_CHECK(!ui_hk_type_ok(""));
+  SD_CHECK(!ui_hk_type_ok("SSH-RSA"));
+  SD_CHECK(!ui_hk_type_ok("a b"));
+}
+
+static sd_json *parse_text(const char *s)
+{
+  sd_json *j = NULL;
+  if (sd_json_parse(s, strlen(s), 16, &j) != SD_OK)
+    return NULL;
+  return j;
+}
+
+SD_TEST(hk_offer_parse_first_contact_and_verified)
+{
+  ui_hk_offer o;
+  wchar_t lines[512];
+  sd_json *j = parse_text("{\"host\":\"example.org\",\"lookup_name\":\"example.org\",\"verified\":false,"
+                          "\"keys\":[{\"type\":\"ssh-ed25519\",\"fingerprint\":\"SHA256:aaa\"}],\"id\":\"a-3\"}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK_STR(o.host, "example.org");
+  SD_CHECK_EQ_INT(o.verified, 0);
+  SD_CHECK_STR(o.id, "a-3");
+  SD_CHECK_EQ_INT((int)o.nkeys, 1);
+  SD_CHECK_STR(o.keys[0].type, "ssh-ed25519");
+  SD_CHECK_STR(o.keys[0].fp, "SHA256:aaa");
+  sd_json_free(j);
+
+  j = parse_text("{\"host\":\"h\",\"verified\":true,\"id\":\"a-4\",\"keys\":["
+                 "{\"type\":\"ecdsa-sha2-nistp256\",\"fingerprint\":\"SHA256:bbb\"},"
+                 "{\"type\":\"ssh-rsa\",\"fingerprint\":\"SHA256:ccc\"}]}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK_EQ_INT(o.verified, 1);
+  SD_CHECK_EQ_INT((int)o.nkeys, 2);
+  ui_hk_offer_lines(&o, lines, SD_COUNTOF(lines));
+  SD_CHECK(wcscmp(lines, L"ecdsa-sha2-nistp256  SHA256:bbb\r\nssh-rsa  SHA256:ccc") == 0);
+  ui_hk_offer_lines(&o, lines, 12);                                    /* a small buffer holds no partial line */
+  SD_CHECK(lines[0] == L'\0');
+  sd_json_free(j);
+}
+
+SD_TEST(hk_offer_parse_degenerate_replies)
+{
+  ui_hk_offer o;
+  sd_json *j;
+  /* the server offered nothing new: no id, no offer */
+  j = parse_text("{\"host\":\"h\",\"verified\":true,\"keys\":[]}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK_EQ_INT((int)o.nkeys, 0);
+  SD_CHECK(o.id[0] == '\0');
+  sd_json_free(j);
+  /* an id with a character the accept request must not carry is dropped with the offer */
+  j = parse_text("{\"host\":\"h\",\"id\":\"a-1\\\"}\",\"keys\":[{\"type\":\"t\",\"fingerprint\":\"f\"}]}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK(o.id[0] == '\0');
+  SD_CHECK_EQ_INT((int)o.nkeys, 0);
+  sd_json_free(j);
+  /* keys without a type or a fingerprint are skipped; control characters are shown as question marks */
+  j = parse_text("{\"host\":\"h\\u0001x\",\"id\":\"a-2\",\"keys\":[{\"type\":\"t\"},{\"fingerprint\":\"f\"},"
+                 "{\"type\":\"ssh-ed25519\",\"fingerprint\":\"SHA256:z\\u0007\"}]}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK_EQ_INT((int)o.nkeys, 1);
+  SD_CHECK_STR(o.host, "h?x");
+  SD_CHECK_STR(o.keys[0].fp, "SHA256:z?");
+  sd_json_free(j);
+  /* more keys than the agent ever sends are cut */
+  j = parse_text("{\"host\":\"h\",\"id\":\"a-5\",\"keys\":[{\"type\":\"a\",\"fingerprint\":\"1\"},"
+                 "{\"type\":\"a\",\"fingerprint\":\"2\"},{\"type\":\"a\",\"fingerprint\":\"3\"},"
+                 "{\"type\":\"a\",\"fingerprint\":\"4\"},{\"type\":\"a\",\"fingerprint\":\"5\"},"
+                 "{\"type\":\"a\",\"fingerprint\":\"6\"},{\"type\":\"a\",\"fingerprint\":\"7\"},"
+                 "{\"type\":\"a\",\"fingerprint\":\"8\"},{\"type\":\"a\",\"fingerprint\":\"9\"}]}");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_OK);
+  SD_CHECK_EQ_INT((int)o.nkeys, UI_HK_OFFER_KEYS);
+  sd_json_free(j);
+  /* not an object */
+  j = parse_text("[1]");
+  SD_REQUIRE(j != NULL);
+  SD_CHECK(ui_hk_offer_parse(j, &o) == SD_E_INVALID_PARAM);
+  sd_json_free(j);
+  SD_CHECK(ui_hk_offer_parse(NULL, &o) == SD_E_INVALID_PARAM);
+}
+
+SD_TEST(hk_add_fail_classes)
+{
+  SD_CHECK(ui_hk_add_fail_of(SD_E_DISCONNECTED) == UI_HK_ADD_FAIL_AGENT_DOWN);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_UNSUPPORTED) == UI_HK_ADD_FAIL_UNSUPPORTED);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_HOSTKEY_MISMATCH) == UI_HK_ADD_FAIL_MISMATCH);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_HOSTKEY_REJECTED) == UI_HK_ADD_FAIL_REJECTED);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_BUSY) == UI_HK_ADD_FAIL_BUSY);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_TIMEOUT) == UI_HK_ADD_FAIL_OTHER);
+  SD_CHECK(ui_hk_add_fail_of(SD_E_HOSTKEY_TYPE_UNAVAILABLE) == UI_HK_ADD_FAIL_OTHER);
+  SD_CHECK(ui_hk_id_ok("a-12"));
+  SD_CHECK(!ui_hk_id_ok(""));
+  SD_CHECK(!ui_hk_id_ok("a b"));
+  SD_CHECK(!ui_hk_id_ok(NULL));
+}

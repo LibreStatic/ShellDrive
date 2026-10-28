@@ -29,10 +29,11 @@
 #define UI_IPC_CONNECT_MS  10000u
 #define UI_IPC_UPDATE_MS   120000u   /* update.check: the manifest download may take a while */
 #define UI_IPC_APPLY_MS    630000u   /* update.apply: the agent's staged setup waits up to 600 s (04 §9) */
+#define UI_IPC_HKADD_MS    60000u    /* hostkey.add: the agent connects to the server and reads its host keys */
 
 typedef struct ui_ipc_req {
   ui_ipc_kind kind;
-  char method[24];
+  char method[32];              /* the longest is hostkey.announced.accept (24 characters) */
   char *params;                 /* heap copy, NULL when the call has no parameters */
   wchar_t drive[3];
 } ui_ipc_req;
@@ -145,6 +146,8 @@ static unsigned ui_ipc_call_ms(ui_ipc_kind kind)
 {
   if (kind == UI_IPC_UPDATE_CHECK)
     return UI_IPC_UPDATE_MS;
+  if (kind == UI_IPC_HK_ADD)
+    return UI_IPC_HKADD_MS;
   if (kind == UI_IPC_UPDATE_APPLY)
     return UI_IPC_APPLY_MS;
   return UI_IPC_CALL_MS;
