@@ -62,3 +62,21 @@ that order plus the `DefaultSecureProtocols` value). Then per VM: copy the disk 
 shut down, take `base` with `New-LabVM.ps1 -Checkpoint`. Suggested order: sd-xp-sp3-x86 first
 (minimum OS, import floor capture), then sd-win7-sp1-x64, sd-win7-sp1-x86, sd-win10-ltsc21-x64,
 sd-win11-23h2-x64, sd-srv2022-x64; plus the XP SP3 install inside the QEMU P3 disk.
+
+## 2026-10-28 (evening): Win7 bases done, two mysteries open — see `D:\sdlab\handoff-lab.md`
+
+- Win7 x86 + x64 installed fully unattended (Professional, `SD-7-X86` hostname seen in guest log),
+  `base` checkpoints taken, read-only backups in `D:\images\` (5380 MB / 7588 MB), `BaseVhdx` set.
+- Setup ISOs rebuilt 5× (all now carry `\autounattend.xml`, `\sdlab-seed\`, `\$OEM$` SetupComplete).
+- P1 (blocks smoke): `SdLabSmoke` ONSTART/SYSTEM task is registered in the guests (verified offline
+  via qemu-img + WSL forensics) but never fires — no transcript in a 30 min `Invoke-SdLab` run
+  (FAIL, log-less). Fix staged: XML-defined task (power conditions off) via `SetupComplete.cmd`;
+  needs a reinstall to test.
+- P2 (blocks trio): Win10/Win11/Server never start setup (0% CPU from boot). ISOs verified
+  structurally perfect (El Torito, RBA→etfsboot hash match, exact WIM names). Ruled out: disk resize,
+  DVD drive object, host load. E4 datum: Win7 ISO in the Win10 VM reached `WIMApplyImage` then hung
+  silently (`setuperr.log` empty) — forensics in `D:\sdlab\staging\e4-*.log`.
+- Reinstall rule learned: a VM with a bootable HDD will not boot the setup DVD hands-free — wipe the
+  disk (delete + recreate the VM; backups exist) before reinstalling.
+- XP x86 + QEMU P3 still need the maintainer (product-key wall). Full detail, evidence, forensic
+  playbook and ordered next steps: `D:\sdlab\handoff-lab.md` (host-only, never commit).
