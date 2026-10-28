@@ -1006,3 +1006,83 @@ build, so the shipping `proxy = system` leg is refused, as it is on the per-user
 - More than one identity per hop, and certificate files, are refused rather than supported.
 - A live chain (two real SSH hosts) and a real WinHTTP machine proxy are lab items. The x86-ia32 preset was not built
   for this part (no new static import).
+
+## Part 12: policies in the service, the machine-only reads, the proxy secret verb, the hostkey mount without a letter (`wip/r17-svcpol`)
+
+Closes the four follow-ups of Parts 10 and 11: `proxy = system` for service profiles can be allowed by policy, the service
+reads its policies from HKLM only, an administrator can store the password of a service proxy leg, and a hostkey mount has
+no drive letter any more.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `src/sd_policy/include/sd_policy/sd_policy.h`, `src/sd_policy/sd_policy.c` | `sd_policy_machine_get_dword`, `sd_policy_machine_get_sz`: the same readers, HKLM only (2.6 rule 1: the service never reads HKCU) |
+| `apps/shelldrive-host/service.c` | `svc_sysproxy_allowed`, `svc_sysproxy_sspi`, `svc_sysproxy_policy_flag` (the machine policies of proxy = system); `svc_chain_leg` (SSPI decision and auth of the system leg); `svc_policy_hk_accept` reads UpdateHostKeys from HKLM only; `handle_proxy_secret` (`secret.set` and `secret.delete` with `kind: "proxy"`); `job_hk_start` passes letter 0 |
+| `apps/shelldrive-host/service.h` | `svc_sysproxy_ops.allow` takes the value -1 (read the policy); `svc_test_sysproxy_policy` (SD_SVC_TEST_HOOKS) |
+| `apps/shelldrive-host/agent.c` | a hostkey mount (test = 2) gets letter 0; the profile.test letter Z stays (see open items) |
+| `src/sd_mount/mount.c`, `src/sd_mount/include/sd_mount/sd_mount.h` | `sd_mount_create` accepts letter 0 for `hostkey_fetch` only; `mount_log_letter` writes `-` in the log lines of a mount without a letter |
+| `apps/shelldrive/cli.h`, `cli_args.c`, `cli_cmds.c`, `cli_service.c` | `CLI_CMD_SECRET`, `shelldrive secret set|delete --machine --proxy SPEC [--stdin]`, `cli_run_secret` (secret.set or secret.delete through the service pipe) |
+| `l10n/cli/*.po` (six locales) | `cli.help.secret`, `cli.secret.need_admin`, `cli.secret.bad_proxy`, `cli.secret.prompt`, `cli.secret.empty`, `cli.secret.stored`, `cli.secret.deleted` |
+| `tests/unit/sd_policy/*` | machine readers refuse a type or id mismatch; the proxy policies are boolean in the table |
+| `tests/unit/sd_svc/test_service.c`, `main.c` | `svc_system_proxy_policy_is_read_from_the_machine_values`, `svc_secret_proxy_set_and_delete_through_the_pipe` |
+| `tests/unit/sd_mount/test_mount.c`, `main.c` | `mount_hostkey_fetch_has_no_drive_letter` |
+| `tests/apps/test_cli_args.c`, `main.c` | `cli_parse_secret_proxy` |
+| `docs/design/03-apps-platform.md` | §3.5 (machine reads, system proxy policies), §6.1 (secret verb), the service-table row for `secret.set` / `secret.delete` |
+
+**1. `proxy = system` allowed by policy (2.6 rule 1, 3.5, 3.8).** The shipping seam is `{ allow -1, real read, NULL }`: at each
+leg the service reads `AllowSystemProxy` from HKLM. 0 (or a missing value) refuses the leg with `usage` before the read, as
+before. A stub seam keeps `allow` 0 or 1 as its own answer. `AllowSystemProxySspi` is read with the same rule, and only when the
+seam says -1. With 0 the leg has no SSPI (the auth stays 0, as in Part 11). With 1 the leg gets `SD_PROXY_AUTH_SSPI_KERBEROS`
+when its `proxy_auth` is `auto` (Kerberos only), and `allow_discovered_sspi` is set. Basic and Negotiate on a system leg stay
+refused (the machine configuration gives no credentials, TM-R10). `none` gets no SSPI whatever the policy.
+
+**2. Machine-only policy reads.** `sd_policy_machine_get_dword` and `sd_policy_machine_get_sz` read HKLM and nothing else. The
+service uses them for `UpdateHostKeys` and for both system-proxy policies. 03 §3.5 states HKLM-then-HKCU for the product as a
+whole; the service does not follow that order, because its HKCU is the SYSTEM profile and 2.6 rule 1 says it never reads HKCU.
+The agent and the UI keep the order of §3.5 (their code is unchanged).
+
+**3. `shelldrive secret set|delete --machine --proxy SPEC [--stdin]`.** The spec had no CLI syntax for this (03 §6.1 lists the
+service verbs only), so the verb is new. `--machine` is required because the store is the service's. `SPEC` is
+`http://user@host:port` or `socks5://user@host:port` (`sd_proxy_spec_parse`; `user:pass@` is refused). The password is read with
+`cli_read_line` without echo (or one line from stdin with `--stdin`) into a buffer that is wiped after the request, and the
+request is built in a secret writer (`sd_wr_init_secret`). The service method is `secret.set` or `secret.delete` with
+`kind: "proxy"`, `proxy` (the spec) and `value`. The target is the one `svc_proxy_secret_present` reads for the leg, so a leg
+configured in a profile finds the password. The reply is `{"stored": true}` or `{"deleted": true}`; no secret is printed or
+returned. Admins only (`need_admin`), exit 9 otherwise. The user-scope store is not touched.
+
+**4. Hostkey mounts have no drive letter.** `sd_mount_create` accepts letter 0 when `params.hostkey_fetch` is set. The mount
+makes itself test-only (no vfs, no backend, no drive is started). Any other mount still needs `A`..`Z`, and a letter outside
+`A`..`Z` (other than 0) is refused for every mount. The places that used the letter of a hostkey mount: the log lines of
+`mount.c` (`mount_log_letter` writes `-` for letter 0), `sd_mount_letter` and `sd_mount_get_attach` (0), and the state snapshot
+(`state_producer.c` already writes 0 for a letter outside A..Z). Hostkey mounts are not listed in the agent or the service, so
+no reply or event shows their letter. The agent's `letter_in_use_locked` ignores test mounts, so a hostkey mount never blocks a
+drive letter. The two `L'Z'` workarounds for hostkey mounts are gone (`service.c` `job_hk_start`, `agent.c`
+`handle_mount_body` with `hk`).
+
+**Tests** (`tests/unit/sd_policy`, `tests/unit/sd_svc`, `tests/unit/sd_mount`, `tests/apps`; no HKLM write, no real proxy, no
+real Credential Manager: the service tests use the test secret root and the seam and policy stubs):
+- `policy_machine_reads_refuse_type_and_id_mismatch`, `policy_system_proxy_policies_are_boolean_machine_ready`.
+- `svc_system_proxy_policy_is_read_from_the_machine_values`: policy 1 with SSPI 0 (mounted, auth 0), policy 0 (refused before
+  any read, `usage`), policy 1 with SSPI 1 (`SD_PROXY_AUTH_SSPI_KERBEROS` on the leg).
+- `svc_secret_proxy_set_and_delete_through_the_pipe`: `secret.set` stores under the leg's target (checked with sd_secret_get); a
+  spec with a password or without a user is `usage` and stores nothing; `secret.delete` removes it; a second delete is
+  `secret_not_found`.
+- `mount_hostkey_fetch_has_no_drive_letter`: a hostkey mount with letter 0 ends UNMOUNTED with no vfs and no letter mapped; a
+  drive mount with letter 0, and a hostkey mount with letter `1`, are refused.
+- `cli_parse_secret_proxy`: the verbs, the required `--machine` and `--proxy`, the extra argument, and the options refused for
+  this verb; the other verbs keep their rules.
+
+**Open items**
+- **SSPI towards a system proxy with `AllowSystemProxySspi = 1`.** `sd_ssh_proxy_machine` returns the machine proxy without its
+  origin, so the service cannot tell a WPAD/PAC-discovered proxy from a configured one. With the policy on, SSPI is allowed
+  towards whatever the machine configuration names; the policy is the admin's statement that this is wanted (3.8). A machine
+  read that reports the origin would let a configured proxy keep SSPI when the policy is off. Not done.
+- The agent's `profile.test` still passes letter Z (`handle_mount_body`, `test` = 1). `sd_mount` requires a letter for a
+  connect-only test that is not a hostkey mount, so that Z stays. Allowing letter 0 for `test_only` is the same change; it is
+  not in this part.
+- No user-scope proxy secret verb (`secret --user`). Secrets are write-only (4.5), so there is no read-back verb.
+- A live machine WinHTTP proxy and a real elevated administrator token were not exercised (lab, TST-23 in 05 §7). The
+  `sd_ssh_proxy_machine` read itself is not covered by a test.
+- The HKLM-only read is covered by the type and id checks only: a test cannot write HKLM without touching the machine, so the
+  service tests force the values through `svc_test_sysproxy_policy` and `svc_test_hk_policy`.

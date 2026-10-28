@@ -539,7 +539,7 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `update.check`, `update.apply` | x | — | M4 (the updater engine, 04 §9). Settings shows the update group disabled while `update.check` is missing from `features` |
 | `service.status` | — | x | the facts of `shelldrive service status --json` as the service sees them (`svc_status.c`, one writer for both): `installed`, `state` (`running`, `stopped`, `starting`, `stopping`, `paused`, `unknown`), `start_type`, `program {path, check: ok\|unquoted\|other\|unknown}`, `event_source {state: registered\|missing\|other\|unknown, message_file}`, `pipe {reachable: true, healthy, global_drives, prompts}`, and `machine {state: ok\|refused, reason?: owner\|reparse_point\|not_directory\|acl\|not_file, path?, profiles}` (the machine data folder as found at start, 3.2; `path`, the first refused folder, only for an elevated administrator). Open to every client; no secrets |
 | `service.repair_data` | — | x (admin, elevated) | runs `svc_repair_data` (the code of `shelldrive service repair-data`, 3.2, TM-R34) on `%ProgramData%`, then checks the layout again as the start does and, when it is trusted, leaves the idle state and loads the machine profiles. Reply `{moved, moved_to, folders, healthy}` (the CLI's `--json` members plus `healthy`). Errors: `access_denied`, `busy` (a global drive exists: the repair can move the folder that holds its secrets), `repair_refused` (a link or junction at the base; nothing changed), `io_error`. The service closes its log around the move |
-| `secret.set`, `secret.delete` | — | x (admin, elevated) | M5 (4.5): in M3 machine passwords are CLI-only |
+| `secret.set`, `secret.delete` | — | x (admin, elevated) | M5 (4.5): in M3 machine passwords are CLI-only. `kind: "proxy"` with `proxy: "http://user@host:port"` or `"socks5://user@host:port"` (no password in the spec) and `value` stores or removes the service proxy secret of that leg (`shelldrive secret set --machine --proxy`); the reply never holds the secret |
 
 Not on the pipe, by design: profile create/edit/delete, settings and overrides (direct `sd_config` writes under
 `sd_config_lock`, 3.6), host-key store list, import and remove (direct `sd_known_hosts`, 5.0), and `hostkey.trust`
@@ -1079,6 +1079,12 @@ unless a policy is set.
 
 ### 3.5 Group Policy values (registry, read-only for us)
 
+Machine reads of the service (M5, `docs/dev/m5-notes.md` Part 12): the service (LocalSystem) reads these values from HKLM only, through
+`sd_policy_machine_get_dword` / `sd_policy_machine_get_sz`; its HKCU is the SYSTEM profile, and 2.6 rule 1 says it never reads HKCU. The
+agent and the UI keep the HKLM-then-HKCU order above. The service reads `AllowSystemProxy` and `AllowSystemProxySspi` at each
+`proxy = system` leg (AllowSystemProxy 0 refuses it with `usage`; AllowSystemProxySspi 1 lets that leg use the Kerberos-only
+Negotiate of `proxy_auth = auto`, nothing else; no Basic, no NTLM).
+
 All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (HKLM wins), listed here once (C8):
 `LegacyAlgorithms` (0 allow, 1 warn, 2 refuse), `AllowUserProfiles`, `AllowAdHocMounts`, `AllowedBackends`
 (`webdav,dokany`), `DisableCredentialSaving`, `StrictHostKeyChecking` (1 = no TOFU, only machine known_hosts),
@@ -1489,6 +1495,7 @@ shelldrive hostkey list [host] [--announced] | add --from-server host[:port] [--
                    | accept-announced <id> [--add-only]
 shelldrive location add <profile> | remove <profile> | repair     Network location entries (8.7)
 shelldrive service install | uninstall | start | stop | status | repair-data     (repair-data: 3.2, TM-R34)
+shelldrive secret set | delete --machine --proxy SPEC [--stdin]     password of a service proxy leg (4.5, 3.8); elevated; read without echo, never printed
 shelldrive cache clear [<profile>|X:|mount-id] | --all [--force]     --force: clear although write-behind data is queued (kept)
 shelldrive logs [--component agent|service|ui] [--lines N] [--follow] [--path]
 shelldrive diag [--check] [--bundle FILE.zip [--include-dumps] [--no-anonymize]] [--fix linked-connections|webclient]

@@ -7,6 +7,7 @@ SD_TEST_DECL(cli_parse_other_commands);
 SD_TEST_DECL(cli_parse_mount_m2_options);
 SD_TEST_DECL(cli_parse_profile_hostkey_status);
 SD_TEST_DECL(cli_parse_hostkey_add_machine);
+SD_TEST_DECL(cli_parse_secret_proxy);
 SD_TEST_DECL(smoke_hostkey_add_machine);
 SD_TEST_DECL(smoke_hostkey_add_offers);
 SD_TEST_DECL(smoke_version_help_usage);
@@ -57,6 +58,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_parse_mount_m2_options),
   SD_TEST_ENTRY(cli_parse_profile_hostkey_status),
   SD_TEST_ENTRY(cli_parse_hostkey_add_machine),
+  SD_TEST_ENTRY(cli_parse_secret_proxy),
   SD_TEST_ENTRY(smoke_hostkey_add_machine),
   SD_TEST_ENTRY(smoke_version_help_usage),
   SD_TEST_ENTRY(smoke_mount_prompts_and_errors),

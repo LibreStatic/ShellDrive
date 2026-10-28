@@ -47,4 +47,9 @@ int sd_policy_get_dword(sd_policy_id id, DWORD *value);
  * when a value of the right type exists; the text is cut at cch - 1 characters. */
 int sd_policy_get_sz(sd_policy_id id, wchar_t *buf, size_t cch);
 
+/* Machine scope only (03 §3.5, §2.6 rule 1): the same readers, but HKLM alone. HKCU is never read. The service
+ * (LocalSystem) uses these: its HKCU is the SYSTEM profile, not a user's setting. */
+int sd_policy_machine_get_dword(sd_policy_id id, DWORD *value);
+int sd_policy_machine_get_sz(sd_policy_id id, wchar_t *buf, size_t cch);
+
 #endif /* SD_POLICY_H */

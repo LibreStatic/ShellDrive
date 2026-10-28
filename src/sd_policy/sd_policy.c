@@ -65,3 +65,19 @@ int sd_policy_get_sz(sd_policy_id id, wchar_t *buf, size_t cch)
     return 0;
   return read_sz(HKEY_LOCAL_MACHINE, d->name, buf, cch) || read_sz(HKEY_CURRENT_USER, d->name, buf, cch);
 }
+
+int sd_policy_machine_get_dword(sd_policy_id id, DWORD *value)
+{
+  const sd_policy_def *d = sd_policy_def_of(id);
+  if (d == NULL || value == NULL || d->reg != SD_POLICY_REG_DWORD)
+    return 0;
+  return read_dword(HKEY_LOCAL_MACHINE, d->name, value);
+}
+
+int sd_policy_machine_get_sz(sd_policy_id id, wchar_t *buf, size_t cch)
+{
+  const sd_policy_def *d = sd_policy_def_of(id);
+  if (d == NULL || buf == NULL || cch == 0 || d->reg != SD_POLICY_REG_SZ)
+    return 0;
+  return read_sz(HKEY_LOCAL_MACHINE, d->name, buf, cch);
+}

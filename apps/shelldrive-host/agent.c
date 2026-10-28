@@ -1900,8 +1900,10 @@ static sd_err handle_mount_body(sd_ipc_client *client, const sd_json *params, sd
       return fail(err, SD_E_EXISTS, "already_mounted", "profile already mounted");
     }
   }
-  if (test) {
-    letter = L'Z';                     /* a test has no drive: the letter only satisfies the mount record */
+  if (hk) {
+    letter = 0;                        /* a hostkey mount has no drive (params.hostkey_fetch, 03 §6.1) */
+  } else if (test) {
+    letter = L'Z';                     /* profile.test has no drive: the letter only satisfies the mount record */
   } else if (letter) {
     if (letter_in_use_locked(letter)) {
       char detail[32];

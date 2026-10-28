@@ -68,3 +68,27 @@ SD_TEST(policy_type_mismatch_reads_absent)
   SD_CHECK(sd_policy_get_sz(SD_POLICY_UILANGUAGE, NULL, 0) == 0);
   SD_CHECK(v == 7);
 }
+
+SD_TEST(policy_machine_reads_refuse_type_and_id_mismatch)
+{
+  DWORD v = 7;
+  wchar_t buf[16];
+  /* The machine-only readers (the service, 2.6 rule 1) apply the same type and id checks, before any registry access */
+  SD_CHECK(sd_policy_machine_get_dword(SD_POLICY_UILANGUAGE, &v) == 0);
+  SD_CHECK(sd_policy_machine_get_sz(SD_POLICY_DISABLENETWORKLOCATIONS, buf, SD_COUNTOF(buf)) == 0);
+  SD_CHECK(sd_policy_machine_get_dword((sd_policy_id)SD_POLICY_ID_COUNT, &v) == 0);
+  SD_CHECK(sd_policy_machine_get_dword((sd_policy_id)-1, &v) == 0);
+  SD_CHECK(sd_policy_machine_get_sz(SD_POLICY_UILANGUAGE, NULL, 0) == 0);
+  SD_CHECK(sd_policy_machine_get_dword(SD_POLICY_ALLOWSYSTEMPROXY, NULL) == 0);
+  SD_CHECK(v == 7);
+}
+
+SD_TEST(policy_system_proxy_policies_are_boolean_machine_ready)
+{
+  const sd_policy_def *d = sd_policy_def_of(SD_POLICY_ALLOWSYSTEMPROXY);
+  SD_REQUIRE(d != NULL);
+  SD_CHECK(d->kind == SD_POLICY_KIND_BOOLEAN && d->reg == SD_POLICY_REG_DWORD && d->min == 0 && d->max == 1);
+  d = sd_policy_def_of(SD_POLICY_ALLOWSYSTEMPROXYSSPI);
+  SD_REQUIRE(d != NULL);
+  SD_CHECK(d->kind == SD_POLICY_KIND_BOOLEAN && d->reg == SD_POLICY_REG_DWORD && d->min == 0 && d->max == 1);
+}

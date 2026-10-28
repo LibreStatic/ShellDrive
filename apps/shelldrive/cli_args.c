@@ -130,19 +130,24 @@ static int allowed(cli_cmd cmd, int id)
   switch (id) {
   case OPT_JSON: case OPT_QUIET: case OPT_LANG: case OPT_HELP: case OPT_VERSION:
     return 1;
-  case OPT_STDIN:                       /* hostkey add: the answer to its question is read from standard input */
-    return cmd == CLI_CMD_MOUNT || cmd == CLI_CMD_HOSTKEY;
+  case OPT_STDIN:                       /* hostkey add: the answer to its question is read from standard input;
+                                           secret set: the password is read from standard input (--stdin) */
+    return cmd == CLI_CMD_MOUNT || cmd == CLI_CMD_HOSTKEY || cmd == CLI_CMD_SECRET;
   case OPT_PROMPT: case OPT_HOST: case OPT_LETTER: case OPT_IDENTITY:
   case OPT_REMOTE_PATH: case OPT_READ_ONLY: case OPT_NO_WAIT: case OPT_BACKEND:
-  case OPT_JUMP: case OPT_PROXY: case OPT_CONNECTIONS:
+  case OPT_JUMP: case OPT_CONNECTIONS:
     return cmd == CLI_CMD_MOUNT;
+  case OPT_PROXY:                       /* a mount's proxy leg, or the proxy of secret set|delete */
+    return cmd == CLI_CMD_MOUNT || cmd == CLI_CMD_SECRET;
   case OPT_OPEN:
     return cmd == CLI_CMD_MOUNT;
   case OPT_STATS:
     return cmd == CLI_CMD_STATUS;
   case OPT_TYPE: case OPT_FROM: case OPT_ADD_ONLY: case OPT_ANNOUNCED:
-  case OPT_MACHINE: case OPT_FROM_SERVER: case OPT_EXPECT:
+  case OPT_FROM_SERVER: case OPT_EXPECT:
     return cmd == CLI_CMD_HOSTKEY;
+  case OPT_MACHINE:                     /* the service's store (hostkey, secret) */
+    return cmd == CLI_CMD_HOSTKEY || cmd == CLI_CMD_SECRET;
   case OPT_DRY_RUN:
     return cmd == CLI_CMD_PROFILE;
   case OPT_ALL: case OPT_FORCE:
@@ -220,6 +225,7 @@ static cli_cmd command_of(const wchar_t *w)
   if (wcscmp(w, L"profile") == 0) return CLI_CMD_PROFILE;
   if (wcscmp(w, L"hostkey") == 0) return CLI_CMD_HOSTKEY;
   if (wcscmp(w, L"service") == 0) return CLI_CMD_SERVICE;
+  if (wcscmp(w, L"secret") == 0) return CLI_CMD_SECRET;
   if (wcscmp(w, L"version") == 0) return CLI_CMD_VERSION;
   if (wcscmp(w, L"help") == 0) return CLI_CMD_HELP;
   if (wcscmp(w, L"agent") == 0) return CLI_CMD_AGENT_STOP;   /* "agent stop" checked below */
@@ -392,6 +398,9 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       } else if (a->cmd == CLI_CMD_CACHE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
+      } else if (a->cmd == CLI_CMD_SECRET) {
+        if (a->positional == NULL) slot = &a->positional;   /* set | delete */
+        else if (a->arg2 == NULL) slot = &a->arg2;          /* rejected below (no second argument) */
       } else if (a->cmd == CLI_CMD_SERVICE) {
         if (a->positional == NULL) slot = &a->positional;   /* the verb */
         else if (a->arg2 == NULL) slot = &a->arg2;          /* the profile or X: */
@@ -459,13 +468,14 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->bench_scenario ? L"--scenario" : a->bench_size_mib ? L"--size" :
                    L"--write-mode", NULL);
   /* --stdin is also a hostkey add option (the answer to its question) */
-  if (a->cmd != CLI_CMD_MOUNT && (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only ||
-                                  a->no_wait || (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY) ||
-                                  a->prompt != CLI_PROMPT_AUTO || a->backend ||
-                                  a->jump_count || a->proxy || a->connections))
+  if (a->cmd != CLI_CMD_MOUNT && a->cmd != CLI_CMD_SECRET &&
+      (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only ||
+       a->no_wait || (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY) ||
+       a->prompt != CLI_PROMPT_AUTO || a->backend ||
+       a->jump_count || a->proxy || a->connections))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->backend ? L"--backend" : a->host_spec ? L"--host" : a->letter ? L"--letter" :
                    a->identity ? L"--identity" : a->remote_path ? L"--remote-path" : a->read_only ? L"--read-only" :
-                   a->no_wait ? L"--no-wait" : (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY) ? L"--stdin" :
+                   a->no_wait ? L"--no-wait" : (a->use_stdin && a->cmd != CLI_CMD_HOSTKEY && a->cmd != CLI_CMD_SECRET) ? L"--stdin" :
                    a->jump_count ? L"--jump" : a->proxy ? L"--proxy" : a->connections ? L"--connections" :
                    L"--prompt", NULL);
   if (a->cmd != CLI_CMD_UNMOUNT && a->cmd != CLI_CMD_CACHE && (a->all || a->force))
@@ -477,7 +487,7 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   if (a->cmd != CLI_CMD_HOSTKEY && (a->hk_type || a->from || a->add_only || a->announced))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" :
                    a->add_only ? L"--add-only" : L"--announced", NULL);
-  if (a->cmd != CLI_CMD_HOSTKEY && (a->from_server || a->expect || a->machine))
+  if (a->cmd != CLI_CMD_HOSTKEY && a->cmd != CLI_CMD_SECRET && (a->from_server || a->expect || a->machine))
     return set_err(a, CLI_E_UNKNOWN_OPTION, a->machine ? L"--machine" : a->from_server ? L"--from-server" :
                    L"--expect", NULL);
   if (a->cmd != CLI_CMD_PROFILE && a->dry_run)
@@ -539,6 +549,27 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       return set_err(a, CLI_E_CONFLICT, L"--all", a->arg2);
     if (!a->all && !a->arg2)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
+    break;
+  case CLI_CMD_SECRET:
+    /* secret set|delete --machine --proxy SPEC [--stdin] (cli_service.c): the password of a service proxy leg */
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"set") != 0 && wcscmp(a->positional, L"delete") != 0)
+      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+    if (a->arg2)
+      return set_err(a, CLI_E_EXTRA_ARGUMENT, a->arg2, NULL);
+    if (a->from_server || a->expect)
+      return set_err(a, CLI_E_UNKNOWN_OPTION, a->from_server ? L"--from-server" : L"--expect", NULL);
+    if (!a->machine)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, L"--machine", NULL);
+    if (!a->proxy)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, L"--proxy", NULL);
+    if (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only || a->no_wait ||
+        a->prompt != CLI_PROMPT_AUTO || a->backend || a->jump_count || a->connections)
+      return set_err(a, CLI_E_UNKNOWN_OPTION, a->host_spec ? L"--host" : a->letter ? L"--letter" :
+                     a->identity ? L"--identity" : a->remote_path ? L"--remote-path" : a->read_only ? L"--read-only" :
+                     a->no_wait ? L"--no-wait" : a->backend ? L"--backend" : a->jump_count ? L"--jump" :
+                     a->connections ? L"--connections" : L"--prompt", NULL);
     break;
   case CLI_CMD_SERVICE:
     /* list | mount <profile> | unmount <profile|X:> | status [<profile|X:>] | install | uninstall | start | stop |

@@ -19,9 +19,11 @@
 typedef void (*svc_event_fn)(void *ctx, DWORD msg_id, const wchar_t **args, size_t nargs);
 
 /* proxy = system of a service profile (M5, 2.6 rule 1, 3.8). read: the WinHTTP machine configuration for host:port;
-   kind is the SD_PROXY_* value (0 direct, 1 HTTP, 2 SOCKS5), the proxy in host_out / port_out. allow: the machine
-   policy AllowSystemProxy; 0 refuses the leg with usage. Shipping: allow 0 (this build reads no policy yet, as the
-   per-user path) and the real sd_ssh_proxy_machine. Tests pass a stub and set allow. */
+   kind is the SD_PROXY_* value (0 direct, 1 HTTP, 2 SOCKS5), the proxy in host_out / port_out. allow: 1 or 0 is the
+   answer of the seam itself (0 refuses the leg with usage); -1 = the machine policy AllowSystemProxy, read at each
+   leg from HKLM only (sd_policy_machine_get_dword). Shipping: allow -1 (so the policy decides) and the real
+   sd_ssh_proxy_machine. The machine policy AllowSystemProxySspi is read the same way when allow is -1; with 0 or 1
+   SSPI towards the system proxy is never allowed. Tests pass a stub. */
 typedef sd_err (*svc_sysproxy_read_fn)(void *ctx, const wchar_t *host, uint16_t port, int *kind, wchar_t host_out[256],
                                        uint16_t *port_out);
 typedef struct svc_sysproxy_ops {
@@ -76,6 +78,9 @@ void svc_test_hk_policy(int forced, DWORD value);
    class of the reserved-instance rule, 2.2); the token class is used again when on = 0. Tests of the reserved instances
    use it for their raw instances, which an unelevated test process could not hold otherwise. */
 void svc_test_connect_admin(int on);
+/* SD_SVC_TEST_HOOKS builds only. forced = 0 reads AllowSystemProxy and AllowSystemProxySspi from HKLM (only with
+   svc_opts.sysproxy_ops.allow = -1); forced = 1 uses allow and sspi (0 or 1) for every leg from now on. */
+void svc_test_sysproxy_policy(int forced, DWORD allow, DWORD sspi);
 #endif
 
 #endif /* SERVICE_H */
