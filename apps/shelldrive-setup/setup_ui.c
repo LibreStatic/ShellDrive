@@ -275,10 +275,10 @@ static void build_mode(sd_setup_ui *ui, int back_on, int last)
   ui->radio_portable = add_child(ui, L"BUTTON",
                                  text_of(SD_MSG_INSTALLER_MODE_PORTABLE, NULL, buf, SD_SETUP_COUNTOF(buf)),
                                  BS_AUTORADIOBUTTON | WS_TABSTOP, 0, x + 8, 112, w - 8, 22, SD_ID_R_PORTABLE);
-  /* The all-users choice is shown, disabled, with its reason (the engine refuses it in this build). */
+  /* The all-users choice: the elevated two-stage install (setup_elevate.c). Its explanation is shown under it. */
   ui->radio_machine = add_child(ui, L"BUTTON",
                                 text_of(SD_MSG_INSTALLER_MODE_MACHINE, NULL, buf, SD_SETUP_COUNTOF(buf)),
-                                BS_AUTORADIOBUTTON | WS_TABSTOP | (SD_FLOW_MACHINE_AVAILABLE ? 0 : WS_DISABLED), 0,
+                                BS_AUTORADIOBUTTON | WS_TABSTOP, 0,
                                 x + 8, 140, w - 8, 22, SD_ID_R_MACHINE);
   add_text(ui, text_of(SD_MSG_INSTALLER_MODE_MACHINE_REASON, NULL, buf, SD_SETUP_COUNTOF(buf)), x + 28, 170, w - 28,
            44, SD_ID_REASON);
@@ -438,9 +438,6 @@ static int read_page(sd_setup_ui *ui, sd_flow_page cur, sd_setup_choices *c)
     else if (ui->radio_machine != NULL && SendMessageW(ui->radio_machine, BM_GETCHECK, 0, 0) == BST_CHECKED)
       c->mode = SD_SETUP_MODE_MACHINE;
     else
-      c->mode = SD_SETUP_MODE_USER;
-    /* the all-users choice is disabled in this build; it cannot be checked, so this is a test seam only */
-    if (c->mode == SD_SETUP_MODE_MACHINE && !SD_FLOW_MACHINE_AVAILABLE)
       c->mode = SD_SETUP_MODE_USER;
     return 1;
   case SD_FLOW_DESTINATION: {

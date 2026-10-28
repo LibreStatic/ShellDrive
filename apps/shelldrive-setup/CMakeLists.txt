@@ -23,6 +23,7 @@ set(_sd_setup_host_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
 add_library(sd_payload_sig STATIC setup_payload_sig.c)
 target_include_directories(sd_payload_sig PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sd_payload_sig PUBLIC sd_crypto sd_headers)
+target_compile_definitions(sd_payload_sig PUBLIC "SD_SETUP_BUILD_CHANNEL=\"${SD_SETUP_CHANNEL}\"")
 set_target_properties(sd_payload_sig PROPERTIES FOLDER "apps")
 
 add_library(sd_setup_core STATIC

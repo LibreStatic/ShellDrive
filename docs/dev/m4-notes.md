@@ -493,3 +493,104 @@ manifest with 15 days, and a file name with a separator are all refused. Passing
 6. `release-gates.txt`: the record format is not defined in 04 section 12.3, so it is not implemented.
 7. CODEOWNERS: the owner handle is the maintainer's decision; the lint reports it as a warning.
 8. `release.yml`: the finalize gate still stops; update it when the steps above exist.
+
+## Installer pass (wip/r17-setupfin)
+
+Scope: open items 1, 2, 4 and 5 of the r16 section above, and `/extract=` (04 section 6.5). Per-machine uninstall is not done
+(see open items). Paths are relative to the repository root. Verified by the required gate (`ci-local`, presets x86-ia32,
+x64-modern, x64-analysis, `-TestRegex 'setup|engine|msi|release|l10n|importcheck|isacheck'`): 51, 34 and 32 tests pass.
+
+| # | Item | Status now | Where / evidence |
+|---|---|---|---|
+| 3 | Per-machine install through the MSI | Done in code; install lab pending | `setup_main.c` (`run_install`, `run_machine_elevated`), `setup_elevate.c` (`sd_setup_elev_parent_ex`). The MSI is a CAB member (see packaging below). |
+| 4 | Two-stage elevation | Done in the engine; lab pending | Progress is relayed live now (below). Tests `tests/setup/test_elevate.c`: `setup_elev_parent_relays_progress`, `setup_elev_stage1_copies_the_stage_log`. |
+| 11 | `DEFAULTPROFILES` | unchanged | `packaging/msi/ShellDrive.wxs` |
+| 22 | `PAYLOAD_SIG` | Done in the stub; the package step still open | `cmake/SdPayload.cmake` passes `--sig` when `SD_PAYLOAD_SIG` names a file. |
+
+### Packaging (open item 1)
+
+- `CMakeLists.txt`: the `SD_BUILD_MSI` option and `packaging/msi` are now added before `apps/shelldrive-setup`, so the
+  stub's payload can name the MSI target and file (`SD_MSI_PACKAGE`).
+- `cmake/SdPayload.cmake`: with `SD_BUILD_MSI` the CAB gets the member `ShellDrive.msi` (the stage 2 path, 04 section 6.4).
+  `sd-payload` always gets `--channel ${SD_SETUP_CHANNEL}` (cache, default `stable`), and `--sig ${SD_PAYLOAD_SIG}` when the
+  cache FILEPATH is set (empty by default: the stub then refuses the payload, as before).
+- `apps/shelldrive-setup/CMakeLists.txt`: `SD_SETUP_BUILD_CHANNEL` is compiled into `sd_payload_sig` from `SD_SETUP_CHANNEL`.
+- Without `SD_BUILD_MSI` (the gate does not build the MSI) the CAB has no MSI and stage 2 reports `msi_missing`, as before.
+- The `package` job of `release.yml` still stops with its error (it also needs the Dokany lock and the signing sessions).
+
+### Wizard, progress and log (open items 2 and 4 of the r16 section)
+
+- `setup_flow.h`: `SD_FLOW_MACHINE_AVAILABLE` is 1. The mode page enables the all-users radio (`setup_ui.c`). `/permachine`
+  skips the mode page; the Dokany page follows the all-users choice; `/permachine` with `/passive` shows the progress view only.
+- `run_install` is now the one entry for every mode. The payload and its signature are checked before any page. An all-users
+  choice (interactive or `/permachine`) runs `sd_setup_elev_parent_ex` with the progress view of the parent.
+- `sd_setup_elev_parent_ex`: stage 1 starts on a worker thread. The parent polls the pipe every 100 ms, reports each new
+  `P <n>` line to the progress callback, and pumps the window on each tick (`SD_SETUP_ELEV_TICK`). `M` and `R` lines are read
+  at the end, not live. `sd_setup_elev_parent` is the same call without a callback.
+- The status line shows no text during the elevated stages (the bar only). Launch is not offered after an all-users install,
+  because the parent does not know the MSI folder.
+- `/log=`: the parent gives the path to stage 1 only, as `/log=` on the stage 1 command line (stage 2 never gets a path).
+  After stage 2, stage 1 copies `msi.log` of the stage folder to that path. The target must be an absolute drive path of a
+  `.log` file, with no `..`, in an existing folder that is not a reparse point; an existing target must be a plain file (it
+  is replaced). Anything else is refused and logged (`elevate.log_refused`).
+- `installer.error.payload_signature` (new, all six catalogs, appended at the end of each `.po`): used when the release
+  signature of PAYLOAD_TABLE fails. Table failures keep `installer.error.payload_damaged`.
+
+### /extract (04 section 6.5)
+
+- `run_extract` (`setup_main.c`): `/extract=<dir>` extracts the payload into a fresh folder under %TEMP%, copies
+  `ShellDrive.msi` to `<dir>\ShellDrive.msi` (replacing an existing file), and removes the temp folder. No elevation.
+  A payload without the MSI fails with `msi_missing`. Not covered by a test in this pass.
+
+### Per-user and portable installs
+
+- `setup_install.c` (`stage_and_place`) deletes `ShellDrive.msi` from the staging tree, so the MSI never lands in a
+  per-user or portable folder.
+
+### CI note (r16 open item 7)
+
+The gate command above includes `engine`, so `unit.engine` (51 tests in the gate run, 52 in the engine count) runs in the
+required gate. No workflow in `.github/workflows/` passes `TestRegex`, so the main CI runs every test. The statement in the
+r16 section that the gate misses `unit.engine` is superseded by this note.
+
+### Tests added
+
+- `tests/setup/test_flow.c`: the all-users choice is enabled; "all users chosen on the mode page" flow.
+- `tests/setup/test_elevate.c`: `setup_elev_parent_relays_progress` (progress callback sees 40 from `P 10`, `P 40`) and
+  `setup_elev_stage1_copies_the_stage_log` (a `.log` target is written; a `.txt` target and a `..` path are not).
+
+### Open items after this pass
+
+1. Per-machine uninstall (04 section 6.7): `setup /uninstall` with the two stages and `msiexec /x` on the stage MSI, and
+   `/uninstall` plus `/permachine` parsing. Not started.
+2. The stage status text is empty; `M` lines are not shown live; closing the progress window does not cancel the stage.
+3. Launch after an all-users install (needs the MSI install folder from the parent or the stage).
+4. Log copy race: the target folder is checked, then written; a junction swapped into a parent path between the two is not
+   excluded. Needs review (TM-R33 class).
+5. `release.yml` `package` job and `SD_PAYLOAD_SIG` from signing session 1 (`sd-release sign --kind payload --sig-only`).
+   Nothing signed here.
+6. Lab checks (04 section 11.4): UAC and XP Run As, progress relay under runas, msiexec install, Change, Repair and Remove.
+7. No test yet for the MSI exclusion in per-user installs or for `/extract`.
+8. The Dokany chain still does not run (unchanged).
+
+### /log= for all-users installs (r17, option c; supersedes the stage 1 copy above)
+
+- No path reaches an elevated stage: the parent does not pass /log= on the stage 1 command line, and stage 1 copies nothing.
+  The stage folder keeps its protected DACL (SYSTEM and Administrators), so the unelevated parent cannot read msi.log there.
+- The log travels over the result pipe, whose DACL is the current user only. Stage 2 sends after msiexec, before the R line:
+  `G` (opens the block), then `L <hex>` lines of 1 to 64 bytes of msi.log (lowercase hex, 130 UTF-16 units at most), an
+  optional `T` (the log was cut at SD_ELEV_LOG_CAP = 4 MiB, only the first 4 MiB are sent), and the R line that ends the stage.
+- The parent drains the pipe as bytes (UTF-16LE lines), and treats the block as data only: it never reads a path or a command
+  from it. Control lines (P, M, R) keep their meaning. A second G, an L line outside a block, bad hex, an odd length, a line
+  over the buffer, or more than the cap sets "bad": nothing is written and the event elevate.log_malformed is logged. The
+  install result is not changed by the log.
+- With a good block the parent writes the bytes to /log= itself, with its own token, CREATE_ALWAYS, after the same target
+  checks as before (absolute drive path, .log, no parent-folder component, existing folder not a reparse point, existing
+  target a plain file). Events: elevate.log_written, elevate.log_truncated (block had T), elevate.log_refused,
+  elevate.log_failed, elevate.log_absent (no block: the stage failed before msiexec, or an older stage).
+- elevate.log_not_copied is gone. Tests (tests/setup/test_elevate.c): setup_elev_parent_writes_the_relayed_log,
+  setup_elev_parent_truncated_block_is_written, setup_elev_parent_malformed_block_writes_nothing,
+  setup_elev_parent_oversized_block_writes_nothing (4 MiB + 64 bytes), setup_elev_stage2_sends_the_stage_log,
+  setup_elev_stage1_keeps_the_stage_log_in_the_stage.
+- Open: the cap is 4 MiB of raw log; a longer msi.log is truncated, not refused. Throughput is limited by pipe round trips
+  (the parent drains without waiting while data keeps coming).

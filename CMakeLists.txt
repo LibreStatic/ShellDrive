@@ -89,14 +89,15 @@ if(NOT SD_ARM32)
   add_subdirectory(apps/shelldrive-shellext)
 endif()
 
-# Setup engine, stub and payload (04 §6; tools/sd-payload attaches the payload CAB, added above).
-add_subdirectory(apps/shelldrive-setup)
-
-# Per-machine MSI packages (04 §8): opt-in, target msi, needs WiX 3.14 (packaging/msi/CMakeLists.txt).
+# Per-machine MSI packages (04 §8): opt-in, target msi, needs WiX 3.14 (packaging/msi/CMakeLists.txt). Added before the
+# setup stub, because the stub's payload CAB carries the MSI when it is built (cmake/SdPayload.cmake).
 option(SD_BUILD_MSI "Build the per-machine MSI of this flavour (target msi, WiX 3.14; 04 §8)" OFF)
 if(SD_BUILD_MSI)
   add_subdirectory(packaging/msi)
 endif()
+
+# Setup engine, stub and payload (04 §6; tools/sd-payload attaches the payload CAB, added above).
+add_subdirectory(apps/shelldrive-setup)
 
 # Unit tests and other test suites.
 add_subdirectory(tests)

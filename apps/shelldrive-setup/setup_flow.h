@@ -11,9 +11,8 @@
  *   install, interactive   welcome, license, mode (unless /peruser, /portable or /permachine was given),
  *                          destination (portable without a folder), Dokany (all users only), progress, finish
  *
- * The mode page offers the all-users choice disabled in this build (SD_FLOW_MACHINE_AVAILABLE = 0): the
- * engine refuses per-machine installs today (setup_install.c, the MSI is not in this milestone). The Dokany
- * page is therefore reached only by a test (/test-pages /permachine) until that changes. */
+ * The mode page offers the all-users choice (SD_FLOW_MACHINE_AVAILABLE = 1). The choice runs the two elevated
+ * stages (setup_elevate.c) and shows the parent's progress view; /permachine skips the mode page. */
 #ifndef SD_SETUP_FLOW_H
 #define SD_SETUP_FLOW_H
 
@@ -22,8 +21,8 @@
 #include "setup_core.h"
 #include "sd_l10n_installer_ids.h"
 
-/* Per-machine installs are refused by the engine in this build (04 §6.3, 6.10). Flip when the MSI lands. */
-#define SD_FLOW_MACHINE_AVAILABLE 0
+/* The all-users choice is offered (04 §6.3). It needs the payload MSI at run time (packaging/msi, SD_BUILD_MSI). */
+#define SD_FLOW_MACHINE_AVAILABLE 1
 
 typedef enum sd_flow_page {
   SD_FLOW_NONE = 0,              /* no more pages: the caller goes on with the work */
