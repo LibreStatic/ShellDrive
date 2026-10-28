@@ -33,10 +33,19 @@ param(
   # Inner loop for one change (not a gate run): only the tests whose name matches this ctest regex (-R), and with
   # -ReleaseOnly no Debug configuration.
   [string]$TestRegex = '',
-  [switch]$ReleaseOnly
+  [switch]$ReleaseOnly,
+  # -Pipeline: a second PowerShell builds the presets one after another (-BuildOnly) while this one runs the tests
+  # of each preset as soon as its build is done, so the next build overlaps the current tests (which leave most
+  # cores idle). Tests still run one preset at a time: some share machine state across ctest runs.
+  [switch]$Pipeline,
+  [switch]$BuildOnly,
+  [switch]$TestOnly
 )
 
 $ErrorActionPreference = 'Stop'
+# MSBuild worker nodes outlive a build by default and keep files of the build tree open, which breaks a later
+# -Clean (and the pipeline's parallel builder); no node reuse.
+$env:MSBUILDDISABLENODEREUSE = '1'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -57,7 +66,21 @@ $ctest = Join-Path $bin 'ctest.exe'
 $out = Join-Path $root 'build\ci-local'
 New-Item -ItemType Directory -Force $out | Out-Null
 
-if (-not $NoFixture) {
+$marker = { param($p) Join-Path $out "built-$p.txt" }
+$builder = $null
+if ($Pipeline) {
+  foreach ($p in $Presets) { Remove-Item -Force (& $marker $p) -ErrorAction SilentlyContinue }
+  $plist = ($Presets | ForEach-Object { "'$_'" }) -join ','
+  $bcmd = "& '$PSCommandPath' -BuildOnly -Presets $plist" + $(if ($Clean) { ' -Clean' } else { '' }) +
+          $(if ($ReleaseOnly) { ' -ReleaseOnly' } else { '' })
+  $blog = Join-Path $out 'pipeline-build.log'
+  Write-Host "== Pipeline: builds run in a second process (log: $blog)"
+  $builder = Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $bcmd) `
+    -RedirectStandardOutput $blog -RedirectStandardError "$blog.err" -WindowStyle Hidden -PassThru
+  $TestOnly = $true
+}
+
+if (-not $NoFixture -and -not $BuildOnly) {
   $start = Join-Path $root 'tests\fixtures\wsl-sshd\start.ps1'
   if (Test-Path $start) {
     Write-Host '== Starting the WSL sshd fixture (no-op if already running)'
@@ -72,7 +95,16 @@ foreach ($preset in $Presets) {
   $note = ''
   try {
     $dir = Join-Path $root "build\$preset"
-    if ($Clean -and (Test-Path $dir)) {
+    if ($Pipeline) {
+      # wait for the builder's verdict on this preset (it writes 'ok' or the failure)
+      while (-not (Test-Path (& $marker $preset))) {
+        if ($builder.HasExited -and -not (Test-Path (& $marker $preset))) { throw 'the build process ended without building this preset' }
+        Start-Sleep -Seconds 5
+      }
+      $verdict = (Get-Content (& $marker $preset) -Raw).Trim()
+      if ($verdict -ne 'ok') { throw "build: $verdict (see build\ci-local\pipeline-build.log)" }
+    }
+    if ($Clean -and -not $TestOnly -and (Test-Path $dir)) {
       # A scanner or a test process that is just exiting can hold a file for a moment; retry before failing.
       for ($try = 1; ; $try++) {
         try { Remove-Item -Recurse -Force $dir -ErrorAction Stop; break }
@@ -80,21 +112,27 @@ foreach ($preset in $Presets) {
       }
     }
 
-    Write-Host "== [$preset] configure"
-    & $cmake --preset $preset | Out-Host
-    if ($LASTEXITCODE) { throw 'configure failed' }
+    if (-not $TestOnly) {
+      Write-Host "== [$preset] configure"
+      & $cmake --preset $preset | Out-Host
+      if ($LASTEXITCODE) { throw 'configure failed' }
+    }
 
     $configs = @($preset)
     $listing = & $cmake --list-presets=build 2>$null
     if (-not $ReleaseOnly -and $listing -match "`"$preset-debug`"") { $configs += "$preset-debug" }
 
     foreach ($cfg in $configs) {
-      Write-Host "== [$cfg] build"
-      $log = & { $ErrorActionPreference = 'Continue'; & $cmake --build --preset $cfg 2>&1 }
-      $log | Out-Host
-      if ($LASTEXITCODE) { throw "build $cfg failed" }
-      $warn = @($log | Select-String -Pattern ' (warning|error) [A-Z]+[0-9]+').Count
-      if ($warn) { throw "build $cfg reported $warn warnings/errors" }
+      if (-not $TestOnly) {
+        Write-Host "== [$cfg] build"
+        # --parallel 4: MSBuild builds up to four projects at once (/m:4); each cl.exe also runs /MP (SdOptions.cmake).
+        $log = & { $ErrorActionPreference = 'Continue'; & $cmake --build --preset $cfg --parallel 4 2>&1 }
+        $log | Out-Host
+        if ($LASTEXITCODE) { throw "build $cfg failed" }
+        $warn = @($log | Select-String -Pattern ' (warning|error) [A-Z]+[0-9]+').Count
+        if ($warn) { throw "build $cfg reported $warn warnings/errors" }
+      }
+      if ($BuildOnly) { continue }
       if ($preset -in @('arm64', 'arm32')) {
         # Build only: ARM test binaries cannot run on this x64 host (04 §11.4); the ARM ctest presets select no tests, so ctest is skipped.
         $note += "$preset $cfg built, not tested (build only); "
@@ -123,14 +161,17 @@ foreach ($preset in $Presets) {
       if ($skipped.Count -and -not $AllowSkip) { throw "tests $cfg skipped: $($skipped -join ', ')" }
       if ($skipped.Count) { $note += "skipped in ${cfg}: $($skipped -join ', '); " }
     }
+    if ($BuildOnly) { Set-Content -Path (& $marker $preset) -Value 'ok' }
   } catch {
     $status = 'FAIL'
     $note += $_.Exception.Message
+    if ($BuildOnly) { Set-Content -Path (& $marker $preset) -Value $_.Exception.Message }
   }
   $sw.Stop()
   $results += [pscustomobject]@{ Preset = $preset; Result = $status; Minutes = [math]::Round($sw.Elapsed.TotalMinutes, 1); Note = $note }
 }
 
+if ($builder) { $builder.WaitForExit() }
 Write-Host ''
 $results | Format-Table -AutoSize | Out-Host
 if ($results | Where-Object Result -ne 'pass') { exit 1 }

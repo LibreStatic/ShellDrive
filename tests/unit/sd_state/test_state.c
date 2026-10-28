@@ -229,6 +229,9 @@ SD_TEST(state_torn_reads_never_mix)
       busy++;
     }
   }
+  /* on a loaded machine the writer thread may not have been scheduled yet: give it up to 10 s to publish */
+  for (i = 0; i < 1000 && InterlockedCompareExchange((volatile LONG *)&c.published, 0, 0) == 0; i++)
+    Sleep(10);
   InterlockedExchange(&c.stop, 1);
   WaitForSingleObject(th, INFINITE);
   CloseHandle(th);

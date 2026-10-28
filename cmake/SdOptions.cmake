@@ -203,6 +203,11 @@ add_compile_options(
   "$<$<COMPILE_LANGUAGE:C>:/W4;/WX;/utf-8;/Zi;/Gy;/Gw;/GS;/GF;/we4013;/we4047;/we4024;/Brepro>"
   "$<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Release>>:/O2>"
   "$<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:/Od>")
+# The Visual Studio generator hands each project's sources to one cl.exe, which compiles them one at a time:
+# /MP lets cl compile a project's files in parallel (it implies /FS for the shared /Zi PDB).
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+  add_compile_options("$<$<COMPILE_LANGUAGE:C>:/MP>")
+endif()
 # Volatile semantics (04 §1.1, M6): /volatile:ms makes every volatile access an acquire load or release store.
 # It is the default on x86 and x64 (no code change there); on ARM64 the default is /volatile:iso, which would
 # leave the volatile flags and sequence counters of sd_state, sd_ipc and the shell extension unordered.

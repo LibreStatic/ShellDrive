@@ -69,6 +69,16 @@ static void vclose(sd_vfs_handle *h, BOOL del)
   sd_vfs_close(h);
 }
 
+/* sd_vfs_close releases the remote handle and the SFTP CLOSE runs in the background: wait (up to 10 s, a
+   loaded machine) for the fake's count to reach n. */
+static uint32_t wait_open_handles(sd_sftp_session *s, uint32_t n)
+{
+  int i;
+  for (i = 0; i < 1000 && fake_open_handles(s) != n; i++)
+    Sleep(10);
+  return fake_open_handles(s);
+}
+
 #define SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 
 typedef struct list_ctx { WCHAR names[64][64]; sd_vfs_info info[64]; int n; } list_ctx;
@@ -148,7 +158,7 @@ SD_TEST(vfs_create_write_read_roundtrip)
   SD_CHECK(fake_count(f.s, FOP_FSYNC) == 1);
   vclose(h, FALSE);
   SD_CHECK_EQ_U64(fake_get(f.s, "/home/user/data.bin", NULL, 0), (3u << 20) + 4);
-  SD_CHECK(fake_open_handles(f.s) == 0);
+  SD_CHECK(wait_open_handles(f.s, 0) == 0);
 
   SD_REQUIRE(vopen(&f, L"\\DATA.BIN", GENERIC_READ, FILE_SHARE_READ, SD_VFS_FILE_OPEN, 0, &h) == SD_VFS_OK);
   SD_CHECK_EQ_INT(sd_vfs_read(h, 0, back, 3u << 20, &got), SD_VFS_OK);

@@ -89,6 +89,7 @@ int sd_test_main(const sd_test_case *cases, size_t count, int argc, char **argv)
 {
   const char *filter = NULL;
   size_t i, run = 0, failed = 0;
+  unsigned shard = 0, shards = 1;   /* --shard K/N: only the cases whose index is K modulo N (parallel CTest entries) */
   int a;
 
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
@@ -102,11 +103,19 @@ int sd_test_main(const sd_test_case *cases, size_t count, int argc, char **argv)
     }
     if (strcmp(argv[a], "--filter") == 0 && a + 1 < argc)
       filter = argv[++a];
+    if (strcmp(argv[a], "--shard") == 0 && a + 1 < argc) {
+      if (sscanf_s(argv[++a], "%u/%u", &shard, &shards) != 2 || shards == 0 || shard >= shards) {
+        printf("bad --shard %s (want K/N with K < N)\n", argv[a]);
+        return 2;
+      }
+    }
   }
 
   for (i = 0; i < count; i++) {
     sd_test_ctx t;
     if (filter && strstr(cases[i].name, filter) == NULL)
+      continue;
+    if (i % shards != shard)
       continue;
     t.name = cases[i].name;
     t.failures = 0;

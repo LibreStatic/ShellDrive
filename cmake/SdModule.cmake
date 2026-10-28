@@ -72,8 +72,11 @@ function(sd_add_module name)
   endif()
 endfunction()
 
+# SHARDS n (optional) registers unit.<short>.0 .. unit.<short>.<n-1> instead of unit.<short>, each running every
+# n-th case (--shard k/n of the harness), so one long suite spreads over ctest -j. Every case runs in exactly
+# one shard, so a new case needs no CMake change.
 function(sd_add_unit_test short)
-  cmake_parse_arguments(T "" "" "SOURCES;DEPS" ${ARGN})
+  cmake_parse_arguments(T "" "SHARDS" "SOURCES;DEPS" ${ARGN})
   set(_t sd-test-${short})
   # The asInvoker manifest keeps Windows installer detection from elevating 32-bit test binaries whose names
   # contain "setup", "update", "install" or "patch" (ctest then reports them as Not Run).
@@ -82,8 +85,16 @@ function(sd_add_unit_test short)
   add_executable(${_t} ${T_SOURCES} "${_manifest}")
   target_link_libraries(${_t} PRIVATE sd_test_harness ${T_DEPS})
   set_target_properties(${_t} PROPERTIES FOLDER "tests")
-  add_test(NAME unit.${short} COMMAND ${_t})
-  set_tests_properties(unit.${short} PROPERTIES LABELS unit TIMEOUT 300)
+  if(T_SHARDS)
+    math(EXPR _last "${T_SHARDS} - 1")
+    foreach(_k RANGE ${_last})
+      add_test(NAME unit.${short}.${_k} COMMAND ${_t} --shard ${_k}/${T_SHARDS})
+      set_tests_properties(unit.${short}.${_k} PROPERTIES LABELS unit TIMEOUT 300)
+    endforeach()
+  else()
+    add_test(NAME unit.${short} COMMAND ${_t})
+    set_tests_properties(unit.${short} PROPERTIES LABELS unit TIMEOUT 300)
+  endif()
 endfunction()
 
 # Object library with the x86-sse2 entry thunk, always compiled /arch:IA32 (SD_X86_ARCH_OVERRIDE).
