@@ -37,6 +37,10 @@ void print_error(const cli_args *a, const char *code, const char *detail, int ex
 int fail_ipc(const cli_args *a, const sd_ipc_error *e, const err_ctx *ec);
 int fail_code(const cli_args *a, const char *code, const char *detail, const err_ctx *ec);
 
+/* ---- elevation ---- */
+/* 1 when the process token is elevated (or the check is unavailable); 0 otherwise (cli_common.c). */
+int cli_is_elevated(void);
+
 /* ---- connection ---- */
 int can_prompt(const cli_args *a);
 /* Answers one prompt.request event of this connection (cli_cmds.c; mount and profile test). */

@@ -1056,3 +1056,28 @@ msgstr "Windows no pudo iniciar sesión en el servidor local de archivos de Shel
 msgctxt "cli.prompt.webdav_token_only_question"
 msgid "Continue with a less protected connection? [y]es, [N]o: "
 msgstr "¿Continuar con una conexión menos protegida? [s]í, [N]o: "
+
+#. Help for hostkey add --from-server. The value is host[:port].
+msgctxt "cli.help.opt_from_server"
+msgid "The server to take host keys from, as host[:port]. Its keys are checked against the stored ones first."
+msgstr "El servidor del que tomar las claves de host, como host[:port]. Primero se comparan sus claves con las guardadas."
+
+#. Help for hostkey add --expect. SHA256: is literal.
+msgctxt "cli.help.opt_expect"
+msgid "Accept the key only when its SHA-256 fingerprint is this value, for example SHA256:abc... Meant for scripts: a mismatch fails."
+msgstr "Acepta la clave solo si su huella SHA-256 es este valor, por ejemplo SHA256:abc... Pensado para scripts: si no coincide, falla."
+
+#. Help for --machine on hostkey add and accept-announced.
+msgctxt "cli.help.opt_machine"
+msgid "Work on the machine host keys (the service's store). Needs an elevated console."
+msgstr "Trabaja con las claves de host de la máquina (el almacén del servicio). Requiere una consola elevada."
+
+#. Printed when --machine is used from a console that is not elevated (exit 9).
+msgctxt "cli.hk.need_admin"
+msgid "Changing the machine host keys needs an elevated console. Run it as administrator."
+msgstr "Cambiar las claves de host de la máquina requiere una consola elevada. Ejecutá el programa como administrador."
+
+#. Printed by hostkey add and accept-announced --machine until the service connect path exists (exit 1).
+msgctxt "cli.hk.not_built"
+msgid "Adding host keys from a server is not part of this build yet."
+msgstr "Agregar claves de host desde un servidor todavía no forma parte de esta versión."

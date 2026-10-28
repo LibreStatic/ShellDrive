@@ -546,3 +546,24 @@ SD_TEST(smoke_hostkey_commands)
   EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
   EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
 }
+
+/* hostkey add and accept-announced --machine without an elevated console (exit 9), and the paths this build does
+   not have yet (exit 1). SHELLDRIVE_TEST_ELEVATED=0 reports a non-elevated token; the store is never touched. */
+SD_TEST(smoke_hostkey_add_machine)
+{
+  static run_result r;
+  SD_REQUIRE(setup());
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"0");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test --machine", NULL) == 9 &&
+         strstr(r.err, "elevated console") != NULL, "machine add needs an elevated console");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test --machine --json", NULL) == 9 &&
+         strstr(r.out, "access_denied") != NULL, "machine add json is access_denied");
+  EXPECT(RUN(L"hostkey accept-announced a-1 --machine", NULL) == 9, "machine accept needs an elevated console");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test", NULL) == 1 &&
+         strstr(r.err, "not part of this build") != NULL, "user add is not part of this build");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect SHA256:abcdefgh --json", NULL) == 1 &&
+         strstr(r.out, "not_implemented") != NULL, "user add json");
+  EXPECT(RUN(L"hostkey add smokehk.test", NULL) == 2, "add needs --from-server");
+  EXPECT(RUN(L"hostkey add --from-server smokehk.test --expect md5:abcdef", NULL) == 2, "bad --expect");
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
+}

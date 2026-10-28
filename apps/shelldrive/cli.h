@@ -55,6 +55,9 @@ typedef struct cli_args {
   int connections;           /* mount --connections N (1..4); 0 = not given */
   const wchar_t *hk_type;    /* hostkey remove --type T */
   const wchar_t *from;       /* hostkey import --from putty|openssh */
+  const wchar_t *from_server;/* hostkey add --from-server host[:port] */
+  const wchar_t *expect;     /* hostkey add --expect SHA256:... */
+  int machine;               /* --machine: the machine store (hostkey add, accept-announced) */
   int dry_run, add_only, announced;
   cli_usage_err err;
   const wchar_t *bad;
