@@ -152,8 +152,14 @@ Priority 3: Explorer integration (8).
       applications do not get the menu there (03 8.5 wants both views; the x86 DLL is not in the x64 package).
     - **Open:** per-user removal does not delete the empty CLSID and `InprocServer32` parents (the table removes only
       keys whose name contains ShellDrive); the MSI does not have this problem.
-    Still missing: drive labels and icons (8.3), Windows 11 modern menu (8.6, needs the certificate), network
-    locations (8.7). The UI verbs used are `--action mount <profile id>`, `show`, `open|unmount|reconnect X:`, all
+    **Round 19 (`wip/r19-shelllabels`), done:** drive labels and icons (8.3: `_LabelFromReg` by `sd_webdav_map`, per-user
+    drive icon key, stale cleanup at start; an icon key of someone else is never overwritten) and network locations
+    (8.7, `explorer_data.c`): the entries now follow profile changes while the agent runs (create, rename, remove, `network_location = no`;
+    mounted profiles keep their drive as target; `scope = service` profiles get none) and `--installer-hook user-cleanup --apply`
+    removes our NetHood entries and placeholders. Tests: `m3_network_location_follows_profile_changes`,
+    `m3_user_cleanup_hook_removes_our_entries`. **Open:** `shelldrive location add|remove|repair` in the CLI, the portable-mode
+    exclusion (no portable detection exists yet), the `[verify]` items on real Explorer.
+    Still missing: Windows 11 modern menu (8.6, needs the certificate). The UI verbs used are `--action mount <profile id>`, `show`, `open|unmount|reconnect X:`, all
     existing in `ui_wire.c`; no new IPC method was needed (the DLL never opens the pipe, 8.2).
 12. **`.sdmount` MOTW check and error text** are in `main.c` (`--action mount-file`); the shell association
     registration belongs to the installer (not audited).

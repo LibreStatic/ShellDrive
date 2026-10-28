@@ -36,4 +36,12 @@ void explorer_apply(const host_explorer_mount *m);
 /* Shutdown, after every mount is gone: removes the icons this agent wrote (explorer.ini). */
 void explorer_shutdown(void);
 
+/* The profiles changed (config watch): reconciles the Network location folders with them (create, rename,
+   remove); entries of mounted profiles keep pointing at their drive. Control thread. */
+void explorer_config_changed(void);
+
+/* User uninstall (installer hook user-cleanup): removes every Network location entry of ours, the placeholder
+   folders and the icons listed in explorer.ini. Entries without our marker are never touched. No agent needed. */
+void explorer_cleanup_user(void);
+
 #endif /* SD_HOST_EXPLORER_DATA_H */
