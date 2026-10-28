@@ -37,6 +37,14 @@ typedef struct sd_setup_elev_ops {
   DWORD (*run)(void *ctx, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *dir, int runas, DWORD *exit_code);
   /* 1 when dir is a real folder (not a reparse point) whose owner is trusted (SYSTEM or Administrators, 03 §3.2). */
   int (*folder_trusted)(void *ctx, const wchar_t *dir);
+  /* Stage 2 of an uninstall: the braced product code of the ShellDrive MSI in the machine registry (sd_setup_machine_product).
+     1 when found. The code is the only thing msiexec /x receives; nothing from the command line. */
+  int (*find_machine_product)(void *ctx, wchar_t *code, size_t cch);
+  /* The parent's install folder of the machine install (sd_setup_machine_install_dir). 1 when known. */
+  int (*machine_dir)(void *ctx, wchar_t *out, size_t cch);
+  /* Starts exe with cmdline in dir and returns at once, with this process's token (never runas, never the elevated stage).
+     1 when started. */
+  int (*launch)(void *ctx, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *dir);
 } sd_setup_elev_ops;
 
 /* The shipping seam. */
@@ -88,5 +96,16 @@ DWORD sd_setup_elev_stage1(const sd_setup_elev_ops *ops, const wchar_t *base, co
 DWORD sd_setup_elev_stage2(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
                            const sd_setup_args *args, const sd_setup_payload *payload,
                            const unsigned char expected[32]);
+
+/* Stage 2 of a per-machine uninstall (04 §6.7): no payload. It finds the ShellDrive product code in the machine registry
+   and runs "msiexec /x <code>" in the stage folder, with the forwarded switches and the msi.log of the stage (sent over the
+   pipe as for an install). Returns the exit code it reported. */
+DWORD sd_setup_elev_stage2_uninstall(const sd_setup_elev_ops *ops, const wchar_t *base, const wchar_t *self,
+                                     const sd_setup_args *args);
+
+/* After an all-users install, the parent only (never the elevated stage): starts <machine install folder>\shelldrive-ui.exe
+   as the logged-on user. Returns 0 when started; 1 when the folder is unknown, the parent holds an administrator token
+   (the UI would run elevated, so it is not started) or the start failed. */
+int sd_setup_elev_launch_installed(const sd_setup_elev_ops *ops);
 
 #endif /* SD_SETUP_ELEVATE_H */
