@@ -852,9 +852,15 @@ sd_err sd_import_write(sd_import_result *r, uint32_t *written)
     sd_err e;
     if (!r->items[i].selected)
       continue;
-    e = sd_profile_save(&r->items[i].p);
+    e = sd_profile_save_ex(&r->items[i].p, 0);
     if (e == SD_OK) n++;
     else if (first == SD_OK) first = e;
+  }
+  if (n != 0) {
+    /* One rewrite of menu.cache for the whole import (03 §8.2.2); a failure is logged, the profiles are saved. */
+    sd_err m = sd_menucache_refresh();
+    if (m != SD_OK)
+      SD_LOGW("config", "menu.cache not updated after an import (%d)", (int)m);
   }
   if (written) *written = n;
   return first;

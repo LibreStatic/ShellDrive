@@ -556,6 +556,18 @@ static sd_err make_tree(const wchar_t *dir, int protect_from_len)
   return SD_OK;
 }
 
+sd_err sd_config_state_dir(wchar_t *out, size_t cch)
+{
+  sd_err e = g_root_override[0] ? sd_config_root(out, cch) : folder(CSIDL_LOCAL_APPDATA, out, cch);
+  size_t base;
+  if (e != SD_OK)
+    return e;
+  base = wcslen(out);
+  if (!wcat(out, cch, L"\\state"))
+    return SD_E_NAME_TOO_LONG;
+  return make_tree(out, (int)base);
+}
+
 sd_err sd_config_ensure_dirs(void)
 {
   wchar_t root[MAX_PATH], sub[MAX_PATH];
@@ -1085,7 +1097,7 @@ static sd_err write_atomic(const wchar_t *path, const void *data, size_t len)
   return SD_OK;
 }
 
-sd_err sd_profile_save(sd_profile *p)
+sd_err sd_profile_save_ex(sd_profile *p, int update_menu)
 {
   wchar_t path[MAX_PATH], dir[MAX_PATH], name[64];
   sd_ini *ini = NULL;
@@ -1143,9 +1155,21 @@ sd_err sd_profile_save(sd_profile *p)
     sd_wr_free(&w);
   }
   sd_ini_free(ini);
+  /* Still under config.lock, so two writers never leave an older list in menu.cache (03 §8.2.2). The profile is
+     saved either way; a menu.cache failure is logged only. */
+  if (e == SD_OK && update_menu) {
+    sd_err m = sd_menucache_rewrite();
+    if (m != SD_OK)
+      SD_LOGW("config", "menu.cache not updated after a profile save (%d)", (int)m);
+  }
   sd_config_unlock(lock);
   sd_free(existing);
   return e;
+}
+
+sd_err sd_profile_save(sd_profile *p)
+{
+  return sd_profile_save_ex(p, 1);
 }
 
 sd_err sd_profile_delete(const char *name_or_id)
@@ -1158,6 +1182,11 @@ sd_err sd_profile_delete(const char *name_or_id)
   e = sd_profile_find(name_or_id, NULL, path, SD_COUNTOF(path));
   if (e == SD_OK && !DeleteFileW(path))
     e = SD_E_ACCESS_DENIED;
+  if (e == SD_OK) {
+    sd_err m = sd_menucache_rewrite();
+    if (m != SD_OK)
+      SD_LOGW("config", "menu.cache not updated after a profile delete (%d)", (int)m);
+  }
   sd_config_unlock(lock);
   return e;
 }

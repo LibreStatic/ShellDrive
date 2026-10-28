@@ -3395,6 +3395,10 @@ int host_agent_run(const host_agent_opts *opts)
   if (host_state_open() != SD_OK)
     SD_LOGW("agent", "state snapshot unavailable (named object squatted or no memory)");
   explorer_reconcile_start();
+  /* menu.cache (03 §8.2.2) is rewritten on every profile change; one rewrite here also covers profiles made before it
+     existed or edited by hand. A failure only leaves the old file (or the empty submenu) in place. */
+  if (sd_menucache_refresh() != SD_OK)
+    SD_LOGW("agent", "menu.cache not refreshed at start");
 
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size = sizeof(cfg);

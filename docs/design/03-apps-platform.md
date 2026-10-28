@@ -1934,9 +1934,13 @@ line, `<32 lowercase hex digits of the profile id><TAB><display name>`. Blank li
 skipped. A malformed line (id not 32 lowercase hex digits, no TAB, empty name, name over 128 UTF-16 units, invalid UTF-8,
 control characters) or a repeated id is dropped on its own; a wrong first line or a file over the cap is no data. The
 shell extension opens it read-only and only when its owner is the user (or the default owner of the user's token); the
-parser is `shx_menucache_parse` (`shellext_model.c`). Its writer is the agent or the UI (backend: not implemented on this
-branch, see `docs/dev/handoff-frontend.md`); the file must be rewritten atomically (write a temporary file in the same
-folder, then replace) whenever a profile is added, renamed or removed.
+parser is `shx_menucache_parse` (`shellext_model.c`). The writer is `sd_menucache_rewrite` (`src/sd_config/menucache.c`,
+format and name sanitizing in `menucache_format.c`), so the CLI, the UI and the agent share it: `sd_profile_save` and
+`sd_profile_delete` rewrite the file while holding `config.lock`, `sd_import_write` rewrites it once after its saves,
+and the agent rewrites it at start. The file is written to `menu.cache.<pid>.tmp` in the same folder, then moved over
+`menu.cache` with `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` (available on XP; no separate path). It holds only the
+ids and names: no host, user or secret. Names have control, bidi and zero-width characters removed and are cut at 128
+UTF-16 units, and a profile with an id or name that cannot be written is left out.
 
 Items, by class (the two classes of the DLL are `SHX_CLSID_CONTEXT_MENU` for Drive, Directory and `*`, and
 `SHX_CLSID_COMPUTER_MENU` for This PC; the second keeps the code from guessing which menu Explorer asked for):

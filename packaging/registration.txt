@@ -12,6 +12,8 @@
 #                 [FLAVOUR]     flavour name of the installed payload (x86-ia32, x64-modern, ...)
 #                 [SIZEKB]      installed size in KB (rounded up)
 #   feature     core (always written) | autostart (written only when sign-in start is chosen)
+#               | shellext (the shell extension's rows: the MSI puts them in the ShellExt feature, the per-user setup
+#                 writes them with the other rows; they match apps/shelldrive-shellext/shellext_register.c, 03 §8.5)
 # Rows are written and removed in file order. Keys are removed by the uninstaller when empty.
 # Lines starting with # are comments. A "|" never appears inside data.
 
@@ -31,3 +33,15 @@ Software\LibreStatic\ShellDrive|Version|SZ|[VERSION]|core
 Software\LibreStatic\ShellDrive|Flavour|SZ|[FLAVOUR]|core
 Software\Microsoft\Windows\CurrentVersion\App Paths\shelldrive-ui.exe||SZ|[INSTALLDIR]shelldrive-ui.exe|core
 Software\Microsoft\Windows\CurrentVersion\Run|ShellDrive|SZ|"[INSTALLDIR]shelldrive-host.exe" agent --logon --if-needed|autostart
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}||SZ|ShellDrive context menu|shellext
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32||SZ|[INSTALLDIR]shelldrive-shellext.dll|shellext
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32|ThreadingModel|SZ|Apartment|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}||SZ|ShellDrive This PC context menu|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32||SZ|[INSTALLDIR]shelldrive-shellext.dll|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32|ThreadingModel|SZ|Apartment|shellext
+Software\Classes\Drive\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\Directory\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\*\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shellex\ContextMenuHandlers\ShellDrive||SZ|{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}|shellext
+Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|SZ|ShellDrive context menu|shellext
+Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved|{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}|SZ|ShellDrive This PC context menu|shellext

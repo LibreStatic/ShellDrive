@@ -179,6 +179,43 @@ static int contains_ci(const wchar_t *hay, const wchar_t *needle)
   return 0;
 }
 
+/* 1 when the Registry row of key with value name name ("" = the default value, Name NULL) has the value expect. */
+static int registry_is(MSIHANDLE db, const wchar_t *key, const wchar_t *name, const wchar_t *expect)
+{
+  wchar_t sql[1024], nm[256], val[2048];
+  MSIHANDLE view = 0, rec = 0;
+  int found = 0;
+  swprintf_s(sql, 1024, L"SELECT `Name`, `Value` FROM `Registry` WHERE `Key` = '%ls'", key);
+  if (MsiDatabaseOpenViewW(db, sql, &view) != ERROR_SUCCESS)
+    return 0;
+  if (MsiViewExecute(view, 0) == ERROR_SUCCESS) {
+    while (!found && MsiViewFetch(view, &rec) == ERROR_SUCCESS) {
+      DWORD ncch = 256, vcch = 2048;
+      nm[0] = 0;
+      if (!MsiRecordIsNull(rec, 1))
+        MsiRecordGetStringW(rec, 1, nm, &ncch);
+      if (wcscmp(nm, name) == 0 && MsiRecordGetStringW(rec, 2, val, &vcch) == ERROR_SUCCESS)
+        found = wcscmp(val, expect) == 0;
+      MsiCloseHandle(rec);
+      rec = 0;
+    }
+  }
+  MsiCloseHandle(view);
+  return found;
+}
+
+/* 1 when the component of the Registry row with this key is installed by feature. */
+static int key_in_feature(MSIHANDLE db, const wchar_t *key, const wchar_t *feature)
+{
+  wchar_t sql[1024], comp[128];
+  swprintf_s(sql, 1024, L"SELECT `Component_` FROM `Registry` WHERE `Key` = '%ls'", key);
+  if (!query_first(db, sql, comp, 128))
+    return 0;
+  swprintf_s(sql, 1024, L"SELECT `Feature_` FROM `FeatureComponents` WHERE `Component_` = '%ls' AND `Feature_` = '%ls'",
+             comp, feature);
+  return query_first(db, sql, comp, 128);
+}
+
 /* True when a row of the Registry table has a key containing text (case-insensitive). */
 static int any_key_contains(MSIHANDLE db, const wchar_t *text)
 {
@@ -312,6 +349,41 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
   check(query_first(db, L"SELECT `Value` FROM `Registry` WHERE `Key` = 'Software\\LibreStatic\\ShellDrive'"
                         L" AND `Name` = 'Version'", buf, 2048),
         "LibreStatic Version marker for Intune detection (04 §8.3)");
+  {
+    /* The shell extension rows (packaging/registration.txt, feature shellext, 03 §8.5): the same keys and values as the
+       per-user registration in apps/shelldrive-shellext/shellext_register.c, all in the ShellExt feature. */
+    static const struct { const wchar_t *key; const wchar_t *name; const wchar_t *value; } rows[] = {
+      { L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}", L"", L"ShellDrive context menu" },
+      { L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\\InprocServer32", L"", L"[INSTALLDIR]shelldrive-shellext.dll" },
+      { L"Software\\Classes\\CLSID\\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\\InprocServer32", L"ThreadingModel", L"Apartment" },
+      { L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}", L"", L"ShellDrive This PC context menu" },
+      { L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\\InprocServer32", L"", L"[INSTALLDIR]shelldrive-shellext.dll" },
+      { L"Software\\Classes\\CLSID\\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\\InprocServer32", L"ThreadingModel", L"Apartment" },
+      { L"Software\\Classes\\Drive\\shellex\\ContextMenuHandlers\\ShellDrive", L"", L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}" },
+      { L"Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\ShellDrive", L"", L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}" },
+      { L"Software\\Classes\\*\\shellex\\ContextMenuHandlers\\ShellDrive", L"", L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}" },
+      { L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\ContextMenuHandlers\\ShellDrive", L"",
+        L"{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}" },
+      { L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved", L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}",
+        L"ShellDrive context menu" },
+      { L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved", L"{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}",
+        L"ShellDrive This PC context menu" },
+    };
+    size_t r;
+    int ok_values = 1, ok_feature = 1;
+    for (r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+      if (!registry_is(db, rows[r].key, rows[r].name, rows[r].value)) {
+        printf("     wrong or missing %ls [%ls]\n", rows[r].key, rows[r].name);
+        ok_values = 0;
+      }
+      if (!key_in_feature(db, rows[r].key, L"ShellExt")) {
+        printf("     not in feature ShellExt: %ls\n", rows[r].key);
+        ok_feature = 0;
+      }
+    }
+    check(ok_values, "shell extension rows: CLSIDs with the DLL and Apartment, Drive/Directory/* and This PC handlers, Approved (03 §8.5)");
+    check(ok_feature, "shell extension rows are in the ShellExt feature (no registration without the DLL)");
+  }
   check(!any_key_contains(db, L"Uninstall\\ShellDrive"),
         "no Uninstall key of ShellDrive from the registration rows (Windows Installer writes the ARP entry)");
   check(count_rows(db, L"SELECT `Condition` FROM `LaunchCondition`") == launch_count,

@@ -282,9 +282,42 @@ sd_err sd_profile_load_file(const wchar_t *path, sd_profile *p, const char **bad
 sd_err sd_profile_find(const char *name_or_id, sd_profile *p, wchar_t *path_out, size_t path_cch);
 /* Creates or updates the profile file (assigns an id when empty); unknown keys are preserved. */
 sd_err sd_profile_save(sd_profile *p);
+/* As sd_profile_save; update_menu = 0 leaves menu.cache alone (the caller refreshes it once, sd_menucache_refresh). */
+sd_err sd_profile_save_ex(sd_profile *p, int update_menu);
 sd_err sd_profile_delete(const char *name_or_id);
 
 typedef int (*sd_profile_enum_cb)(void *ctx, const sd_profile *p, const wchar_t *path);  /* 0 stops */
 sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx);
+
+/* menu.cache (03 §8.2.2): the profile list of the This PC submenu, read read-only by the shell extension. Every
+   profile add, rename and delete rewrites it (sd_profile_save, sd_profile_delete); sd_import_write rewrites it once
+   after its saves. The file holds only profile ids and display names. */
+#define SD_MENU_ID_CHARS      32u
+#define SD_MENU_NAME_BYTES    384u     /* 128 UTF-16 units, at most 3 bytes each in UTF-8 */
+#define SD_MENU_NAME_UNITS    128u
+#define SD_MENU_MAX_PROFILES  256u
+#define SD_MENU_MAX_BYTES     65536u
+
+typedef struct sd_menu_entry {
+  char id[SD_MENU_ID_CHARS + 1];      /* 32 lowercase hex digits */
+  char name[SD_MENU_NAME_BYTES + 1];  /* UTF-8, sanitized by sd_menu_entry_from_profile */
+} sd_menu_entry;
+
+/* Entry of one profile. SD_E_INVALID_PARAM when the profile must not be listed: the id is not 32 lowercase hex
+   digits, or no name is left after removing control, bidi and zero-width characters (leading and trailing spaces
+   are trimmed, the name is cut at SD_MENU_NAME_UNITS UTF-16 units on a character boundary). */
+sd_err sd_menu_entry_from_profile(const sd_profile *p, sd_menu_entry *e);
+
+/* Writes the menu.cache text (header "SDMENU 1", then "<id>\t<name>" lines, LF ends, no BOM) into out. Entries whose
+   id repeats an earlier one are skipped, the lines are sorted by name (ASCII case-insensitive), at most
+   SD_MENU_MAX_PROFILES are used, and lines that would take the total past SD_MENU_MAX_BYTES are left out. Returns the
+   length in bytes (no NUL is written), or 0 when cap is too small or an argument is invalid. */
+size_t sd_menu_format(const sd_menu_entry *e, size_t n, char *out, size_t cap);
+
+/* Rewrites menu.cache from the profile store, taking config.lock. The file is replaced atomically. */
+sd_err sd_menucache_refresh(void);
+/* Full path of menu.cache (LOCALAPPDATAibrestaticshelldrivestatemenu.cache, or <root>state under the test
+   override). creates the state folder. */
+sd_err sd_menucache_path(wchar_t *out, size_t cch);
 
 #endif /* SD_CONFIG_H */
