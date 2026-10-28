@@ -9,8 +9,8 @@ These rules apply to the whole repository. Component notes live next to the code
 
 ## Language
 - Commit messages, PR titles and descriptions, branch names, code identifiers, code comments, test names,
-  log messages and machine-readable output (JSON diagnostics, protocol strings, event log payloads) are
-  in English, whatever language the prompt uses.
+  log messages and machine-readable output (JSON diagnostics, protocol strings, event log insert strings
+  such as paths and reason codes) are in English, whatever language the prompt uses.
 - Documentation (`README.md`, `docs/`, `AGENTS.md` files, guides, checklists) is written in one language:
   English. Do not add translated copies of documents or prose in another language.
 - User-facing text is written in English first and fully localized into English, Spanish, French,
@@ -18,8 +18,9 @@ These rules apply to the whole repository. Component notes live next to the code
   language across every component: Spanish with Rioplatense voseo ("Elegí"), Brazilian Portuguese, French
   with "vous", German and Italian with the informal imperative.
   - This covers the CLI (`--help`, user-facing errors, printed summaries), the tray app, the main window,
-    Explorer integration, the installer (EXE and MSI) and the service's user-visible messages. Logs and
-    JSON stay in English.
+    Explorer integration, the installer (EXE and MSI) and the service's user-visible messages, including
+    the message text of its Event Log entries (`l10n/svc`, one text per language under every sublanguage
+    LANGID; 03 §10.3). Logs, JSON and Event Log insert strings stay in English.
   - Use placeholders and plural-aware messages instead of string concatenation.
   - The resource format and loading mechanism for Win32 (XP-compatible) are defined in
     `docs/design/03-apps-platform.md` §9 "Localization" (§9.1 "Decision: our own message catalog compiled
