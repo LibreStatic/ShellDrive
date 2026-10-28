@@ -10,7 +10,7 @@ set(_fake_dir "${CMAKE_SOURCE_DIR}/tests/unit/sd_mount")
 # Manager, the registry or the Event Log. svc_scm.c is compiled here, but svc_scm_real_ops is never called by the tests.
 # test_repair.c runs the machine data folder repair (svc_repair.c) on a temp folder only: no %ProgramData%, no elevation.
 sd_add_unit_test(svc
-  SOURCES main.c test_access.c test_service.c test_scm.c test_gw.c test_repair.c
+  SOURCES main.c test_access.c test_service.c test_scm.c test_gw.c test_repair.c test_identity.c
           "${_host_dir}/service.c" "${_host_dir}/svc_access.c" "${_host_dir}/svc_scm.c"
           "${_host_dir}/svc_gw.c" "${_host_dir}/svc_gw_attach.c" "${_host_dir}/svc_repair.c"
           "${_host_dir}/svc_folder.c"

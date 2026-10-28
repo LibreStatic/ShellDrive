@@ -27,6 +27,10 @@ typedef struct svc_opts {
   void *event_ctx;
   svc_owner_fn owner_trusted;        /* NULL = the shipping owner rule (3.2): SYSTEM or Administrators; tests replace it */
   int test_all_admin;                /* SD_SVC_TEST_HOOKS builds only: every client counts as an elevated admin */
+  /* SD_SVC_TEST_HOOKS builds only (ignored by the shipping build): an SDDL ACE appended to every machine DACL the start
+     sets or checks, e.g. "(A;OICI;FA;;;OW)". A non-elevated test process is only the owner of the folders it made, and
+     the owner needs the rights BUILTIN\Administrators has; the same seam as svc_repair_ops.extra_ace. NULL = none. */
+  const wchar_t *dacl_extra_ace;
 } svc_opts;
 
 /* Blocks until svc_request_stop (or a stop control). Returns 0, or 1 when the core cannot start (no pipe, no folder
