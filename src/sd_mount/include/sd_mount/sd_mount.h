@@ -236,6 +236,7 @@ typedef struct sd_mount_params {
   uint32_t hop_count;                   /* 0..9 */
   int legacy_policy;                    /* sd_legacy_policy; default SD_LEGACY_WARN (D33) */
   int refuse_terrapin_exposed;
+  int compression;                      /* connection.compression (no): zlib@openssh.com, 01 section 4.7 */
   uint32_t connections;                 /* pool size 1..4 (D18); 0 = 1 */
   uint32_t keepalive_ms, connect_timeout_ms;   /* 0 = sd_ssh defaults */
   const wchar_t *profile_name;          /* shown in Credential Manager comments */

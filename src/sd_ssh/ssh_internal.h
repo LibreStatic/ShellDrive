@@ -20,6 +20,7 @@
 #include "sd_base/sd_err.h"
 #include "sd_crypto/sd_crypto.h"
 #include "sd_ssh/sd_known_hosts.h"
+#include "ssh_zlib.h"
 
 /* ---- message numbers (RFC 4250 §4.1, RFC 8308, OpenSSH PROTOCOL) ---- */
 enum {
@@ -117,6 +118,7 @@ typedef struct ssh_list_input {
   const char *disabled;          /* comma list or NULL */
   int refuse_terrapin_exposed;
   int initial;                   /* first KEX: add ext-info-c and kex-strict-c-v00@openssh.com */
+  int compress;                  /* offer zlib@openssh.com first, then none (SD_SSH_CFG_COMPRESS) */
   int allow_legacy;              /* legacy_policy != REFUSE: legacy algorithms ranked last (D33) */
   const char *hostkey_only;      /* non-NULL: exact host-key list (fetch_hostkeys re-key, 01 §4.3) */
   /* availability; NULL = sd_pktcipher_find() / ssh_kex_supported() / ssh_hostkey_alg_supported().
@@ -177,6 +179,18 @@ int ssh_hostkey_alg_supported(const char *name);
 
 /* ---- binary packet protocol (packet.c) ---- */
 
+/* Delayed compression of one direction (zlib@openssh.com, 01 section 4.7). The codec state survives re-keys;
+   ssh_dir_clear frees it. */
+typedef struct ssh_comp {
+  int tx;                        /* 1: this is the sending direction */
+  int on;                        /* compression active: after USERAUTH_SUCCESS, zlib@openssh.com negotiated */
+  char name[24];                 /* negotiated algorithm for this direction at the last NEWKEYS */
+  ssh_zdef *zdef;                /* tx codec */
+  ssh_zinf *zinf;                /* rx codec */
+  sd_wr zw;                      /* tx: compressed payload of the packet being sealed */
+  uint8_t *zout;                 /* rx: decompressed payload, valid until the next ssh_pkt_open */
+} ssh_comp;
+
 typedef struct ssh_dir {
   const sd_pktcipher_info *ci;   /* NULL: no encryption (before the first NEWKEYS) */
   sd_pktcipher *pc;
@@ -192,10 +206,16 @@ typedef struct ssh_dir {
   int rx_have_len;
   uint32_t rx_len;
   size_t rx_discard;             /* CBC + non-ETM MAC failure: fail once this many bytes are buffered */
+  ssh_comp comp;                 /* survives ssh_dir_set_keys (re-keys); freed by ssh_dir_clear */
 } ssh_dir;
 
 void   ssh_dir_init(ssh_dir *d);
-void   ssh_dir_clear(ssh_dir *d);        /* frees the cipher, wipes keys; keeps seq */
+void   ssh_dir_clear(ssh_dir *d);        /* frees the cipher and compression state, wipes keys; keeps seq */
+/* Records the algorithm negotiated for this direction (NEWKEYS). Any other name than zlib@openssh.com
+   ends compression in this direction. */
+void   ssh_dir_set_comp_name(ssh_dir *d, const char *name);
+/* Activates the recorded zlib@openssh.com for this direction (after USERAUTH_SUCCESS). No-op for none. */
+sd_err ssh_dir_comp_start(ssh_dir *d);
 /* Installs new keys. cipher/mac are negotiated names; mac ignored for AEAD. */
 sd_err ssh_dir_set_keys(ssh_dir *d, int encrypt, const char *cipher, const char *mac,
                         const uint8_t *key, const uint8_t *iv, const uint8_t *mac_key);

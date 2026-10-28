@@ -147,3 +147,67 @@ SD_TEST(ssh_packet_ciphers_roundtrip)
     ssh_dir_clear(&rx);
   }
 }
+
+/* Delayed zlib@openssh.com (01 section 4.7): plain packets until the switch, compressed packets after it, one
+   continuous stream per direction. No cipher: framing only. */
+SD_TEST(ssh_packet_zlib_delayed)
+{
+  enum { NPKT = 24 };
+  ssh_dir tx, rx;
+  sd_wr w;
+  size_t off = 0, k;
+  size_t plain_bytes = 0, wire_comp = 0;
+  uint8_t pl[4096];
+
+  ssh_dir_init(&tx);
+  ssh_dir_init(&rx);
+  tx.comp.tx = 1;
+  ssh_dir_set_comp_name(&tx, "zlib@openssh.com");
+  ssh_dir_set_comp_name(&rx, "zlib@openssh.com");
+  sd_wr_init(&w, 1u << 22);
+
+  /* before USERAUTH_SUCCESS nothing is compressed */
+  memset(pl, 'p', 64);
+  SD_REQUIRE(ssh_pkt_seal(&tx, pl, 64, &w) == SD_OK);
+  SD_CHECK(!tx.comp.on && !rx.comp.on);
+  /* the first plain packet is a complete plain packet of 64 bytes */
+  {
+    size_t used = 0;
+    sd_span pls;
+    SD_REQUIRE(ssh_pkt_open(&rx, w.p, w.len, &used, &pls) == SD_OK);
+    SD_REQUIRE(pls.p != NULL && pls.n == 64 && memcmp(pls.p, pl, 64) == 0);
+    off = used;
+  }
+
+  /* USERAUTH_SUCCESS: both directions switch, from the next packet on */
+  SD_REQUIRE(ssh_dir_comp_start(&tx) == SD_OK);
+  SD_REQUIRE(ssh_dir_comp_start(&rx) == SD_OK);
+  SD_CHECK(tx.comp.on && rx.comp.on);
+  for (k = 0; k < NPKT; k++) {
+    size_t n = 200 + k * 97, before = w.len;
+    size_t i, used = 0;
+    sd_span pls;
+    for (i = 0; i < n; i++) pl[i] = (uint8_t)("abcdefgh"[(i / 7 + k) % 8]);
+    SD_REQUIRE(ssh_pkt_seal(&tx, pl, n, &w) == SD_OK);
+    plain_bytes += n;
+    wire_comp += w.len - before;
+    /* decode this packet right away, as the connection does */
+    SD_REQUIRE(ssh_pkt_open(&rx, w.p + off, w.len - off, &used, &pls) == SD_OK);
+    SD_REQUIRE(pls.p != NULL);
+    SD_CHECK(pls.n == n && memcmp(pls.p, pl, n) == 0);
+    off += used;
+  }
+  SD_CHECK(off == w.len);
+  SD_CHECK(wire_comp < plain_bytes / 2);     /* repetitive payloads shrink */
+  SD_CHECK(tx.seq == NPKT + 1 && rx.seq == NPKT + 1);
+
+  /* a re-key that negotiates none ends compression in that direction */
+  ssh_dir_set_comp_name(&rx, "none");
+  SD_CHECK(!rx.comp.on);
+  ssh_dir_set_comp_name(&tx, "none");
+  SD_CHECK(!tx.comp.on);
+
+  sd_wr_free(&w);
+  ssh_dir_clear(&tx);
+  ssh_dir_clear(&rx);
+}

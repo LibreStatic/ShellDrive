@@ -357,7 +357,8 @@ sd_err ssh_build_lists(const ssh_list_input *in, ssh_lists *out, ssh_list_result
   build_mac_list(in, dc2s.drop_etm, out->mac_c2s, sizeof(out->mac_c2s));
   build_mac_list(in, ds2c.drop_etm, out->mac_s2c, sizeof(out->mac_s2c));
   /* An empty MAC list is only acceptable if every cipher left is AEAD; negotiation checks it. */
-  memcpy(out->comp, "none", 5);
+  if (in->compress) memcpy(out->comp, "zlib@openssh.com,none", 22);
+  else memcpy(out->comp, "none", 5);
   return SD_OK;
 }
 

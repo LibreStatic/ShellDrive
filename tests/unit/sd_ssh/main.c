@@ -16,6 +16,7 @@ SD_TEST_DECL(ssh_base64_roundtrip);
 SD_TEST_DECL(ssh_packet_plain_framing);
 SD_TEST_DECL(ssh_packet_rejects_bad_framing);
 SD_TEST_DECL(ssh_packet_ciphers_roundtrip);
+SD_TEST_DECL(ssh_packet_zlib_delayed);
 SD_TEST_DECL(ssh_kh_patterns);
 SD_TEST_DECL(ssh_kh_lookup_names);
 SD_TEST_DECL(ssh_kh_check_statuses);
@@ -49,6 +50,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ssh_packet_plain_framing),
   SD_TEST_ENTRY(ssh_packet_rejects_bad_framing),
   SD_TEST_ENTRY(ssh_packet_ciphers_roundtrip),
+  SD_TEST_ENTRY(ssh_packet_zlib_delayed),
   SD_TEST_ENTRY(ssh_kh_patterns),
   SD_TEST_ENTRY(ssh_kh_lookup_names),
   SD_TEST_ENTRY(ssh_kh_check_statuses),

@@ -452,6 +452,10 @@ const char *sd_profile_m2_from_ini(const sd_ini *ini, sd_profile *p)
     if (!sd_ini_parse_bool(v, &b)) return "security.refuse_terrapin_exposed";
     p->refuse_terrapin_exposed = b;
   }
+  if ((v = sd_ini_get(ini, "connection", "compression")) != NULL) {
+    if (!sd_ini_parse_bool(v, &b)) return "connection.compression";
+    p->compression = b;
+  }
   return NULL;
 }
 
@@ -522,6 +526,8 @@ sd_err sd_profile_m2_to_ini(const sd_profile *p, sd_ini *d)
   }
   if (p->refuse_terrapin_exposed || HAS("security", "refuse_terrapin_exposed"))
     SET("security", "refuse_terrapin_exposed", p->refuse_terrapin_exposed ? "yes" : "no");
+  if (p->compression || HAS("connection", "compression"))
+    SET("connection", "compression", p->compression ? "yes" : "no");
 #undef SET
 #undef HAS
   return SD_OK;

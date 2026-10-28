@@ -283,6 +283,7 @@ struct sd_ssh_conn {
   int identities_only;        /* D37 */
   uint32_t methods;
   int pool_member;
+  int compress;               /* SD_SSH_CFG_COMPRESS */
   sd_legacy_policy legacy_policy;
   int refuse_terrapin;
   char *disabled;

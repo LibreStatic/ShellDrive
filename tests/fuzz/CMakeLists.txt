@@ -60,3 +60,4 @@ sd_add_fuzz_target(wd_http DEPS sd_webdav PRIVATE_INCLUDES "${CMAKE_SOURCE_DIR}/
 sd_add_fuzz_target(wd_xml DEPS sd_webdav PRIVATE_INCLUDES "${CMAKE_SOURCE_DIR}/src/sd_webdav")
 sd_add_fuzz_target(state DEPS sd_state)
 sd_add_fuzz_target(manifest DEPS sd_update sd_crypto)
+sd_add_fuzz_target(inflate DEPS sd_ssh sd_crypto PRIVATE_INCLUDES "${CMAKE_SOURCE_DIR}/src/sd_ssh")

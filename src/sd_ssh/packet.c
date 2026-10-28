@@ -13,14 +13,76 @@ void ssh_dir_init(ssh_dir *d)
   d->block = 8;
 }
 
-void ssh_dir_clear(ssh_dir *d)
+/* Wipes the cipher and MAC state; keeps seq and the compression state (re-keys keep both). */
+static void dir_clear_cipher(ssh_dir *d)
 {
   uint32_t seq = d->seq;
+  ssh_comp comp = d->comp;
   if (d->pc) sd_pktcipher_free(d->pc);
   if (d->mac_on) sd_hmac_wipe(&d->hmac);
   sd_secure_zero(d, sizeof(*d));
   d->block = 8;
   d->seq = seq;
+  d->comp = comp;
+}
+
+static void comp_free(ssh_comp *c)
+{
+  if (c->zdef) ssh_zdef_free(c->zdef);
+  if (c->zinf) ssh_zinf_free(c->zinf);
+  if (c->zout) {
+    sd_secure_zero(c->zout, SSH_ZLIB_PACKET_MAX);
+    sd_free(c->zout);
+  }
+  sd_wr_free(&c->zw);
+  c->zdef = NULL;
+  c->zinf = NULL;
+  c->zout = NULL;
+  c->on = 0;
+  c->name[0] = 0;
+  memset(&c->zw, 0, sizeof(c->zw));
+}
+
+void ssh_dir_clear(ssh_dir *d)
+{
+  comp_free(&d->comp);
+  dir_clear_cipher(d);
+}
+
+#define ZLIB_OPENSSH "zlib@openssh.com"
+
+void ssh_dir_set_comp_name(ssh_dir *d, const char *name)
+{
+  size_t n = strlen(name);
+  if (n >= sizeof(d->comp.name)) n = sizeof(d->comp.name) - 1;
+  if (strcmp(name, ZLIB_OPENSSH) != 0) {
+    /* a re-key that drops compression: the stream ends here, on both sides */
+    if (d->comp.on) comp_free(&d->comp);
+    d->comp.name[0] = 0;
+    return;
+  }
+  memcpy(d->comp.name, name, n);
+  d->comp.name[n] = 0;
+}
+
+sd_err ssh_dir_comp_start(ssh_dir *d)
+{
+  if (strcmp(d->comp.name, ZLIB_OPENSSH) != 0 || d->comp.on) return SD_OK;
+  if (d->comp.tx) {
+    d->comp.zdef = ssh_zdef_new();
+    if (!d->comp.zdef) return SD_E_NO_MEMORY;
+    sd_wr_init(&d->comp.zw, SSH_MAX_PACKET_LEN);
+  } else {
+    d->comp.zinf = ssh_zinf_new();
+    if (!d->comp.zinf) return SD_E_NO_MEMORY;
+    d->comp.zout = (uint8_t *)sd_alloc(SSH_ZLIB_PACKET_MAX);
+    if (!d->comp.zout) {
+      comp_free(&d->comp);
+      return SD_E_NO_MEMORY;
+    }
+  }
+  d->comp.on = 1;
+  return SD_OK;
 }
 
 static int mac_info(const char *mac, sd_hash_alg *alg, int *etm)
@@ -56,14 +118,15 @@ sd_err ssh_dir_set_keys(ssh_dir *d, int encrypt, const char *cipher, const char 
 {
   const sd_pktcipher_info *ci = sd_pktcipher_find(cipher);
   sd_err e;
-  ssh_dir_clear(d);
+  dir_clear_cipher(d);
+  d->comp.tx = encrypt ? 1 : 0;
   if (!ci) return SD_E_UNSUPPORTED;
   e = sd_pktcipher_new(ci, encrypt, key, iv, &d->pc);
   if (e != SD_OK) { d->pc = NULL; return e; }
   d->ci = ci;
   d->block = ci->block_len > 8 ? ci->block_len : 8;
   if (!(ci->flags & SD_PC_AEAD)) {
-    if (!mac || !mac_info(mac, &d->mac_hash, &d->etm)) { ssh_dir_clear(d); return SD_E_UNSUPPORTED; }
+    if (!mac || !mac_info(mac, &d->mac_hash, &d->etm)) { dir_clear_cipher(d); return SD_E_UNSUPPORTED; }
     d->mac_len = sd_hash_len(d->mac_hash);
     sd_hmac_init(&d->hmac, d->mac_hash, mac_key, d->mac_len);
     d->mac_on = 1;
@@ -88,11 +151,21 @@ sd_err ssh_pkt_seal(ssh_dir *d, const uint8_t *payload, size_t n, sd_wr *out)
 {
   int aead = dir_aead(d);
   int excl = aead || d->etm;                 /* length field excluded from block alignment */
-  size_t block = d->block, base, pad, plen, extra, total;
+  size_t block = d->block, base, pad, plen, extra, total, plain_n;
   uint8_t *pkt;
   sd_err e;
 
   if (n == 0 || n > SSH_MAX_PAYLOAD_OUT) return SD_E_INVALID_PARAM;
+  plain_n = n;
+  if (d->comp.on) {
+    /* delayed zlib@openssh.com: the payload is compressed before padding and encryption */
+    sd_wr_reset(&d->comp.zw);
+    e = ssh_zdef_compress(d->comp.zdef, payload, n, &d->comp.zw);
+    if (e != SD_OK) return e;
+    if (!sd_wr_ok(&d->comp.zw) || d->comp.zw.len == 0 || d->comp.zw.len > SSH_MAX_PAYLOAD_OUT) return SD_E_INTERNAL;
+    payload = d->comp.zw.p;
+    n = d->comp.zw.len;
+  }
   base = (excl ? 0 : 4) + 1 + n;
   pad = block - (base % block);
   if (pad < 4) pad += block;
@@ -121,7 +194,7 @@ sd_err ssh_pkt_seal(ssh_dir *d, const uint8_t *payload, size_t n, sd_wr *out)
   if (e != SD_OK) { sd_secure_zero(pkt, total); out->len -= total; return e; }
   d->seq++;
   d->packets++;
-  d->bytes += n;
+  d->bytes += plain_n;
   return SD_OK;
 }
 
@@ -197,6 +270,16 @@ sd_err ssh_pkt_open(ssh_dir *d, uint8_t *buf, size_t avail, size_t *consumed, sd
   if (padlen < 4 || padlen + 2 > d->rx_len) return SD_E_PROTOCOL;
   payload->p = buf + 5;
   payload->n = d->rx_len - padlen - 1;
+  if (d->comp.on) {
+    /* authenticated packets only: the payload is inflated into the connection's buffer (valid until the next
+       call); a corrupt stream or an oversized payload is a protocol error */
+    size_t zn = 0;
+    if (ssh_zinf_packet(d->comp.zinf, payload->p, payload->n, d->comp.zout, SSH_ZLIB_PACKET_MAX, &zn) != SD_OK ||
+        zn == 0)
+      return SD_E_PROTOCOL;
+    payload->p = d->comp.zout;
+    payload->n = zn;
+  }
   *consumed = total;
   d->seq++;
   d->packets++;

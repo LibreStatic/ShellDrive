@@ -134,7 +134,9 @@ typedef struct sd_ssh_algo_cfg {
   int crypto_backend;                   /* 0 auto, 1 own */
 } sd_ssh_algo_cfg;
 
-enum { SD_SSH_CFG_POOL_MEMBER = 1u << 0 };
+/* SD_SSH_CFG_COMPRESS: offer zlib@openssh.com (delayed, active after USERAUTH_SUCCESS, 01 section 4.7) before none;
+ * off by default. */
+enum { SD_SSH_CFG_POOL_MEMBER = 1u << 0, SD_SSH_CFG_COMPRESS = 1u << 1 };
 
 /* ProxyJump (M2, 01 §5.1): hops[0] is reached over TCP (optionally through its proxy), hops[i]
  * (i >= 1) through a direct-tcpip channel on hops[i-1] to (host, port) as configured for hop i,

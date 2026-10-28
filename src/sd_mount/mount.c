@@ -129,6 +129,7 @@ struct sd_mount {
   sd_kh_store *stores;
   uint32_t nstores;
   int legacy_policy, refuse_terrapin;
+  int compression;               /* connection.compression: SD_SSH_CFG_COMPRESS */
   uint32_t connections, keepalive, ctimeout;
   wchar_t *profile_name;
   uint32_t ja_from;               /* first hop whose key was accepted by a prompt in this connection (TM-R05) */
@@ -1857,6 +1858,7 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   m->ja_from = NO_HOP;
   m->legacy_policy = p->legacy_policy;
   m->refuse_terrapin = p->refuse_terrapin_exposed;
+  m->compression = p->compression;
   m->connections = p->connections >= 1 && p->connections <= 4 ? p->connections : 1;
   m->conn.pool_wanted = m->connections;
   m->test_only = p->test_only ? 1 : 0;
@@ -1975,6 +1977,7 @@ static void build_ssh_config(sd_mount *m)
   m->ssh.hop_count = m->nhops;
   m->ssh.algos.legacy_policy = (sd_legacy_policy)m->legacy_policy;
   m->ssh.algos.refuse_terrapin_exposed = m->refuse_terrapin;
+  m->ssh.flags = m->compression ? SD_SSH_CFG_COMPRESS : 0;
   m->ssh.connect_timeout_ms = m->ctimeout;
   m->ssh.keepalive_interval_ms = m->keepalive;
   m->ssh.known_hosts = m->kh;

@@ -109,6 +109,7 @@ typedef struct run {
   int reconnect_prompts, just_accepted_prompts;
   sd_hostkey_decision decision;
   char hk_lookup[128], hk_fp[64], neg_cipher[64], neg_mac[64], neg_kex[64];
+  char neg_comp_c2s[32], neg_comp_s2c[32];
   int strict, kex_count;
   /* channel */
   sd_ssh_channel *ch;
@@ -145,6 +146,8 @@ static void on_negotiated(void *ctx, const sd_ssh_negotiated *n)
   run *r = (run *)ctx;
   _snprintf_s(r->neg_cipher, sizeof(r->neg_cipher), _TRUNCATE, "%s", n->cipher_c2s);
   _snprintf_s(r->neg_mac, sizeof(r->neg_mac), _TRUNCATE, "%s", n->mac_c2s);
+  _snprintf_s(r->neg_comp_c2s, sizeof(r->neg_comp_c2s), _TRUNCATE, "%s", n->comp_c2s);
+  _snprintf_s(r->neg_comp_s2c, sizeof(r->neg_comp_s2c), _TRUNCATE, "%s", n->comp_s2c);
   _snprintf_s(r->neg_kex, sizeof(r->neg_kex), _TRUNCATE, "%s", n->kex);
   r->strict = n->strict_kex;
   r->kex_count++;
@@ -190,6 +193,7 @@ typedef struct conn_opts {
   uint32_t keepalive_ms;
   sd_hostkey_decision decision;
   int cache_secrets;
+  int compress;               /* SD_SSH_CFG_COMPRESS */
 } conn_opts;
 
 static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_opts *o, run *r, sd_ssh_conn **out)
@@ -223,6 +227,7 @@ static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_op
   cfg.rekey_bytes = o->rekey_bytes;
   cfg.keepalive_interval_ms = o->keepalive_ms;
   cfg.connect_timeout_ms = 10000;
+  cfg.flags = o->compress ? SD_SSH_CFG_COMPRESS : 0;
   cb.ctx = r;
   cb.on_prompt = on_prompt;
   cb.on_negotiated = on_negotiated;
@@ -897,6 +902,31 @@ SD_TEST(interop_hostkeys_fetch_first_contact_refused)
   sd_event_destroy(&f.ev);
 }
 
+SD_TEST(interop_zlib_delayed)
+{
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  sd_known_hosts *kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.compress = 1;
+  o.decision = SD_HK_ACCEPT_ONCE;
+  /* the fixture runs OpenSSH with its default "Compression delayed": zlib@openssh.com is negotiated and
+     starts after USERAUTH_SUCCESS; the session then carries a stream of several packets each way */
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_STR(r.neg_comp_c2s, "zlib@openssh.com");
+  SD_CHECK_STR(r.neg_comp_s2c, "zlib@openssh.com");
+  if (r.done_err == SD_OK) {
+    exec_check(sd_t_, c, &r, "echo zlib-delayed", "zlib-delayed\n", 0);
+    exec_check(sd_t_, c, &r, "yes shelldrive | head -c 300000", NULL, 300000);
+  }
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_reconnect_pinned_host_key),
   SD_TEST_ENTRY(interop_reconnect_secret_cache),
@@ -912,6 +942,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_rekey_bulk),
   SD_TEST_ENTRY(interop_hostkeys_fetch_none_offered),
   SD_TEST_ENTRY(interop_hostkeys_fetch_first_contact_refused),
+  SD_TEST_ENTRY(interop_zlib_delayed),
 };
 
 int main(int argc, char **argv)

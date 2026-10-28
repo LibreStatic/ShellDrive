@@ -132,6 +132,7 @@ void ssh_kex_try_send_initial(sd_ssh_conn *c)
   in.refuse_terrapin_exposed = c->refuse_terrapin && in.server != NULL;
   in.allow_legacy = allow_legacy(c);
   in.initial = 1;
+  in.compress = c->compress;
   e = ssh_build_lists(&in, &sent, &res);
   if (e == SD_OK) {
     in.initial = 0;
@@ -418,6 +419,7 @@ static void send_newkeys(sd_ssh_conn *c)
   e = ssh_dir_set_keys(&c->tx, 1, k->algs.enc_c2s, k->algs.mac_c2s, k->key_c2s, k->iv_c2s, k->mac_c2s);
   if (e != SD_OK) { ssh_fail(c, SD_E_KEX_FAILED, 0, "install keys"); return; }
   if (c->strict) c->tx.seq = 0;
+  ssh_dir_set_comp_name(&c->tx, k->algs.comp_c2s);
   k->newkeys_sent = 1;
   ssh_flush_pending(c);
   kex_check_done(c);
@@ -431,6 +433,7 @@ static void on_newkeys(sd_ssh_conn *c)
   e = ssh_dir_set_keys(&c->rx, 0, k->algs.enc_s2c, k->algs.mac_s2c, k->key_s2c, k->iv_s2c, k->mac_s2c);
   if (e != SD_OK) { ssh_fail(c, SD_E_KEX_FAILED, 0, "install keys"); return; }
   if (c->strict) c->rx.seq = 0;
+  ssh_dir_set_comp_name(&c->rx, k->algs.comp_s2c);
   k->newkeys_recv = 1;
   kex_check_done(c);
 }
