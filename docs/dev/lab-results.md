@@ -39,3 +39,26 @@ administrator, shut down; move/copy each disk to `D:\images\<vm>.vhdx`, set `Bas
 
 Still blocked: product keys, QEMU install for `sd-p3-xp`, second-batch media, code-signing
 certificate (see the hand-off).
+
+## 2026-10-28: pre-run validation (still no guest OS, no runs yet)
+
+- QEMU is now installed: `C:\Program Files\qemu\qemu-system-i386.exe`, version 11.1.0.
+  Empty P3 disk created with `qemu-img create -f qcow2 D:\images\xp-pro-sp3-x86-p3.qcow2 8G`
+  (still needs the XP SP3 install under QEMU per `tests/lab/qemu/Start-QemuPentium3.ps1`).
+- Payload ISO path validated against the current `build\` tree (all four shippable flavours
+  have Release `shelldrive.exe`, plus the full `sd-test-*.exe` set): `New-PayloadIso.ps1`
+  for `x86-ia32,x86-sse2` produced a 3465216-byte ISO via oscdimg with the expected 9 files
+  in 4 directories (5 guest scripts + 2 binaries x 2 flavours). Validation ISO discarded.
+- `D:\images\` now holds only the empty `xp-pro-sp3-x86-p3.qcow2`; all six `BaseVhdx` are still
+  empty and no `base` checkpoints exist, so no smoke or security runs are possible yet.
+
+Maintainer checklist to unblock the runs (hand-off §"Procedure per VM" step 2): start each VM
+(`Hyper-V Manager` or `vmconnect localhost <vm>`), install Windows, enter the key, create a
+local administrator, shut down; on 7 SP1 x64 optionally make two bases (without/with
+KB4490628 + KB4474419 + KB3140245 — `.msu` files carry valid Microsoft signatures, install in
+that order plus the `DefaultSecureProtocols` value). Then per VM: copy the disk to
+`D:\images\<vm>.vhdx`, set `BaseVhdx` / clear `InstallIso` in `D:\sdlab\lab.psd1`, rerun
+`New-LabVM.ps1`, attach the payload ISO, boot, run `\sdlab\install-runner.cmd` as administrator,
+shut down, take `base` with `New-LabVM.ps1 -Checkpoint`. Suggested order: sd-xp-sp3-x86 first
+(minimum OS, import floor capture), then sd-win7-sp1-x64, sd-win7-sp1-x86, sd-win10-ltsc21-x64,
+sd-win11-23h2-x64, sd-srv2022-x64; plus the XP SP3 install inside the QEMU P3 disk.
