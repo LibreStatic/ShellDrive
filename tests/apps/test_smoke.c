@@ -546,3 +546,82 @@ SD_TEST(smoke_hostkey_commands)
   EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
   EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
 }
+
+/* TM-R19 (03 §7.5): the agent starts the WebDAV mount without SSPI (SHELLDRIVE_TEST_WD_NOAUTH=1, read by the fake
+   at start), so the token-only question reaches the console. The variable is set before the first run (that run
+   starts the agent, which inherits it) and cleared at the end of each test. */
+static void wd_noauth(int on)
+{
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_WD_NOAUTH", on ? L"1" : NULL);
+}
+
+/* The question line of the console prompt (cli.prompt.webdav_token_only_question, en). */
+#define TOKEN_ONLY_TEXT "less protected connection"
+
+/* "y" on the console: the enable is mounted over WebDAV in token-only mode (list reports backend webdav). */
+SD_TEST(smoke_webdav_token_only_cli_yes)
+{
+  static run_result r;
+  wchar_t l1, l2, args[768];
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1);
+  wd_noauth(1);
+  /* host key (y), then the token-only question (y); publickey, so no password is asked */
+  wcscpy_s(args, 768, L"mount --host tokyes.test --backend webdav --identity C:\\k\\id --stdin --json --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\ny\n") == 0 && strstr(r.out, "\"state\":\"mounted\"") != NULL, "token-only mount");
+  EXPECT(strstr(r.err, TOKEN_ONLY_TEXT) != NULL, "token-only question asked on the console");
+  EXPECT(RUN(L"list --json", NULL) == 0 && strstr(r.out, "\"backend\":\"webdav\"") != NULL &&
+         strstr(r.out, "\"state\":\"mounted\"") != NULL, "list shows the webdav mount");
+  EXPECT(RUN(L"unmount --all", NULL) == 0, "unmount");
+  EXPECT(RUN(L"agent stop", NULL) == 0 && strstr(r.out, "stopped") != NULL, "agent stop");
+  wd_noauth(0);
+}
+
+/* "n" and an empty line (the default is no) both refuse: exit 4 (authentication, 03 §6.2) with the
+   token_only_refused code, nothing mounted, and the question was asked. */
+SD_TEST(smoke_webdav_token_only_cli_refused)
+{
+  static run_result r;
+  wchar_t l1, l2, args[768];
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1 && l2);
+  wd_noauth(1);
+  wcscpy_s(args, 768, L"--json mount --host tokno.test --backend webdav --identity C:\\k\\id --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nn\n") == 4 && strstr(r.out, "\"code\":\"token_only_refused\"") != NULL, "answer n refuses");
+  EXPECT(strstr(r.err, TOKEN_ONLY_TEXT) != NULL, "question asked for n");
+  EXPECT(RUN(L"list --json", NULL) == 0 && strstr(r.out, "\"mounts\":[]") != NULL, "nothing mounted after n");
+
+  wcscpy_s(args, 768, L"--json mount --host tokempty.test --backend webdav --identity C:\\k\\id --stdin --letter ");
+  add_letter(args, 768, l2);
+  EXPECT(RUN(args, "y\n\n") == 4 && strstr(r.out, "\"code\":\"token_only_refused\"") != NULL, "empty answer refuses");
+  EXPECT(strstr(r.err, TOKEN_ONLY_TEXT) != NULL, "question asked for an empty answer");
+  EXPECT(RUN(L"list --json", NULL) == 0 && strstr(r.out, "\"mounts\":[]") != NULL, "nothing mounted after empty");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+  wd_noauth(0);
+}
+
+/* --prompt none: the question is never asked on the console; the mount is refused with prompt_required (exit 4).
+   The host key is stored first (a refused token-only question does not undo the host trust). */
+SD_TEST(smoke_webdav_token_only_prompt_none)
+{
+  static run_result r;
+  wchar_t l1, l2, args[768];
+  SD_REQUIRE(setup());
+  free_letters(&l1, &l2);
+  SD_REQUIRE(l1);
+  wd_noauth(1);
+  wcscpy_s(args, 768, L"mount --host tokprompt.test --backend webdav --identity C:\\k\\id --stdin --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, "y\nn\n") == 4, "host key stored, token-only refused");
+  wcscpy_s(args, 768, L"--json mount --host tokprompt.test --backend webdav --identity C:\\k\\id --prompt none --letter ");
+  add_letter(args, 768, l1);
+  EXPECT(RUN(args, NULL) == 4 && strstr(r.out, "\"code\":\"prompt_required\"") != NULL, "prompt none refuses");
+  EXPECT(strstr(r.err, TOKEN_ONLY_TEXT) == NULL, "prompt none does not ask");
+  EXPECT(RUN(L"list --json", NULL) == 0 && strstr(r.out, "\"mounts\":[]") != NULL, "nothing mounted with prompt none");
+  EXPECT(RUN(L"agent stop", NULL) == 0, "agent stop");
+  wd_noauth(0);
+}

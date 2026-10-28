@@ -1549,7 +1549,7 @@ On XP the check is plain group membership.
 | 1 | generic failure | `internal`, `io_error` |
 | 2 | usage error | `usage`, `service_access_required` |
 | 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found`, `not_mounted` (refresh of a drive without a file system) |
-| 4 | authentication failed or required | `auth_failed`, `prompt_required`, `auth_unavailable` (no SSPI for WebDAV; 02 §7.4) |
+| 4 | authentication failed or required | `auth_failed`, `prompt_required`, `auth_unavailable` (no SSPI for WebDAV; 02 §7.4), `token_only_refused` (token-only WebDAV not confirmed; TM-R19) |
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
 | 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |

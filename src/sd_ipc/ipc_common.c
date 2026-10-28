@@ -580,6 +580,7 @@ static const struct { const char *code; int exit_code; } k_codes[] = {
   { "proxy_unsupported", 16 },
   { "selftest_failed", 17 }, { "update_verify_failed", 17 },
   { "io_error", 1 }, { "prompt_unavailable", 4 },
+  { "token_only_refused", 4 },   /* TM-R19: the user did not confirm token-only WebDAV (auth, 03 §6.2) */
   { "secret_not_found", 3 },
 };
 

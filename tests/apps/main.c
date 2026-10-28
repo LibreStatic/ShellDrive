@@ -12,6 +12,9 @@ SD_TEST_DECL(smoke_mount_m2_flags_and_prompts);
 SD_TEST_DECL(smoke_status_and_pool_flag);
 SD_TEST_DECL(smoke_profile_import);
 SD_TEST_DECL(smoke_hostkey_commands);
+SD_TEST_DECL(smoke_webdav_token_only_cli_yes);
+SD_TEST_DECL(smoke_webdav_token_only_cli_refused);
+SD_TEST_DECL(smoke_webdav_token_only_prompt_none);
 SD_TEST_DECL(m3_ui_only_prompts_and_answers);
 SD_TEST_DECL(m3_prompt_deadline_timeout);
 SD_TEST_DECL(m3_queue_evicts_and_drains_to_ui);
@@ -43,6 +46,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(smoke_status_and_pool_flag),
   SD_TEST_ENTRY(smoke_profile_import),
   SD_TEST_ENTRY(smoke_hostkey_commands),
+  SD_TEST_ENTRY(smoke_webdav_token_only_cli_yes),
+  SD_TEST_ENTRY(smoke_webdav_token_only_cli_refused),
+  SD_TEST_ENTRY(smoke_webdav_token_only_prompt_none),
   SD_TEST_ENTRY(m3_ui_only_prompts_and_answers),
   SD_TEST_ENTRY(m3_prompt_deadline_timeout),
   SD_TEST_ENTRY(m3_queue_evicts_and_drains_to_ui),

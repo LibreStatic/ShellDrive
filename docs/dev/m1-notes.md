@@ -574,7 +574,8 @@ Local HTTP/1.1 + WebDAV server over `sd_vfs`, mapped through the built-in Window
   (`SD_WD_E_AUTH_UNAVAILABLE`, exit 4), plumbing `token_only` / `token_only_confirmed` into sd_mount and the WebDAV
   cfg, and tests (sd_mount, agent broker). Still open: the WinHTTP autologon-LOW self-test that detects a
   redirector authentication failure (02 §7.4), and the "redirector prompted for credentials" detection. No profile
-  key exists for token-only, so the answer is asked per enable. The CLI answer has no unit test (no harness).
+  key exists for token-only, so the answer is asked per enable. The CLI answer is covered end to end by the apps smoke tests
+  (`smoke_webdav_token_only_cli_yes`, `_cli_refused`, `_prompt_none`; r12), which drive the console y/N over `--stdin`.
 - Watchers (TM-R17 c, e): the API exists (`sd_webdav_cleanup_mappings(0, port)`) but there is no
   long-running CLI/tray to watch the agent. (The crash filter and the cleanup at stop are wired; see
   Integration.)
