@@ -320,3 +320,61 @@ rollbacks not authored, SERVICE/SERVICESTART with the service (M5), shell extens
 information (12.2). Lab checks of the installed behaviour (11.4): the Installer key on install, Change, repair and uninstall; the
 ownership rules with a pre-existing `EnableLinkedConnections` value; the options page. The Dokany driver is not installed or
 removed by the MSI (setup does that).
+
+## Installer audit and status (wip/r15-installer)
+
+Audit of the M4 installer backlog (`docs/dev/handoff-backend.md`, "M4 — backend parts") against the tree. Status: **Done** =
+implemented and checked (here or in CI); **Partial** = some of it exists, the rest is open; **Missing** = not in the tree;
+**Blocked** = needs the lab, a certificate, or a design decision. Paths are relative to the repository root.
+
+| # | Backlog item | Status | Where / evidence |
+|---|---|---|---|
+| 1 | Setup engine: CAB payload through `cabinet.dll` FDI, flavour choice by CPU and OS, per-user, portable, repair, uninstall | Partial (per user and portable done; machine mode missing) | `apps/shelldrive-setup/setup_*.c`; `tests/setup` (`sd-test-engine`, 37 tests pass) |
+| 2 | Stub flavours: `x86-ia32`, `x86-sse2`, `x64-xp`, `x64-modern`, ARM64 and ARM32 stubs | Partial | Stub built by `x86-ia32` (importcheck and isacheck pass). ARM stubs are built by their presets; they cannot run here (04 §11.4). |
+| 3 | Per-machine install through the MSI | Missing | `apps/shelldrive-setup/setup_main.c` refuses `SD_SETUP_MODE_MACHINE` (`MACHINE_UNSUPPORTED`); `/extract=` is refused too. |
+| 4 | Two-stage elevation (04 §6.4): `runas` relaunch, stage 1, stage 2 (`/elevated-child`), pipe | Missing | No `runas`, hidden switch or pipe in `setup_main.c` or `setup_args.c`. Building blocks are in row 7. |
+| 5 | DLL search rules (TM-R33), KnownDLL-only imports | Done | `restrict_dll_search` in `setup_main.c`; ctest `importcheck.stub.knowndlls`, `importcheck.shelldrive-setup-stub`, `isacheck.shelldrive-setup-stub` pass on `x86-ia32`. |
+| 6 | Owner and link checks of `%ProgramData%\LibreStatic\ShellDrive` (TM-R34) | Partial (was Missing in the setup engine) | The check is the service's `apps/shelldrive-host/svc_repair.c` and `svc_folder.c` (tests `unit.svc`), now also compiled into `sd_setup_core` (`apps/shelldrive-setup/CMakeLists.txt`). Wrapper: `apps/shelldrive-setup/setup_trust.c` (`sd_setup_secure_programdata`, logs `setup.programdata_untrusted`). Test: `setup_programdata_trust`. The machine install path that would call it is still missing. |
+| 7 | Stage folder with its protected DACL in one `CreateDirectoryW` call (04 §6.4 stage 1, step c) | Partial | `sd_setup_create_stage_dir` in `setup_trust.c`; test `setup_stage_dir_fresh_names`. Not wired: there is no stage 1. |
+| 8 | Dokany decision table (04 §7.3) | Done for the decision; chaining Partial | `sd_setup_dokany_decide` in `setup_core.h`; the wizard option is `setup_flow.c`. |
+| 9 | Dokany chaining after the `dokan2.dll` VC++ check (C31, D32) | Partial | `apps/shelldrive-setup/setup_dokany.c`: PE import reader for `vcruntime140*` and `msvcp140*`, chain choice (MSI, BUNDLE, UNAVAILABLE), command lines, run gate with an injected runner. This build injects none, so nothing starts. Tests: `setup_dokany_*` (5 tests). Missing: `installer/dokany/dokany.lock` (pins, signer), a production runner, the post-install `dokan2.dll` load check (`shelldrive-host --selftest`), and the [lab-verify] items of 04 §7.1 and §7.3 (dependency per architecture, bundle switches, signer name). |
+| 10 | `REMOVESECRETS` | Done in the MSI; lab check pending | `packaging/msi/ShellDrive.wxs`: property (`REMOVESECRETS` = 1), removal conditions. The keep-secrets check of the install smoke (04 §11.2) is not run. |
+| 11 | `DEFAULTPROFILES` (C9) | Missing | `ShellDrive.wxs`: accepted and ignored (WiX 3.14 has no MoveFile element; 04 §8.4 open item). |
+| 12 | WiX MSIs for `x86-ia32`, `x86-sse2`, `x64-xp`, `x64-modern` | Done (build and `msiexec /a` checks); install lab pending | `packaging/msi/CMakeLists.txt` (flavour table), `build-msi.cmake`, `tests/msi` (`msi.<flavour>.tables`, `.admin`, `.wixui`). |
+| 13 | ARM64 MSI | Blocked (missing) | `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM presets: the MSI tools run on the x86/x64 host. Needs a cross-tree `msi` target (04 §8, M6). |
+| 14 | ARM32 MSI (D31) | Blocked (missing) | No ARM32 row in the flavour table; same reason as row 13. |
+| 15 | Language transforms for every LCID (C43) | Done | `tools/sd-msiembed`, `l10n/installer/*.po` (six locales), `msi.<flavour>.tables`. |
+| 16 | WixUI overrides and the dialog set | Done | `packaging/msi/wixui/` (es-es voseo, de-de `du`, it-it informal), `tests/msi/check-wixui.cmake` (`msi.<flavour>.wixui`). |
+| 17 | ADMX and ADML generated from the policy table (03 §3.5) | Done | `res/policy/policies.txt`, `tools/sd-admxgen`, `l10n/policy`. Run here (`x86-ia32` debug): `unit.admxgen`, `unit.policy`, `policy.admx_structure`, `policy.no_raw_reads`, `l10n.policy_catalogs_complete` pass. |
+| 18 | Sparse MSIX build switch (D27) | Missing | No `packaging/msix`, no `SD_SPARSE_MSIX` option in CMake. Shipping also needs the certificate (D27). |
+| 19 | Reproducible-build check (04 §12.2) | Done (not run in this change) | `tools/check-repro.ps1`; ctest `repro.*`, excluded from the default run. |
+| 20 | Release pipeline (04 §12.3, §11.2) | Partial | `.github/workflows/ci.yml` pins its actions by SHA (done). New `.github/workflows/release.yml` skeleton: input and gate checks, build matrix, `check-repro`, binary upload. The `package` and `finalize` jobs stop with an error. Missing: `installer/` (keys, `release-gates.txt`, `dokany.lock`), `tools/sd-release`, `resign.yml`, `CODEOWNERS`, the `workflow-lint` job, the signed-tag gate and the tag trigger. |
+| 21 | Two offline signing sessions (D42) | Missing (manual steps only) | `release.yml`: `signing-session-1` and `signing-session-2` are approval gates with the checklist, no secrets, no signing in CI. `sd-release verify` and `sign` do not exist. |
+| 22 | `PAYLOAD_SIG` and signed payload tables (TM-R38) | Missing | Open item 1 of the M4 setup notes. |
+| 23 | Installer hook `programdata-secure` (TM-R34) | Done in the hook; order Partial | `apps/shelldrive-host/installer_hooks.c` now runs `svc_repair_data` (host builds `svc_repair.c` too). Open: `CA_ProgramDataSecure` is scheduled `After="InstallFiles"` in `packaging/msi/ShellDrive.wxs`, but TM-R34 needs the check before any ProgramData write. The other hooks still log "not yet implemented (M5)". |
+| 24 | Updater engine (04 §9) | Done (engine); MSI install detection missing | Section "Updater engine" above. |
+
+### Changes made by this audit pass
+
+- `apps/shelldrive-setup/setup_trust.c|h`: TM-R34 wrapper, common AppData lookup, stage folder creation.
+- `apps/shelldrive-setup/setup_dokany.c|h`: VC++ dependency check of `dokan2.dll` (read-only PE parse, fails closed),
+  chain choice, command lines, run gate. No process is started by the engine in this build.
+- `apps/shelldrive-setup/CMakeLists.txt`: `sd_setup_core` compiles `svc_folder.c` and `svc_repair.c` from
+  `apps/shelldrive-host` (one source, not a copy) and links `sd_base`.
+- `apps/shelldrive-host/installer_hooks.c` and `CMakeLists.txt`: `programdata-secure --apply` runs the repair.
+- `tests/setup/test_trust.c`, `tests/setup/test_dokany.c`, `tests/setup/main.c`, `tests/setup/CMakeLists.txt`: 7 new tests.
+- `.github/workflows/release.yml`: skeleton, fails closed (see row 20).
+
+Verification (`x86-ia32` debug, `sd-test-engine`, stub import and ISA audits, `unit.admxgen`, `unit.policy`,
+`policy.*`): see the final gate run in the commit message.
+
+### Open items after this audit
+
+1. Per-machine install: the MSI call, the two elevation stages (runas, pipe, stage 2), and the wiring of rows 6, 7 and 9.
+2. Move `CA_ProgramDataSecure` before `InstallFiles` (or check ProgramData first in the setup engine).
+3. Dokany: `installer/dokany/dokany.lock`, the production runner (MSI and bundle), the post-install check, the lab items.
+4. `DEFAULTPROFILES` (MSI MoveFile authoring or a custom action), `/extract=`, `/removedata`.
+5. ARM64 and ARM32 MSI: a cross-tree `msi` target that takes ARM binaries from another build directory.
+6. Release: `installer/` keys and records, `tools/sd-release`, signed tag gate, `resign.yml`, `CODEOWNERS`, `workflow-lint`.
+7. Sparse MSIX (D27) build switch.
+8. Lab checks: install smoke, `REMOVESECRETS`, Dokany and XP import captures (04 §11.4).

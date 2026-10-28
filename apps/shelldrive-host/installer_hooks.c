@@ -7,10 +7,13 @@
  * installer run is not blocked by a hook that has nothing to do yet. */
 #include <windows.h>
 #include <sddl.h>
+#include <shlobj.h>
 #include <strsafe.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+
+#include "svc_repair.h"
 
 #define SD_HOOK_AGENT_EVENT L"Global\\com.librestatic.shelldrive.agent.shutdown."
 
@@ -19,6 +22,31 @@ typedef BOOL (WINAPI *sd_ProcessIdToSessionId_t)(DWORD, DWORD *);
 static const wchar_t *const k_hooks[] = {
   L"webdav-tune", L"user-cleanup", L"modern-menu", L"signal-shutdown", L"programdata-secure"
 };
+
+/* %ProgramData%\LibreStatic and \ShellDrive are checked by handle and set back to the 3.2 DACLs; an untrusted folder is
+   moved aside (TM-R34, 04 §6.4). The same repair the setup stub runs before any elevated write. */
+static int programdata_secure(void)
+{
+  wchar_t base[MAX_PATH];
+  svc_repair_ops ops;
+  svc_repair_result rr;
+  DWORD err;
+
+  if (FAILED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, base))) {
+    wprintf(L"programdata-secure: the common application data folder is not known\n");
+    return 1;
+  }
+  svc_repair_real_ops(&ops);
+  memset(&rr, 0, sizeof(rr));
+  err = svc_repair_data(&ops, base, &rr);
+  if (err != 0) {
+    wprintf(L"programdata-secure: the ProgramData folders could not be secured (error %lu)\n", (unsigned long)err);
+    return 1;
+  }
+  if (rr.moved)
+    wprintf(L"programdata-secure: an untrusted folder was moved aside to %s\n", rr.path);
+  return 0;
+}
 
 /* Shutdown events of this account's agent in this session (the current process session). */
 static int signal_own_agents(void)
@@ -102,6 +130,13 @@ int sd_host_installer_hook(int argc, wchar_t **argv)
     if (!apply)
       return 0;                /* nothing to undo: the agents were asked to exit already */
     return signal_own_agents();
+  }
+
+  if (wcscmp(name, L"programdata-secure") == 0) {
+    /* Nothing to undo: the folders are trusted and stay. */
+    if (!apply)
+      return 0;
+    return programdata_secure();
   }
 
   wprintf(L"installer hook %s: not yet implemented (M5)\n", name);

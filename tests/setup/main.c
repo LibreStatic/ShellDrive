@@ -33,6 +33,13 @@ SD_TEST_DECL(setup_flow_terminates_for_every_input);
 SD_TEST_DECL(setup_flow_dokany_view_states);
 SD_TEST_DECL(setup_flow_dokany_plan_by_mode);
 SD_TEST_DECL(setup_flow_names_and_titles);
+SD_TEST_DECL(setup_programdata_trust);
+SD_TEST_DECL(setup_stage_dir_fresh_names);
+SD_TEST_DECL(setup_dokany_pe_vcr_state);
+SD_TEST_DECL(setup_dokany_pe_malformed_fails_closed);
+SD_TEST_DECL(setup_dokany_choose_chain);
+SD_TEST_DECL(setup_dokany_command_lines);
+SD_TEST_DECL(setup_dokany_run_gate);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flavour_table),
@@ -65,6 +72,13 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flow_dokany_view_states),
   SD_TEST_ENTRY(setup_flow_dokany_plan_by_mode),
   SD_TEST_ENTRY(setup_flow_names_and_titles),
+  SD_TEST_ENTRY(setup_programdata_trust),
+  SD_TEST_ENTRY(setup_stage_dir_fresh_names),
+  SD_TEST_ENTRY(setup_dokany_pe_vcr_state),
+  SD_TEST_ENTRY(setup_dokany_pe_malformed_fails_closed),
+  SD_TEST_ENTRY(setup_dokany_choose_chain),
+  SD_TEST_ENTRY(setup_dokany_command_lines),
+  SD_TEST_ENTRY(setup_dokany_run_gate),
 };
 
 int main(int argc, char **argv)

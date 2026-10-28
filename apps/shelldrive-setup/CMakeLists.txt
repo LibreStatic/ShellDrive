@@ -15,6 +15,9 @@ sd_add_l10n_catalog(installer DOMAINS installer)
 
 sd_setup_generate_regtable(SD_SETUP_REGTABLE_C)
 
+# The TM-R34 folder check is the service's (svc_repair.c, svc_folder.c): the same source files, not a copy.
+set(_sd_setup_host_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
+
 add_library(sd_setup_core STATIC
   setup_args.c
   setup_sha256.c
@@ -27,9 +30,14 @@ add_library(sd_setup_core STATIC
   setup_msg.c
   setup_flow.c
   setup_install.c
+  setup_trust.c
+  setup_dokany.c
+  "${_sd_setup_host_dir}/svc_folder.c"
+  "${_sd_setup_host_dir}/svc_repair.c"
   ${SD_SETUP_REGTABLE_C})
 target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer)
+target_include_directories(sd_setup_core PRIVATE "${_sd_setup_host_dir}")
+target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer sd_base)
 set_target_properties(sd_setup_core PROPERTIES FOLDER "apps")
 
 if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64" OR SD_FLAVOUR STREQUAL "arm32")

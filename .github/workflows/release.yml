@@ -1,0 +1,175 @@
+# Release pipeline skeleton (docs/design/04 §12.3, §11.2; D42, TM-R38, TM-R39).
+#
+# Status: SKELETON. The jobs that build and test the release presets are complete; the jobs after them stop with an
+# error until the parts they need exist in the repository (installer/dokany/dokany.lock, installer/keys/release-gates.txt,
+# payload packaging, sd-release; see docs/dev/m4-notes.md). Every such step fails closed, so no draft release can
+# come out of this file yet.
+#
+# Secrets: none are referenced. Signing never runs in CI. The two offline signing sessions (D42) are maintainer steps on
+# the offline machine; the jobs signing-session-1 and signing-session-2 are approval gates (a protected environment with a
+# required reviewer, configured in the repository settings) and print the checklist of 04 §12.3.
+#
+# Actions: only first-party actions, pinned by commit SHA (TM-R39, same pins as ci.yml). No actions/cache is used.
+# Triggers: workflow_dispatch only. The tag trigger (v*) is added when the signed-tag gate exists (TM-R39).
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (must match VERSION, for example 0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-gates:
+    name: verify version and release gates
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 15
+    env:
+      SD_INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the version input against VERSION
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fileVersion = (Get-Content -Raw VERSION).Trim()
+          if ($fileVersion -ne $env:SD_INPUT_VERSION) {
+            throw "VERSION is '$fileVersion' but the input is '$env:SD_INPUT_VERSION'."
+          }
+
+      - name: Check the release gates record (D38, TM-R38)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # release-gates.txt is maintainer-edited and CODEOWNERS-protected (04 §12.3). It does not exist yet.
+          if (-not (Test-Path 'installer/keys/release-gates.txt')) {
+            throw 'installer/keys/release-gates.txt is missing: the release gates are not recorded yet (04 §12.3).'
+          }
+
+  build:
+    name: build (${{ matrix.preset }})
+    needs: verify-gates
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        preset: [x64-modern, x64-xp, x86-ia32, x86-sse2, arm64, arm32]
+    env:
+      SD_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up v141_xp toolset
+        if: matrix.preset != 'x64-modern' && matrix.preset != 'arm64' && matrix.preset != 'arm32'
+        uses: ./.github/actions/setup-xp-toolset
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset ${{ matrix.preset }} "-DSD_BUILD_NUMBER=${{ github.run_number }}"
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test Release
+        if: matrix.preset != 'arm64' && matrix.preset != 'arm32'
+        shell: pwsh
+        run: ctest --preset ${{ matrix.preset }}
+
+      # Reproducible build (04 §12.2): two builds from one source tree compared byte for byte. Two presets only, the
+      # rest of the matrix runs the same check when the double build is affordable on the release runner.
+      - name: Reproducible build check
+        if: matrix.preset == 'x64-modern' || matrix.preset == 'x86-ia32'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check-repro.ps1 -Preset ${{ matrix.preset }}
+
+      # Unsigned binaries only: the payload tables are signed in the offline session (D42), never here.
+      - name: Upload binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-bin-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/bin/Release/*.exe
+            build/${{ matrix.preset }}/bin/Release/*.pdb
+          if-no-files-found: error
+
+  package:
+    name: package (payload CABs, MSIs, setup EXEs)
+    needs: build
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Not implemented yet. Needed: installer/dokany/dokany.lock with the verified Dokany files (TM-R23, D32), the payload
+      # CAB and PAYLOAD_TABLE step (tools/sd-payload), the MSIs (packaging/msi, SD_BUILD_MSI with WiX 3.14 on this runner),
+      # sd-msilang transforms and the sd-release manifest tool (tools/sd-release does not exist yet).
+      - name: Stop until packaging exists
+        shell: pwsh
+        run: |
+          throw 'package is not implemented: payload packaging, the Dokany lock and tools/sd-release are not in the repository yet (docs/dev/m4-notes.md).'
+
+  signing-session-1:
+    name: offline signing session 1 of 2 (maintainer, D42)
+    needs: package
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 30
+    environment: release-stable-session-1
+    steps:
+      # The maintainer performs this session offline (04 §12.3 step 5): verify payload-tables.txt against the rebuilt
+      # payloads with sd-release verify, sign with the release-stable key, and hand the signatures to the finalize step.
+      # CI signs nothing here; the key never touches this runner.
+      - name: Checklist
+        shell: pwsh
+        run: |
+          Write-Output 'Offline session 1 of 2 (D42): verify payload-tables.txt, sign it on the offline machine, record the result.'
+
+  finalize:
+    name: finalize (draft release, manually approved)
+    needs: signing-session-1
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 60
+    # The only job with write access: it creates the draft release and nothing else (TM-R39).
+    permissions:
+      contents: write
+    environment: release-finalize
+    steps:
+      - name: Stop until packaging exists
+        shell: pwsh
+        run: |
+          throw 'finalize is not implemented: PAYLOAD_SIG insertion, SHA256SUMS, manifest.txt and the draft release need the package job first.'
+
+  signing-session-2:
+    name: offline signing session 2 of 2 (maintainer, D42)
+    needs: finalize
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 30
+    environment: release-stable-session-2
+    steps:
+      # 04 §12.3 step 7: verify manifest.txt and SHA256SUMS against the draft assets with sd-release verify, sign them
+      # with the release-stable key offline, and upload manifest.txt (signed) and SHA256SUMS.sig to the draft.
+      - name: Checklist
+        shell: pwsh
+        run: |
+          Write-Output 'Offline session 2 of 2 (D42): verify manifest.txt and SHA256SUMS against the draft, sign offline, upload the signed files.'
