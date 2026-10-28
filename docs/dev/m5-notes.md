@@ -1086,3 +1086,54 @@ real Credential Manager: the service tests use the test secret root and the seam
   `sd_ssh_proxy_machine` read itself is not covered by a test.
 - The HKLM-only read is covered by the type and id checks only: a test cannot write HKLM without touching the machine, so the
   service tests force the values through `svc_test_sysproxy_policy` and `svc_test_hk_policy`.
+
+## Part 13: end-to-end tests of the CLI over the service pipe (`wip/r19-svce2e`)
+
+Closes the gap noted in parts 9 to 12: no test started the service pipe for the CLI process. The CLI smoke tests of
+`tests/apps` cover the argument and elevation paths only.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `tests/e2e/CMakeLists.txt` | `sd-test-e2e.exe` (`unit.e2e`): the service core sources with `SD_SVC_TEST_HOOKS`, as in `tests/unit/sd_svc`; `e2e.shipping_has_no_test_hooks` |
+| `tests/e2e/e2e_host.c`, `e2e_host.h` | the core runs on a thread of the test process (`svc_run`, fake mount backend, temp machine root, per-run pipe suffix, `svc_test_connect_admin`); `e2e_run_cli` starts `sd-test-cli.exe` as a child process with the test variables set and reads its output and exit code |
+| `tests/e2e/test_cli_service.c`, `main.c` | six tests (below) |
+| `tests/e2e/check_no_test_hooks.ps1` | the shipping `shelldrive.exe` and `shelldrive-host.exe` contain no `SHELLDRIVE_TEST_` name (ASCII or UTF-16LE) |
+| `apps/shelldrive/cli_service.c` | `SD_CLI_TEST_HOOKS` only: `SHELLDRIVE_TEST_SCM=running|absent` replaces the two read-only SCM queries of `service status` |
+| `apps/shelldrive/cli_common.c` | `cli_is_elevated` reads `SHELLDRIVE_TEST_ELEVATED` only under `SD_CLI_TEST_HOOKS`; `1` grants elevation, `0` denies |
+| `apps/shelldrive/main.c` | `SHELLDRIVE_TEST_EXPECTED_OWNER` (test hooks only) sets the owner the CLI requires of the service pipe |
+
+**Change of behaviour.** Before this part the shipping CLI read `SHELLDRIVE_TEST_ELEVATED` and denied elevation when it was
+`0`. The read is now compiled only into the test build, so the shipping CLI ignores the variable.
+
+**Test seams of the CLI (test builds only)**
+
+- `SHELLDRIVE_TEST_INSTANCE`: the pipe suffix (existing), shared by the test host and the child CLI.
+- `SHELLDRIVE_TEST_EXPECTED_OWNER`: the owner SID the service pipe must have. The host runs as the test user, so the pipe is
+  owned by that user, not SYSTEM; the child must expect the same.
+- `SHELLDRIVE_TEST_ELEVATED=0|1`: deny or grant elevation. Granting is the test-only addition.
+- `SHELLDRIVE_TEST_SCM=running|absent`: the service state seen by `service status`, so the pipe path runs without the service
+  installed.
+- `SHELLDRIVE_TEST_CONFIG_DIR` (existing): a temp configuration root.
+
+**Tests** (`unit.e2e`, one core per process, the last test stops it)
+
+- `e2e_status_reaches_the_service_over_the_pipe`: `service status --json` with the service running reports `reachable` and
+  `healthy`.
+- `e2e_status_without_an_installed_service_does_not_query_the_pipe`: no `reachable` member when the service is absent.
+- `e2e_service_mount_and_unmount_need_elevation`: `service mount` and `service unmount` exit 9 when denied and leave the drive as
+  it was; granted, the profile `mounted` mounts and unmounts, and `service status <profile>` reports `mounted` in between.
+- `e2e_hostkey_offer_is_listed_and_accepted_into_the_machine_store`: `hostkey add --machine` and `hostkey list --announced
+  --machine` exit 9 when denied; granted, the offer for `hk.first.test` is listed by its id, nothing is written to the machine
+  store until `hostkey accept-announced <id> --add-only --machine` (one machine write), the offer leaves the list, and a second
+  accept fails.
+- `e2e_secret_set_and_delete_machine_proxy_through_the_service`: `secret set --machine --proxy ... --stdin` exits 9 when denied
+  and stores nothing; granted, the password is stored under the leg's target (read back in-process from the service store),
+  it is never printed, and `secret delete` removes it.
+- `e2e_core_stops_and_the_cli_no_longer_reaches_the_pipe`: after the core stops, `service status` reports `reachable` false.
+- `e2e.shipping_has_no_test_hooks`: no `SHELLDRIVE_TEST_` name in the shipping executables.
+
+**Not covered.** The real SCM (`install`, `start`, `stop`) and the Event Log are not reached. The core is in the test process
+(as in `unit.svc`), not in a separate host process; the CLI is the separate process, and every CLI request crosses the named
+pipe. An elevated administrator token and the real `--machine` UI prompts are not exercised (lab).

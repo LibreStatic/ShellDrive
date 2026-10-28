@@ -78,6 +78,9 @@ void svc_test_hk_policy(int forced, DWORD value);
    class of the reserved-instance rule, 2.2); the token class is used again when on = 0. Tests of the reserved instances
    use it for their raw instances, which an unelevated test process could not hold otherwise. */
 void svc_test_connect_admin(int on);
+/* SD_SVC_TEST_HOOKS builds only. on = 1: every client, whatever its hello kind, passes the admin check of the methods
+   (the e2e host runs the real CLI, whose hello kind is "cli"); the restricted-token rules of the pipe are unchanged. */
+void svc_test_admin_all_clients(int on);
 /* SD_SVC_TEST_HOOKS builds only. forced = 0 reads AllowSystemProxy and AllowSystemProxySspi from HKLM (only with
    svc_opts.sysproxy_ops.allow = -1); forced = 1 uses allow and sspi (0 or 1) for every leg from now on. */
 void svc_test_sysproxy_policy(int forced, DWORD allow, DWORD sspi);

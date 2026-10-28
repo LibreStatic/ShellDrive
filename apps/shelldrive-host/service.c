@@ -165,6 +165,7 @@ static struct svc_state {
   int test_hk_policy_forced;        /* SD_SVC_TEST_HOOKS only: svc_test_hk_policy replaces the registry value */
   DWORD test_hk_policy;
   int test_connect_admin;           /* SD_SVC_TEST_HOOKS only: every new connection counts as admin at connect */
+  int test_admin_any;               /* SD_SVC_TEST_HOOKS only: every client, whatever its hello kind, is an admin for the methods */
   int test_sysproxy_forced;         /* SD_SVC_TEST_HOOKS only: svc_test_sysproxy_policy replaces the machine policies */
   DWORD test_sysproxy_allow, test_sysproxy_sspi;
 #endif
@@ -190,6 +191,8 @@ static int caller_is_admin(sd_ipc_client *c)
 {
 #ifdef SD_SVC_TEST_HOOKS
   if (g.test_all_admin && strcmp(sd_ipc_client_kind(c), "testadmin") == 0)
+    return 1;
+  if (g.test_admin_any)
     return 1;
 #endif
   return sd_ipc_client_is_admin(c) ? 1 : 0;
@@ -1524,6 +1527,13 @@ void svc_test_connect_admin(int on)
 {
   g.test_connect_admin = on;
 }
+
+#ifdef SD_SVC_TEST_HOOKS
+void svc_test_admin_all_clients(int on)
+{
+  g.test_admin_any = on;
+}
+#endif
 
 void svc_test_sysproxy_policy(int forced, DWORD allow, DWORD sspi)
 {
