@@ -7,6 +7,7 @@
 
 sd_add_unit_test(engine
   SOURCES main.c test_common.c test_args.c test_cab.c test_install.c test_flow.c test_trust.c test_dokany.c
-  DEPS sd_setup_core)
+    test_payload_sig.c
+  DEPS sd_setup_core sd_crypto)
 # test_trust.c uses the service's svc_repair.h seam (the same owner rule as tests/unit/sd_svc/test_repair.c).
 target_include_directories(sd-test-engine PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")

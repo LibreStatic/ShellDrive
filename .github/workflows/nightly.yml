@@ -1,0 +1,130 @@
+# Nightly checks (docs/design/04 §11.2; M6 notes in docs/dev/m6-notes.md): libFuzzer runs of the parser targets with a
+# time budget per target, and the dudect-style constant-time timing tests (tests/ct, D1; SD_CT_TIMING).
+#
+#   fuzz  one job per target (tests/fuzz/CMakeLists.txt, sd_add_fuzz_target): the x86-fuzz preset (libFuzzer and
+#         AddressSanitizer, never shipped), 600 s per target, the repository corpus copied to a scratch folder first so
+#         the repository is never written. A crash or a timeout uploads its input and fails the job.
+#   ct    dudect timing tests on the quiet-machine flavours of the matrix (x86-ia32, x64-modern). Hosted runners are
+#         noisy: a failure here is a signal to rerun on the lab machine (04 §11.2), not a release decision.
+#   lint  the workflow lint (tools/check-workflows.ps1): read-only, runs on every night as well.
+#
+# Secrets: none are referenced and no cache is restored (TM-R39). Actions: first-party, pinned by commit SHA, the
+# same pins as ci.yml. Token: read-only. Triggers: schedule and workflow_dispatch only; no pull_request trigger.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  workflow-lint:
+    name: workflow lint
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint the workflows
+        shell: pwsh
+        run: ./tools/check-workflows.ps1
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [json, ini, utf_names, text_sanitize, keyfile, known_hosts, cert, kexinit, sftp_reply, wd_http, wd_xml, state, manifest, inflate]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure (x86-fuzz)
+        shell: pwsh
+        run: cmake --preset x86-fuzz
+
+      - name: Build the libFuzzer target
+        shell: pwsh
+        run: cmake --build build/x86-fuzz --config Debug --target sd-fuzz-${{ matrix.target }}-libfuzzer
+
+      - name: Run for 600 seconds on a scratch copy of the corpus
+        shell: pwsh
+        env:
+          SD_FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          $exe = Get-ChildItem -Path build/x86-fuzz -Recurse -Filter "sd-fuzz-$env:SD_FUZZ_TARGET-libfuzzer.exe" | Select-Object -First 1
+          if (-not $exe) { throw "libFuzzer target not found" }
+          $work = Join-Path $env:RUNNER_TEMP "corpus-$env:SD_FUZZ_TARGET"
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Copy-Item -Path (Join-Path "tests/fuzz/corpus" $env:SD_FUZZ_TARGET) -Destination $work -Recurse -Force
+          $artifacts = Join-Path $env:RUNNER_TEMP "fuzz-artifacts-$env:SD_FUZZ_TARGET"
+          New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
+          Push-Location $artifacts
+          try {
+            & $exe.FullName (Join-Path $work $env:SD_FUZZ_TARGET) -max_total_time=600 -timeout=20 "-artifact_prefix=$artifacts/"
+            if ($LASTEXITCODE -ne 0) { throw "fuzzer exit $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Upload crashes and timeouts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: ${{ runner.temp }}/fuzz-artifacts-${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+  ct:
+    name: dudect (${{ matrix.preset }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [x86-ia32, x64-modern]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure with the timing tests
+        shell: pwsh
+        run: cmake --preset ${{ matrix.preset }} "-DSD_CT_TIMING=ON"
+
+      - name: Build sd-ct-dudect
+        shell: pwsh
+        run: cmake --build build/${{ matrix.preset }} --config Release --target sd-ct-dudect
+
+      - name: Run the timing tests (all primitives, default samples)
+        shell: pwsh
+        run: |
+          $exe = Join-Path "build/${{ matrix.preset }}/bin/Release" "sd-ct-dudect.exe"
+          & $exe 2>&1 | Tee-Object -FilePath "ct-${{ matrix.preset }}.txt"
+          if ($LASTEXITCODE -ne 0) { throw "dudect reports a timing difference or bad inputs (exit $LASTEXITCODE)" }
+
+      - name: Upload the timing report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ct-${{ matrix.preset }}
+          path: ct-${{ matrix.preset }}.txt
+          if-no-files-found: ignore
+          retention-days: 30

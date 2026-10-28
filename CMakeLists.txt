@@ -51,6 +51,7 @@ if(NOT SD_ARM64 AND NOT SD_ARM32)
   add_subdirectory(tools/sd-isacheck)
 endif()
 add_subdirectory(tools/sd-updsign)
+add_subdirectory(tools/sd-release)
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)

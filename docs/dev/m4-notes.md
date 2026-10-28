@@ -378,3 +378,75 @@ Verification (`x86-ia32` debug, `sd-test-engine`, stub import and ISA audits, `u
 6. Release: `installer/` keys and records, `tools/sd-release`, signed tag gate, `resign.yml`, `CODEOWNERS`, `workflow-lint`.
 7. Sparse MSIX (D27) build switch.
 8. Lab checks: install smoke, `REMOVESECRETS`, Dokany and XP import captures (04 §11.4).
+
+## Release side: payload signature, sd-release, nightly checks (wip/r16-release)
+
+Scope: open items 1 and 6 of the audit above in part (`PAYLOAD_SIG`, the release tool, the nightly and the workflow
+lint). Rows 20 to 22 of the table move as follows.
+
+| # | Item | Status now | Where / evidence |
+|---|---|---|---|
+| 20 | Release pipeline | Partial (unchanged) | `release.yml` still stops at `package` and `finalize`; its header says `sd-release` is missing, which is no longer true. The `workflow-lint` job is in `ci.yml` and `nightly.yml`. |
+| 21 | Two offline signing sessions (D42) | Partial | `sd-release session` writes `SESSION.txt` with the file hashes and the digest of the signed message; `sd-release sign` and `verify` do the signing and the checks. The steps stay manual (no signing in CI). `resign` is missing (see open items). |
+| 22 | `PAYLOAD_SIG` and signed payload tables (TM-R38) | Done in the stub; the keyring and the package step are open | `apps/shelldrive-setup/setup_payload_sig.c|h`, one call site in `setup_main.c` (`run_install`, after the table lookup). Tests: `tests/setup/test_payload_sig.c` (14 tests, generated test keys). |
+
+### What the stub checks now (04 section 6.1, 9.3; TM-R38)
+
+- `PAYLOAD_TABLE` must start with the magic line `shelldrive-payload-table 1`, then `product com.librestatic.shelldrive`
+  and `channel stable|beta`, then the flavour lines. LF endings, printable ASCII, at most 4096 bytes.
+- `PAYLOAD_SIG` is one line `sig ed25519 <key id, 16 hex> <signature, 88 base64>` + LF (118 bytes, canonical base64).
+- The signed bytes are `com.librestatic.shelldrive payload table v1\n` || the table bytes (domain separation).
+- The key ID is the first 8 bytes of SHA-256 of the public key. The key must be in the keyring compiled into the stub,
+  not revoked, inside its validity dates (Unix seconds, inclusive), and for the table's channel; the build's channel is
+  `SD_SETUP_BUILD_CHANNEL` (default `stable`).
+- Any failure returns a refusal with `SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED`. Fail closed.
+- The keyring is `apps/shelldrive-setup/setup_keyring.inc`. The repository holds only a revoked placeholder, so the stub
+  refuses every payload until the release pipeline generates the file from `installer/keys/keyset.txt`.
+- `sd_setup_core` now links `sd_payload_sig` (sd_crypto only). `shelldrive-setup-stub.exe` still passes
+  `importcheck.stub.knowndlls` and `isacheck` on `x86-ia32`.
+
+### Decisions taken here (not in the spec text; review them)
+
+1. The payload domain string `com.librestatic.shelldrive payload table v1\n` and the table header lines are new. The spec
+   says "domain-separated" and gives no string. The manifest and keyset strings are the ones of `sd_update.h`.
+2. `SHA256SUMS.sig` signs `com.librestatic.shelldrive sha256sums v1\n` || the file (the spec does not give a domain).
+3. A manifest spec may use CR LF line ends (files saved on Windows); the body written is LF only.
+4. `sd-payload` gets `--channel` and `--sig`. Without `--channel` it writes the legacy table, which the stub refuses; the
+   package step therefore must pass both (not done: `cmake/SdPayload.cmake` still calls it without them).
+5. Stub failures reuse the message `PAYLOAD_DAMAGED`. A dedicated "signature" message needs all six locales (AGENTS.md)
+   and was not added here.
+
+### tools/sd-release (04 section 9.2, 9.3, 12.3)
+
+Commands: `hash`, `sums`, `table` (one flavour per setup EXE), `check-table` (table against the rebuilt CAB), `manifest`
+(unsigned body: `file` lines hashed from a directory; the TM-R36 limits are enforced: stable at most 30 days, beta at
+most 14 days from `released` to `expires`), `sign` (body + sig line, or the sig line alone with `--sig-only`; a manifest
+is parsed with `sd_upd_manifest_parse` before it is written), `verify` (checks the sig and the key ID; a manifest is
+parsed in full), `pubkey`, `session` (`SESSION.txt` for the offline sessions). No network code; no key in the tree.
+`sd-updsign` (earlier, from the update work) overlaps `sign` and `verify`; merge or retire one of them.
+
+Test: `tests/release/release_flow.cmake` (ctest `release.flow`, label `release`). It generates two TEST seeds in the script,
+runs every command, and checks the expected exit codes: a tampered table or manifest, a beta key on a stable signature,
+a sums signature used as a payload signature, a body without its final LF, a stable manifest with 67 days, a beta
+manifest with 15 days, and a file name with a separator are all refused. Passing on `x86-ia32`.
+
+### Nightly and lint
+
+- `.github/workflows/nightly.yml`: `fuzz` (14 targets, 600 s each, scratch corpus copy, crash upload) and `ct`
+  (`SD_CT_TIMING=ON`, `sd-ct-dudect`, x86-ia32 and x64-modern). Details and deviations: `docs/dev/m6-notes.md`.
+- `tools/check-workflows.ps1` (workflow lint, TM-R39/TST-32), also a job of `ci.yml`. It passes on the current tree with
+  one warning (no CODEOWNERS).
+
+### Open items after this change
+
+1. `installer/keys/` (root public keys, `keyset.txt`) and the generated `setup_keyring.inc`. Until then no payload verifies.
+2. `cmake/SdPayload.cmake` and the `package` job: pass `--channel` and `--sig` to `sd-payload`, with the signature made
+   by session 1 of 2 (`sd-release sign --kind payload --sig-only`).
+3. No test of the positive path through the stub's resources (`sd_setup_payload_sig_check` with a real `PAYLOAD_SIG`).
+   The pure verifier is tested with generated keys; the resource wrapper is tested only for the refusal path.
+4. `sd-release resign` (stable re-signing with a new serial and `expires`, TM-R36) is not written.
+5. Stage 2 checks of 04 section 12.3 step 7 (`signtool remove /s`, removal of `PAYLOAD_SIG`, comparison with the rebuilt
+   EXE) are not in the tool.
+6. `release-gates.txt`: the record format is not defined in 04 section 12.3, so it is not implemented.
+7. CODEOWNERS: the owner handle is the maintainer's decision; the lint reports it as a warning.
+8. `release.yml`: the finalize gate still stops; update it when the steps above exist.

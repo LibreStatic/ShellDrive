@@ -1,13 +1,16 @@
 /* sd-payload: attaches a setup payload to a copy of the setup stub (docs/design/04 §6.1).
  *
  *   sd-payload --base <stub.exe> --out <setup.exe> --flavour <x86-ia32|...> --cab <payload.cab>
+ *              [--channel <stable|beta>] [--sig <sig.txt>]
  *
- * Writes the stub to <setup.exe> and adds two RT_RCDATA resources with UpdateResourceW:
+ * Writes the stub to <setup.exe> and adds RT_RCDATA resources with UpdateResourceW:
  *   PAYLOAD_<FLAVOUR>  the CAB bytes (the flavour name in upper case, '-' replaced by '_');
- *   PAYLOAD_TABLE      one line "<flavour> <sha256 hex> <size>" (the stub verifies the hash before unpacking).
- * The PAYLOAD_SIG signature of the table (TM-R38) is not written yet: it waits for the release keyset
- * (04 §6.1, open item in docs/dev/m4-notes.md). Build-time tool, never shipped; the console and the
- * CRT are fine here, unlike in the stub. */
+ *   PAYLOAD_TABLE      the table the stub verifies: with --channel, the signed header (magic, product, channel,
+ *                      LF endings) and the flavour line "<flavour> <sha256 hex> <size>" (setup_payload_sig.h);
+ *                      without it, the legacy single line (the stub refuses it: no signature can match).
+ *   PAYLOAD_SIG        --sig: the one-line "sig ed25519 ..." signature of the table (TM-R38), made by
+ *                      tools/sd-release sign --domain payload.
+ * Build-time tool, never shipped; the console and the CRT are fine here, unlike in the stub. */
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <windows.h>
 
@@ -49,14 +52,14 @@ static unsigned char *read_file(const char *path, size_t *size)
 
 int main(int argc, char **argv)
 {
-  const char *base = NULL, *out = NULL, *flavour = NULL, *cab = NULL;
+  const char *base = NULL, *out = NULL, *flavour = NULL, *cab = NULL, *channel = NULL, *sigpath = NULL;
   wchar_t resname[64];
   wchar_t wflav[32];
-  unsigned char *cab_bytes, *stub_bytes = NULL;
-  size_t cab_size = 0, stub_size = 0;
+  unsigned char *cab_bytes, *stub_bytes = NULL, *sig_bytes = NULL;
+  size_t cab_size = 0, stub_size = 0, sig_size = 0;
   unsigned char sha[32];
   char hex[65];
-  char table[256];
+  char table[512];
   HANDLE upd;
   size_t i;
   int n;
@@ -73,17 +76,28 @@ int main(int argc, char **argv)
       flavour = argv[i + 1];
     else if (strcmp(argv[i], "--cab") == 0)
       cab = argv[i + 1];
+    else if (strcmp(argv[i], "--channel") == 0)
+      channel = argv[i + 1];
+    else if (strcmp(argv[i], "--sig") == 0)
+      sigpath = argv[i + 1];
     else
       return fail("unknown option");
   }
   if (base == NULL || out == NULL || flavour == NULL || cab == NULL)
-    return fail("usage: sd-payload --base <stub> --out <exe> --flavour <name> --cab <cab>");
+    return fail("usage: sd-payload --base <stub> --out <exe> --flavour <name> --cab <cab> [--channel c] [--sig f]");
   if (strlen(flavour) >= sizeof(wflav) / sizeof(wflav[0]) - 1)
     return fail("flavour name too long");
+  if (channel != NULL && strcmp(channel, "stable") != 0 && strcmp(channel, "beta") != 0)
+    return fail("channel must be stable or beta");
 
   cab_bytes = read_file(cab, &cab_size);
   if (cab_bytes == NULL || cab_size == 0)
     return fail("cannot read the payload CAB");
+  if (sigpath != NULL) {
+    sig_bytes = read_file(sigpath, &sig_size);
+    if (sig_bytes == NULL || sig_size == 0 || sig_size > 256)
+      return fail("cannot read the signature file");
+  }
   stub_bytes = read_file(base, &stub_size);
   if (stub_bytes == NULL || stub_size == 0)
     return fail("cannot read the stub");
@@ -100,7 +114,12 @@ int main(int argc, char **argv)
 
   sd_setup_sha256(cab_bytes, cab_size, sha);
   sd_setup_sha256_hex(sha, hex);
-  n = _snprintf(table, sizeof(table), "%s %s %lu\r\n", flavour, hex, (unsigned long)cab_size);
+  if (channel != NULL)
+    n = _snprintf(table, sizeof(table),
+                  "shelldrive-payload-table 1\nproduct com.librestatic.shelldrive\nchannel %s\n%s %s %lu\n",
+                  channel, flavour, hex, (unsigned long)cab_size);
+  else
+    n = _snprintf(table, sizeof(table), "%s %s %lu\r\n", flavour, hex, (unsigned long)cab_size);
   if (n <= 0 || n >= (int)sizeof(table))
     return fail("table overflow");
 
@@ -126,7 +145,9 @@ int main(int argc, char **argv)
   if (upd == NULL)
     return fail("BeginUpdateResource failed");
   if (!UpdateResourceW(upd, RT_RCDATA, resname, 0, cab_bytes, (DWORD)cab_size) ||
-      !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_TABLE", 0, table, (DWORD)strlen(table))) {
+      !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_TABLE", 0, table, (DWORD)strlen(table)) ||
+      (sig_bytes != NULL &&
+       !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_SIG", 0, sig_bytes, (DWORD)sig_size))) {
     EndUpdateResourceW(upd, TRUE);
     return fail("UpdateResource failed");
   }

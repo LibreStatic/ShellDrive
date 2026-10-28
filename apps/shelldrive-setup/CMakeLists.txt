@@ -18,6 +18,13 @@ sd_setup_generate_regtable(SD_SETUP_REGTABLE_C)
 # The TM-R34 folder check is the service's (svc_repair.c, svc_folder.c): the same source files, not a copy.
 set(_sd_setup_host_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
 
+# Payload table signature (TM-R38): pure verifier plus the resource wrapper. Shared with tools/sd-release and its
+# tests; sd_crypto only (sd_ed25519_verify and SHA-256 run on XP and in the stub).
+add_library(sd_payload_sig STATIC setup_payload_sig.c)
+target_include_directories(sd_payload_sig PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(sd_payload_sig PUBLIC sd_crypto sd_headers)
+set_target_properties(sd_payload_sig PROPERTIES FOLDER "apps")
+
 add_library(sd_setup_core STATIC
   setup_args.c
   setup_sha256.c
@@ -37,7 +44,7 @@ add_library(sd_setup_core STATIC
   ${SD_SETUP_REGTABLE_C})
 target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(sd_setup_core PRIVATE "${_sd_setup_host_dir}")
-target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer sd_base)
+target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer sd_base sd_payload_sig)
 set_target_properties(sd_setup_core PROPERTIES FOLDER "apps")
 
 if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64" OR SD_FLAVOUR STREQUAL "arm32")
