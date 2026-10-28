@@ -16,6 +16,7 @@ SD_TEST_DECL(svc_attention_counts_the_open_prompts);
 SD_TEST_DECL(svc_secret_round_trip_is_dpapi_service_scope);
 SD_TEST_DECL(svc_list_hides_mounts_outside_service_access_from_users);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
+SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
 SD_TEST_DECL(scm_install_registers_the_service_in_order);
 SD_TEST_DECL(scm_install_skips_the_sid_type_before_vista);
 SD_TEST_DECL(scm_install_refuses_without_elevation);
@@ -56,6 +57,7 @@ SD_TEST_DECL(repair_moves_an_untrusted_owner_aside_and_imports_nothing);
 SD_TEST_DECL(repair_refuses_a_link_as_the_base);
 SD_TEST_DECL(repair_reports_a_missing_base);
 SD_TEST_DECL(repair_owner_rule_trusts_only_system_and_administrators);
+SD_TEST_DECL(folder_check_reports_reparse_kind_and_owner);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -74,6 +76,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_secret_round_trip_is_dpapi_service_scope),
   SD_TEST_ENTRY(svc_list_hides_mounts_outside_service_access_from_users),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
+  SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),
   SD_TEST_ENTRY(scm_install_registers_the_service_in_order),
   SD_TEST_ENTRY(scm_install_skips_the_sid_type_before_vista),
   SD_TEST_ENTRY(scm_install_refuses_without_elevation),
@@ -114,6 +117,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(repair_refuses_a_link_as_the_base),
   SD_TEST_ENTRY(repair_reports_a_missing_base),
   SD_TEST_ENTRY(repair_owner_rule_trusts_only_system_and_administrators),
+  SD_TEST_ENTRY(folder_check_reports_reparse_kind_and_owner),
 };
 
 int main(int argc, char **argv)

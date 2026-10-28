@@ -37,3 +37,8 @@ MessageId=2110 Severity=Error SymbolicName=SVC_MSG_START_FAILED
 Language=English
 ShellDrive service could not start (%1).
 .
+
+MessageId=3102 Severity=Warning SymbolicName=SVC_MSG_UNTRUSTED_FOLDER
+Language=English
+Machine folder %1 was refused (%2). The ShellDrive service stays idle until an elevated shelldrive service repair-data renames it aside.
+.

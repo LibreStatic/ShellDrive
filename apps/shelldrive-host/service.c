@@ -108,7 +108,9 @@ static struct svc_state {
   sd_ipc_server *srv;
   const sd_mount_backend *be;
   wchar_t root[MAX_PATH], profiles[MAX_PATH], service_dir[MAX_PATH], kh[MAX_PATH], logfile[MAX_PATH];
-  int idle;                         /* layout refused (reparse point, no rights): nothing is loaded */
+  wchar_t vendor[MAX_PATH];         /* %ProgramData%\LibreStatic, default location only (D45, 3.2) */
+  svc_owner_fn owner_trusted;       /* NULL = the shipping owner rule (3.2); tests replace it */
+  int idle;                         /* layout refused (owner, reparse point, no rights): nothing is loaded */
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
   svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
@@ -248,6 +250,7 @@ static sd_err svc_compute_paths(const wchar_t *override_root)
     if (SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, base) != S_OK)
       return SD_E_FAILURE;
     _snwprintf_s(g.root, MAX_PATH, _TRUNCATE, L"%s\\LibreStatic\\ShellDrive", base);
+    _snwprintf_s(g.vendor, MAX_PATH, _TRUNCATE, L"%s\\LibreStatic", base);
   }
   _snwprintf_s(g.profiles, MAX_PATH, _TRUNCATE, L"%s\\profiles", g.root);
   _snwprintf_s(g.service_dir, MAX_PATH, _TRUNCATE, L"%s\\service", g.root);
@@ -256,52 +259,109 @@ static sd_err svc_compute_paths(const wchar_t *override_root)
   return SD_OK;
 }
 
-/* Creates one folder with its 3.2 DACL when it is missing. An existing reparse point refuses the whole tree: the
-   service then loads nothing from it (3.2, TM-R34). */
-static sd_err svc_mkdir(const wchar_t *path, const wchar_t *sddl)
+/* The first machine folder refused at start (3.2, TM-R34) and why: Event 3102 names both. */
+typedef struct svc_refusal {
+  wchar_t path[MAX_PATH];
+  svc_folder_reason why;
+} svc_refusal;
+
+static void svc_refuse(svc_refusal *w, const wchar_t *path, svc_folder_reason why)
 {
-  DWORD attr = GetFileAttributesW(path);
-  if (attr != INVALID_FILE_ATTRIBUTES) {
-    if (attr & FILE_ATTRIBUTE_REPARSE_POINT)
-      return SD_E_ACCESS_DENIED;
-    return (attr & FILE_ATTRIBUTE_DIRECTORY) ? SD_OK : SD_E_NOT_A_DIRECTORY;
+  if (w == NULL)
+    return;
+  _snwprintf_s(w->path, MAX_PATH, _TRUNCATE, L"%s", path);
+  w->why = why;
+}
+
+/* An existing machine folder is used only when it is a folder, not a reparse point, and its owner is trusted (3.2).
+   A refused folder is never fixed here: repair-data does that. Every check runs on a handle that does not follow links. */
+static sd_err svc_check_existing(const wchar_t *path, svc_refusal *w)
+{
+  HANDLE h = NULL;
+  svc_folder_reason why = SVC_FOLDER_NO_RIGHTS;
+  DWORD e = svc_folder_open(path, READ_CONTROL | FILE_READ_ATTRIBUTES, &h);
+  if (e == 0) {
+    why = SVC_FOLDER_OK;
+    e = svc_folder_inspect(h, 1, g.owner_trusted, NULL, &why);
+    CloseHandle(h);
+    if (e != 0)
+      why = SVC_FOLDER_NO_RIGHTS;
   }
-  {
-    PSECURITY_DESCRIPTOR sd = NULL;
-    SECURITY_ATTRIBUTES sa;
-    BOOL ok;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sd, NULL))
-      return SD_E_INTERNAL;
-    memset(&sa, 0, sizeof(sa));
-    sa.nLength = sizeof(sa);
-    sa.lpSecurityDescriptor = sd;
-    ok = CreateDirectoryW(path, &sa);
-    LocalFree(sd);
-    if (!ok && GetLastError() != ERROR_ALREADY_EXISTS)
-      return SD_E_ACCESS_DENIED;
+  if (why != SVC_FOLDER_OK) {
+    svc_refuse(w, path, why);
+    return SD_E_ACCESS_DENIED;
   }
   return SD_OK;
 }
 
-static sd_err svc_ensure_layout(void)
+/* Creates one folder with its 3.2 DACL when it is missing. An existing folder is checked (svc_check_existing); a folder
+   that cannot be created refuses the layout. */
+static sd_err svc_mkdir(const wchar_t *path, const wchar_t *sddl, svc_refusal *w)
+{
+  HANDLE h = NULL;
+  DWORD e = svc_folder_open(path, FILE_READ_ATTRIBUTES, &h);
+  PSECURITY_DESCRIPTOR sd = NULL;
+  SECURITY_ATTRIBUTES sa;
+  if (e == 0) {
+    CloseHandle(h);
+    return svc_check_existing(path, w);
+  }
+  if (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND) {
+    svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
+    return SD_E_ACCESS_DENIED;
+  }
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sd, NULL)) {
+    svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
+    return SD_E_INTERNAL;
+  }
+  memset(&sa, 0, sizeof(sa));
+  sa.nLength = sizeof(sa);
+  sa.lpSecurityDescriptor = sd;
+  if (!CreateDirectoryW(path, &sa)) {
+    e = GetLastError();
+    LocalFree(sd);
+    if (e == ERROR_ALREADY_EXISTS)
+      return svc_check_existing(path, w);
+    svc_refuse(w, path, SVC_FOLDER_NO_RIGHTS);
+    return SD_E_ACCESS_DENIED;
+  }
+  LocalFree(sd);
+  return SD_OK;
+}
+
+/* The vendor folder (D45), only for the default location (the tests create their own root). It is checked like the
+   rest of the tree; when it is missing nothing is created here (the data folder is created below it by svc_mkdir). */
+static sd_err svc_check_vendor(svc_refusal *w)
+{
+  HANDLE h = NULL;
+  DWORD e;
+  if (g.vendor[0] == 0)
+    return SD_OK;
+  e = svc_folder_open(g.vendor, FILE_READ_ATTRIBUTES, &h);
+  if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+    return SD_OK;
+  if (e == 0)
+    CloseHandle(h);
+  return svc_check_existing(g.vendor, w);
+}
+
+static sd_err svc_ensure_layout(svc_refusal *w)
 {
   static const wchar_t *const k_admin_read = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
   static const wchar_t *const k_admin = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
   static const wchar_t *const k_system = L"D:PAI(A;OICI;FA;;;SY)";
   wchar_t path[MAX_PATH];
   sd_err e;
-  /* the vendor folder, only for the default location (the tests create their own root) */
-  e = svc_mkdir(g.root, k_admin_read);
-  if (e != SD_OK)
-    return e;
+  if ((e = svc_check_vendor(w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.root, k_admin_read, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\logs", g.root);
-  if ((e = svc_mkdir(path, k_admin)) != SD_OK) return e;
-  if ((e = svc_mkdir(g.profiles, k_admin_read)) != SD_OK) return e;
-  if ((e = svc_mkdir(g.service_dir, k_admin)) != SD_OK) return e;
+  if ((e = svc_mkdir(path, k_admin, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.profiles, k_admin_read, w)) != SD_OK) return e;
+  if ((e = svc_mkdir(g.service_dir, k_admin, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\secrets", g.service_dir);
-  if ((e = svc_mkdir(path, k_system)) != SD_OK) return e;
+  if ((e = svc_mkdir(path, k_system, w)) != SD_OK) return e;
   _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\keys", g.service_dir);
-  return svc_mkdir(path, k_system);
+  return svc_mkdir(path, k_system, w);
 }
 
 /* ---- profiles ---- */
@@ -611,6 +671,16 @@ static void svc_event_mount(sd_mount_state st, const char *prof_id, wchar_t lett
     args[2] = wcode;
     svc_event(SVC_MSG_MOUNT_FAILED, args, 3);
   }
+}
+
+/* Event 3102 (10.3): a machine folder refused at start. %1 is the folder, %2 the reason (owner, reparse_point,
+   not_directory, acl). The service stays idle and nothing is repaired here (repair-data does that). */
+static void svc_event_untrusted(const svc_refusal *w)
+{
+  const wchar_t *args[2];
+  args[0] = w->path;
+  args[1] = svc_folder_reason_text(w->why);
+  svc_event(SVC_MSG_UNTRUSTED_FOLDER, args, 2);
 }
 
 /* The SCM sink: ReportEventW under source ShellDrive (registered by `shelldrive service install`). The message file
@@ -1428,7 +1498,7 @@ static sd_err handle_selftest(sd_json_writer *res)
   sd_jw_obj_begin(res);
   sd_jw_key(res, "name"); sd_jw_cstr(res, "layout");
   sd_jw_key(res, "result"); sd_jw_cstr(res, g.idle ? "fail" : "pass");
-  if (g.idle) { sd_jw_key(res, "detail"); sd_jw_cstr(res, "machine folder refused (reparse point or rights)"); }
+  if (g.idle) { sd_jw_key(res, "detail"); sd_jw_cstr(res, "machine folder refused (owner, reparse point or rights)"); }
   sd_jw_obj_end(res);
   sd_jw_obj_begin(res);
   sd_jw_key(res, "name"); sd_jw_cstr(res, "profiles");
@@ -1653,6 +1723,7 @@ static void svc_setup_secrets(const wchar_t *dir)
 int svc_run(const svc_opts *o)
 {
   sd_ipc_server_cfg cfg;
+  svc_refusal refusal;
   sd_err e;
   int rc = 0;
   memset(&g, 0, sizeof(g));
@@ -1666,6 +1737,7 @@ int svc_run(const svc_opts *o)
   g.be = (o && o->backend) ? o->backend : host_backend();
   g.event = o ? o->event : NULL;
   g.event_ctx = o ? o->event_ctx : NULL;
+  g.owner_trusted = o ? o->owner_trusted : NULL;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
 #endif
@@ -1675,10 +1747,12 @@ int svc_run(const svc_opts *o)
   }
   if (o && o->open_log && sd_log_open_file(g.logfile) != SD_OK)
     SD_LOGW("svc", "the service log is not open");
-  e = svc_ensure_layout();
+  memset(&refusal, 0, sizeof(refusal));
+  e = svc_ensure_layout(&refusal);
   if (e != SD_OK) {
     g.idle = 1;
     SD_LOGE("svc", "the machine folder is refused (%s): the service stays idle (3.2)", sd_err_name(e));
+    svc_event_untrusted(&refusal);
   }
   svc_setup_secrets(o && o->secret_dir ? o->secret_dir : g.service_dir);
   (void)svc_load_profiles();

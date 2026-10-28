@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "sd_test.h"
+#include "svc_folder.h"
 #include "svc_repair.h"
 
 #ifndef FSCTL_SET_REPARSE_POINT
@@ -414,4 +415,59 @@ SD_TEST(repair_owner_rule_trusts_only_system_and_administrators)
   SD_CHECK(ops.owner_trusted(ops.ctx, (PSID)sy) == 1);
   SD_CHECK(ops.owner_trusted(ops.ctx, (PSID)ba) == 1);
   SD_CHECK(ops.owner_trusted(ops.ctx, (PSID)world) == 0);
+}
+
+/* The shared check (svc_folder.c, used by the service start and the repair): one reason per kind of entry. */
+SD_TEST(folder_check_reports_reparse_kind_and_owner)
+{
+  wchar_t base[MAX_PATH], link[MAX_PATH], target[MAX_PATH], dir[MAX_PATH], file[MAX_PATH], miss[MAX_PATH];
+  HANDLE h = NULL, f = NULL;
+  svc_folder_reason why = SVC_FOLDER_OK;
+  DWORD e;
+  SD_REQUIRE(make_base(base, T_COUNT(base), L"folder"));
+  join(target, T_COUNT(target), base, L"real");
+  SD_REQUIRE(CreateDirectoryW(target, NULL));
+  join(link, T_COUNT(link), base, L"link");
+  SD_REQUIRE(make_junction(link, target));
+  join(dir, T_COUNT(dir), base, L"dir");
+  SD_REQUIRE(CreateDirectoryW(dir, NULL));
+  join(file, T_COUNT(file), base, L"file");
+  f = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  SD_REQUIRE(f != INVALID_HANDLE_VALUE);
+  CloseHandle(f);
+  join(miss, T_COUNT(miss), base, L"missing");
+
+  /* a junction is a reparse point, whatever its owner, and it is not followed */
+  SD_REQUIRE(svc_folder_open(link, READ_CONTROL | FILE_READ_ATTRIBUTES, &h) == 0);
+  SD_REQUIRE(svc_folder_inspect(h, 1, owner_any, NULL, &why) == 0);
+  CloseHandle(h);
+  SD_CHECK(why == SVC_FOLDER_REPARSE);
+
+  /* a file where a folder belongs */
+  SD_REQUIRE(svc_folder_open(file, READ_CONTROL | FILE_READ_ATTRIBUTES, &h) == 0);
+  SD_REQUIRE(svc_folder_inspect(h, 1, owner_any, NULL, &why) == 0);
+  CloseHandle(h);
+  SD_CHECK(why == SVC_FOLDER_KIND);
+
+  /* a folder: the owner decides */
+  SD_REQUIRE(svc_folder_open(dir, READ_CONTROL | FILE_READ_ATTRIBUTES, &h) == 0);
+  SD_REQUIRE(svc_folder_inspect(h, 1, owner_none, NULL, &why) == 0);
+  SD_CHECK(why == SVC_FOLDER_OWNER);
+  SD_REQUIRE(svc_folder_inspect(h, 1, owner_any, NULL, &why) == 0);
+  SD_CHECK(why == SVC_FOLDER_OK);
+  CloseHandle(h);
+
+  /* a store file is checked for kind and reparse point only: no owner rule */
+  SD_REQUIRE(svc_folder_open(file, READ_CONTROL | FILE_READ_ATTRIBUTES, &h) == 0);
+  SD_REQUIRE(svc_folder_inspect(h, 0, owner_none, NULL, &why) == 0);
+  CloseHandle(h);
+  SD_CHECK(why == SVC_FOLDER_OK);
+
+  /* a missing path is reported as missing, never as trusted */
+  e = svc_folder_open(miss, READ_CONTROL | FILE_READ_ATTRIBUTES, &h);
+  SD_CHECK(e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND);
+  SD_CHECK(h == NULL);
+  SD_CHECK(lstrcmpW(svc_folder_reason_text(SVC_FOLDER_REPARSE), L"reparse_point") == 0);
+  SD_CHECK(lstrcmpW(svc_folder_reason_text(SVC_FOLDER_OWNER), L"owner") == 0);
+  remove_tree(base);
 }

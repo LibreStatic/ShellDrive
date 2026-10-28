@@ -168,8 +168,9 @@ Why these four and not one:
 - The service logs to `<machine root>\logs\service.log`. Its console and SCM text is localized in the `svc` domain
   (03 §9.1); its log lines and codes stay English.
 - Global mounts are Dokany only in this part. Startup creates the machine folders with the DACLs of 3.2 when they
-  are missing and refuses the whole tree (idle service) when a folder is a reparse point. Existing folders are not
-  re-ACLed and their owner is not checked yet (left, 3.2).
+  are missing and refuses the whole tree (idle service) when a folder is a reparse point or has a foreign owner, and
+  logs Event 3102 for the first one refused. Existing folders are not re-ACLed yet (left, 3.2); `service repair-data`
+  does the repair.
 - A `scope = service` profile is loaded only when it validates: a user is named, `auth.agent` is not `pageant` or
   `openssh` (D17), `kbdint` is not offered, no jump hosts or proxies (not in this part), no WebDAV backend (D11), and
   every `service_access` entry resolves. Other machine profiles load without a warning.
@@ -2337,7 +2338,8 @@ v1.0 (can ship in v1.x without format changes).
   waiting for user sign-in (`attach` mode, 1.3), 1200 change through a global drive (info; `%1` profile, `%2` user
   SID, `%3` account name, `%4` operation, `%5` remote path; coalesced per 60 s; D35/TM-R24), 3101 service pipe client
   refused or over quota (warning, at most once per SID per 10 min; `%1` SID, `%2` reason; TM-R25), 3102 untrusted
-  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`; TM-R27, TM-R34).
+  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`, `not_directory` for a file where a folder belongs;
+  TM-R27, TM-R34).
   `ReportEventW` (XP+).
 - The agent does not write to the Event Log (users cannot register sources; its file log is enough).
 
