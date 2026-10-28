@@ -11,7 +11,9 @@ typedef enum cli_cmd {
   CLI_CMD_NONE, CLI_CMD_HELP, CLI_CMD_VERSION, CLI_CMD_MOUNT, CLI_CMD_UNMOUNT, CLI_CMD_LIST,
   CLI_CMD_AGENT_STOP, CLI_CMD_STATUS, CLI_CMD_PROFILE, CLI_CMD_HOSTKEY,
   CLI_CMD_REFRESH, CLI_CMD_CACHE,    /* M3: refresh <X:|PATH>[\sub\path], cache clear [<profile>|--all] */
-  CLI_CMD_SERVICE                    /* M5: service list | mount | unmount | status (03 §6.1) */
+  CLI_CMD_SERVICE,                   /* M5: service list | mount | unmount | status (03 §6.1) */
+  CLI_CMD_DIAG,                      /* diag: only "diag bench" so far; the parser turns it into CLI_CMD_BENCH */
+  CLI_CMD_BENCH                      /* diag bench <X:> and the bench alias (cli_bench.c, 03 §6.1, 02 §11) */
 } cli_cmd;
 
 /* Repeatable --jump: at most SD_PROFILE_MAX_HOPS hops before the parse rejects one more. */
@@ -59,6 +61,9 @@ typedef struct cli_args {
   const wchar_t *expect;     /* hostkey add --expect SHA256:... */
   int machine;               /* --machine: the machine store (hostkey add, accept-announced) */
   int dry_run, add_only, announced;
+  const wchar_t *bench_scenario;   /* diag bench --scenario NAME; NULL = all */
+  const wchar_t *bench_write_mode; /* diag bench --write-mode through|behind; NULL = through */
+  int bench_size_mib;              /* diag bench --size MIB (1..4096); 0 = default */
   cli_usage_err err;
   const wchar_t *bad;
   const wchar_t *bad_value;
@@ -96,5 +101,6 @@ int cli_run_cache(const cli_args *a);          /* cli_cmds3.c: cache clear [<pro
 int cli_run_service(const cli_args *a);        /* cli_service.c: service list | mount | unmount | status (03 §1.3, §6.1; M5) */
 int cli_run_profile_test(const cli_args *a);   /* cli_cmds3.c: profile test <profile> (03 §6.1) */
 int cli_run_status_stats(const cli_args *a);   /* cli_cmds3.c: status --stats (03 §6.1, 02 §11) */
+int cli_run_bench(const cli_args *a);          /* cli_bench.c: diag bench <X:> [--scenario] [--size] [--write-mode] (03 §6.1, 02 §11) */
 
 #endif /* SD_CLI_H */

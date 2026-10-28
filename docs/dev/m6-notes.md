@@ -324,3 +324,43 @@ here runs ARM32 code.
 - CI: the `arm32` job runs on `windows-2022`. Whether that image has the ARM32 toolset and the SDK 10.0.22621 ARM
   libraries is not verified here (the local machine has both).
 - Removing the compiler-probe workaround once CMake's compiler test honours the SDK version (see Build layout).
+
+## diag bench (02 section 11, 03 section 6.1)
+
+`shelldrive diag bench <X:> [--scenario NAME] [--size MIB] [--write-mode through|behind] [--json]`, alias
+`shelldrive bench ...`. Source: `apps/shelldrive/cli_bench.c`; parser in `cli_args.c`; strings in `l10n/cli/*.po`
+(the `cli.bench.*` and `cli.help.bench*` entries).
+
+- **Scenarios.** `all` (default), `seq-write` (1 MiB blocks), `seq-write-64k` (64 KiB blocks), `seq-read` (1 MiB blocks,
+  reads the file that `seq-write` made; run alone, it writes that file first, untimed), `small-files` (1000 files of 4 KiB,
+  create and close), `open` (50 samples: attributes alone, then open + first 4 KiB read + close; medians and 95th percentiles).
+  Sequential timings include the close, so the flush of the cache is counted.
+- **`--size MIB`** is an addition to the spec, which fixes the 1 GiB transfer of 02 section 11 but no option for it.
+  Default 256 MiB, range 1 to 4096; 02 section 11 uses 1024.
+- **Write mode.** `--write-mode` (default `through`) is the mode the report states; JSON carries
+  `"write_mode_source": "declared"`. The agent's `list` does not report a mount's write mode, so the CLI cannot check
+  it. The report says so.
+- **Pool.** `connection.pool` from the agent's `list` when an agent runs and has the letter; `null` otherwise.
+- **Safety.** The run creates one new folder `X:\.shelldrive-bench-<pid>-<tick>` (CreateDirectory fails on an existing
+  name) and writes only `CREATE_NEW` files inside it. The folder is removed at the end, also after a failed step; if it
+  cannot be removed the run exits 1 and prints the path. A volume with `FILE_READ_ONLY_VOLUME`, or an agent row with
+  `read_only`, is refused before anything is written (`read_only_mount`, exit 1). A letter with no volume gives
+  `mount_not_found` (exit 3).
+- **Output.** Human: one localized line per scenario, the pool and write-mode lines, and a note that reads can come from the
+  memory cache, which the run does not clear. `--json`: `{"ok":true,"result":{"target","size_mib","write_mode",
+  "write_mode_source","backend","pool","scenarios":[...],"cleaned"}}` with English keys; timings are numbers with three
+  decimals. Timings are never asserted by the tests.
+- **Test hook.** Test builds only: `SHELLDRIVE_TEST_BENCH_ROOT` replaces the drive by a folder (no volume checks). The smoke
+  test `smoke_diag_bench` uses it; `cli_parse_diag_bench` covers the parser.
+- **Shared code.** `tests/unit/sd_vfs/bench_pool.c` measures through the `sd_vfs` API and needs the WSL fixture, so it is
+  not factored into this command. Nothing in it is shared with the Win32 harness beyond the throughput formula.
+
+Not in this build (open items):
+
+- The 1,000-entry and 10,000-entry directory listing scenarios (02 section 11 "dir"), the `FILE_FLAG_NO_BUFFERING`
+  variant, the robocopy / 7-Zip / Explorer / Office real-world runs, and the `connections = 4` comparison (needs a profile
+  change between runs).
+- The mount's own write mode and pool size in the agent's `list` reply (so `--write-mode` can be checked, not only declared).
+- Warm and cold cache control: the run does not drop the cache, so cold numbers need a remount between runs.
+- WAN figures (netem) and the XP, Win7 and ARM64 spot checks of 02 section 11; this is the CLI part only.
+- Ctrl+C during a run leaves the folder behind; the next run uses a new folder name, so nothing is overwritten.

@@ -9,6 +9,7 @@ set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds2.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds3.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_bench.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_service.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c
   # service install/uninstall/start/stop/status (M5): the SCM seam lives with the service it registers (03 §1.3).

@@ -94,7 +94,8 @@ enum {
   OPT_JSON, OPT_QUIET, OPT_LANG, OPT_HELP, OPT_VERSION, OPT_PROMPT, OPT_STDIN,
   OPT_HOST, OPT_LETTER, OPT_IDENTITY, OPT_REMOTE_PATH, OPT_READ_ONLY, OPT_NO_WAIT, OPT_ALL, OPT_FORCE,
   OPT_BACKEND, OPT_JUMP, OPT_PROXY, OPT_CONNECTIONS, OPT_TYPE, OPT_FROM, OPT_DRY_RUN, OPT_ADD_ONLY,
-  OPT_ANNOUNCED, OPT_STATS, OPT_OPEN, OPT_MACHINE, OPT_FROM_SERVER, OPT_EXPECT
+  OPT_ANNOUNCED, OPT_STATS, OPT_OPEN, OPT_MACHINE, OPT_FROM_SERVER, OPT_EXPECT,
+  OPT_SCENARIO, OPT_SIZE, OPT_WRITE_MODE
 };
 
 static const opt_def k_opts[] = {
@@ -115,6 +116,8 @@ static const opt_def k_opts[] = {
   { L"--announced", O_FLAG, OPT_ANNOUNCED }, { L"--stats", O_FLAG, OPT_STATS }, { L"--open", O_FLAG, OPT_OPEN },
   { L"--machine", O_FLAG, OPT_MACHINE }, { L"--from-server", O_VALUE, OPT_FROM_SERVER },
   { L"--expect", O_VALUE, OPT_EXPECT },
+  { L"--scenario", O_VALUE, OPT_SCENARIO }, { L"--size", O_VALUE, OPT_SIZE },
+  { L"--write-mode", O_VALUE, OPT_WRITE_MODE },
 };
 
 /* Which options each command accepts (globals are always accepted). */
@@ -138,6 +141,8 @@ static int allowed(cli_cmd cmd, int id)
     return cmd == CLI_CMD_PROFILE;
   case OPT_ALL: case OPT_FORCE:
     return cmd == CLI_CMD_UNMOUNT || cmd == CLI_CMD_CACHE;
+  case OPT_SCENARIO: case OPT_SIZE: case OPT_WRITE_MODE:
+    return cmd == CLI_CMD_DIAG || cmd == CLI_CMD_BENCH;
   }
   return 0;
 }
@@ -174,8 +179,28 @@ static const wchar_t *hk_add_option_name(const cli_args *a)
   return a->machine ? L"--machine" : a->from_server ? L"--from-server" : L"--expect";
 }
 
+/* diag bench --scenario NAME: one of the scenario names of cli_bench.c, or "all". */
+static int bench_scenario_ok(const wchar_t *v)
+{
+  static const wchar_t *const names[] = { L"all", L"seq-write", L"seq-write-64k", L"seq-read", L"small-files", L"open" };
+  size_t i;
+  for (i = 0; i < SD_COUNTOF(names); i++)
+    if (wcscmp(v, names[i]) == 0) return 1;
+  return 0;
+}
+
+/* diag bench <X:> and bench <X:>: a drive letter, optionally with a backslash (the same shape as refresh). */
+static int bench_drive_ok(const wchar_t *s)
+{
+  if (s == NULL || !((s[0] >= L'A' && s[0] <= L'Z') || (s[0] >= L'a' && s[0] <= L'z')) || s[1] != L':')
+    return 0;
+  return s[2] == 0 || (s[2] == L'\\' && s[3] == 0);
+}
+
 static cli_cmd command_of(const wchar_t *w)
 {
+  if (wcscmp(w, L"diag") == 0) return CLI_CMD_DIAG;     /* diag bench <X:> (the only diag form so far) */
+  if (wcscmp(w, L"bench") == 0) return CLI_CMD_BENCH;   /* alias of diag bench (03 §6.1) */
   if (wcscmp(w, L"mount") == 0) return CLI_CMD_MOUNT;
   if (wcscmp(w, L"unmount") == 0 || wcscmp(w, L"umount") == 0) return CLI_CMD_UNMOUNT;
   if (wcscmp(w, L"list") == 0 || wcscmp(w, L"ls") == 0) return CLI_CMD_LIST;
@@ -281,6 +306,30 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
       case OPT_MACHINE: a->machine = 1; break;
       case OPT_FROM_SERVER: a->from_server = value; break;
       case OPT_EXPECT: a->expect = value; break;
+      case OPT_SCENARIO:
+        if (!bench_scenario_ok(value))
+          return set_err(a, CLI_E_BAD_VALUE, d->name, value);
+        a->bench_scenario = value;
+        break;
+      case OPT_SIZE: {
+        /* 1..4096 MiB: digits only, no sign, no leading overflow */
+        int64_t mib = 0;
+        const wchar_t *p = value;
+        while (*p >= L'0' && *p <= L'9') {
+          mib = mib * 10 + (*p - L'0');
+          if (mib > 4096) break;
+          p++;
+        }
+        if (mib < 1 || mib > 4096 || *p)
+          return set_err(a, CLI_E_BAD_VALUE, d->name, value);
+        a->bench_size_mib = (int)mib;
+        break;
+      }
+      case OPT_WRITE_MODE:
+        if (wcscmp(value, L"through") != 0 && wcscmp(value, L"behind") != 0)
+          return set_err(a, CLI_E_BAD_VALUE, d->name, value);
+        a->bench_write_mode = value;
+        break;
       case OPT_STATS: a->stats = 1; break;
       case OPT_OPEN: a->open_after = 1; break;
       }
@@ -305,8 +354,12 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
          sub-verb + source + value, hostkey takes sub-verb + target */
       const wchar_t **slot = NULL;
       if (a->cmd == CLI_CMD_MOUNT || a->cmd == CLI_CMD_UNMOUNT || a->cmd == CLI_CMD_HELP ||
-          a->cmd == CLI_CMD_STATUS || a->cmd == CLI_CMD_REFRESH) {
+          a->cmd == CLI_CMD_STATUS || a->cmd == CLI_CMD_REFRESH || a->cmd == CLI_CMD_BENCH) {
         if (a->positional == NULL) slot = &a->positional;
+      } else if (a->cmd == CLI_CMD_DIAG) {
+        /* diag <verb> <X:>: the verb, then the drive (the verb is checked below) */
+        if (a->positional == NULL) slot = &a->positional;
+        else if (a->arg2 == NULL) slot = &a->arg2;
       } else if (a->cmd == CLI_CMD_CACHE) {
         if (a->positional == NULL) slot = &a->positional;
         else if (a->arg2 == NULL) slot = &a->arg2;
@@ -332,6 +385,19 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
   /* options given before the command word: re-check against the command */
   if (a->cmd == CLI_CMD_NONE && !a->help)
     return set_err(a, CLI_E_MISSING_ARGUMENT, NULL, NULL);
+  /* diag bench <X:> is the bench command (03 §6.1); "diag" has no other verb in this build */
+  if (a->cmd == CLI_CMD_DIAG && !a->help) {
+    if (a->positional == NULL)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (wcscmp(a->positional, L"bench") != 0)
+      return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
+    a->cmd = CLI_CMD_BENCH;
+    a->positional = a->arg2;
+    a->arg2 = NULL;
+  }
+  if (a->cmd != CLI_CMD_BENCH && (a->bench_scenario || a->bench_size_mib || a->bench_write_mode))
+    return set_err(a, CLI_E_UNKNOWN_OPTION, a->bench_scenario ? L"--scenario" : a->bench_size_mib ? L"--size" :
+                   L"--write-mode", NULL);
   if (a->cmd != CLI_CMD_MOUNT && (a->host_spec || a->letter || a->identity || a->remote_path || a->read_only ||
                                   a->no_wait || a->use_stdin || a->prompt != CLI_PROMPT_AUTO || a->backend ||
                                   a->jump_count || a->proxy || a->connections))
@@ -482,6 +548,12 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     } else {
       return set_err(a, CLI_E_UNKNOWN_COMMAND, a->positional, NULL);
     }
+    break;
+  case CLI_CMD_BENCH:
+    if (!a->positional)
+      return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
+    if (!bench_drive_ok(a->positional))
+      return set_err(a, CLI_E_LETTER, a->positional, a->positional);
     break;
   case CLI_CMD_AGENT_STOP:
     if (!have_agent_verb)
