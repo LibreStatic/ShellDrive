@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <sddl.h>
+#include <aclapi.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -1152,6 +1153,156 @@ sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx)
       SD_LOGW("config", "skipping profile %ls (invalid %s)", path, bad ? bad : "file");
       continue;
     }
+    if (!cb(ctx, pp, path))
+      break;
+  } while (FindNextFileW(f, &fd));
+  FindClose(f);
+  sd_free(pp);
+  return SD_OK;
+}
+
+/* ---- machine templates (03 §3.2, 3.4: scope = users) ---- */
+
+sd_err sd_config_machine_root(wchar_t *out, size_t cch)
+{
+  /* the test override replaces the whole tree: <override>\machine stands for %ProgramData%\LibreStatic\ShellDrive */
+  if (g_root_override[0])
+    return wcpy(out, cch, g_root_override) && wcat(out, cch, L"\\machine") ? SD_OK : SD_E_NAME_TOO_LONG;
+  return folder(CSIDL_COMMON_APPDATA, out, cch);
+}
+
+/* A SID from its string form (S-1-5-18 SYSTEM, S-1-5-32-544 Administrators, S-1-3-4 OWNER RIGHTS) is trusted for the
+   machine folders (3.2): the owner, and no allow ACE that grants write, delete or WRITE_DAC to anyone else. */
+static int machine_sid_trusted(PSID s)
+{
+  static const wchar_t *const k_trusted[] = { L"S-1-5-18", L"S-1-5-32-544", L"S-1-3-4" };
+  size_t i;
+  for (i = 0; i < SD_COUNTOF(k_trusted); i++) {
+    PSID t = NULL;
+    int same = 0;
+    if (ConvertStringSidToSidW(k_trusted[i], &t)) {
+      same = EqualSid(s, t) ? 1 : 0;
+      LocalFree(t);
+    }
+    if (same)
+      return 1;
+  }
+  return 0;
+}
+
+#define MACHINE_WRITE_MASK (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | \
+                            FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL)
+
+/* 1 when the open handle is a plain folder (want_dir) or a plain file, not a link, owned by a trusted SID and with no
+   write right for anyone else. Test roots (the override) are ordinary user folders, so only the link check applies. */
+static int machine_entry_trusted(HANDLE h, int want_dir)
+{
+  BY_HANDLE_FILE_INFORMATION bi;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  PSID owner = NULL;
+  PACL dacl = NULL;
+  ACL_SIZE_INFORMATION asi;
+  DWORD i;
+  int ok = 0;
+  if (!GetFileInformationByHandle(h, &bi))
+    return 0;
+  if ((bi.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    return 0;
+  if (((bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != (want_dir != 0))
+    return 0;
+  if (g_root_override[0])
+    return 1;
+  if (GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, NULL, &dacl,
+                      NULL, &sd) != ERROR_SUCCESS)
+    return 0;
+  if (owner == NULL || !machine_sid_trusted(owner) || dacl == NULL)
+    goto done;
+  if (!GetAclInformation(dacl, &asi, sizeof(asi), AclSizeInformation))
+    goto done;
+  ok = 1;
+  for (i = 0; ok && i < asi.AceCount; i++) {
+    ACE_HEADER *ah = NULL;
+    ACCESS_ALLOWED_ACE *a;
+    if (!GetAce(dacl, i, (LPVOID *)&ah) || ah == NULL)
+      ok = 0;
+    else if (ah->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+      a = (ACCESS_ALLOWED_ACE *)ah;
+      if ((a->Mask & MACHINE_WRITE_MASK) != 0 && !machine_sid_trusted((PSID)&a->SidStart) &&
+          !EqualSid((PSID)&a->SidStart, owner))
+        ok = 0;
+    }
+  }
+done:
+  if (sd != NULL)
+    LocalFree(sd);
+  return ok;
+}
+
+/* Opens a machine entry for the checks without following a link. */
+static HANDLE machine_open(const wchar_t *path, int want_dir)
+{
+  return CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                     NULL, OPEN_EXISTING,
+                     FILE_FLAG_OPEN_REPARSE_POINT | (want_dir ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
+}
+
+sd_err sd_profile_enum_templates(sd_profile_enum_cb cb, void *ctx)
+{
+  wchar_t dir[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH];
+  WIN32_FIND_DATAW fd;
+  HANDLE h, f;
+  sd_profile *pp;
+  DWORD err;
+  sd_err e = sd_config_machine_root(dir, SD_COUNTOF(dir));
+  if (e != SD_OK)
+    return e;
+  if (!wcat(dir, SD_COUNTOF(dir), L"\\profiles"))
+    return SD_E_NAME_TOO_LONG;
+  h = machine_open(dir, 1);
+  if (h == NULL || h == INVALID_HANDLE_VALUE) {
+    err = GetLastError();
+    return err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND ? SD_OK : SD_E_ACCESS_DENIED;   /* no folder: none */
+  }
+  e = machine_entry_trusted(h, 1) ? SD_OK : SD_E_ACCESS_DENIED;
+  CloseHandle(h);
+  if (e != SD_OK) {
+    SD_LOGW("config", "machine profiles folder %ls is not trusted; no machine templates listed", dir);
+    return e;
+  }
+  if (!wcpy(pattern, SD_COUNTOF(pattern), dir) || !wcat(pattern, SD_COUNTOF(pattern), L"\\*.ini"))
+    return SD_E_NAME_TOO_LONG;
+  f = FindFirstFileExW(pattern, FindExInfoStandard, &fd, FindExSearchNameMatch, NULL, 0);
+  if (f == INVALID_HANDLE_VALUE)
+    return SD_OK;
+  if ((pp = (sd_profile *)sd_alloc(sizeof(*pp))) == NULL) {
+    FindClose(f);
+    return SD_E_NO_MEMORY;
+  }
+  do {
+    const char *bad = NULL;
+    size_t nl = wcslen(fd.cFileName);
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+      continue;
+    if (nl < 4 || _wcsicmp(fd.cFileName + nl - 4, L".ini") != 0)
+      continue;
+    if (!wcpy(path, SD_COUNTOF(path), dir) || !wcat(path, SD_COUNTOF(path), L"\\") ||
+        !wcat(path, SD_COUNTOF(path), fd.cFileName))
+      continue;
+    h = machine_open(path, 0);
+    if (h == NULL || h == INVALID_HANDLE_VALUE)
+      continue;
+    e = machine_entry_trusted(h, 0) ? SD_OK : SD_E_ACCESS_DENIED;
+    CloseHandle(h);
+    if (e != SD_OK) {
+      SD_LOGW("config", "skipping machine profile %ls (not trusted)", path);
+      continue;
+    }
+    if (sd_profile_load_file(path, pp, &bad) != SD_OK) {
+      SD_LOGW("config", "skipping machine profile %ls (invalid %s)", path, bad ? bad : "file");
+      continue;
+    }
+    if (pp->scope != SD_PROFILE_SCOPE_USERS)
+      continue;
     if (!cb(ctx, pp, path))
       break;
   } while (FindNextFileW(f, &fd));

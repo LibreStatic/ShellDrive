@@ -519,14 +519,16 @@ static void hk_do(ssh_work *w)
     GetSystemTime(&t);
     comment[0] = '\0';
     {
-      /* "# added=YYYY-MM-DD" (03 §5.1 comment style) */
+      /* "# added=YYYY-MM-DD by=shelldrive" (03 §5.1 comment style) */
       static const char k_pfx[] = "# added=";
+      static const char k_by[] = " by=shelldrive";
       char *o = comment;
       memcpy(o, k_pfx, sizeof(k_pfx) - 1); o += sizeof(k_pfx) - 1;
       *o++ = (char)('0' + (t.wYear / 1000) % 10); *o++ = (char)('0' + (t.wYear / 100) % 10);
       *o++ = (char)('0' + (t.wYear / 10) % 10); *o++ = (char)('0' + t.wYear % 10); *o++ = '-';
       *o++ = (char)('0' + t.wMonth / 10); *o++ = (char)('0' + t.wMonth % 10); *o++ = '-';
-      *o++ = (char)('0' + t.wDay / 10); *o++ = (char)('0' + t.wDay % 10); *o = '\0';
+      *o++ = (char)('0' + t.wDay / 10); *o++ = (char)('0' + t.wDay % 10);
+      memcpy(o, k_by, sizeof(k_by));     /* includes the terminating NUL */
     }
     /* a certificate is stored as its plain key (known_hosts converts it) */
     h->err = sd_known_hosts_add(h->kh, SD_KH_STORE_USER, h->name, h->blob, h->len, comment);
@@ -551,7 +553,11 @@ static void raise_hostkey_prompt(sd_ssh_conn *c)
   bits = ssh_blob_key_bits(c->hostkey, c->hostkey_len);
   hi->key_bits = bits ? bits : 256;
   hi->fp_sha256 = ssh_prompt_str(p, c->hostkey_fp);
-  hi->fp_md5 = "";
+  {
+    char md5[64];
+    if (sd_hostkey_fingerprint_md5(c->hostkey, c->hostkey_len, md5) != SD_OK) md5[0] = '\0';
+    hi->fp_md5 = ssh_prompt_str(p, md5);     /* "MD5:xx:..." secondary display (5.2); "" when unavailable */
+  }
   hi->status = SD_HK_NEW;
   hi->is_reconnect = c->is_reconnect;
   hi->blob = ssh_prompt_blob(p, c->hostkey, c->hostkey_len);

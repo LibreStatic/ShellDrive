@@ -531,6 +531,7 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `log.tail {lines?, cursor?, level?, component?, follow?}` | x | x (admin, M5) | the ring of 4096 records (2.4.1). `follow: true` is `unsupported` in M3 (the `log` topic is M4) |
 | `selftest` | x | x | `{healthy, checks:[{name, result: pass\|fail\|skip, code?, detail}]}`; the CLI maps `healthy: false` to exit 17 |
 | `diag.collect` | x | x (admin, M5) | M4 (10.5) |
+| `events.recent {limit?}` | x | — | Open to every client, like `list`. Reply `{events: [{seq, time, event, mount_id?, state?, code?}], last_seq}`: the newest records of the agent's event history, oldest first, at most 200 (`limit` 1 to 200, default 200; a ring, the oldest dropped first). Recorded: every `mount.state` (with `state`, and `code` of a failed state), every `warning` (`code`), every `hostkeys.announced` (`mount_id`), and a failed mount create (`state: failed`). `seq` counts from 1 in this agent process and is never reused; `time` is unix seconds. A UI that starts later fills its event list from this, then follows the events. Prompts are not recorded. Feature `events.recent` |
 | `agent.shutdown {unmount?}` | x | — | stops the agent; every mount is unmounted (1.2) |
 | `hostkey.announced.list` | x | x (admin, M5) | `{announcements:[{id, mount_id, host, lookup_name, hop, add, remove}]}` |
 | `hostkey.announced.accept {id, add_only}` | x | x (admin, elevated, M5) | applies an announcement (5.6). The argument shape is `{id, add_only}` (`add_only: true` skips the removals) |
@@ -783,8 +784,9 @@ void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event)
 - **Features.** The `hello` reply carries `features: [...]` with the names this build implements: the methods `status`,
   `config.reload`, `log.tail`, `selftest`, `prompt.list` and the behaviour `prompt.queued`. M3 adds the methods `refresh`,
   `cache.clear`, `profile.test` and `mount.attach_info`, the status details `status.stats` and `status.proxy_legs`, and
-  the events `config.changed` and `agent.stopping` (listed as names, as the others). Still planned: `diag.collect`,
-  `update.check`, `log.follow` and the `log` topic (M4). A client calls a method only if its name is listed and degrades
+  the events `config.changed` and `agent.stopping` (listed as names, as the others). The agent also lists `diag.collect`,
+  `update`, `update.check`, `update.apply` and `events.recent` (round 18: the event history, 2.4). Still planned:
+  `log.follow` and the `log` topic (M4). A client calls a method only if its name is listed and degrades
   otherwise (the Logs viewer shows
   that the agent is too old for log viewing without `log.tail`).
 - **Skew.** A server supports proto N and N-1 (2.3). An M3 UI talking to an M2 agent gets `features` without the M3 names
@@ -1051,7 +1053,9 @@ Semantics owned by this layer:
   global mounts, letters with remembered persistent connections (`WNetOpenEnum(RESOURCE_REMEMBERED)`), and A:/B:.
   Folder targets must be empty directories on a local NTFS volume (validated at mount).
 - Scope `users`: machine-provided template; each user's agent mounts it with the user's own credentials and
-  known_hosts. **Per-user overrides are limited to `mount.target`, `mount.autostart` and
+  known_hosts. The UI lists them under "Provided by your organization" through `sd_profile_enum_templates` (sd_config):
+  the machine store `%ProgramData%\LibreStatic\ShellDrive\profiles` only, read-only, each folder and file checked on its
+  handle (plain, owned by SYSTEM or Administrators, no write right for others; 3.2). Test roots use `<override>\machine`. **Per-user overrides are limited to `mount.target`, `mount.autostart` and
   `mount.autostart_sessions` (D25)**, plus hiding the template. They are stored in
   `%APPDATA%\LibreStatic\ShellDrive\overrides\<profile id>.ini` (`[override] target, autostart, autostart_sessions, hidden`);
   any other key in that file is ignored with a log line. The profile editor shows a template read-only except the
@@ -1402,7 +1406,13 @@ mutex.
   never hashed (the file is ACL-protected and readable entries help support); hashed entries from other tools are
   read fine.
 - Each line we write gets an end-of-line comment: `# added=2026-10-24 by=shelldrive`, `# imported-from=putty`,
-  `# imported-from=openssh` or `# updated-by=hostkeys-00 added=…` (5.6).
+  `# imported-from=openssh` or `# updated-by=hostkeys-00 added=…` (5.6). The host key manager reads each line through
+  `sd_known_hosts_list_all` (user and machine stores), which also returns the trailing comment, the `added` date and the
+  origin: `ShellDrive` (`by=shelldrive` or a bare `added=`), `Copied from PuTTY`, `Copied from OpenSSH`, `Updated by server`
+  (`updated-by=`), or other (no source comment). Live sources are not listed (5.1). The reply of the agent carries no host
+  key store list: the UI reads the stores itself (5.1 "store list is not on the pipe").
+- The MD5 fingerprint (`MD5:xx:xx:...`, legacy display, 5.2) comes from `sd_hostkey_fingerprint_md5` (sd_crypto MD5, RFC
+  1321); the host key prompt carries it in `fp_md5`.
 - The store key for jump hops and aliases is `host_key_alias` if set, else the hop's host/port.
 
 ### 5.2 First-connection (TOFU) dialog

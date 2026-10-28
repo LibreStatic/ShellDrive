@@ -4,6 +4,7 @@ SD_TEST_DECL(sha256_kat);
 SD_TEST_DECL(sha512_sha384_kat);
 SD_TEST_DECL(hash_incremental_matches_oneshot);
 SD_TEST_DECL(hmac_rfc4231);
+SD_TEST_DECL(md5_rfc1321);
 SD_TEST_DECL(pbkdf2_rfc7914);
 SD_TEST_DECL(wycheproof_hmac_sha256);
 SD_TEST_DECL(wycheproof_hmac_sha512);
@@ -51,6 +52,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(sha512_sha384_kat),
   SD_TEST_ENTRY(hash_incremental_matches_oneshot),
   SD_TEST_ENTRY(hmac_rfc4231),
+  SD_TEST_ENTRY(md5_rfc1321),
   SD_TEST_ENTRY(pbkdf2_rfc7914),
   SD_TEST_ENTRY(wycheproof_hmac_sha256),
   SD_TEST_ENTRY(wycheproof_hmac_sha512),

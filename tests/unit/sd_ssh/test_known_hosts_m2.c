@@ -426,6 +426,78 @@ static int count_cb(void *ctx, const sd_kh_entry *e)
   return 0;
 }
 
+typedef struct all_ctx {
+  uint32_t n;
+  sd_kh_origin origin[6];
+  char comment[6][256];
+  char added[6][16];
+} all_ctx;
+
+static int all_cb(void *vctx, const sd_kh_all_entry *e)
+{
+  all_ctx *c = (all_ctx *)vctx;
+  if (e->line >= 1 && e->line <= 5) {
+    c->n++;
+    c->origin[e->line] = e->origin;
+    _snprintf_s(c->comment[e->line], sizeof(c->comment[0]), _TRUNCATE, "%s", e->comment);
+    _snprintf_s(c->added[e->line], sizeof(c->added[0]), _TRUNCATE, "%s", e->added);
+  }
+  return 0;
+}
+
+/* sd_known_hosts_list_all: the trailing comment, the added= date and the source of each line (03 §5.1) */
+SD_TEST(tr_kh_list_all_comments_and_origin)
+{
+  uint8_t a[128], b[128];
+  size_t al, bl;
+  wchar_t path[MAX_PATH];
+  sd_kh_store st;
+  sd_known_hosts *kh = NULL;
+  all_ctx c;
+  char fp[64];
+  uint8_t d[SD_MD5_LEN];
+  char hex[3];
+  if (!tu_crypto_or_skip("tr_kh_list_all_comments_and_origin")) return;
+  al = pub_blob(KEY_A, a, sizeof(a), NULL, 0);
+  bl = pub_blob(KEY_B, b, sizeof(b), NULL, 0);
+  SD_REQUIRE(al && bl);
+  SD_REQUIRE(tu_temp_path(L"kh-list-all\\known_hosts", path, SD_COUNTOF(path)));
+  DeleteFileW(path);
+  st.kind = SD_KH_STORE_USER; st.path = path; st.writable = 1;
+  SD_REQUIRE(sd_known_hosts_open(&st, 1, &kh) == SD_OK);
+  SD_CHECK_EQ_INT(sd_known_hosts_add(kh, SD_KH_STORE_USER, "[c1]:2236", a, al, "# imported-from=putty added=2026-10-24"), SD_OK);
+  SD_CHECK_EQ_INT(sd_known_hosts_add(kh, SD_KH_STORE_USER, "[c2]:2236", b, bl, "# updated-by=hostkeys-00 added=2026-10-25"), SD_OK);
+  SD_CHECK_EQ_INT(sd_known_hosts_add(kh, SD_KH_STORE_USER, "[c3]:2236", a, al, "# added=2026-10-26 by=shelldrive"), SD_OK);
+  SD_CHECK_EQ_INT(sd_known_hosts_add(kh, SD_KH_STORE_USER, "[c4]:2236", b, bl, "# imported-from=openssh added=2026-10-27"), SD_OK);
+  SD_CHECK_EQ_INT(sd_known_hosts_add(kh, SD_KH_STORE_USER, "[c5]:2236", a, al, NULL), SD_OK);
+  memset(&c, 0, sizeof(c));
+  SD_CHECK_EQ_INT(sd_known_hosts_list_all(kh, SD_KH_STORE_USER, all_cb, &c), SD_OK);
+  SD_CHECK_EQ_INT(c.n, 5);
+  SD_CHECK_EQ_INT(c.origin[1], SD_KH_ORIGIN_PUTTY);
+  SD_CHECK_STR(c.added[1], "2026-10-24");
+  SD_CHECK_STR(c.comment[1], "# imported-from=putty added=2026-10-24");
+  SD_CHECK_EQ_INT(c.origin[2], SD_KH_ORIGIN_SERVER);
+  SD_CHECK_STR(c.added[2], "2026-10-25");
+  SD_CHECK_EQ_INT(c.origin[3], SD_KH_ORIGIN_SHELLDRIVE);
+  SD_CHECK_STR(c.added[3], "2026-10-26");
+  SD_CHECK_STR(c.comment[3], "# added=2026-10-26 by=shelldrive");
+  SD_CHECK_EQ_INT(c.origin[4], SD_KH_ORIGIN_OPENSSH);
+  SD_CHECK_STR(c.added[4], "2026-10-27");
+  SD_CHECK_EQ_INT(c.origin[5], SD_KH_ORIGIN_OTHER);
+  SD_CHECK_STR(c.comment[5], "");
+  SD_CHECK_STR(c.added[5], "");
+  /* MD5 display fingerprint: "MD5:" and 16 lowercase hex pairs separated by colons (51 characters) */
+  SD_CHECK(sd_hostkey_fingerprint_md5(a, al, fp) == SD_OK);
+  SD_CHECK_EQ_INT(strlen(fp), 51);
+  SD_CHECK(strncmp(fp, "MD5:", 4) == 0);
+  SD_CHECK(fp[6] == ':' && fp[9] == ':' && fp[48] == ':');
+  sd_hash(SD_HASH_MD5, a, al, d);
+  _snprintf_s(hex, sizeof(hex), _TRUNCATE, "%02x", d[0]);
+  SD_CHECK(fp[4] == hex[0] && fp[5] == hex[1]);
+  sd_known_hosts_close(kh);
+  DeleteFileW(path);
+}
+
 SD_TEST(tr_kh_apply_hostkeys_and_remove_key)
 {
   uint8_t a[128], b[128], c[128];

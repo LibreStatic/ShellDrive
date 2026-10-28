@@ -327,6 +327,15 @@ sd_err sd_profile_delete(const char *name_or_id);
 
 typedef int (*sd_profile_enum_cb)(void *ctx, const sd_profile *p, const wchar_t *path);  /* 0 stops */
 sd_err sd_profile_enum(sd_profile_enum_cb cb, void *ctx);
+/* Machine templates (03 §3.2, 3.4): the profiles of the machine store (%ProgramData%\LibreStatic\ShellDrive\profiles)
+   whose profile.scope is users, for the "Provided by your organization" group. Read-only for users: the caller shows
+   them and never writes them. Each file is checked on its handle first (a plain file, owned by SYSTEM or
+   Administrators, no write right for anyone else; the folder the same): an untrusted folder is refused with
+   SD_E_ACCESS_DENIED and nothing is listed; an untrusted file is skipped. A missing folder lists nothing. Under the test
+   override (sd_config_set_root_override) the machine root is <override>\machine and only the link check applies. */
+sd_err sd_profile_enum_templates(sd_profile_enum_cb cb, void *ctx);
+/* The machine data root: %ProgramData%\LibreStatic\ShellDrive, or <override>\machine under the test override. */
+sd_err sd_config_machine_root(wchar_t *out, size_t cch);
 
 /* menu.cache (03 §8.2.2): the profile list of the This PC submenu, read read-only by the shell extension. Every
    profile add, rename and delete rewrites it (sd_profile_save, sd_profile_delete); sd_import_write rewrites it once

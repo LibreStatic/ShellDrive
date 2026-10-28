@@ -15,6 +15,7 @@ set(SD_CRYPTO_SOURCES
     gcm.c
     hash.c
     init.c
+    md5.c
     pktcipher.c
     blowfish_pi.inc
     sha2_consts.inc)

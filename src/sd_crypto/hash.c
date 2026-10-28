@@ -223,6 +223,7 @@ static void sha512_final(sha512_state *s, uint8_t *out, size_t outlen)
 size_t sd_hash_len(sd_hash_alg alg)
 {
   switch ((int)alg) {
+  case SD_HASH_MD5: return 16;
   case SD_HASH_SHA1: return 20;
   case SD_HASH_SHA256: return 32;
   case SD_HASH_SHA384: return 48;
@@ -234,6 +235,7 @@ size_t sd_hash_len(sd_hash_alg alg)
 size_t sd_hash_block_len(sd_hash_alg alg)
 {
   switch ((int)alg) {
+  case SD_HASH_MD5:
   case SD_HASH_SHA1:
   case SD_HASH_SHA256: return 64;
   case SD_HASH_SHA384:
@@ -246,7 +248,9 @@ void sd_hash_init(sd_hash_ctx *c, sd_hash_alg alg)
 {
   memset(c, 0, sizeof(*c));
   c->alg = alg;
-  if (alg == SD_HASH_SHA1) {
+  if (alg == SD_HASH_MD5) {
+    sd_md5_state_init(c->opaque);
+  } else if (alg == SD_HASH_SHA1) {
     sd_sha1_state_init(c->opaque);
   } else if (alg == SD_HASH_SHA256) {
     sha256_state *s = (sha256_state *)c->opaque;
@@ -261,7 +265,9 @@ void sd_hash_update(sd_hash_ctx *c, const void *p, size_t n)
 {
   if (n == 0)
     return;
-  if (c->alg == SD_HASH_SHA1)
+  if (c->alg == SD_HASH_MD5)
+    sd_md5_state_update(c->opaque, (const uint8_t *)p, n);
+  else if (c->alg == SD_HASH_SHA1)
     sd_sha1_state_update(c->opaque, (const uint8_t *)p, n);
   else if (c->alg == SD_HASH_SHA256)
     sha256_update((sha256_state *)c->opaque, (const uint8_t *)p, n);
@@ -271,7 +277,9 @@ void sd_hash_update(sd_hash_ctx *c, const void *p, size_t n)
 
 void sd_hash_final(sd_hash_ctx *c, uint8_t *out)
 {
-  if (c->alg == SD_HASH_SHA1)
+  if (c->alg == SD_HASH_MD5)
+    sd_md5_state_final(c->opaque, out);
+  else if (c->alg == SD_HASH_SHA1)
     sd_sha1_state_final(c->opaque, out);
   else if (c->alg == SD_HASH_SHA256)
     sha256_final((sha256_state *)c->opaque, out, 32);

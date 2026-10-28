@@ -144,12 +144,13 @@ typedef struct host_mount {
 #define PROMPT_RECONNECT_MS   600000u     /* prompts raised by a reconnect */
 #define UI_LAUNCH_INTERVAL_MS 30000u      /* at most one prompt-UI launch per 30 s */
 #define WARN_RING             32u         /* recent warnings kept for `list` */
+#define EVENT_RING            200u        /* recent events kept for `events.recent` (03 §2.4, 7.7) */
 
 /* Feature names of the hello reply (03 §7, 2.8): only what this build implements. */
 static const char *const k_agent_features[] = {
   "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued",
   "refresh", "cache.clear", "profile.test", "mount.attach_info", "status.stats", "status.proxy_legs",
-  "config.changed", "agent.stopping", "update", "update.check", "update.apply", "diag.collect", NULL
+  "config.changed", "agent.stopping", "update", "update.check", "update.apply", "diag.collect", "events.recent", NULL
 };
 
 #ifdef SD_HOST_TEST_HOOKS
@@ -168,6 +169,17 @@ static uint32_t env_u32(const wchar_t *name, uint32_t def)
 #endif
 
 typedef struct host_warn { char code[40]; char mount_id[16]; } host_warn;
+
+/* One event of the agent's history (03 §2.4 events.recent): the mount.state, warning and hostkeys.announced events
+   the clients get, as short records. Oldest records are dropped first; seq is never reused in this process. */
+typedef struct host_event {
+  uint64_t seq;
+  int64_t time;                 /* unix seconds */
+  char event[24];
+  char mount_id[16];
+  char state[24];              /* mount.state: the new state */
+  char code[40];               /* error or warning code; "" when none */
+} host_event;
 
 /* M3 prompt record (03 §3.2): from the sd_mount prompt until its prompt.closed. */
 typedef struct host_prompt {
@@ -216,6 +228,11 @@ static struct {
   int ui_launch;                /* 0 in test builds unless SHELLDRIVE_TEST_UI_LAUNCH=1: tests never start a UI */
   host_warn warns[WARN_RING];
   uint32_t warn_next, warn_count;
+  /* event history: its own lock, a leaf (taken while g.lock may be held, never the other way round) */
+  sd_mutex evlock;
+  host_event events[EVENT_RING];
+  uint32_t event_next, event_count;
+  uint64_t event_seq;
   uint64_t boot_tick;           /* log.tail cursor boot id */
   /* M3 agent.stopping reason: "request", "event" or "idle" */
   const char *stop_reason;
@@ -267,6 +284,24 @@ static void scopy(char *dst, size_t cap, const char *src)
   if (cap == 0) return;
   if (src) for (; src[i] && i + 1 < cap; i++) dst[i] = src[i];
   dst[i] = 0;
+}
+
+/* Appends one event to the history (03 §2.4 events.recent). Callers may hold g.lock: evlock is a leaf. */
+static void record_event(const char *event, const char *mount_id, const char *state, const char *code)
+{
+  host_event *e;
+  sd_mutex_lock(&g.evlock);
+  e = &g.events[g.event_next];
+  e->seq = ++g.event_seq;
+  e->time = sd_unix_time_now();
+  scopy(e->event, sizeof(e->event), event);
+  scopy(e->mount_id, sizeof(e->mount_id), mount_id);
+  scopy(e->state, sizeof(e->state), state);
+  scopy(e->code, sizeof(e->code), code);
+  g.event_next = (g.event_next + 1u) % EVENT_RING;
+  if (g.event_count < EVENT_RING)
+    g.event_count++;
+  sd_mutex_unlock(&g.evlock);
 }
 
 static int wide_from_utf8(const char *s, wchar_t *out, size_t cch)
@@ -451,6 +486,7 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
 {
   sd_wr d;
   sd_json_writer jw;
+  const char *ecode = NULL;         /* the error code of a failed state, for the event history */
   if (h->test_only)                 /* profile.test is not a mount for the clients (M3) */
     return;
   sd_wr_init(&d, 64 * 1024);
@@ -465,6 +501,7 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
     sd_mount_get_failure(h->m, &f);
     if (f.err == SD_OK) f.err = why;
     code = final_code(h, &f);
+    ecode = code;
     sd_jw_key(&jw, "error");
     sd_jw_obj_begin(&jw);
     sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, code);
@@ -497,6 +534,7 @@ static void send_state_event(host_mount *h, sd_mount_state st, sd_err why)
   sd_jw_obj_end(&jw);
   if (sd_jw_finish(&jw) == SD_OK)
     broadcast_data("mount", "mount.state", &d);
+  record_event("mount.state", h->id, sd_mount_state_name(st), ecode);
   sd_wr_free(&d);
 }
 
@@ -521,6 +559,7 @@ static void send_warning(host_mount *h, const char *code, const wchar_t *path, U
   sd_jw_obj_end(&jw);
   sd_jw_obj_end(&jw);
   remember_warning(code, h->id);
+  record_event("warning", h->id, NULL, code);
   if (sd_jw_finish(&jw) == SD_OK) {
     broadcast_data("mount", "warning", &d);
     broadcast_data("warning", "warning", &d);
@@ -888,6 +927,7 @@ static void on_warning(void *ctx, sd_mount *m, const char *code, uint32_t hop, c
     } else {
       SD_LOGW("agent", "%s: warning %s (hop %u): %s", h->id, code, (unsigned)hop, detail ? detail : "");
       remember_warning(code, h->id);
+      record_event("warning", h->id, NULL, code);
       sd_wr_init(&d, 16 * 1024);
       sd_jw_init(&jw, &d);
       sd_jw_obj_begin(&jw);
@@ -1035,6 +1075,7 @@ static void on_hostkeys_announced(void *ctx, sd_mount *m, const sd_mount_announc
       write_announce_json(&jw, x);
       SD_LOGI("agent", "%s: %Hs offered new host keys (%s)", h->id, a->lookup_name, x->id);
     }
+    record_event("hostkeys.announced", h->id, NULL, NULL);
     if (sd_jw_finish(&jw) == SD_OK) {
       broadcast_data("mount", "hostkeys.announced", &d);
       broadcast_data("hostkeys", "hostkeys.announced", &d);
@@ -1628,6 +1669,7 @@ static void work_start(void *arg)
       sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, sd_ipc_exit_code_for_err(e));
       sd_jw_obj_end(&jw);
       sd_jw_obj_end(&jw);
+      if (!h->test_only) record_event("mount.state", h->id, "failed", sd_err_name(e));
       if (!h->test_only && sd_jw_finish(&jw) == SD_OK) broadcast_data("mount", "mount.state", &d);
       sd_wr_free(&d);
     }
@@ -3323,6 +3365,38 @@ static sd_err handle_diag_collect(sd_json_writer *res)
   return SD_OK;
 }
 
+/* events.recent {limit?} (03 §2.4): the newest records of the event history, oldest first, at most EVENT_RING (200;
+   limit 1 to 200, default 200). Reply {events: [{seq, time, event, mount_id?, state?, code?}], last_seq}. seq counts
+   from 1 in this agent process; a client that started later sees the same history as the others. Open to every
+   client of the pipe, like list. */
+static sd_err handle_events_recent(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  int64_t limit = EVENT_RING;
+  uint32_t n, first, k;
+  if (sd_json_get(params, "limit") && (!sd_json_get_int64(params, "limit", &limit) || limit < 1 || limit > EVENT_RING))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "limit must be 1 to 200");
+  sd_mutex_lock(&g.evlock);
+  n = g.event_count < (uint32_t)limit ? g.event_count : (uint32_t)limit;
+  first = (g.event_next + EVENT_RING - n) % EVENT_RING;
+  sd_jw_key(res, "events");
+  sd_jw_arr_begin(res);
+  for (k = 0; k < n; k++) {
+    const host_event *e = &g.events[(first + k) % EVENT_RING];
+    sd_jw_obj_begin(res);
+    sd_jw_key(res, "seq"); sd_jw_int(res, (int64_t)e->seq);
+    sd_jw_key(res, "time"); sd_jw_int(res, e->time);
+    sd_jw_key(res, "event"); sd_jw_cstr(res, e->event);
+    if (e->mount_id[0]) { sd_jw_key(res, "mount_id"); sd_jw_cstr(res, e->mount_id); }
+    if (e->state[0]) { sd_jw_key(res, "state"); sd_jw_cstr(res, e->state); }
+    if (e->code[0]) { sd_jw_key(res, "code"); sd_jw_cstr(res, e->code); }
+    sd_jw_obj_end(res);
+  }
+  sd_jw_arr_end(res);
+  sd_jw_key(res, "last_seq"); sd_jw_int(res, (int64_t)g.event_seq);
+  sd_mutex_unlock(&g.evlock);
+  return SD_OK;
+}
+
 static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                           sd_json_writer *res, sd_ipc_error *err)
 {
@@ -3336,6 +3410,7 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "list") == 0) return handle_list(res);
   if (strcmp(method, "status") == 0) return handle_status(params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
+  if (strcmp(method, "events.recent") == 0) return handle_events_recent(params, res, err);
   if (strcmp(method, "diag.collect") == 0) return handle_diag_collect(res);
   if (strcmp(method, "profile.test") == 0) return handle_profile_test(client, params, res, err);
   if (strcmp(method, "refresh") == 0) return handle_refresh(params, res, err);
@@ -3508,6 +3583,7 @@ int host_agent_run(const host_agent_opts *opts)
   }
   sd_mutex_init(&g.lock);
   sd_mutex_init(&g.qlock);
+  sd_mutex_init(&g.evlock);
   g.qev = CreateEventW(NULL, FALSE, FALSE, NULL);
   if (g.qev == NULL)
     return 1;
