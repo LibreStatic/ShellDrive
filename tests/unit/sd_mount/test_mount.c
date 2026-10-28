@@ -190,6 +190,8 @@ static void h_free(harness *h)
 
 /* M3: the next h_create_b makes a test-only mount (profile.test) when set */
 static int h_test_only;
+/* the next h_create_b makes a hostkey mount (params.hostkey_fetch: no drive, letter 0 allowed) when set */
+static int h_hostkey_fetch;
 /* TM-R19: the next h_create_b asks for token-only (params.token_only / token_only_confirmed) */
 static int h_token_only, h_token_confirmed;
 
@@ -206,6 +208,7 @@ static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identit
   p.remote_path = "/srv/data";
   p.backend = backend;
   p.test_only = h_test_only;
+  p.hostkey_fetch = h_hostkey_fetch;
   p.token_only = h_token_only;
   p.token_only_confirmed = h_token_confirmed;
   memset(&cb, 0, sizeof(cb));
@@ -222,7 +225,7 @@ static sd_err h_create_b(harness *h, const wchar_t *host, const wchar_t *identit
   p.disk_cache_mb = 64;
   p.offline_wait_ms = 1500;
   p.reconnect_grace_ms = 30000;
-  return sd_mount_create(fake_backend(), &p, &cb, &h->m);
+  return sd_mount_create(h_hostkey_fetch ? fake_backend_hostkeys() : fake_backend(), &p, &cb, &h->m);
 }
 
 static sd_err h_create(harness *h, const wchar_t *host, const wchar_t *identity, wchar_t letter)
@@ -649,6 +652,40 @@ SD_TEST(mount_m3_test_only_probe)
   SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_FAILED);
   SD_CHECK(sd_mount_get_probe(h.m, &p) == 0);
   sd_mount_destroy(h.m);
+  h_free(&h);
+}
+
+SD_TEST(mount_hostkey_fetch_has_no_drive_letter)
+{
+  harness h;
+  sd_mount_attach a;
+  uint32_t vfs0;
+  fake_backend_reset();
+  vfs0 = fake_backend_vfs_mounts();
+  h_init(&h);
+  h.hk_answer = SD_MA_HOSTKEY_ONCE;
+  /* a hostkey mount (params.hostkey_fetch) is created with letter 0: it never maps a drive */
+  h_hostkey_fetch = 1;
+  SD_REQUIRE(h_create(&h, L"hk.test", NULL, 0) == SD_OK);
+  h_hostkey_fetch = 0;
+  SD_CHECK(sd_mount_letter(h.m) == 0);
+  SD_REQUIRE(sd_mount_start(h.m) == SD_OK);
+  SD_CHECK(pump_until_final(&h, 5000));
+  SD_CHECK_EQ_INT(sd_mount_get_state(h.m), SD_MOUNT_UNMOUNTED);
+  sd_mount_get_attach(h.m, &a);
+  SD_CHECK(a.letter == 0 && !a.mounted);
+  SD_CHECK_EQ_U64(fake_backend_vfs_mounts(), vfs0);
+  SD_CHECK(!fake_backend_letter_mounted(L'Z'));
+  sd_mount_destroy(h.m);
+  h_free(&h);
+  /* any other mount still needs a drive letter, and a letter outside A..Z is refused for every mount */
+  h_init(&h);
+  SD_CHECK(h_create(&h, L"nodrive.test", NULL, 0) == SD_E_INVALID_PARAM);
+  h_free(&h);
+  h_init(&h);
+  h_hostkey_fetch = 1;
+  SD_CHECK(h_create(&h, L"badletter.test", NULL, L'1') == SD_E_INVALID_PARAM);
+  h_hostkey_fetch = 0;
   h_free(&h);
 }
 

@@ -34,6 +34,8 @@ SD_TEST_DECL(svc_proxy_basic_without_a_service_secret_is_refused);
 SD_TEST_DECL(svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store);
 SD_TEST_DECL(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it);
 SD_TEST_DECL(svc_system_proxy_refuses_basic_auth_on_its_leg);
+SD_TEST_DECL(svc_system_proxy_policy_is_read_from_the_machine_values);
+SD_TEST_DECL(svc_secret_proxy_set_and_delete_through_the_pipe);
 SD_TEST_DECL(svc_hostkey_add_through_an_unknown_jump_host_is_refused);
 SD_TEST_DECL(svc_one_profile_mounted_twice_keeps_both_announcements);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
@@ -126,6 +128,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store),
   SD_TEST_ENTRY(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it),
   SD_TEST_ENTRY(svc_system_proxy_refuses_basic_auth_on_its_leg),
+  SD_TEST_ENTRY(svc_system_proxy_policy_is_read_from_the_machine_values),
+  SD_TEST_ENTRY(svc_secret_proxy_set_and_delete_through_the_pipe),
   SD_TEST_ENTRY(svc_hostkey_add_through_an_unknown_jump_host_is_refused),
   SD_TEST_ENTRY(svc_one_profile_mounted_twice_keeps_both_announcements),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),

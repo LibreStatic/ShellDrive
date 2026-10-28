@@ -212,7 +212,7 @@ typedef struct sd_mount_params {
   const wchar_t *identity_path;         /* expanded key file path; NULL/"" = none */
   uint32_t auth_methods;                /* SD_AUTH_* (sd_ssh.h); 0 = publickey|kbdint|password */
   const char *remote_path;              /* UTF-8; NULL/"" = login directory */
-  wchar_t letter;                       /* 'D'..'Z' */
+  wchar_t letter;                       /* 'D'..'Z'; 0 only with hostkey_fetch (a hostkey mount has no drive) */
   int read_only;
   int symlinks;                         /* sd_vfs_symlinks */
   int write_mode;                       /* sd_vfs_write_mode */

@@ -165,6 +165,8 @@ static struct svc_state {
   int test_hk_policy_forced;        /* SD_SVC_TEST_HOOKS only: svc_test_hk_policy replaces the registry value */
   DWORD test_hk_policy;
   int test_connect_admin;           /* SD_SVC_TEST_HOOKS only: every new connection counts as admin at connect */
+  int test_sysproxy_forced;         /* SD_SVC_TEST_HOOKS only: svc_test_sysproxy_policy replaces the machine policies */
+  DWORD test_sysproxy_allow, test_sysproxy_sspi;
 #endif
   svc_event_fn event;               /* Event Log sink (10.3), NULL = none */
   void *event_ctx;
@@ -1201,6 +1203,9 @@ static const char *svc_chain_identity(svc_chain *c, uint32_t i, const sd_chain_h
   return NULL;
 }
 
+static int svc_sysproxy_allowed(void);
+static int svc_sysproxy_sspi(void);
+
 /* The leg that reaches hop i (3.8): none, a configured HTTP or SOCKS5 proxy (a service secret for a user), or the
    machine configuration read through the seam (proxy = system, refused unless the machine policy allows it). */
 static const char *svc_chain_leg(svc_chain *c, uint32_t i, const sd_chain *ch)
@@ -1217,8 +1222,10 @@ static const char *svc_chain_leg(svc_chain *c, uint32_t i, const sd_chain *ch)
     wchar_t hostw[256];
     uint16_t port = 0;
     sd_err e;
-    if (g.sysproxy == NULL || !g.sysproxy->allow || g.sysproxy->read == NULL)
+    int sspi = 0;
+    if (g.sysproxy == NULL || g.sysproxy->read == NULL || !svc_sysproxy_allowed())
       return "proxy = system is refused by policy AllowSystemProxy (TM-R10)";
+    sspi = svc_sysproxy_sspi();
     if (svc_proxy_leg_check(x, pa, 0, &bad, &why) != SD_OK) {
       SD_LOGW("svc", "chain leg %u refused: %s (%s)", (unsigned)i, bad, why);
       return why;
@@ -1235,8 +1242,10 @@ static const char *svc_chain_leg(svc_chain *c, uint32_t i, const sd_chain *ch)
     d->proxy.host = c->proxy_host[i];
     d->proxy.port = port;
     d->proxy.user = NULL;
-    d->proxy.auth = 0;                  /* TM-R10: no SSPI towards a proxy obtained from proxy = system */
-    d->proxy.allow_discovered_sspi = 0;
+    /* TM-R10: no SSPI towards a proxy obtained from proxy = system unless AllowSystemProxySspi = 1; then the
+       Kerberos-only Negotiate of proxy_auth auto (no credentials here, 2.6 rule 1) */
+    d->proxy.auth = (sspi && pa != SD_PROFILE_PROXY_AUTH_NONE) ? SD_PROXY_AUTH_SSPI_KERBEROS : 0;
+    d->proxy.allow_discovered_sspi = sspi;
     d->proxy.allow_system = 0;
     d->proxy.fallback_direct = fb;
     return NULL;
@@ -1340,7 +1349,38 @@ static sd_err svc_sysproxy_machine_read(void *ctx, const wchar_t *host, uint16_t
   return e;
 }
 
-static const svc_sysproxy_ops k_sysproxy_shipping = { 0, svc_sysproxy_machine_read, NULL };
+static const svc_sysproxy_ops k_sysproxy_shipping = { -1, svc_sysproxy_machine_read, NULL };
+
+/* One machine policy of proxy = system (03 §3.5, 3.8): HKLM only, a missing or other-typed value reads as 0. */
+static int svc_sysproxy_policy_flag(sd_policy_id id)
+{
+  DWORD v = 0;
+  return sd_policy_machine_get_dword(id, &v) && v == 1;
+}
+
+/* AllowSystemProxy for one leg: the seam's own answer, or the machine policy when the seam says -1. */
+static int svc_sysproxy_allowed(void)
+{
+#ifdef SD_SVC_TEST_HOOKS
+  if (g.test_sysproxy_forced)
+    return g.test_sysproxy_allow == 1;
+#endif
+  if (g.sysproxy->allow >= 0)
+    return g.sysproxy->allow != 0;
+  return svc_sysproxy_policy_flag(SD_POLICY_ALLOWSYSTEMPROXY);
+}
+
+/* AllowSystemProxySspi (TM-R10): SSPI towards a system proxy only when the seam asks for the policy and it is 1. */
+static int svc_sysproxy_sspi(void)
+{
+#ifdef SD_SVC_TEST_HOOKS
+  if (g.test_sysproxy_forced)
+    return g.test_sysproxy_sspi == 1;
+#endif
+  if (g.sysproxy->allow >= 0)
+    return 0;
+  return svc_sysproxy_policy_flag(SD_POLICY_ALLOWSYSTEMPROXYSSPI);
+}
 
 /* ---- host keys kept for review (M5, 03 §5.6, §6.1) ---- */
 
@@ -1469,7 +1509,7 @@ static int svc_policy_hk_accept(void)
 #endif
   {
     DWORD v = 0;
-    return sd_policy_get_dword(SD_POLICY_UPDATEHOSTKEYS, &v) && v == 2;
+    return sd_policy_machine_get_dword(SD_POLICY_UPDATEHOSTKEYS, &v) && v == 2;
   }
 }
 
@@ -1483,6 +1523,13 @@ void svc_test_hk_policy(int forced, DWORD value)
 void svc_test_connect_admin(int on)
 {
   g.test_connect_admin = on;
+}
+
+void svc_test_sysproxy_policy(int forced, DWORD allow, DWORD sspi)
+{
+  g.test_sysproxy_forced = forced;
+  g.test_sysproxy_allow = allow;
+  g.test_sysproxy_sspi = sspi;
 }
 #endif
 
@@ -1830,7 +1877,7 @@ static void job_hk_start(void *arg)
     pr.profile_name = namew;
     pr.backend = SD_MOUNT_BACKEND_DOKANY;
     pr.global_mount = 0;
-    pr.letter = L'Z';                           /* sd_mount_create wants a letter; a hostkey mount never mounts a drive */
+    pr.letter = 0;                              /* a hostkey mount has no drive (params.hostkey_fetch) */
     pr.connections = 1;
     pr.no_secret_cache = 1;                     /* the service never keeps a secret it was given (2.5) */
     pr.legacy_policy = p->legacy_algorithms;
@@ -2511,6 +2558,39 @@ static sd_err handle_selftest(sd_json_writer *res)
   return SD_OK;
 }
 
+/* secret.set / secret.delete with kind "proxy" (4.5, 3.8, 2.6 rule 1): the password of a proxy leg of the service. proxy
+   is a spec without a password (sd_proxy_spec_parse refuses user:pass@), http://user@host:port or
+   socks5://user@host:port; the target is the one svc_proxy_secret_present reads for that leg. The value is never
+   echoed back, and the reply has no secret. */
+static sd_err handle_proxy_secret(const char *spec, const char *value, int set, sd_json_writer *res, sd_ipc_error *err)
+{
+  sd_proxy_spec x;
+  char target[SD_SECRET_MAX_TARGET];
+  sd_err e;
+  if (spec == NULL || (set && (value == NULL || value[0] == 0)))
+    return fail(err, SD_E_INVALID_PARAM, "usage", "secret needs proxy and a non-empty value");
+  if (sd_proxy_spec_parse(spec, &x) != SD_OK || (x.kind != SD_PROFILE_PROXY_HTTP && x.kind != SD_PROFILE_PROXY_SOCKS5) ||
+      x.user[0] == 0)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "proxy needs http:// or socks5:// with a user and no password");
+  e = sd_secret_target_proxy(x.kind == SD_PROFILE_PROXY_SOCKS5 ? "socks5" : "http", x.user, x.host, x.port, target,
+                             sizeof(target));
+  if (e != SD_OK)
+    return fail(err, e, NULL, "bad target");
+  if (set) {
+    e = sd_secret_put(SD_SECRET_SERVICE, SD_SECRET_PROXY, target, NULL, value, strlen(value));
+    if (e != SD_OK)
+      return fail(err, e, NULL, "secret store failed");
+    sd_jw_key(res, "stored"); sd_jw_bool(res, 1);
+  } else {
+    e = sd_secret_delete(SD_SECRET_SERVICE, SD_SECRET_PROXY, target);
+    if (e != SD_OK)
+      return fail(err, e == SD_E_NOT_FOUND ? SD_E_NOT_FOUND : e, e == SD_E_NOT_FOUND ? "secret_not_found" : NULL,
+                  "no such secret");
+    sd_jw_key(res, "deleted"); sd_jw_bool(res, 1);
+  }
+  return SD_OK;
+}
+
 static sd_err handle_secret(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err, int set)
 {
   const char *key = sd_json_get_str(params, "profile");
@@ -2522,6 +2602,8 @@ static sd_err handle_secret(sd_ipc_client *c, const sd_json *params, sd_json_wri
   sd_err e = need_admin(c, err);
   if (e != SD_OK)
     return e;
+  if (kind != NULL && strcmp(kind, "proxy") == 0)
+    return handle_proxy_secret(sd_json_get_str(params, "proxy"), value, set, res, err);
   if (key == NULL || kind == NULL || value == NULL)
     return fail(err, SD_E_INVALID_PARAM, "usage", "secret needs profile, kind and value");
   if (strcmp(kind, "password") != 0)

@@ -866,6 +866,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"--write-mode through|behind", SD_MSG_CLI_HELP_OPT_WRITE_MODE);
   } else if (topic && wcscmp(topic, L"service") == 0) {
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
+    help_line(L"secret set|delete --machine --proxy SPEC [--stdin]", SD_MSG_CLI_HELP_SECRET);
   } else if (topic && wcscmp(topic, L"profile") == 0) {
     help_line(L"profile import putty [<session>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile import ssh-config [<file>] [--dry-run]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
@@ -900,6 +901,7 @@ void cli_print_help(const wchar_t *topic)
     help_line(L"refresh <X:|PATH>[\\sub\\path]", SD_MSG_CLI_HELP_REFRESH);
     help_line(L"cache clear [<profile>|X:] | --all [--force]", SD_MSG_CLI_HELP_CACHE);
     help_line(L"service list | mount <profile> | unmount <profile|X:> | status <profile|X:>", SD_MSG_CLI_HELP_SERVICE);
+    help_line(L"secret set|delete --machine --proxy SPEC [--stdin]", SD_MSG_CLI_HELP_SECRET);
     help_line(L"diag [--check] | --bundle [FILE] | --fix webclient|linked-connections", SD_MSG_CLI_HELP_DIAG);
     help_line(L"profile import putty [<session>] | ssh-config [<file>]", SD_MSG_CLI_HELP_PROFILE_IMPORT);
     help_line(L"profile test <profile>", SD_MSG_CLI_HELP_PROFILE_TEST);
@@ -951,6 +953,7 @@ int cli_run(const cli_args *a)
   case CLI_CMD_REFRESH:    return cli_run_refresh(a);
   case CLI_CMD_CACHE:      return cli_run_cache(a);
   case CLI_CMD_SERVICE:    return cli_run_service(a);
+  case CLI_CMD_SECRET:     return cli_run_secret(a);
   case CLI_CMD_BENCH:      return cli_run_bench(a);
   case CLI_CMD_DIAG:
     if (a->diag_bundle) return cli_run_diag_bundle(a);

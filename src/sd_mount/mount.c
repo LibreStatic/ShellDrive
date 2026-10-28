@@ -360,12 +360,18 @@ static void post_item(sd_mount *m, int kind, sd_err err, uint32_t prompt_id, sd_
   m->cb.post(m->cb.ctx, run_item, it);
 }
 
+/* The drive letter for log lines. A hostkey mount (params.hostkey_fetch) has no drive: its letter is 0 and logs '-'. */
+static int mount_log_letter(const sd_mount *m)
+{
+  return m->letter ? (int)m->letter : '-';
+}
+
 static void set_state(sd_mount *m, sd_mount_state st, sd_err why)
 {
   if (m->state == st)
     return;
   m->state = st;
-  SD_LOGI("mount", "%c: state %s (%s)", (int)m->letter, sd_mount_state_name(st), sd_err_name(why));
+  SD_LOGI("mount", "%c: state %s (%s)", mount_log_letter(m), sd_mount_state_name(st), sd_err_name(why));
   if (m->cb.on_state)
     m->cb.on_state(m->cb.ctx, m, st, why);
 }
@@ -450,7 +456,7 @@ static void vfs_on_event(void *ctx, const sd_vfs_event *ev)
     return;
   }
   if (ev->kind == SD_VFS_EV_DELETE_FAILED)
-    SD_LOGW("mount", "%c: delete failed (%s)", (int)m->letter, vfs_status_code(ev->status));
+    SD_LOGW("mount", "%c: delete failed (%s)", mount_log_letter(m), vfs_status_code(ev->status));
   if (ev->kind != SD_VFS_EV_WRITE_FAILED && ev->kind != SD_VFS_EV_NOTICE && ev->kind != SD_VFS_EV_IDENTITY)
     return;
   it = (mount_item *)sd_calloc(1, sizeof(*it));
@@ -466,10 +472,10 @@ static void vfs_on_event(void *ctx, const sd_vfs_event *ev)
       if (n) memcpy(it->path, ev->path, n * sizeof(wchar_t));
       it->path[n] = 0;
     }
-    SD_LOGW("mount", "%c: write_failed, %llu bytes lost (%s)", (int)m->letter, (unsigned long long)ev->bytes,
+    SD_LOGW("mount", "%c: write_failed, %llu bytes lost (%s)", mount_log_letter(m), (unsigned long long)ev->bytes,
             vfs_status_code(ev->status));
   } else if (ev->kind == SD_VFS_EV_NOTICE) {
-    SD_LOGW("mount", "%c: vfs notice %s: %s", (int)m->letter, ev->code ? ev->code : "", ev->detail ? ev->detail : "");
+    SD_LOGW("mount", "%c: vfs notice %s: %s", mount_log_letter(m), ev->code ? ev->code : "", ev->detail ? ev->detail : "");
   }
   if (it == NULL)
     return;
@@ -986,7 +992,7 @@ static void run_item(void *arg)
         }
         if (!m->warned_pool) {
           m->warned_pool = 1;
-          SD_LOGI("mount", "%c: pool member needs interactive auth; pool limited", (int)m->letter);
+          SD_LOGI("mount", "%c: pool member needs interactive auth; pool limited", mount_log_letter(m));
           if (m->cb.on_warning) m->cb.on_warning(m->cb.ctx, m, "pool_limited", 0, "interactive_auth");
         }
         break;
@@ -1005,7 +1011,7 @@ static void run_item(void *arg)
         sd_mount_announcement *a = it->ann;
         if (a->mode == SD_HKU_YES && m->kh && m->be->kh_apply_hostkeys) {
           sd_err ae = apply_on(m->be, m->kh, SD_KH_STORE_USER, a, 1);   /* removals always need the review (5.6) */
-          SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %s saved (%s)", (int)m->letter,
+          SD_LOGI("mount", "%c: UpdateHostKeys: %u new key(s) for %s saved (%s)", mount_log_letter(m),
                   (unsigned)a->add_count, a->lookup_name, sd_err_name(ae));
           if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 1, ae);
           if (a->remove_count && m->cb.on_hostkeys_announced) {
@@ -1016,7 +1022,7 @@ static void run_item(void *arg)
           if (m->cb.on_hostkeys_announced) m->cb.on_hostkeys_announced(m->cb.ctx, m, a, 0, SD_OK);
         } else {
           SD_LOGI("mount", "%c: UpdateHostKeys announcement for %s ignored (update_host_keys = no)",
-                  (int)m->letter, a->lookup_name);
+                  mount_log_letter(m), a->lookup_name);
         }
       }
       break;
@@ -1332,7 +1338,7 @@ static int try_autofill(sd_mount *m, const sd_mount_prompt *mp)
                               : m->be->prompt_answer(p, 1, resp);
   sd_secure_free(buf, SECRET_CAP);
   m->autofilled[pp.skind] |= bit;
-  SD_LOGI("mount", "%c: %s prompt of hop %u answered from the saved secrets (%s)", (int)m->letter,
+  SD_LOGI("mount", "%c: %s prompt of hop %u answered from the saved secrets (%s)", mount_log_letter(m),
           sd_mount_prompt_kind_name(pk), (unsigned)pp.hop, sd_err_name(e));
   return 1;
 }
@@ -1778,7 +1784,11 @@ sd_err sd_mount_create(const sd_mount_backend *be, const sd_mount_params *p, con
   *out = NULL;
   if (be == NULL || p == NULL || cb == NULL || cb->post == NULL || p->struct_size < sizeof(sd_mount_params) ||
       p->host == NULL || p->host[0] == 0 || p->user == NULL || p->user[0] == 0 ||
-      p->letter < L'A' || p->letter > L'Z' || p->backend < SD_MOUNT_BACKEND_AUTO || p->backend > SD_MOUNT_BACKEND_WEBDAV)
+      (p->letter != 0 && (p->letter < L'A' || p->letter > L'Z')) || p->backend < SD_MOUNT_BACKEND_AUTO ||
+      p->backend > SD_MOUNT_BACKEND_WEBDAV)
+    return SD_E_INVALID_PARAM;
+  /* a drive letter is needed for every mount but a hostkey mount (hostkey_fetch: connect only, no drive, 03 §6.1) */
+  if (!p->hostkey_fetch && (p->letter < L'A' || p->letter > L'Z'))
     return SD_E_INVALID_PARAM;
   /* M5: a global mount needs its volume security descriptor (service_access, D35) */
   if (p->global_mount && (p->volume_sd == NULL || p->volume_sd_len == 0))

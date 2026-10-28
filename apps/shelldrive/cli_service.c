@@ -11,6 +11,12 @@
  *   service start | stop              starts or stops ShellDriveSvc (elevated)
  *   service repair-data               repairs the machine data folder and its stores (elevated, 3.2, TM-R34)
  *
+ *   secret set|delete --machine --proxy SPEC [--stdin]
+ *                                     the password of a service proxy leg (elevated, 4.5, 3.8): the password is read
+ *                                     without echo (or from stdin) and sent to the service, which stores it in its
+ *                                     secret store; it is never printed. SPEC: http://user@host:port or
+ *                                     socks5://user@host:port (no password in the spec).
+ *
  * Exit codes: status reports exit 0 (also when not installed); query failures exit 1. */
 #include <windows.h>
 #include <shlobj.h>
@@ -25,6 +31,7 @@
 #include "sd/version.h"
 #include "sd_base/sd_json.h"
 #include "sd_base/sd_mem.h"
+#include "sd_config/sd_config.h"
 #include "sd_ipc/sd_ipc.h"
 #include "sd_l10n_cli_ids.h"
 
@@ -532,6 +539,85 @@ static int run_repair(const cli_args *a)
   } else {
     say(SD_MSG_CLI_SERVICE_REPAIR_OK, NULL, 0, 0);
   }
+  return 0;
+}
+
+/* secret set|delete --machine --proxy SPEC (4.5, 3.8, 2.6 rule 1): secret.set or secret.delete with kind proxy through the
+   service pipe. The password is read without echo, or from stdin with --stdin, and wiped after the request. The reply
+   carries no secret: json gives only {"stored": true} or {"deleted": true}. */
+static int secret_fail(const cli_args *a, const char *code, const char *detail, sd_msg_id id, int rc)
+{
+  if (a->json)
+    return fail_code(a, code, detail, NULL);
+  say(id, NULL, 0, 1);
+  return rc;
+}
+
+int cli_run_secret(const cli_args *a)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_json *res = NULL;
+  sd_wr w;
+  sd_proxy_spec x;
+  char spec[400], pw[1024];
+  int set = a->positional != NULL && wcscmp(a->positional, L"set") == 0;
+  int rc;
+  pw[0] = 0;
+  if (!cli_is_elevated()) {
+    say(SD_MSG_CLI_SECRET_NEED_ADMIN, NULL, 0, 1);
+    return 9;
+  }
+  utf8_of(a->proxy, spec, sizeof(spec));
+  if (sd_proxy_spec_parse(spec, &x) != SD_OK || (x.kind != SD_PROFILE_PROXY_HTTP && x.kind != SD_PROFILE_PROXY_SOCKS5) ||
+      x.user[0] == 0)
+    return secret_fail(a, "usage", "--proxy needs http:// or socks5:// with a user and no password", SD_MSG_CLI_SECRET_BAD_PROXY, 2);
+  if (set) {
+    if (!a->use_stdin)
+      say(SD_MSG_CLI_SECRET_PROMPT, NULL, 0, 1);
+    if (!cli_read_line(pw, sizeof(pw), 0, a->use_stdin) || pw[0] == 0) {
+      SecureZeroMemory(pw, sizeof(pw));
+      return secret_fail(a, "usage", "the password is empty", SD_MSG_CLI_SECRET_EMPTY, 2);
+    }
+  }
+  if (!connect_service(&c)) {
+    SecureZeroMemory(pw, sizeof(pw));
+    say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+    return 8;
+  }
+  sd_wr_init_secret(&w, 1024);
+  {
+    sd_json_writer jw;
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "kind"); sd_jw_cstr(&jw, "proxy");
+    sd_jw_key(&jw, "proxy"); sd_jw_cstr(&jw, spec);
+    if (set) {
+      sd_jw_key(&jw, "value"); sd_jw_cstr(&jw, pw);
+    }
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) != SD_OK) {
+      SecureZeroMemory(pw, sizeof(pw));
+      sd_wr_free(&w);
+      sd_ipc_close(c);
+      return fail_code(a, "internal", "request", NULL);
+    }
+  }
+  SecureZeroMemory(pw, sizeof(pw));
+  rc = sd_ipc_call_raw(c, set ? "secret.set" : "secret.delete", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err) == SD_OK
+           ? 0 : -1;
+  sd_wr_free(&w);
+  if (rc != 0) {
+    sd_ipc_close(c);
+    return fail_ipc(a, &err, NULL);
+  }
+  if (a->json) {
+    json_ok(res);
+  } else {
+    say(set ? SD_MSG_CLI_SECRET_STORED : SD_MSG_CLI_SECRET_DELETED, NULL, 0, 0);
+  }
+  sd_json_free(res);
+  sd_ipc_close(c);
   return 0;
 }
 

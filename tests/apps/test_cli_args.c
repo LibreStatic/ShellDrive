@@ -213,6 +213,28 @@ SD_TEST(cli_parse_hostkey_add_machine)
   SD_CHECK(parse_line(L"sd --machine hostkey add --from-server h", &a) == CLI_OK && a.machine);
 }
 
+/* secret set|delete --machine --proxy SPEC (M5, 4.5, 3.8): the admin verb for a service proxy password. */
+SD_TEST(cli_parse_secret_proxy)
+{
+  cli_args a;
+  SD_CHECK(parse_line(L"sd secret set --machine --proxy socks5://u@h:1080", &a) == CLI_OK);
+  SD_CHECK(a.cmd == CLI_CMD_SECRET && wcscmp(a.positional, L"set") == 0 && a.arg2 == NULL && a.machine);
+  SD_CHECK(wcscmp(a.proxy, L"socks5://u@h:1080") == 0 && !a.use_stdin);
+  SD_CHECK(parse_line(L"sd secret delete --machine --proxy http://u@h:3128", &a) == CLI_OK && a.machine);
+  SD_CHECK(parse_line(L"sd secret set --machine --proxy http://u@h --stdin", &a) == CLI_OK && a.use_stdin);
+  SD_CHECK(parse_line(L"sd secret set --proxy http://u@h", &a) == CLI_E_MISSING_ARGUMENT && wcscmp(a.bad, L"--machine") == 0);
+  SD_CHECK(parse_line(L"sd secret set --machine", &a) == CLI_E_MISSING_ARGUMENT && wcscmp(a.bad, L"--proxy") == 0);
+  SD_CHECK(parse_line(L"sd secret --machine --proxy http://u@h", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd secret frob --machine --proxy http://u@h", &a) == CLI_E_UNKNOWN_COMMAND);
+  SD_CHECK(parse_line(L"sd secret set x --machine --proxy http://u@h", &a) == CLI_E_EXTRA_ARGUMENT);
+  SD_CHECK(parse_line(L"sd secret set --machine --proxy http://u@h --from-server h", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd secret set --machine --proxy http://u@h --letter X:", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd secret set --machine --proxy http://u@h --all", &a) == CLI_E_UNKNOWN_OPTION);
+  /* the other verbs keep their rules: --proxy is a mount option, --machine a hostkey and secret option */
+  SD_CHECK(parse_line(L"sd status --proxy http://u@h", &a) == CLI_E_UNKNOWN_OPTION);
+  SD_CHECK(parse_line(L"sd status --machine", &a) == CLI_E_UNKNOWN_OPTION);
+}
+
 /* diag bench <X:> and the bench alias (03 §6.1, 02 §11): the defaults, the options and the parser's errors. */
 SD_TEST(cli_parse_diag_bench)
 {

@@ -14,6 +14,7 @@ SD_TEST_DECL(mount_backend_selection);
 SD_TEST_DECL(mount_m3_test_only_probe);
 SD_TEST_DECL(mount_m3_refresh_stats_cache_and_stop);
 SD_TEST_DECL(mount_m3_webdav_attach_port);
+SD_TEST_DECL(mount_hostkey_fetch_has_no_drive_letter);
 SD_TEST_DECL(mount_token_only_params_reach_webdav_cfg);
 SD_TEST_DECL(mount_token_only_refused_for_global);
 SD_TEST_DECL(mount_token_consent_accept_and_once);
@@ -45,6 +46,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(mount_m3_test_only_probe),
   SD_TEST_ENTRY(mount_m3_refresh_stats_cache_and_stop),
   SD_TEST_ENTRY(mount_m3_webdav_attach_port),
+  SD_TEST_ENTRY(mount_hostkey_fetch_has_no_drive_letter),
   SD_TEST_ENTRY(mount_token_only_params_reach_webdav_cfg),
   SD_TEST_ENTRY(mount_token_only_refused_for_global),
   SD_TEST_ENTRY(mount_token_consent_accept_and_once),

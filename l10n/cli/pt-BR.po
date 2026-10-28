@@ -1555,3 +1555,31 @@ msgctxt "cli.help.opt_yes"
 msgid "Do not ask before a fix."
 msgstr "Não pergunta antes de uma correção."
 
+msgctxt "cli.help.secret"
+msgid "Store or remove the password of a proxy used by the service's machine profiles. Needs an elevated console."
+msgstr "Guarda ou remove a senha de um proxy usado pelos perfis de máquina do serviço. Exige um console elevado."
+
+msgctxt "cli.secret.need_admin"
+msgid "Storing or removing a proxy password needs an elevated console. Run it as administrator."
+msgstr "Guardar ou remover uma senha de proxy exige um console elevado. Execute o programa como administrador."
+
+msgctxt "cli.secret.bad_proxy"
+msgid "--proxy needs http:// or socks5:// with a user and no password, for example socks5://user@proxy:1080."
+msgstr "--proxy exige http:// ou socks5:// com um usuário e sem senha, por exemplo socks5://usuario@proxy:1080."
+
+msgctxt "cli.secret.prompt"
+msgid "Proxy password (typed text is not shown):"
+msgstr "Senha do proxy (o que você digitar não aparece):"
+
+msgctxt "cli.secret.empty"
+msgid "The password is empty. Nothing was stored."
+msgstr "A senha está vazia. Nada foi guardado."
+
+msgctxt "cli.secret.stored"
+msgid "The proxy password is stored for the service."
+msgstr "A senha do proxy foi guardada para o serviço."
+
+msgctxt "cli.secret.deleted"
+msgid "The proxy password is removed from the service."
+msgstr "A senha do proxy foi removida do serviço."
+

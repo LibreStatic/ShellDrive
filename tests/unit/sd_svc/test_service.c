@@ -1684,6 +1684,93 @@ SD_TEST(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it)
   sd_ipc_close(c);
 }
 
+/* AllowSystemProxy and AllowSystemProxySspi are read from the machine policy (sd_policy_machine_get_dword) when the seam
+   says -1. The test forces the values (svc_test_sysproxy_policy) and never writes HKLM: off refuses the leg before any
+   read, on with SSPI off gives the leg no SSPI, on with SSPI on gives it the Kerberos-only Negotiate (TM-R10). */
+SD_TEST(svc_system_proxy_policy_is_read_from_the_machine_values)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "", mid2[16] = "", mid3[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  g_sysops.allow = -1;
+  /* AllowSystemProxy 1, AllowSystemProxySspi 0 */
+  svc_test_sysproxy_policy(1, 1, 0);
+  g_sysread_calls = 0;
+  SD_REQUIRE(mount_and_wait(c, "sysproxy", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  SD_CHECK(g_sysread_calls >= 1);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_auth(0), 0);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  /* AllowSystemProxy 0: refused before the machine configuration is read */
+  svc_test_sysproxy_policy(1, 0, 1);
+  g_sysread_calls = 0;
+  SD_CHECK(mount_and_wait(c, "sysproxy", "failed", mid2, sizeof(mid2), &st));
+  SD_CHECK(failed_with(st, "usage"));
+  SD_CHECK_EQ_INT(g_sysread_calls, 0);
+  json_drop(&st);
+  if (mid2[0]) {
+    SD_CHECK(unmount_id(c, mid2));
+    SD_CHECK(wait_state(c, mid2, "gone", 10000, NULL));
+  }
+  /* AllowSystemProxy 1 and AllowSystemProxySspi 1: the leg may use the Kerberos-only Negotiate */
+  svc_test_sysproxy_policy(1, 1, 1);
+  SD_REQUIRE(mount_and_wait(c, "sysproxy", "mounted", mid3, sizeof(mid3), &st));
+  json_drop(&st);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_auth(0), SD_PROXY_AUTH_SSPI_KERBEROS);
+  SD_CHECK(unmount_id(c, mid3));
+  SD_CHECK(wait_state(c, mid3, "gone", 10000, NULL));
+  svc_test_sysproxy_policy(0, 0, 0);
+  g_sysops.allow = 1;
+  sd_ipc_close(c);
+}
+
+/* secret.set and secret.delete with kind proxy (M5, 4.5): the service stores the password of a proxy leg under the
+   target the leg reads, admins only; the reply has no secret, and a spec with a password is refused. */
+SD_TEST(svc_secret_proxy_set_and_delete_through_the_pipe)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  char target[SD_SECRET_MAX_TARGET];
+  sd_secbuf *b = NULL;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_REQUIRE(sd_secret_target_proxy("http", "px", "proxy.example", 3128, target, sizeof(target)) == SD_OK);
+  res = call(c, "secret.set", "{\"kind\":\"proxy\",\"proxy\":\"http://px@proxy.example:3128\",\"value\":\"pxpw\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  {
+    int stored = 0;
+    SD_CHECK(sd_json_get_bool(res, "stored", &stored) && stored == 1);
+  }
+  sd_json_free(res);
+  SD_REQUIRE(sd_secret_get(SD_SECRET_SERVICE, SD_SECRET_PROXY, target, &b) == SD_OK);
+  SD_CHECK(b->len == strlen("pxpw") && memcmp(b->p, "pxpw", b->len) == 0);
+  sd_secbuf_free(b);
+  /* a password in the spec, or no user, is refused and stores nothing */
+  res = call(c, "secret.set", "{\"kind\":\"proxy\",\"proxy\":\"http://px:pw@proxy.example:3128\",\"value\":\"x\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "usage");
+  res = call(c, "secret.set", "{\"kind\":\"proxy\",\"proxy\":\"http://proxy.example:3128\",\"value\":\"x\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "usage");
+  res = call(c, "secret.delete", "{\"kind\":\"proxy\",\"proxy\":\"http://px@proxy.example:3128\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  {
+    int deleted = 0;
+    SD_CHECK(sd_json_get_bool(res, "deleted", &deleted) && deleted == 1);
+  }
+  sd_json_free(res);
+  SD_CHECK(sd_secret_get(SD_SECRET_SERVICE, SD_SECRET_PROXY, target, &b) == SD_E_NOT_FOUND);
+  res = call(c, "secret.delete", "{\"kind\":\"proxy\",\"proxy\":\"http://px@proxy.example:3128\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "secret_not_found");
+  sd_ipc_close(c);
+}
+
 SD_TEST(svc_system_proxy_refuses_basic_auth_on_its_leg)
 {
   sd_ipc_conn *c = NULL;
