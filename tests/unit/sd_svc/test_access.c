@@ -153,11 +153,14 @@ SD_TEST(validate_profile_refusals)
   SD_CHECK_STR(key, "profile.user");
   strcpy_s(p.user, sizeof(p.user), "svc");
 
-  /* not in this build: jump hosts, proxies, global WebDAV (D11) */
+  /* M5: jump hosts and proxies are checked per hop when the chain is built, not here */
   strcpy_s(p.jump, sizeof(p.jump), "bastion");
-  SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_E_INVALID_PARAM);
-  SD_CHECK_STR(key, "proxy.jump");
+  p.proxy[0].kind = SD_PROFILE_PROXY_HTTP;
+  SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_OK);
   p.jump[0] = 0;
+  p.proxy[0].kind = SD_PROFILE_PROXY_NONE;
+
+  /* not in this build: global WebDAV (D11) */
   p.backend = SD_PROFILE_BACKEND_WEBDAV;
   SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_E_INVALID_PARAM);
   SD_CHECK_STR(key, "mount.backend");
@@ -167,6 +170,65 @@ SD_TEST(validate_profile_refusals)
   p.service_access[0] = 0;
   SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_E_INVALID_PARAM);
   SD_CHECK_STR(key, "profile.service_access");
+}
+
+/* M5 chain rules (2.6 rule 1): each hop and each proxy leg is checked with the service rules. */
+SD_TEST(chain_hop_and_proxy_leg_rules)
+{
+  sd_chain_hop h;
+  sd_proxy_spec x;
+  const char *key = NULL, *why = NULL;
+
+  memset(&h, 0, sizeof(h));
+  h.auth_methods = SD_PROFILE_AUTH_PUBLICKEY | SD_PROFILE_AUTH_PASSWORD;
+  h.agent = SD_PROFILE_AGENT_NONE;
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_OK);
+  h.identity_count = 2;
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.identity");
+  h.identity_count = 1;
+  strcpy_s(h.certificate, sizeof(h.certificate), "c.crt");
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.certificate");
+  h.certificate[0] = 0;
+  strcpy_s(h.identity_store, sizeof(h.identity_store), "0123456789abcdef0123456789abcdef");
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.identity_store");
+  h.identity_store[0] = 0;
+  h.agent = SD_PROFILE_AGENT_OPENSSH;
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.agent");
+  h.agent = SD_PROFILE_AGENT_AUTO;
+  strcpy_s(h.agent_keys, sizeof(h.agent_keys), "SHA256:abc");
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.agent_keys");
+  h.agent_keys[0] = 0;
+  h.auth_methods |= SD_PROFILE_AUTH_KBDINT;
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "auth.methods");
+  h.auth_methods = SD_PROFILE_AUTH_KBDINT;
+  SD_CHECK_EQ_INT(svc_chain_hop_check(&h, &key, &why), SD_E_INVALID_PARAM);
+
+  /* proxy legs: none and a system proxy without credentials are fine; a user needs a service secret */
+  memset(&x, 0, sizeof(x));
+  x.kind = SD_PROFILE_PROXY_NONE;
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_AUTO, 0, &key, &why), SD_OK);
+  x.kind = SD_PROFILE_PROXY_SYSTEM;
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_AUTO, 0, &key, &why), SD_OK);
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_BASIC, 0, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "proxy.proxy_auth");
+  x.kind = SD_PROFILE_PROXY_HTTP;
+  strcpy_s(x.host, sizeof(x.host), "proxy.example");
+  x.port = 3128;
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_AUTO, 0, &key, &why), SD_OK);
+  strcpy_s(x.user, sizeof(x.user), "pu");
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_BASIC, 0, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_STR(key, "proxy.proxy_auth");
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_BASIC, 1, &key, &why), SD_OK);
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_NONE, 0, &key, &why), SD_OK);
+  x.kind = SD_PROFILE_PROXY_SOCKS5;
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_AUTO, 0, &key, &why), SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(svc_proxy_leg_check(&x, SD_PROFILE_PROXY_AUTH_AUTO, 1, &key, &why), SD_OK);
 }
 
 SD_TEST(volume_sddl_is_valid_and_lists_every_entry)

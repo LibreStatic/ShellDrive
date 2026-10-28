@@ -420,8 +420,9 @@ profile, or a password prompt), or an sd_ssh "post-KEX" connect mode that stops 
 - `hostkey add --machine --from-server` and `hostkey accept-announced --machine` (5.6 machine store): the command
   surface and the elevation rule are in part 5; the connect, the store write and the service side are not (the
   per-user connect of part 6 is blocked on authentication, see there).
-- Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles (2.6 rule 1 lists them as allowed; refused
-  in this part with `usage`).
+- Chains (`proxy.jump`), proxies, and the `system` proxy for service profiles: done in part 10. Still open there: the
+  machine policy `AllowSystemProxy` is not read by this build, so `proxy = system` stays refused (as on the per-user
+  path), and there is no admin verb for proxy secrets of the service store.
 - Identity files: the path rule and the handle checks (owner, reparse point, DACL) are done in part 6 for the identity
   file of a service profile. Still open: certificate files (no service profile loads one yet), file-level checks of
   machine profiles, `known_hosts` and `settings.ini` (only the folder rule covers them), passphrase secrets and
@@ -840,3 +841,77 @@ or UAC prompt (no real service in the test runs); the elevated relaunch is cover
 that moves the folder needs the log and secret handles of the service closed: the service closes its own log, but a
 second process holding a file under the folder (an antivirus scan, a CLI) makes the rename fail with `io_error`; the page
 shows the generic failure with the Win32 or IPC code.
+
+## Part 10: chains, proxies and `proxy = system` for service profiles (`wip/r16-svcproxy`)
+
+Closes the "Left" item on chains and proxies (2.6 rule 1). The machine policy `AllowSystemProxy` is not read by this
+build, so the shipping `proxy = system` leg is refused, as it is on the per-user path.
+
+**Files**
+
+| Path | What |
+|---|---|
+| `apps/shelldrive-host/service.c` | `svc_chain_build` (sd_chain_resolve over the machine profiles through `svc_chain_lookup`), `svc_chain_hop`, `svc_chain_identity`, `svc_chain_leg`, `svc_chain_free`, `svc_proxy_secret_present`; `job_start` and `job_hk_start` use them in place of `svc_identity_hop`; `svc_sysproxy_machine_read`, `k_sysproxy_shipping` |
+| `apps/shelldrive-host/svc_access.c`, `svc_access.h` | `svc_chain_hop_check` (one hop), `svc_proxy_leg_check` (one proxy leg); `svc_validate_profile` no longer refuses `proxy.jump` or proxies |
+| `apps/shelldrive-host/service.h` | `svc_sysproxy_ops` (`allow`, `read`, `ctx`) and `svc_opts.sysproxy_ops` (NULL = the shipping ops: `allow` 0, the real read) |
+| `src/sd_ssh/proxy_system.c`, `src/sd_ssh/include/sd_ssh/sd_ssh.h` | `sd_ssh_proxy_machine`: the WinHTTP machine configuration through the existing resolver (service path, static answer only). `WinHttpGetDefaultProxyConfiguration` is resolved at run time, so there is no new static import |
+| `src/sd_mount/mount.c` | hostkey add (`hostkey_fetch`) takes a first-contact key once for the target hop only; an unknown key of a jump host is an ordinary host-key prompt |
+| `tests/unit/sd_mount/fake_backend.c`, `fake_backend.h` | per-hop accessors of the last connect (proxy host, user, port, `proxy_auth`, key blob, host key mode, auth methods); the hostkey connection raises a prompt for an untrusted jump hop and waits for its answer (`fake_backend_hk_jump_prompts`) |
+| `tests/unit/sd_svc/test_service.c`, `test_access.c`, `main.c` | nine fixture profiles (`hop1`, `chain`, `hopuser`, `chainuser`, `proxypw`, `proxysec`, `sysproxy`, `sysbasic`, `hkchain`); the loaded count goes from 9 to 18; `json_drop` for status replies |
+
+**Behaviour (2.6 rule 1, 2.6 rule 2, TM-R27)**
+
+- The chain of a service profile comes from `sd_chain_resolve`, whose lookup sees the loaded machine profiles only. A
+  jump name that is not a machine profile parses as a host spec and inherits the referencing profile's `[auth]`.
+- Every hop, the target included, passes `svc_chain_hop_check`: at most one identity, no certificate, no
+  `identity_store`, no agent (Pageant or OpenSSH), no `agent_keys`, no keyboard-interactive, and publickey or password.
+  The agent of every hop is 0 (D17); `no_save` is set on every hop.
+- The identity of every hop must be under the service folder (`svc_path_under`), is read through
+  `svc_file_read_trusted` (TM-R27) and is passed to sd_mount as a key blob. A refused file is written as Event 3102.
+- Known hosts: the machine store only, read-only, for the whole mount (unchanged). A host-key prompt of a service mount
+  is refused with `host_key_unknown` on every hop. A jump hop never updates host keys; the target keeps the caller's
+  mode (`ask` for a mount, `no` for `hostkey add`).
+- `hostkey add` of a profile with a chain connects through the same hops. Only the target's first-contact key can be
+  offered; an unknown jump host key is refused (`host_key_rejected`), so a jump host has to be pinned first and its key
+  is never offered under the target's name.
+- Proxies: leg k reaches hop k. An HTTP or SOCKS5 leg with a user (HTTP with any `proxy_auth` but `none`, or SOCKS5)
+  needs a proxy secret in the service store (target `http:user@host:port` or `socks5:...`, kind proxy), checked before
+  the connect; sd_mount reads it through `cb.secret_get`. Without it the mount fails with `usage`. A leg with no user
+  sends no password.
+- `proxy = system`: the leg is read through `svc_sysproxy_ops.read` for the target host. The answer becomes an HTTP or
+  SOCKS5 leg with `auth` 0 (no SSPI towards it, TM-R10); a direct answer means no proxy; with
+  `proxy_fallback_direct` a failed read connects directly. The leg is refused with `usage` when `allow` is 0 (the
+  shipping value) and when its `proxy_auth` is basic or negotiate.
+- Behaviour change: a service profile that sets `auth.certificate`, `auth.identity_store`, more than one
+  `auth.identity`, or `auth.agent_keys` is now refused at mount with `usage` (before, the service ignored those keys).
+
+**Tests (verified by `tools/ci-local.ps1 -Presets x64-modern,x64-analysis`, Release and Debug)**
+
+- `test_access.c`: `chain_hop_and_proxy_leg_rules` (each hop and proxy-leg refusal row); `validate_profile_refusals`
+  asserts that a jump and a proxy pass the load check.
+- `test_service.c` (shared core, fake backend, stub `svc_sysproxy_ops`):
+  `svc_chain_two_hops_are_mounted_with_the_service_rules` (two hops, key blobs, no agent, no kbdint, host key modes);
+  `svc_chain_refuses_a_hop_with_a_user_path_identity`; `svc_proxy_basic_without_a_service_secret_is_refused`;
+  `svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store` (the leg and the store answer);
+  `svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it` (the stub is asked for the target host, the leg is
+  the stub's proxy with auth 0; with `allow` 0 a second mount of the same profile fails with `usage` and the stub is not
+  called); `svc_system_proxy_refuses_basic_auth_on_its_leg`; `svc_hostkey_add_through_an_unknown_jump_host_is_refused`;
+  `svc_one_profile_mounted_twice_keeps_both_announcements` (regression: one profile mounted twice in one process).
+- No test reads the real WinHTTP configuration: `sd_ssh_proxy_machine` itself is not exercised by a test.
+
+**Fixed while testing**
+
+- The proxy and system-proxy fixture profiles had no identity, so the target asked for a password the service cannot
+  give (`prompt_unavailable`); they now carry the service identity.
+- A test freed the status reply that `wait_state` keeps in `*last` and then passed the same pointer to a second
+  `wait_state`, which freed it again (heap corruption, 0xC0000374). `json_drop` frees and clears the pointer; every
+  test uses it.
+
+**Not done (open)**
+
+- The machine policies `AllowSystemProxy` and `AllowSystemProxySspi` are not read (no policy reader in this build), so
+  `proxy = system` is refused in the shipping build.
+- No admin verb sets a proxy secret of the service store (`secret.set` takes profile passwords only).
+- More than one identity per hop, and certificate files, are refused rather than supported.
+- A live chain (two real SSH hosts) and a real WinHTTP machine proxy are lab items. The x86-ia32 preset was not built
+  for this part (no new static import).

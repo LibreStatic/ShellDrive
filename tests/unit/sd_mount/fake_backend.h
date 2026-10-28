@@ -26,6 +26,8 @@ const sd_mount_backend *fake_backend(void);
    stored key, *.changed.test mismatches, anything else is a first contact. Its kh_apply accepts the user and the
    machine store; fake_backend_apply_machine_calls() counts the machine-store writes. */
 const sd_mount_backend *fake_backend_hostkeys(void);
+/* host-key prompts raised so far for an untrusted jump hop of a hostkey connection (it waits for their answer) */
+uint32_t fake_backend_hk_jump_prompts(void);
 uint32_t fake_backend_apply_machine_calls(void);
 void fake_backend_reset(void);
 int  fake_backend_is_trusted(const char *host);
@@ -80,6 +82,15 @@ int      fake_backend_last_hop_proxy(uint32_t i);
 uint32_t fake_backend_last_hop_identities(uint32_t i);
 uint32_t fake_backend_last_hop_agent_keys(uint32_t i);
 int      fake_backend_last_hop_identities_only(uint32_t i);
+/* M5 (tests/unit/sd_svc): per hop of the last connect: the leg's proxy host, user, port and proxy_auth (SD_PROXY_AUTH_*),
+   1 when the identity was given as key bytes (blob), the host key update mode and the SD_AUTH_* methods. */
+const char *fake_backend_last_hop_proxy_host(uint32_t i);
+const char *fake_backend_last_hop_proxy_user(uint32_t i);
+uint16_t    fake_backend_last_hop_proxy_port(uint32_t i);
+uint32_t    fake_backend_last_hop_proxy_auth(uint32_t i);
+int         fake_backend_last_hop_blob(uint32_t i);
+int         fake_backend_last_hop_hku(uint32_t i);
+uint32_t    fake_backend_last_hop_auth_methods(uint32_t i);
 uint32_t fake_backend_last_connections(void);
 int      fake_backend_last_legacy_policy(void);
 uint32_t fake_backend_store_answers(void);           /* answers flagged SD_ANSWER_FROM_STORE */

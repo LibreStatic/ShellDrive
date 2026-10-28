@@ -18,6 +18,18 @@
 /* Event Log sink (10.3): msg_id is an id of svc_events.mc, args are its %1..%n inserts. */
 typedef void (*svc_event_fn)(void *ctx, DWORD msg_id, const wchar_t **args, size_t nargs);
 
+/* proxy = system of a service profile (M5, 2.6 rule 1, 3.8). read: the WinHTTP machine configuration for host:port;
+   kind is the SD_PROXY_* value (0 direct, 1 HTTP, 2 SOCKS5), the proxy in host_out / port_out. allow: the machine
+   policy AllowSystemProxy; 0 refuses the leg with usage. Shipping: allow 0 (this build reads no policy yet, as the
+   per-user path) and the real sd_ssh_proxy_machine. Tests pass a stub and set allow. */
+typedef sd_err (*svc_sysproxy_read_fn)(void *ctx, const wchar_t *host, uint16_t port, int *kind, wchar_t host_out[256],
+                                       uint16_t *port_out);
+typedef struct svc_sysproxy_ops {
+  int allow;
+  svc_sysproxy_read_fn read;
+  void *ctx;
+} svc_sysproxy_ops;
+
 typedef struct svc_opts {
   const sd_mount_backend *backend;   /* NULL = host_backend() (the real modules or the unavailable stub) */
   const wchar_t *machine_root;       /* NULL = %ProgramData%\LibreStatic\ShellDrive (tests: a temp folder) */
@@ -41,6 +53,8 @@ typedef struct svc_opts {
   const svc_scm_ops *scm_ops;
   const svc_repair_ops *repair_ops;
   const wchar_t *repair_base;
+  /* proxy = system seams of service profiles (svc_sysproxy_ops above). NULL = refused (allow 0) with the real read. */
+  const svc_sysproxy_ops *sysproxy_ops;
 } svc_opts;
 
 /* Blocks until svc_request_stop (or a stop control). Returns 0, or 1 when the core cannot start (no pipe, no folder

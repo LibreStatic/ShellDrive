@@ -1136,9 +1136,11 @@ static void ssh_on_prompt(void *ctx, sd_prompt *p, const sd_auth_prompt_info *au
   char target[TARGET_CAP];
   owned_hop *oh;
   target[0] = 0;
-  if (hk && m->hk_fetch) {
-    /* M5: first contact (or an accept-once case): the presented key is taken and nothing is stored; the agent
-       asks the user (5.2). The connection goes on, and the fetch then reports verified = 0. */
+  if (hk && m->hk_fetch && (m->nhops == 0 || hk->hop_index + 1 >= m->nhops)) {
+    /* M5: first contact (or an accept-once case) of the target: the presented key is taken and nothing is stored;
+       the agent asks the user (5.2). The connection goes on, and the fetch then reports verified = 0. An unknown key
+       of a jump host is never taken here: it is an ordinary host-key prompt (the caller pins the jump host first),
+       so the fetched keys always come through verified jump hosts and never belong to a jump host. */
     sd_mutex_lock(&m->lock);
     m->hk_presented = 0;
     memset(&m->hk_key, 0, sizeof(m->hk_key));

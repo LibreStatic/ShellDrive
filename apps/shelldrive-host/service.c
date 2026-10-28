@@ -154,6 +154,7 @@ static struct svc_state {
   int repairing;                    /* a service.repair_data runs: a second one is busy */
   const svc_scm_ops *scm_ops;       /* svc_opts seams of service.status and service.repair_data */
   const svc_repair_ops *repair_ops;
+  const svc_sysproxy_ops *sysproxy; /* proxy = system seams (svc_opts.sysproxy_ops); the shipping ops refuse by policy */
   const wchar_t *repair_base;
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
@@ -1059,41 +1060,248 @@ static void svc_on_notice(void *ctx, sd_mount *m, const char *code, const char *
   SD_LOGI("svc", "notice %s %s", code ? code : "", detail ? detail : "");
 }
 
-/* 2.6 rule 1, TM-R27: the profile's identity file as the one hop's key blob. The file is checked and read through one
-   handle (svc_file_read_trusted); the bytes come back in *keybuf (sd_secure_free) and sd_mount copies them. Returns NULL
-   with the hop set up, or the refusal (a refused file is also written as Event 3102). */
-static const char *svc_identity_hop(const sd_profile *p, const wchar_t *hostw, uint16_t port, uint32_t methods,
-                                    sd_hku_mode hku, sd_mount_hop *hop, unsigned char **keybuf, DWORD *keylen,
-                                    char *keylabel, size_t keycap)
+/* ---- chains of service profiles (M5, 2.6 rule 1, 3.4.1, 3.8) ----
+
+   A machine profile's chain is resolved with sd_chain_resolve over the machine profiles only (a jump names a service
+   profile, never a user one). Every hop and every proxy leg then follows the service rules: the machine known_hosts
+   store only (set by the callers, read-only), no TOFU (a host-key prompt is refused, 2.6 rule 2), one identity file
+   under the service folder read through a checked handle (TM-R27) and handed over as a key blob, no agent and no
+   keyboard-interactive, and every secret from the service secret store. The arena holds the strings and key bytes
+   sd_mount_create copies; it is wiped with svc_chain_free. */
+typedef struct svc_chain {
+  uint32_t count;
+  sd_mount_hop hop[SD_MOUNT_MAX_HOPS];
+  wchar_t host[SD_MOUNT_MAX_HOPS][256];
+  char user[SD_MOUNT_MAX_HOPS][128];
+  char alias[SD_MOUNT_MAX_HOPS][256];
+  char label[SD_MOUNT_MAX_HOPS][MAX_PATH * 3];
+  unsigned char *blob[SD_MOUNT_MAX_HOPS];
+  DWORD blob_len[SD_MOUNT_MAX_HOPS];
+  wchar_t proxy_host[SD_MOUNT_MAX_HOPS][256];
+  char proxy_user[SD_MOUNT_MAX_HOPS][128];
+} svc_chain;
+
+static void svc_chain_free(svc_chain *c)
+{
+  uint32_t i;
+  if (c == NULL)
+    return;
+  for (i = 0; i < SD_MOUNT_MAX_HOPS; i++)
+    if (c->blob[i])
+      sd_secure_free(c->blob[i], c->blob_len[i]);
+  sd_free(c);
+}
+
+/* proxy_auth of a service leg (3.8), as the per-user agent maps it. */
+static uint32_t svc_proxy_auth_of(const sd_proxy_spec *x, int pa)
+{
+  if (x->kind == SD_PROFILE_PROXY_SOCKS5)
+    return x->user[0] ? SD_PROXY_AUTH_USERPASS : 0;
+  switch (pa) {
+  case SD_PROFILE_PROXY_AUTH_BASIC:     return SD_PROXY_AUTH_BASIC;
+  case SD_PROFILE_PROXY_AUTH_NEGOTIATE: return SD_PROXY_AUTH_SSPI | (x->user[0] ? SD_PROXY_AUTH_BASIC : 0);
+  case SD_PROFILE_PROXY_AUTH_NONE:      return 0;
+  default:                              return SD_PROXY_AUTH_SSPI_KERBEROS | (x->user[0] ? SD_PROXY_AUTH_BASIC : 0);
+  }
+}
+
+/* Lookup of sd_chain_resolve: the machine profiles only. The control thread calls it without g.lock held. */
+static sd_err svc_chain_lookup(void *ctx, const char *key, sd_profile *out)
+{
+  svc_prof *x;
+  (void)ctx;
+  sd_mutex_lock(&g.lock);
+  x = find_profile_locked(key);
+  if (x != NULL)
+    *out = x->p;
+  sd_mutex_unlock(&g.lock);
+  return x != NULL ? SD_OK : SD_E_NOT_FOUND;
+}
+
+/* Whether the service secret store holds the proxy password of this leg (sd_mount reads it with secret_get later). */
+static int svc_proxy_secret_present(const sd_proxy_spec *x)
+{
+  char target[SD_SECRET_MAX_TARGET];
+  sd_secbuf *b = NULL;
+  int ok = 0;
+  if (x->user[0] == 0)
+    return 0;
+  if (sd_secret_target_proxy(x->kind == SD_PROFILE_PROXY_SOCKS5 ? "socks5" : "http", x->user, x->host, x->port, target,
+                             sizeof(target)) != SD_OK)
+    return 0;
+  if (sd_secret_get(SD_SECRET_SERVICE, SD_SECRET_PROXY, target, &b) == SD_OK) {
+    ok = 1;
+    sd_secbuf_free(b);
+  }
+  return ok;
+}
+
+/* The identity file of one hop (TM-R27): the key blob read through a checked handle; the bytes stay in the arena. */
+static const char *svc_chain_identity(svc_chain *c, uint32_t i, const sd_chain_hop *s)
 {
   wchar_t identw[MAX_PATH];
   svc_folder_reason fr = SVC_FOLDER_OK;
   DWORD fe;
-  *keybuf = NULL;
-  *keylen = 0;
-  if (sd_config_expand_path(p->identity, identw, SD_COUNTOF(identw)) != SD_OK ||
+  sd_mount_hop *d = &c->hop[i];
+  if (s->identity_count == 0)
+    return NULL;
+  if (sd_config_expand_path(s->identity[0], identw, SD_COUNTOF(identw)) != SD_OK ||
       !svc_path_under(identw, g.service_dir))
     return "identity file outside the service folder (TM-R27)";
-  fe = svc_file_read_trusted(g.service_dir, identw, g.owner_trusted, NULL, keybuf, keylen, &fr);
+  fe = svc_file_read_trusted(g.service_dir, identw, g.owner_trusted, NULL, &c->blob[i], &c->blob_len[i], &fr);
   if (fe != 0)
     return "identity file cannot be read (TM-R27)";
   if (fr != SVC_FOLDER_OK) {
     svc_event_key_refused(identw, fr);
     return "identity file refused: owner, reparse point, not a plain file or a writable ACL (TM-R27)";
   }
-  memset(hop, 0, sizeof(*hop));
-  utf8_from_wide(identw, keylabel, keycap);
-  hop->host = hostw;
-  hop->port = port;
-  hop->user = p->user;
-  hop->key_blob = *keybuf;
-  hop->key_blob_len = *keylen;
-  hop->key_label = keylabel;
-  hop->identities_only = 1;                 /* D37: the key given is the only one offered */
-  hop->auth_methods = methods;
-  hop->update_host_keys = hku;
+  utf8_from_wide(identw, c->label[i], sizeof(c->label[i]));
+  d->key_blob = c->blob[i];
+  d->key_blob_len = c->blob_len[i];
+  d->key_label = c->label[i];
   return NULL;
 }
+
+/* The leg that reaches hop i (3.8): none, a configured HTTP or SOCKS5 proxy (a service secret for a user), or the
+   machine configuration read through the seam (proxy = system, refused unless the machine policy allows it). */
+static const char *svc_chain_leg(svc_chain *c, uint32_t i, const sd_chain *ch)
+{
+  const sd_proxy_spec *x = &ch->proxy[i];
+  sd_mount_hop *d = &c->hop[i];
+  int pa = ch->proxy_auth[i];
+  int fb = (ch->proxy_fallback_direct & (1u << i)) != 0;
+  const char *bad = NULL, *why = NULL;
+  if (x->kind == SD_PROFILE_PROXY_NONE)
+    return NULL;
+  if (x->kind == SD_PROFILE_PROXY_SYSTEM) {
+    int kind = SD_PROXY_NONE;
+    wchar_t hostw[256];
+    uint16_t port = 0;
+    sd_err e;
+    if (g.sysproxy == NULL || !g.sysproxy->allow || g.sysproxy->read == NULL)
+      return "proxy = system is refused by policy AllowSystemProxy (TM-R10)";
+    if (svc_proxy_leg_check(x, pa, 0, &bad, &why) != SD_OK) {
+      SD_LOGW("svc", "chain leg %u refused: %s (%s)", (unsigned)i, bad, why);
+      return why;
+    }
+    e = g.sysproxy->read(g.sysproxy->ctx, c->host[i], d->port, &kind, hostw, &port);
+    if (e != SD_OK)
+      return fb ? NULL : "the system proxy cannot be read (TM-R10)";
+    if (kind == SD_PROXY_NONE)
+      return NULL;
+    if (kind != SD_PROXY_HTTP && kind != SD_PROXY_SOCKS5)
+      return "the system proxy is not usable";
+    wcscpy_s(c->proxy_host[i], SD_COUNTOF(c->proxy_host[i]), hostw);
+    d->proxy.kind = kind;
+    d->proxy.host = c->proxy_host[i];
+    d->proxy.port = port;
+    d->proxy.user = NULL;
+    d->proxy.auth = 0;                  /* TM-R10: no SSPI towards a proxy obtained from proxy = system */
+    d->proxy.allow_discovered_sspi = 0;
+    d->proxy.allow_system = 0;
+    d->proxy.fallback_direct = fb;
+    return NULL;
+  }
+  wide_from_utf8(x->host, c->proxy_host[i], SD_COUNTOF(c->proxy_host[i]));
+  if (svc_proxy_leg_check(x, pa, svc_proxy_secret_present(x), &bad, &why) != SD_OK) {
+    SD_LOGW("svc", "chain leg %u refused: %s (%s)", (unsigned)i, bad, why);
+    return why;
+  }
+  d->proxy.kind = x->kind;
+  d->proxy.host = c->proxy_host[i];
+  d->proxy.port = x->port;
+  if (x->user[0]) {
+    strcpy_s(c->proxy_user[i], sizeof(c->proxy_user[i]), x->user);
+    d->proxy.user = c->proxy_user[i];
+  }
+  d->proxy.auth = svc_proxy_auth_of(x, pa);
+  d->proxy.fallback_direct = 0;
+  return NULL;
+}
+
+/* One hop with the service rules (svc_chain_hop_check). hku is the host key mode of the target; the jump hosts
+   never update host keys (no announcements from them). */
+static const char *svc_chain_hop(svc_chain *c, uint32_t i, const sd_chain *ch, const sd_profile *p, int hku)
+{
+  const sd_chain_hop *s = &ch->hop[i];
+  sd_mount_hop *d = &c->hop[i];
+  const char *bad = NULL, *why = NULL;
+  uint32_t methods = 0;
+  if (svc_chain_hop_check(s, &bad, &why) != SD_OK) {
+    SD_LOGW("svc", "chain hop %u refused: %s (%s)", (unsigned)i, bad, why);
+    return why;
+  }
+  wide_from_utf8(s->host, c->host[i], SD_COUNTOF(c->host[i]));
+  if (s->auth_methods & SD_PROFILE_AUTH_PUBLICKEY) methods |= SD_AUTH_PUBLICKEY;
+  if (s->auth_methods & SD_PROFILE_AUTH_PASSWORD) methods |= SD_AUTH_PASSWORD;
+  strcpy_s(c->user[i], sizeof(c->user[i]), s->user[0] ? s->user : p->user);
+  if (s->host_key_alias[0]) {
+    strcpy_s(c->alias[i], sizeof(c->alias[i]), s->host_key_alias);
+    d->host_key_alias = c->alias[i];
+  }
+  d->host = c->host[i];
+  d->port = s->port ? s->port : 22;
+  d->user = c->user[i];
+  d->auth_methods = methods;
+  d->agents = 0;                      /* D17: no agent in the service */
+  d->agent_keys = NULL;
+  d->identities = NULL;
+  d->identity_count = 0;
+  d->identities_only = s->identities_only;   /* D37: resolved by sd_chain_resolve */
+  d->certificate = NULL;
+  d->update_host_keys = (i + 1 == ch->count) ? hku : SD_HKU_NO;
+  d->no_save = 1;                     /* the service never keeps a secret it was given (2.5) */
+  why = svc_chain_identity(c, i, s);
+  if (why != NULL)
+    return why;
+  return svc_chain_leg(c, i, ch);
+}
+
+/* Builds the hops of a machine profile (the last one is the target). Returns NULL with *out set, or the refusal
+   (*out is NULL). Control thread only, without g.lock. */
+static const char *svc_chain_build(svc_chain **out, const sd_profile *p, int hku)
+{
+  svc_chain *c;
+  sd_chain *ch = NULL;
+  const char *why = NULL;
+  uint32_t i;
+  sd_err e;
+  *out = NULL;
+  c = (svc_chain *)sd_calloc(1, sizeof(*c));
+  if (c == NULL)
+    return "out of memory";
+  e = sd_chain_resolve(p, svc_chain_lookup, NULL, &ch, &why);
+  if (e != SD_OK || ch == NULL || ch->count == 0 || ch->count > SD_MOUNT_MAX_HOPS) {
+    sd_free(c);
+    sd_free(ch);
+    return why ? why : "the jump hosts cannot be resolved";
+  }
+  c->count = ch->count;
+  why = NULL;                       /* a resolved chain: the hop checks below decide */
+  for (i = 0; i < ch->count && why == NULL; i++)
+    why = svc_chain_hop(c, i, ch, p, hku);
+  sd_free(ch);
+  if (why != NULL) {
+    svc_chain_free(c);
+    return why;
+  }
+  *out = c;
+  return NULL;
+}
+
+/* Machine policy and the real read of proxy = system (3.8). The seam is svc_opts.sysproxy_ops. */
+static sd_err svc_sysproxy_machine_read(void *ctx, const wchar_t *host, uint16_t port, int *kind, wchar_t *host_out,
+                                        uint16_t *port_out)
+{
+  sd_proxy_kind k = SD_PROXY_NONE;
+  sd_err e;
+  (void)ctx;
+  e = sd_ssh_proxy_machine(host, port, &k, host_out, port_out);
+  *kind = (int)k;
+  return e;
+}
+
+static const svc_sysproxy_ops k_sysproxy_shipping = { 0, svc_sysproxy_machine_read, NULL };
 
 /* ---- host keys kept for review (M5, 03 §5.6, §6.1) ---- */
 
@@ -1456,8 +1664,12 @@ static void svc_hk_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err wh
 static void svc_hk_on_prompt(void *ctx, sd_mount *m, const sd_mount_prompt *p)
 {
   svc_hk *hk = (svc_hk *)ctx;
-  SD_LOGW("svc", "hostkey add for %s asked for a %s prompt: refused (no one can answer it)",
-          hk ? hk->lookup : "", sd_mount_prompt_kind_name(p->kind));
+  if (p->kind == SD_MP_HOSTKEY)     /* only a jump host's key reaches here (sd_mount takes the target's first contact) */
+    SD_LOGW("svc", "hostkey add for %s: the key of jump host %s is not in the machine store: refused (add it first)",
+            hk ? hk->lookup : "", p->host);
+  else
+    SD_LOGW("svc", "hostkey add for %s asked for a %s prompt: refused (no one can answer it)",
+            hk ? hk->lookup : "", sd_mount_prompt_kind_name(p->kind));
   (void)sd_mount_answer(m, p->id, SD_MA_REJECT, 0, NULL);
 }
 
@@ -1469,10 +1681,7 @@ static void job_hk_start(void *arg)
   sd_mount_callbacks cb;
   sd_mount *m = NULL;
   wchar_t hostw[256], namew[160];
-  sd_mount_hop hop;
-  unsigned char *keybuf = NULL;     /* identity bytes (TM-R27), wiped after sd_mount_create copied them */
-  DWORD keylen = 0;
-  char keylabel[MAX_PATH * 3];
+  svc_chain *chain = NULL;          /* the hops (TM-R27 key bytes inside), wiped after sd_mount_create copied them */
   sd_kh_store store;
   const sd_profile *p = &hk->prof->p;
   const char *why = NULL;
@@ -1492,11 +1701,11 @@ static void job_hk_start(void *arg)
   if (methods == 0 && why == NULL)
     why = "no non-interactive authentication method";
   pr.auth_methods = methods;
-  if (why == NULL && p->identity[0]) {
-    why = svc_identity_hop(p, hostw, pr.port, methods, SD_HKU_NO, &hop, &keybuf, &keylen, keylabel, sizeof(keylabel));
+  if (why == NULL) {
+    why = svc_chain_build(&chain, p, SD_HKU_NO);
     if (why == NULL) {
-      pr.hops = &hop;
-      pr.hop_count = 1;
+      pr.hops = chain->hop;
+      pr.hop_count = chain->count;
     }
   }
   if (why == NULL) {
@@ -1528,7 +1737,7 @@ static void job_hk_start(void *arg)
     cb.on_notice = svc_on_notice;
     e = sd_mount_create(g.be, &pr, &cb, &m);
   }
-  sd_secure_free(keybuf, keylen);
+  svc_chain_free(chain);            /* sd_mount_create copied the strings and the key bytes */
   if (why != NULL) {
     SD_LOGW("svc", "hostkey add for %s refused: %s", hk->lookup, why);
     svc_hk_send(hk, SD_E_INVALID_PARAM, "usage", why, NULL, 0);
@@ -1574,10 +1783,7 @@ static void job_start(void *arg)
   char sddl[1024];
   PSECURITY_DESCRIPTOR sd_bytes = NULL;
   ULONG sd_len = 0;
-  unsigned char *keybuf = NULL;     /* identity file bytes, read through a checked handle (TM-R27); wiped after use */
-  DWORD keylen = 0;
-  sd_mount_hop hop;
-  char keylabel[MAX_PATH * 3];
+  svc_chain *chain = NULL;          /* the hops; key bytes (TM-R27) are wiped after sd_mount_create copied them */
   PSID acc_sids[SVC_ACL_MAX], wr_sids[SVC_ACL_MAX];   /* M5: per-request lists (LocalFree after sd_mount_create) */
   uint32_t n_acc_s = 0, n_wr_s = 0, k;
   sd_kh_store store;
@@ -1608,13 +1814,12 @@ static void job_start(void *arg)
     if (p->auth_methods & SD_PROFILE_AUTH_PASSWORD) methods |= SD_AUTH_PASSWORD;
     if (methods == 0) why = "no non-interactive authentication method";
     pr.auth_methods = methods;
-    if (p->identity[0] && why == NULL) {
-      /* 2.6 rule 1, TM-R27: the key bytes go to sd_mount as a key blob, so the mount never opens the path again */
-      why = svc_identity_hop(p, hostw, pr.port, pr.auth_methods, SD_HKU_ASK, &hop, &keybuf, &keylen, keylabel,
-                             sizeof(keylabel));
+    if (why == NULL) {
+      /* 2.6 rule 1, TM-R27: the key bytes go to sd_mount as key blobs, so the mount never opens a path again */
+      why = svc_chain_build(&chain, p, SD_HKU_ASK);
       if (why == NULL) {
-        pr.hops = &hop;
-        pr.hop_count = 1;
+        pr.hops = chain->hop;
+        pr.hop_count = chain->count;
       }
     }
     pr.remote_path = p->remote_path;
@@ -1703,7 +1908,7 @@ static void job_start(void *arg)
     strcpy_s(r->err_detail, sizeof(r->err_detail), why);
     sd_mutex_unlock(&g.lock);
     SD_LOGW("svc", "mount %s refused: %s", j->id, why);
-    sd_secure_free(keybuf, keylen);
+    svc_chain_free(chain);
     announce_state(j->id, r->letter, "failed");
     sd_free(j);
     return;
@@ -1720,7 +1925,7 @@ static void job_start(void *arg)
   cb.on_warning = svc_on_warning;
   cb.on_hostkeys_announced = svc_on_hostkeys;
   e = sd_mount_create(g.be, &pr, &cb, &m);
-  sd_secure_free(keybuf, keylen);   /* sd_mount_create copied the key bytes */
+  svc_chain_free(chain);            /* sd_mount_create copied the strings and the key bytes */
   if (sd_bytes) LocalFree(sd_bytes);
   for (k = 0; k < n_acc_s; k++)
     LocalFree(acc_sids[k]);
@@ -2753,6 +2958,7 @@ int svc_run(const svc_opts *o)
   g.scm_ops = o ? o->scm_ops : NULL;
   g.repair_ops = o ? o->repair_ops : NULL;
   g.repair_base = o ? o->repair_base : NULL;
+  g.sysproxy = (o && o->sysproxy_ops) ? o->sysproxy_ops : &k_sysproxy_shipping;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
   g.dacl_extra = o ? o->dacl_extra_ace : NULL;

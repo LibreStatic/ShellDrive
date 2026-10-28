@@ -28,6 +28,9 @@ typedef struct fake_hop {
   int proxy_kind; char proxy_host[256]; char proxy_user[128]; uint16_t proxy_port;
   int identities_only;
   int hku;
+  uint32_t proxy_auth;                  /* SD_PROXY_AUTH_* of the leg (M5) */
+  int blob;                             /* an identity given as key bytes (SD_ID_BLOB, M5 service hops) */
+  uint32_t auth_methods;                /* SD_AUTH_* of the hop (0 = all three in sd_mount) */
 } fake_hop;
 
 struct sd_sftp_session {
@@ -127,6 +130,14 @@ int fake_backend_last_hop_proxy(uint32_t i) { return i < g_last_nhops ? g_last_h
 uint32_t fake_backend_last_hop_identities(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].nidentities : 0; }
 uint32_t fake_backend_last_hop_agent_keys(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].nagent_keys : 0; }
 int fake_backend_last_hop_identities_only(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].identities_only : -1; }
+/* M5: what the service passed per hop (proxy legs, key blobs, host key mode, auth methods) */
+const char *fake_backend_last_hop_proxy_host(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].proxy_host : ""; }
+const char *fake_backend_last_hop_proxy_user(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].proxy_user : ""; }
+uint16_t fake_backend_last_hop_proxy_port(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].proxy_port : 0; }
+uint32_t fake_backend_last_hop_proxy_auth(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].proxy_auth : 0; }
+int fake_backend_last_hop_blob(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].blob : -1; }
+int fake_backend_last_hop_hku(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].hku : -1; }
+uint32_t fake_backend_last_hop_auth_methods(uint32_t i) { return i < g_last_nhops ? g_last_hops[i].auth_methods : 0; }
 uint32_t fake_backend_last_connections(void) { return g_last_connections; }
 int fake_backend_last_legacy_policy(void) { return g_last_legacy; }
 uint32_t fake_backend_store_answers(void) { return g_store_answers; }
@@ -671,11 +682,16 @@ static sd_err f_session_create(const sd_ssh_config *ssh, const sd_ssh_callbacks 
         else h->nidentities++;
         if (sh->auth.identities[k].kind == SD_ID_FILE && h->identity[0] == 0)
           to_utf8(sh->auth.identities[k].path, h->identity, sizeof(h->identity));
+        if (sh->auth.identities[k].kind == SD_ID_BLOB)
+          h->blob = 1;
       }
       h->identities_only = sh->auth.identities_only;
+      h->auth_methods = sh->auth.methods;
       h->proxy_kind = sh->proxy.kind;
       h->proxy_port = sh->proxy.port;
-      to_utf8(sh->proxy.host, h->proxy_host, sizeof(h->proxy_host));
+      h->proxy_auth = sh->proxy.auth;
+      if (sh->proxy.host)
+        to_utf8(sh->proxy.host, h->proxy_host, sizeof(h->proxy_host));
       if (sh->proxy.user && strlen(sh->proxy.user) < sizeof(h->proxy_user))
         memcpy(h->proxy_user, sh->proxy.user, strlen(sh->proxy.user) + 1);
       h->hku = sh->update_host_keys;
@@ -1140,21 +1156,33 @@ const sd_mount_backend *fake_backend(void)
    Scripted by the host name, as tests/apps/host_fake_backend.c does for the smoke tests:
    *.known.test    a stored key verifies the connection; the server has an ECDSA and an ssh-rsa key besides it
    *.changed.test  the stored key does not match (SD_E_HOSTKEY_MISMATCH)
-   anything else   first contact: the server presents one ssh-ed25519 key (TOFU, 5.2, taken by the mount) */
+   anything else   first contact: the server presents one ssh-ed25519 key (TOFU, 5.2, taken by the mount)
+   A jump hop whose host is not trusted (fake_backend_pre_trust) raises a host-key prompt for that hop first; the
+   connection waits for its answer and fails with SD_E_HOSTKEY_REJECTED when it is rejected or cancelled. */
 
 typedef struct fake_hk {
   char host[256];
   sd_ssh_callbacks cb;
   int first;
   int changed;
+  uint32_t hop_count;
+  int jump_hop;                                        /* first untrusted jump hop, -1 = none */
+  char jump_host[256];
+  sd_ssh_done_cb done;                                 /* pending while the jump prompt is open */
+  void *done_ctx;
   uint8_t ed[4 + 11 + 4 + 32];
   size_t ed_len;
   char ed_fp[64];
 } fake_hk;
 
 static char k_fake_hk_marker;                          /* the prompt object the hostkey connection raises */
+static char k_fake_hk_jump_marker;                     /* the prompt of an untrusted jump hop */
+static fake_hk *k_fake_hk_pending;                     /* the connection waiting for that answer (tests are serial) */
+static uint32_t k_fake_hk_jump_prompts;
 static sd_mount_backend k_fake_hk_table;
 static int k_fake_hk_ready;
+
+uint32_t fake_backend_hk_jump_prompts(void) { return k_fake_hk_jump_prompts; }
 
 static void fk_u32(uint8_t *p, uint32_t v)
 {
@@ -1174,11 +1202,46 @@ static int fk_ends_with(const char *s, const char *suffix)
   return n >= m && _stricmp(s + n - m, suffix) == 0;
 }
 
+static void fk_connect_target(fake_hk *c, sd_ssh_done_cb done, void *ctx);
+
+/* The answer to the jump prompt resumes (or fails) the pending connection. */
+static void fk_jump_answered(int accepted)
+{
+  fake_hk *c = k_fake_hk_pending;
+  sd_ssh_done_cb done;
+  void *ctx;
+  if (c == NULL)
+    return;
+  k_fake_hk_pending = NULL;
+  done = c->done;
+  ctx = c->done_ctx;
+  c->done = NULL;
+  if (!accepted)
+    done(ctx, SD_E_HOSTKEY_REJECTED, (uint32_t)c->jump_hop);
+  else
+    fk_connect_target(c, done, ctx);
+}
+
 static sd_err fk_prompt_answer_hostkey(sd_prompt *p, sd_hostkey_decision d)
 {
   if ((void *)p == (void *)&k_fake_hk_marker)
     return SD_OK;
+  if ((void *)p == (void *)&k_fake_hk_jump_marker) {
+    fk_jump_answered(d != SD_HK_REJECT);
+    return SD_OK;
+  }
   return f_prompt_answer_hostkey(p, d);
+}
+
+static sd_err fk_prompt_cancel(sd_prompt *p)
+{
+  if ((void *)p == (void *)&k_fake_hk_marker)
+    return SD_OK;
+  if ((void *)p == (void *)&k_fake_hk_jump_marker) {
+    fk_jump_answered(0);
+    return SD_OK;
+  }
+  return f_prompt_cancel(p);
 }
 
 static sd_err fk_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
@@ -1186,11 +1249,19 @@ static sd_err fk_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd
   fake_hk *c = (fake_hk *)sd_calloc(1, sizeof(*c));
   const sd_ssh_hop *last;
   uint8_t pk[32];
+  uint32_t i;
   if (c == NULL)
     return SD_E_NO_MEMORY;
   last = &cfg->hops[cfg->hop_count - 1];
   WideCharToMultiByte(CP_UTF8, 0, last->host, -1, c->host, sizeof(c->host), NULL, NULL);
   c->cb = *cb;
+  c->hop_count = cfg->hop_count;
+  c->jump_hop = -1;
+  for (i = 0; i + 1 < cfg->hop_count && c->jump_hop < 0; i++) {
+    WideCharToMultiByte(CP_UTF8, 0, cfg->hops[i].host, -1, c->jump_host, sizeof(c->jump_host), NULL, NULL);
+    if (!fake_backend_is_trusted(c->jump_host))
+      c->jump_hop = (int)i;
+  }
   c->changed = fk_ends_with(c->host, ".changed.test");
   c->first = !c->changed && !fk_ends_with(c->host, ".known.test");
   memset(pk, 0x33, sizeof(pk));
@@ -1202,16 +1273,16 @@ static sd_err fk_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd
   return SD_OK;
 }
 
-static sd_err fk_connect(sd_ssh_conn *cc, sd_ssh_done_cb done, void *ctx)
+static void fk_connect_target(fake_hk *c, sd_ssh_done_cb done, void *ctx)
 {
-  fake_hk *c = (fake_hk *)cc;
   if (c->changed) {
-    done(ctx, SD_E_HOSTKEY_MISMATCH, 0);
-    return SD_OK;
+    done(ctx, SD_E_HOSTKEY_MISMATCH, c->hop_count - 1);
+    return;
   }
   if (c->first) {
     sd_hostkey_prompt_info hk;
     memset(&hk, 0, sizeof(hk));
+    hk.hop_index = c->hop_count - 1;
     hk.host = c->host;
     hk.port = 22;
     hk.lookup_name = c->host;
@@ -1225,6 +1296,33 @@ static sd_err fk_connect(sd_ssh_conn *cc, sd_ssh_done_cb done, void *ctx)
     c->cb.on_prompt(c->cb.ctx, (sd_prompt *)&k_fake_hk_marker, NULL, &hk);
   }
   done(ctx, SD_OK, 0);
+}
+
+static sd_err fk_connect(sd_ssh_conn *cc, sd_ssh_done_cb done, void *ctx)
+{
+  fake_hk *c = (fake_hk *)cc;
+  if (c->jump_hop >= 0) {
+    sd_hostkey_prompt_info hk;
+    memset(&hk, 0, sizeof(hk));
+    hk.hop_index = (uint32_t)c->jump_hop;
+    hk.host = c->jump_host;
+    hk.port = 22;
+    hk.lookup_name = c->jump_host;
+    hk.key_type = "ssh-ed25519";
+    hk.key_bits = 256;
+    hk.fp_sha256 = c->ed_fp;
+    hk.fp_md5 = "";
+    hk.status = SD_HK_NEW;
+    hk.blob = c->ed;
+    hk.blob_len = c->ed_len;
+    c->done = done;
+    c->done_ctx = ctx;
+    k_fake_hk_pending = c;
+    k_fake_hk_jump_prompts++;
+    c->cb.on_prompt(c->cb.ctx, (sd_prompt *)&k_fake_hk_jump_marker, NULL, &hk);
+    return SD_OK;
+  }
+  fk_connect_target(c, done, ctx);
   return SD_OK;
 }
 
@@ -1272,6 +1370,8 @@ static sd_err fk_fetch(sd_ssh_conn *cc, uint32_t hop, const char *const *types, 
 
 static void fk_destroy(sd_ssh_conn *cc)
 {
+  if (k_fake_hk_pending == (fake_hk *)cc)
+    k_fake_hk_pending = NULL;
   sd_free(cc);
 }
 
@@ -1281,6 +1381,7 @@ const sd_mount_backend *fake_backend_hostkeys(void)
   if (!k_fake_hk_ready) {
     k_fake_hk_table = k_fake;
     k_fake_hk_table.prompt_answer_hostkey = fk_prompt_answer_hostkey;
+    k_fake_hk_table.prompt_cancel = fk_prompt_cancel;
     k_fake_hk_table.hk_conn_create = fk_create;
     k_fake_hk_table.hk_conn_connect = fk_connect;
     k_fake_hk_table.hk_conn_fetch = fk_fetch;

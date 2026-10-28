@@ -74,6 +74,34 @@ static int owner_trust_none(void *ctx, PSID owner)
 #define T_ID_HK_CHANGED "0000000000000000000000000000000b"
 #define T_ID_HK_FIRST  "0000000000000000000000000000000c"
 #define T_ID_ROTATE    "0000000000000000000000000000000d"
+static int make_chain_profiles(void);
+#define T_ID_HOP1      "00000000000000000000000000000010"
+#define T_ID_CHAIN     "00000000000000000000000000000011"
+#define T_ID_HOPUSER   "00000000000000000000000000000012"
+#define T_ID_CHAINUSER "00000000000000000000000000000013"
+#define T_ID_PROXYPW   "00000000000000000000000000000014"
+#define T_ID_PROXYSEC  "00000000000000000000000000000015"
+#define T_ID_SYSPROXY  "00000000000000000000000000000016"
+#define T_ID_SYSBASIC  "00000000000000000000000000000017"
+#define T_ID_HKCHAIN   "00000000000000000000000000000018"
+
+/* proxy = system seam (svc_opts.sysproxy_ops): a stub machine configuration; the test changes allow to refuse by policy */
+static svc_sysproxy_ops g_sysops;
+static int g_sysread_calls;
+static char g_sysread_host[256];
+
+static sd_err test_sysproxy_read(void *ctx, const wchar_t *host, uint16_t port, int *kind, wchar_t *host_out,
+                                 uint16_t *port_out)
+{
+  (void)ctx;
+  (void)port;
+  g_sysread_calls++;
+  WideCharToMultiByte(CP_UTF8, 0, host, -1, g_sysread_host, (int)sizeof(g_sysread_host), NULL, NULL);
+  *kind = SD_PROXY_HTTP;
+  wcscpy_s(host_out, 256, L"machine.proxy.example");
+  *port_out = 3128;
+  return SD_OK;
+}
 
 static wchar_t g_root[MAX_PATH];
 static HANDLE g_thread;
@@ -212,11 +240,71 @@ static int make_fixture(void)
   identity_of(&p);
   if (!write_profile(L"k-rotate.ini", &p)) return 0;
 
+  if (!make_chain_profiles()) return 0;
   fake_backend_pre_trust("trusted.example");
   fake_backend_pre_trust("trusted3.example");
   fake_backend_pre_trust("pw.example");
   fake_backend_pre_trust("pw2.example");
   fake_backend_pre_trust("rotate.example");
+  fake_backend_pre_trust("hop1.trusted.example");
+  fake_backend_pre_trust("hop2.trusted.example");
+  return 1;
+}
+
+/* M5 chains and proxies: the jump hosts and the leg proxies of the service profiles below. Every profile has the
+   service identity, so the target authenticates with its key blob and no password prompt is raised. */
+static int make_chain_profiles(void)
+{
+  sd_profile p;
+  p = base_profile(T_ID_HOP1, "hop1", "hop1.trusted.example");
+  identity_of(&p);
+  if (!write_profile(L"l-hop1.ini", &p)) return 0;
+
+  p = base_profile(T_ID_CHAIN, "chain", "trusted.example");
+  identity_of(&p);
+  strcpy_s(p.jump, sizeof(p.jump), "hop1");
+  if (!write_profile(L"m-chain.ini", &p)) return 0;
+
+  /* a jump to a profile whose identity is a user path: refused at mount time (TM-R27) */
+  p = base_profile(T_ID_HOPUSER, "hopuser", "hop2.trusted.example");
+  strcpy_s(p.identity, sizeof(p.identity), "%USERPROFILE%\\.ssh\\id_ed25519");
+  if (!write_profile(L"n-hopuser.ini", &p)) return 0;
+
+  p = base_profile(T_ID_CHAINUSER, "chainuser", "trusted.example");
+  identity_of(&p);
+  strcpy_s(p.jump, sizeof(p.jump), "hopuser");
+  if (!write_profile(L"o-chainuser.ini", &p)) return 0;
+
+  /* a basic proxy leg with a user: needs a proxy secret in the service store */
+  p = base_profile(T_ID_PROXYPW, "proxypw", "trusted.example");
+  identity_of(&p);
+  if (sd_proxy_spec_parse("http://pu@proxy.example:3128", &p.proxy[0]) != SD_OK) return 0;
+  p.proxy_auth[0] = SD_PROFILE_PROXY_AUTH_BASIC;
+  if (!write_profile(L"p-proxypw.ini", &p)) return 0;
+
+  p = base_profile(T_ID_PROXYSEC, "proxysec", "trusted.example");
+  identity_of(&p);
+  if (sd_proxy_spec_parse("http://pu@proxy.example:3128", &p.proxy[0]) != SD_OK) return 0;
+  p.proxy_auth[0] = SD_PROFILE_PROXY_AUTH_BASIC;
+  if (!write_profile(L"q-proxysec.ini", &p)) return 0;
+
+  /* proxy = system: the machine configuration through the seam; with basic it is refused */
+  p = base_profile(T_ID_SYSPROXY, "sysproxy", "trusted.example");
+  identity_of(&p);
+  p.proxy[0].kind = SD_PROFILE_PROXY_SYSTEM;
+  if (!write_profile(L"r-sysproxy.ini", &p)) return 0;
+
+  p = base_profile(T_ID_SYSBASIC, "sysbasic", "trusted.example");
+  identity_of(&p);
+  p.proxy[0].kind = SD_PROFILE_PROXY_SYSTEM;
+  p.proxy_auth[0] = SD_PROFILE_PROXY_AUTH_BASIC;
+  if (!write_profile(L"s-sysbasic.ini", &p)) return 0;
+
+  /* hostkey add through a jump host whose key is not in the machine store: never accepted (2.6 rule 2) */
+  p = base_profile(T_ID_HKCHAIN, "hkchain", "hkchain.known.test");
+  identity_of(&p);
+  strcpy_s(p.jump, sizeof(p.jump), "hkjump.untrusted.test");
+  if (!write_profile(L"t-hkchain.ini", &p)) return 0;
   return 1;
 }
 
@@ -294,6 +382,11 @@ static int ensure_core(void)
   _snwprintf_s(g_repair_base, MAX_PATH, _TRUNCATE, L"%s-repair", g_root);
   if (!CreateDirectoryW(g_repair_base, NULL)) return 0;
   o.repair_base = g_repair_base;
+  /* proxy = system never reads the real WinHTTP configuration in a test: the stub answers, the policy is on */
+  g_sysops.allow = 1;
+  g_sysops.read = test_sysproxy_read;
+  g_sysops.ctx = NULL;
+  o.sysproxy_ops = &g_sysops;
   g_running = CreateEventW(NULL, TRUE, FALSE, NULL);
   g_thread = CreateThread(NULL, 0, core_main, &o, 0, NULL);
   if (g_thread == NULL || g_running == NULL)
@@ -395,6 +488,16 @@ static int wait_state(sd_ipc_conn *c, const char *mount_id, const char *want, ui
   }
 }
 
+/* Frees a status reply kept by wait_state and clears the pointer, so a later wait_state(..., &st) never frees it
+   twice. */
+static void json_drop(sd_json **j)
+{
+  if (*j != NULL) {
+    sd_json_free(*j);
+    *j = NULL;
+  }
+}
+
 static sd_json *mount_profile(sd_ipc_conn *c, const char *profile, sd_ipc_error *err, sd_err *rc)
 {
   char params[160];
@@ -454,15 +557,16 @@ SD_TEST(svc_loads_only_valid_service_profiles)
   const sd_json *loaded;
   SD_REQUIRE(ensure_core());
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
-  /* 9 valid: mounted, nosub, tofu, pwprompt, adminonly and the M5 hostkey and rotate profiles. Refused: pageant (D17).
-     Not loaded: the user profile. */
+  /* 18 valid: mounted, nosub, tofu, pwprompt, adminonly, the M5 hostkey and rotate profiles and the M5 chain and proxy
+     profiles (a chain is checked per hop at mount time, not at load). Refused: pageant (D17). Not loaded: the user
+     profile. */
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
   loaded = sd_json_get(res, "profiles");
   {
     int64_t n = -1;
     SD_CHECK(sd_json_get_int64(loaded, "loaded", &n));
-    SD_CHECK_EQ_INT(n, 9);
+    SD_CHECK_EQ_INT(n, 18);
   }
   sd_json_free(res);
   sd_ipc_close(c);
@@ -669,7 +773,7 @@ SD_TEST(svc_attention_counts_the_open_prompts)
   }
   SD_CHECK(wait_attention(w, 0));
   SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
-  if (st) sd_json_free(st);
+  json_drop(&st);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
   sd_ipc_close(c);
@@ -718,7 +822,7 @@ SD_TEST(svc_admin_answers_a_password_prompt_on_the_pipe)
     sd_json_free(res);
   }
   SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
-  if (st) sd_json_free(st);
+  json_drop(&st);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
   sd_ipc_close(c);
@@ -769,7 +873,7 @@ SD_TEST(svc_list_hides_mounts_outside_service_access_from_users)
   copy_str(letter, sizeof(letter), sd_json_get_str(res, "target"));
   sd_json_free(res);
   SD_CHECK(wait_state(admin, mid, "mounted", 10000, &st));
-  if (st) sd_json_free(st);
+  json_drop(&st);
 
   e = connect_restricted(&user, &has_token);
   if (e != SD_OK) {
@@ -1144,8 +1248,7 @@ SD_TEST(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store)
   sd_json_free(res);
   SD_REQUIRE(mid[0] != 0);
   SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
-  if (st)
-    sd_json_free(st);
+  json_drop(&st);
   SD_REQUIRE(announcement_of_mount(c, mid, id, sizeof(id), &nadd, &nremove));
   SD_CHECK(nadd == 1 && nremove == 1);
   SD_CHECK(saw_event(SVC_MSG_HOSTKEYS_ANNOUNCED));
@@ -1192,7 +1295,7 @@ SD_TEST(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder)
   SD_CHECK(sd_json_get_int64(o, "prompts", &n) && n == 0);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 9);   /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   SD_CHECK(sd_json_get_str(o, "reason") == NULL);
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1237,8 +1340,7 @@ SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
   copy_str(mid, sizeof(mid), sd_json_get_str(res, "mount_id"));
   sd_json_free(res);
   SD_CHECK(wait_state(c, mid, "mounted", 10000, &st));
-  if (st)
-    sd_json_free(st);
+  json_drop(&st);
   res = call(c, "service.status", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
   o = sd_json_get(res, "pipe");
@@ -1252,10 +1354,219 @@ SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
   SD_REQUIRE(res != NULL);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 9);   /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   sd_json_free(res);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+/* M5: mounts a profile and waits for `want`; the mount id is copied to mid and the last status is left in *st (which
+   must be NULL or a reply the caller still owns: wait_state frees it before it stores the next one). */
+static int mount_and_wait(sd_ipc_conn *c, const char *profile, const char *want, char *mid, size_t cap, sd_json **st)
+{
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res = mount_profile(c, profile, &err, &e);
+  if (res == NULL)
+    return 0;
+  copy_str(mid, cap, sd_json_get_str(res, "mount_id"));
+  sd_json_free(res);
+  return mid[0] != 0 && wait_state(c, mid, want, 10000, st);
+}
+
+/* M5: whether a failed mount's last error carries the IPC code. */
+static int failed_with(const sd_json *st, const char *code)
+{
+  const sd_json *le = st ? sd_json_get(st, "last_error") : NULL;
+  const char *got = le ? sd_json_get_str(le, "code") : NULL;
+  return got != NULL && strcmp(got, code) == 0;
+}
+
+SD_TEST(svc_chain_two_hops_are_mounted_with_the_service_rules)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_REQUIRE(mount_and_wait(c, "chain", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  /* jump hop, then the target; the identity of every hop is a key blob read from the service folder (TM-R27), no agent,
+     the jump hop never updates host keys and the target keeps the profile's mode (ask) */
+  SD_CHECK_EQ_INT(fake_backend_last_hop_count(), 2);
+  SD_CHECK_STR(fake_backend_last_hop_host(0), "hop1.trusted.example");
+  SD_CHECK_STR(fake_backend_last_hop_host(1), "trusted.example");
+  SD_CHECK_EQ_INT(fake_backend_last_hop_blob(0), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_blob(1), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_identities_only(0), 1);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_agent_keys(0), 0);
+  SD_CHECK((fake_backend_last_hop_auth_methods(0) & SD_AUTH_KBDINT) == 0);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_hku(0), SD_HKU_NO);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_hku(1), SD_HKU_ASK);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy(0), SD_PROXY_NONE);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_chain_refuses_a_hop_with_a_user_path_identity)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  /* the jump profile's identity is outside the service folder: nothing connects, the mount is refused with usage */
+  SD_REQUIRE(mount_and_wait(c, "chainuser", "failed", mid, sizeof(mid), &st));
+  SD_CHECK(failed_with(st, "usage"));
+  json_drop(&st);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_proxy_basic_without_a_service_secret_is_refused)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  /* basic proxy authentication needs the proxy password, and the service has none stored for this leg */
+  SD_REQUIRE(mount_and_wait(c, "proxypw", "failed", mid, sizeof(mid), &st));
+  SD_CHECK(failed_with(st, "usage"));
+  json_drop(&st);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "", target[SD_SECRET_MAX_TARGET];
+  uint32_t before;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_REQUIRE(sd_secret_target_proxy("http", "pu", "proxy.example", 3128, target, sizeof(target)) == SD_OK);
+  SD_REQUIRE(sd_secret_put(SD_SECRET_SERVICE, SD_SECRET_PROXY, target, NULL, FAKE_PROXY_PASSWORD,
+                           strlen(FAKE_PROXY_PASSWORD)) == SD_OK);
+  before = fake_backend_store_answers();
+  /* the target authenticates with its key blob; the only prompt is the proxy password, answered from the store */
+  SD_CHECK(mount_and_wait(c, "proxysec", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy(0), SD_PROXY_HTTP);
+  SD_CHECK_STR(fake_backend_last_hop_proxy_host(0), "proxy.example");
+  SD_CHECK_STR(fake_backend_last_hop_proxy_user(0), "pu");
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_port(0), 3128);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_auth(0), SD_PROXY_AUTH_BASIC);
+  SD_CHECK(fake_backend_store_answers() > before);   /* the proxy password came from the service store */
+  if (mid[0]) {
+    SD_CHECK(unmount_id(c, mid));
+    SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  }
+  (void)sd_secret_delete(SD_SECRET_SERVICE, SD_SECRET_PROXY, target);
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "", mid2[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  g_sysread_calls = 0;
+  SD_REQUIRE(mount_and_wait(c, "sysproxy", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  /* the machine configuration was asked for the target host, and its answer is the leg: no SSPI (TM-R10) */
+  SD_CHECK(g_sysread_calls >= 1);
+  SD_CHECK_STR(g_sysread_host, "trusted.example");
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy(0), SD_PROXY_HTTP);
+  SD_CHECK_STR(fake_backend_last_hop_proxy_host(0), "machine.proxy.example");
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_port(0), 3128);
+  SD_CHECK_EQ_INT(fake_backend_last_hop_proxy_auth(0), 0);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  /* machine policy AllowSystemProxy off: the same profile, mounted a second time, is refused before any connect */
+  g_sysops.allow = 0;
+  g_sysread_calls = 0;
+  SD_CHECK(mount_and_wait(c, "sysproxy", "failed", mid2, sizeof(mid2), &st));
+  g_sysops.allow = 1;
+  SD_CHECK(failed_with(st, "usage"));
+  SD_CHECK_EQ_INT(g_sysread_calls, 0);
+  json_drop(&st);
+  if (mid2[0]) {
+    SD_CHECK(unmount_id(c, mid2));
+    SD_CHECK(wait_state(c, mid2, "gone", 10000, NULL));
+  }
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_system_proxy_refuses_basic_auth_on_its_leg)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  /* the machine configuration has no credentials to offer (TM-R10): basic on a system leg is refused */
+  SD_REQUIRE(mount_and_wait(c, "sysbasic", "failed", mid, sizeof(mid), &st));
+  SD_CHECK(failed_with(st, "usage"));
+  json_drop(&st);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+SD_TEST(svc_hostkey_add_through_an_unknown_jump_host_is_refused)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  uint32_t before, prompts;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  before = fake_backend_apply_machine_calls();
+  prompts = fake_backend_hk_jump_prompts();
+  /* 2.6 rule 2: the jump host's key is not in the machine store. It is not taken as a first contact (only the target's
+     key can be): the prompt is refused, the connect fails, and no key of the target or the jump host is offered */
+  res = hk_add_call(c, "hkchain.known.test", NULL, NULL, &err, &e);
+  SD_CHECK(res == NULL);
+  if (res)
+    sd_json_free(res);
+  SD_CHECK_STR(err.code, "host_key_rejected");
+  SD_CHECK(fake_backend_hk_jump_prompts() == prompts + 1);
+  SD_CHECK(before == fake_backend_apply_machine_calls());
+  sd_ipc_close(c);
+}
+
+/* Regression: one profile mounted twice in one process, each mount raising its own UpdateHostKeys announcement (the
+   mount slot, the announcement records and the status replies of the first mount must not leak into the second). */
+SD_TEST(svc_one_profile_mounted_twice_keeps_both_announcements)
+{
+  sd_ipc_conn *c = NULL;
+  sd_json *st = NULL;
+  char mid1[16] = "", mid2[16] = "", id1[16] = "", id2[16] = "";
+  size_t nadd = 0, nremove = 0;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_REQUIRE(mount_and_wait(c, "rotate", "mounted", mid1, sizeof(mid1), &st));
+  json_drop(&st);
+  SD_REQUIRE(announcement_of_mount(c, mid1, id1, sizeof(id1), &nadd, &nremove));
+  SD_CHECK(unmount_id(c, mid1));
+  SD_CHECK(wait_state(c, mid1, "gone", 10000, NULL));
+  SD_REQUIRE(mount_and_wait(c, "rotate", "mounted", mid2, sizeof(mid2), &st));
+  json_drop(&st);
+  SD_REQUIRE(announcement_of_mount(c, mid2, id2, sizeof(id2), &nadd, &nremove));
+  SD_CHECK(nadd == 1 && nremove == 1);
+  SD_CHECK(strcmp(mid1, mid2) != 0);
+  SD_CHECK(strcmp(id1, id2) != 0);
+  SD_CHECK(unmount_id(c, mid2));
+  SD_CHECK(wait_state(c, mid2, "gone", 10000, NULL));
   sd_ipc_close(c);
 }
 

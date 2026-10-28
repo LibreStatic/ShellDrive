@@ -24,6 +24,14 @@ SD_TEST_DECL(svc_mount_announcement_is_kept_and_accepted_into_the_machine_store)
 SD_TEST_DECL(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder);
 SD_TEST_DECL(svc_status_is_open_to_a_non_admin_and_repair_is_not);
 SD_TEST_DECL(svc_repair_is_busy_while_a_global_drive_exists);
+SD_TEST_DECL(svc_chain_two_hops_are_mounted_with_the_service_rules);
+SD_TEST_DECL(svc_chain_refuses_a_hop_with_a_user_path_identity);
+SD_TEST_DECL(svc_proxy_basic_without_a_service_secret_is_refused);
+SD_TEST_DECL(svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store);
+SD_TEST_DECL(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it);
+SD_TEST_DECL(svc_system_proxy_refuses_basic_auth_on_its_leg);
+SD_TEST_DECL(svc_hostkey_add_through_an_unknown_jump_host_is_refused);
+SD_TEST_DECL(svc_one_profile_mounted_twice_keeps_both_announcements);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
 SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
 SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
@@ -77,6 +85,7 @@ SD_TEST_DECL(identity_file_with_a_user_writable_acl_is_refused);
 SD_TEST_DECL(identity_file_good_is_read_from_the_checked_handle);
 SD_TEST_DECL(identity_path_that_is_a_folder_is_not_a_file);
 SD_TEST_DECL(machine_folder_dacl_is_reapplied_once_then_left_alone);
+SD_TEST_DECL(chain_hop_and_proxy_leg_rules);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(decide_table),
@@ -103,6 +112,14 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder),
   SD_TEST_ENTRY(svc_status_is_open_to_a_non_admin_and_repair_is_not),
   SD_TEST_ENTRY(svc_repair_is_busy_while_a_global_drive_exists),
+  SD_TEST_ENTRY(svc_chain_two_hops_are_mounted_with_the_service_rules),
+  SD_TEST_ENTRY(svc_chain_refuses_a_hop_with_a_user_path_identity),
+  SD_TEST_ENTRY(svc_proxy_basic_without_a_service_secret_is_refused),
+  SD_TEST_ENTRY(svc_proxy_with_a_service_secret_is_mounted_and_answered_from_the_store),
+  SD_TEST_ENTRY(svc_system_proxy_is_read_through_the_seam_and_policy_refuses_it),
+  SD_TEST_ENTRY(svc_system_proxy_refuses_basic_auth_on_its_leg),
+  SD_TEST_ENTRY(svc_hostkey_add_through_an_unknown_jump_host_is_refused),
+  SD_TEST_ENTRY(svc_one_profile_mounted_twice_keeps_both_announcements),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
   SD_TEST_ENTRY(refuse_log_is_once_per_sid_per_window),
   SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),
@@ -156,6 +173,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(identity_file_good_is_read_from_the_checked_handle),
   SD_TEST_ENTRY(identity_path_that_is_a_folder_is_not_a_file),
   SD_TEST_ENTRY(machine_folder_dacl_is_reapplied_once_then_left_alone),
+  SD_TEST_ENTRY(chain_hop_and_proxy_leg_rules),
 };
 
 int main(int argc, char **argv)
