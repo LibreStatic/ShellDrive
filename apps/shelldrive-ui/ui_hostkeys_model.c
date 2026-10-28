@@ -118,8 +118,24 @@ void ui_hk_row_cells(const ui_hk_row *row, const wchar_t *hashed_text, const wch
   put_wide(cells[4], UI_HK_CELL_MAX, row->store == UI_HK_STORE_MACHINE ? machine_text : user_text);
 }
 
+void ui_hk_row_set_extras(ui_hk_row *row, const char *md5, const char *comment, const char *added, int origin)
+{
+  size_t i;
+  for (i = 0; md5 != NULL && md5[i] != '\0' && i + 1 < sizeof(row->md5); i++)
+    row->md5[i] = md5[i];
+  row->md5[i] = '\0';
+  for (i = 0; comment != NULL && comment[i] != '\0' && i + 1 < sizeof(row->comment); i++)
+    row->comment[i] = comment[i];
+  row->comment[i] = '\0';
+  for (i = 0; added != NULL && added[i] != '\0' && i + 1 < sizeof(row->added); i++)
+    row->added[i] = added[i];
+  row->added[i] = '\0';
+  row->origin = (origin >= 0 && origin < UI_HK_ORIGINS) ? origin : UI_HK_ORIGIN_OTHER;
+}
+
 void ui_hk_row_details(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
-                       const wchar_t *user_text, wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX])
+                       const wchar_t *user_text, const wchar_t *const origin_text[UI_HK_ORIGINS],
+                       wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX])
 {
   wchar_t cells[UI_HK_CELLS][UI_HK_CELL_MAX];
   memset(values, 0, sizeof(wchar_t) * UI_HK_DETAILS * UI_HK_CELL_MAX);
@@ -129,7 +145,12 @@ void ui_hk_row_details(const ui_hk_row *row, const wchar_t *hashed_text, const w
   memcpy(values[UI_HK_DET_TYPE], cells[2], sizeof(cells[2]));
   memcpy(values[UI_HK_DET_FP], cells[3], sizeof(cells[3]));
   memcpy(values[UI_HK_DET_STORE], cells[4], sizeof(cells[4]));
+  put_ascii(values[UI_HK_DET_MD5], UI_HK_CELL_MAX, row->md5);
   swprintf_s(values[UI_HK_DET_LINE], UI_HK_CELL_MAX, L"%lu", (unsigned long)row->line);
+  if (row->origin > UI_HK_ORIGIN_OTHER && row->origin < UI_HK_ORIGINS && origin_text != NULL)
+    put_wide(values[UI_HK_DET_ORIGIN], UI_HK_CELL_MAX, origin_text[row->origin]);
+  put_ascii(values[UI_HK_DET_ADDED], UI_HK_CELL_MAX, row->added);
+  put_ascii(values[UI_HK_DET_COMMENT], UI_HK_CELL_MAX, row->comment);
 }
 
 sd_err ui_hk_reject_params(const char *id, char *out, size_t cap)

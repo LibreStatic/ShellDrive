@@ -27,6 +27,7 @@
 #define UI_WM_IPC_REPLY  (WM_APP + 4)   /* lParam: ui_ipc_reply* (owned by the UI) */
 #define UI_WM_TRAY       (WM_APP + 5)   /* tray icon callback: lParam is the mouse message */
 #define UI_WM_IPC_PROMPTS (WM_APP + 6)  /* lParam: sd_json* result of "prompt.list" (owned by the UI) */
+#define UI_WM_IPC_HISTORY (WM_APP + 8)  /* lParam: sd_json* result of "events.recent" (owned by the UI) */
 #define UI_WM_SVC_ATTENTION (WM_APP + 7) /* wParam: count of prompts waiting for an administrator (ui_svc.c) */
 
 /* Timer of the prompt host (--prompt-host): once a second, the idle exit of 60 s is counted. */
@@ -137,6 +138,8 @@ void ui_app_on_event(sd_json *event);
 void ui_app_on_reply(ui_ipc_reply *reply);
 void ui_app_quit(void);
 void ui_app_on_prompt_list(sd_json *result);
+/* The result of events.recent (the agent's event history): recorded in the event list; takes ownership. */
+void ui_app_on_history(sd_json *result);
 void ui_app_on_timer(UINT_PTR id);
 
 /* ---- ui_model.c: the mount list and text helpers ---- */
@@ -208,6 +211,13 @@ void   ui_tray_on_hostkeys_announced(const sd_json *data);
 /* The notices of 7.7 that follow the agent's state (ui_notice_model.h): recorded in the event list always, shown as a balloon
    when [ui] notify and the kind's switch allow it. detail: the proxy (host:port) or the host; count: prompts waiting. */
 void   ui_tray_notice(ui_nt_kind kind, const wchar_t *subject, const wchar_t *detail, int count);
+/* The same notices for the agent's event history (events.recent): recorded in the event list at `when` (unix seconds),
+   never shown as a balloon. */
+void   ui_tray_history_notice(ui_nt_kind kind, long long when, const wchar_t *subject, const wchar_t *detail);
+void   ui_tray_history_warning(const char *code, long long when, const wchar_t *subject);
+void   ui_tray_history_hostkeys(long long when, const wchar_t *host);
+/* Why a drive reconnected (mount.state reason): the localized text of a known error code, the code itself otherwise. */
+void   ui_reason_text(const char *code, wchar_t *out, size_t cch);
 /* Shows the next queued balloon that the rate limit allows (UI_TIMER_NOTIFY, once a second). */
 void   ui_tray_flush(void);
 
@@ -283,6 +293,8 @@ void   ui_icon_free_all(void);
 /* ---- ui_events.c: the event list (03 §7.7) ---- */
 /* Records one event (a notification, shown or not) in the list of the Events window; the time is now. */
 void   ui_events_record(ui_ev_kind kind, const wchar_t *subject, const wchar_t *text);
+/* As ui_events_record, for something that happened at unix_time (seconds, UTC): the agent's event history. */
+void   ui_events_record_at(ui_ev_kind kind, long long unix_time, const wchar_t *subject, const wchar_t *text);
 size_t ui_events_count(void);
 
 #endif /* SD_UI_INT_H */

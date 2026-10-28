@@ -270,6 +270,15 @@ static DWORD WINAPI ipc_thread(void *arg)
         else
           sd_json_free(res);
       }
+      /* the agent's event history: a UI that starts late shows what happened before (03 2.4, 7.7) */
+      if (sd_ipc_conn_has_feature(c, "events.recent")) {
+        res = NULL;
+        memset(&err, 0, sizeof(err));
+        if (sd_ipc_call_raw(c, "events.recent", NULL, 0, UI_IPC_CALL_MS, &res, &err) == SD_OK)
+          post_json(UI_WM_IPC_HISTORY, res);
+        else
+          sd_json_free(res);
+      }
       stop = serve(c) == 1;
       sd_ipc_close(c);
       InterlockedExchange((volatile LONG *)&g_app.agent_features, 0);

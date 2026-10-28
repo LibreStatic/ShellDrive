@@ -31,7 +31,9 @@
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
 #include "ui_dark.h"
+#include "sd_platform/sd_time.h"
 #include "ui_dpi.h"
+#include "ui_evhist_model.h"
 #include "ui_wizard.h"
 #include "sd_config/sd_config.h"
 #include "ui_admin_model.h"
@@ -252,18 +254,18 @@ void ui_app_on_list(sd_json *result)
 }
 
 /* The event list (7.7) gets every change of state of a drive, and a failed mount with the error code. m is the mount
-   before the event is applied (NULL for one this UI has not listed). */
-static void record_mount_event(const ui_mount *m, const sd_json *data, const char *state)
+   before the event is applied (NULL for one this UI has not listed). err_code: the error code of a failed state (NULL
+   when the event has no error object); reason: why the drive reconnected (mount.state `reason`) or NULL; when: unix
+   seconds for an entry of the agent's history, 0 for now. */
+static void record_state_entry(const ui_mount *m, const char *state, int has_err, const char *err_code,
+                               const char *reason, long long when)
 {
-  const sd_json *err = sd_json_get(data, "error");
   wchar_t text[160];
   wchar_t subject[UI_EV_SUBJECT_MAX];
   wchar_t state_w[24];
   const wchar_t *state_text;
   if (state == NULL || strlen(state) >= sizeof(m->state))
     return;
-  if (err == NULL && m != NULL && strcmp(m->state, state) == 0)
-    return;                                       /* the same state again (connection details only) */
   ui_text_utf8(state, state_w, SD_COUNTOF(state_w));
   if (m != NULL) {
     ui_mount copy = *m;
@@ -276,19 +278,47 @@ static void record_mount_event(const ui_mount *m, const sd_json *data, const cha
     wcsncpy_s(text, SD_COUNTOF(text), state_w, _TRUNCATE);
     subject[0] = 0;
   }
-  if (err != NULL) {
-    const char *code = sd_json_get_str(err, "code");
+  if (has_err) {
     wchar_t wcode[64];
     wchar_t *t;
-    ui_text_utf8(code != NULL ? code : "error", wcode, SD_COUNTOF(wcode));
+    ui_text_utf8(err_code != NULL ? err_code : "error", wcode, SD_COUNTOF(wcode));
     t = ui_format1(SD_MSG_UI_EVENTS_TEXT_FAILED, "code", wcode);
     if (t != NULL) {
-      ui_events_record(UI_EV_ERROR, subject, t);
+      ui_events_record_at(UI_EV_ERROR, when, subject, t);
       sd_free(t);
     }
     return;
   }
-  ui_events_record(UI_EV_DRIVE, subject, text);
+  if (reason != NULL && reason[0] != 0) {
+    /* "Connecting (after: timeout)": the reason the connection comes back (03 2.4) */
+    wchar_t wreason[160];
+    wchar_t *t;
+    sd_arg a[2];
+    ui_reason_text(reason, wreason, SD_COUNTOF(wreason));
+    a[0].name = "state";
+    a[0].type = SD_ARG_STR;
+    a[0].v.s = text;
+    a[1].name = "reason";
+    a[1].type = SD_ARG_STR;
+    a[1].v.s = wreason;
+    t = sd_l10n_format_alloc(SD_MSG_UI_EVENTS_TEXT_REASON, a, 2);
+    if (t != NULL) {
+      ui_events_record_at(UI_EV_DRIVE, when, subject, t);
+      sd_free(t);
+      return;
+    }
+  }
+  ui_events_record_at(UI_EV_DRIVE, when, subject, text);
+}
+
+static void record_mount_event(const ui_mount *m, const sd_json *data, const char *state)
+{
+  const sd_json *err = sd_json_get(data, "error");
+  if (state == NULL)
+    return;
+  if (err == NULL && m != NULL && strcmp(m->state, state) == 0)
+    return;                                       /* the same state again (connection details only) */
+  record_state_entry(m, state, err != NULL, sd_json_get_str(err, "code"), sd_json_get_str(data, "reason"), 0);
 }
 
 /* The name a notice carries: the drive letter, else the profile or the server; for a mount this UI has not listed, the
@@ -310,11 +340,17 @@ static void notice_mount_state(ui_nt_kind kind, const ui_mount *m, const sd_json
   wchar_t code[64];
   const char *c = sd_json_get_str(sd_json_get(data, "error"), "code");
   notice_subject(m, data, subject, SD_COUNTOF(subject));
-  ui_text_utf8(c != NULL ? c : "error", code, SD_COUNTOF(code));
+  if (kind == UI_NT_RECONNECTED) {
+    /* why the connection was lost (mount.state `reason`, round 19): the notice says it when the agent does */
+    c = sd_json_get_str(data, "reason");
+    ui_text_utf8(c != NULL ? c : "", code, SD_COUNTOF(code));
+  } else {
+    ui_text_utf8(c != NULL ? c : "error", code, SD_COUNTOF(code));
+  }
   ui_tray_notice(kind, subject, code, 0);
 }
 
-/* A `warning` with the code proxy_cleartext, pool_limited or disk_cache_refused. The proxy password notice is once per
+/* A `warning` with the code proxy_cleartext, pool_limited, disk_cache_refused or hostkey_source_insecure. The proxy password notice is once per
    (profile, proxy) for the life of the UI (7.7); the agent says it once per mount and hop. */
 static void notice_warning(ui_nt_kind kind, const ui_mount *m, const sd_json *ev_data)
 {
@@ -332,11 +368,98 @@ static void notice_warning(ui_nt_kind kind, const ui_mount *m, const sd_json *ev
       return;
     ui_text_utf8(detail != NULL ? detail : "", wdetail, SD_COUNTOF(wdetail));
   }
+  if (kind == UI_NT_HOSTKEYS_SOURCE) {
+    /* detail names the live source the agent ignores: openssh or putty (TM-R06); the notice says which */
+    const char *name = ui_nt_source_name(detail);
+    ui_text_utf8(name != NULL ? name : "", wdetail, SD_COUNTOF(wdetail));
+  }
   ui_tray_notice(kind, subject, wdetail, 0);
+}
+
+/* ---- the agent's event history (events.recent, 03 2.4, 7.7) ---- */
+
+static ui_evh_state g_evh;
+static int g_evh_ready;
+
+/* The name of the mount in the event list: the drive letter, else the profile or the server; empty for a mount this UI
+   does not know (the history has only its id). */
+static void history_subject(const char *mount_id, wchar_t *out, size_t cch)
+{
+  const ui_mount *m = ui_model_find_id(&g_app.model, mount_id);
+  out[0] = 0;
+  if (m != NULL)
+    wcsncpy_s(out, cch, m->drive[0] != 0 ? m->drive : (m->profile[0] != 0 ? m->profile : m->server), _TRUNCATE);
+}
+
+/* One record of the history becomes the entry the live event would have made, at the time it happened. prev: the state
+   the mount had before (replayed from the history). */
+static void history_record(const ui_evh_rec *r, const char *prev)
+{
+  wchar_t subject[UI_EV_SUBJECT_MAX];
+  history_subject(r->mount_id, subject, SD_COUNTOF(subject));
+  if (strcmp(r->event, "mount.state") == 0) {
+    const ui_mount *m = ui_model_find_id(&g_app.model, r->mount_id);
+    int failed = strcmp(r->state, "failed") == 0;
+    ui_nt_kind nk = ui_nt_of_mount_state_r(prev, r->state, failed ? r->code : NULL, NULL);
+    if (nk != UI_NT_NONE) {
+      wchar_t code[64];
+      ui_text_utf8(r->code[0] != 0 ? r->code : "error", code, SD_COUNTOF(code));
+      ui_tray_history_notice(nk, r->time, subject, nk == UI_NT_MOUNT_FAILED ? code : L"");
+    } else if (failed || strcmp(prev, r->state) != 0) {
+      record_state_entry(m, r->state, failed, r->code, NULL, r->time);
+    }
+  } else if (strcmp(r->event, "warning") == 0) {
+    ui_nt_kind nk = ui_nt_of_warning_code(r->code);
+    if (nk == UI_NT_PROXY_PASSWORD)
+      return;                                     /* the history does not say which proxy */
+    if (nk != UI_NT_NONE)
+      ui_tray_history_notice(nk, r->time, subject, L"");
+    else
+      ui_tray_history_warning(r->code, r->time, subject);
+  } else if (strcmp(r->event, "hostkeys.announced") == 0) {
+    const ui_mount *m = ui_model_find_id(&g_app.model, r->mount_id);
+    if (m != NULL)
+      ui_tray_history_hostkeys(r->time, m->server);
+  }
+}
+
+/* The reply of events.recent: fills the event list with what happened before this UI was running, skipping what it has
+   seen as live events already (ui_evhist_model.h). */
+void ui_app_on_history(sd_json *result)
+{
+  const sd_json *arr = sd_json_get(result, "events");
+  int64_t last = 0;
+  size_t i, n = sd_json_count(arr);
+  ui_evh_track track;
+  if (!g_evh_ready) {
+    ui_evh_init(&g_evh);
+    g_evh_ready = 1;
+  }
+  if (!sd_json_get_int64(result, "last_seq", &last) || last < 0)
+    last = 0;
+  ui_evh_track_init(&track);
+  ui_evh_begin(&g_evh, (unsigned long long)last);
+  for (i = 0; i < n; i++) {
+    ui_evh_rec r;
+    char prev[24];
+    if (!ui_evh_parse(sd_json_at(arr, i), &r))
+      continue;
+    prev[0] = 0;
+    if (strcmp(r.event, "mount.state") == 0)
+      ui_evh_track_step(&track, r.mount_id, r.state, prev);
+    if (ui_evh_wanted(&g_evh, &r))
+      history_record(&r, prev);
+  }
+  ui_evh_end(&g_evh, (unsigned long long)last);
+  sd_json_free(result);
 }
 
 void ui_app_on_event(sd_json *ev)
 {
+  if (!g_evh_ready) {
+    ui_evh_init(&g_evh);
+    g_evh_ready = 1;
+  }
   const char *name = sd_json_get_str(ev, "event");
   const sd_json *data = sd_json_get(ev, "data");
 
@@ -344,7 +467,10 @@ void ui_app_on_event(sd_json *ev)
     const char *id = sd_json_get_str(data, "mount_id");
     const char *st = sd_json_get_str(data, "state");
     ui_mount *m = ui_model_find_id(&g_app.model, id);
-    ui_nt_kind nk = ui_nt_of_mount_state(m != NULL ? m->state : "", st, sd_json_get_str(sd_json_get(data, "error"), "code"));
+    ui_nt_kind nk = ui_nt_of_mount_state_r(m != NULL ? m->state : "", st,
+                                           sd_json_get_str(sd_json_get(data, "error"), "code"),
+                                           sd_json_get_str(data, "reason"));
+    ui_evh_note_live(&g_evh, name, id, st, sd_unix_time_now());
     /* a change the user is told about (7.7) is recorded by its notice, the others by the plain state entry */
     if (nk != UI_NT_NONE)
       notice_mount_state(nk, m, data);
@@ -372,6 +498,7 @@ void ui_app_on_event(sd_json *ev)
     const char *code = sd_json_get_str(data, "code");
     ui_mount *m = ui_model_find_id(&g_app.model, sd_json_get_str(data, "mount_id"));
     unsigned flag = ui_mv_sec_flag(code);
+    ui_evh_note_live(&g_evh, name, sd_json_get_str(data, "mount_id"), code, sd_unix_time_now());
     if (m != NULL && flag != 0) {
       /* the Security column and the details dialog (7.6); a legacy warning names the algorithms */
       m->sec |= flag;
@@ -391,6 +518,7 @@ void ui_app_on_event(sd_json *ev)
   } else if (name != NULL && strcmp(name, "prompt.closed") == 0) {
     ui_prompt_on_closed(sd_json_get_str(data, "prompt_id"), sd_json_get_str(data, "reason"));
   } else if (name != NULL && strcmp(name, "hostkeys.announced") == 0) {
+    ui_evh_note_live(&g_evh, name, sd_json_get_str(data, "mount_id"), NULL, sd_unix_time_now());
     ui_tray_on_hostkeys_announced(data);
     ui_windows_on_event(name, data);
   } else if (name != NULL && strncmp(name, "update.", 7) == 0) {
@@ -516,6 +644,9 @@ static LRESULT CALLBACK ctrl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return 0;
   case UI_WM_IPC_PROMPTS:
     ui_app_on_prompt_list((sd_json *)lp);
+    return 0;
+  case UI_WM_IPC_HISTORY:
+    ui_app_on_history((sd_json *)lp);
     return 0;
   case UI_WM_SVC_ATTENTION:
     ui_app_on_attention((int)wp);

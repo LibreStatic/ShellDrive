@@ -63,6 +63,19 @@ SD_TEST_DECL(notice_warning_codes);
 SD_TEST_DECL(notice_every_kind_has_its_switch);
 SD_TEST_DECL(notice_attention_only_when_the_count_grows);
 SD_TEST_DECL(notice_proxy_password_once_per_profile_and_proxy);
+SD_TEST_DECL(notice_hostkey_source_warning_has_its_notice_and_switch);
+SD_TEST_DECL(notice_source_names);
+SD_TEST_DECL(notice_reconnect_reason_makes_the_reconnected_notice);
+SD_TEST_DECL(notice_reason_codes_known_and_unknown);
+SD_TEST_DECL(evhist_parse_reads_the_three_events);
+SD_TEST_DECL(evhist_parse_refuses_what_it_cannot_show);
+SD_TEST_DECL(evhist_first_import_takes_everything_it_has_not_seen_live);
+SD_TEST_DECL(evhist_live_match_is_by_kind_mount_state_and_time);
+SD_TEST_DECL(evhist_second_import_takes_only_newer_records);
+SD_TEST_DECL(evhist_live_notes_are_a_ring);
+SD_TEST_DECL(evhist_track_replays_the_state_of_each_mount);
+SD_TEST_DECL(hk_row_details_show_comment_added_origin_and_md5);
+SD_TEST_DECL(hk_store_extras_reach_the_row);
 
 SD_TEST_DECL(wire_roundtrip_and_empty);
 SD_TEST_DECL(wire_rejects_bad_header);
@@ -162,6 +175,19 @@ SD_TEST_DECL(admin_elevated_verb_is_exact);
 SD_TEST_DECL(admin_prompt_list_entry_becomes_a_prompt);
 
 static const sd_test_case k_tests[] = {
+  SD_TEST_ENTRY(notice_hostkey_source_warning_has_its_notice_and_switch),
+  SD_TEST_ENTRY(notice_source_names),
+  SD_TEST_ENTRY(notice_reconnect_reason_makes_the_reconnected_notice),
+  SD_TEST_ENTRY(notice_reason_codes_known_and_unknown),
+  SD_TEST_ENTRY(evhist_parse_reads_the_three_events),
+  SD_TEST_ENTRY(evhist_parse_refuses_what_it_cannot_show),
+  SD_TEST_ENTRY(evhist_first_import_takes_everything_it_has_not_seen_live),
+  SD_TEST_ENTRY(evhist_live_match_is_by_kind_mount_state_and_time),
+  SD_TEST_ENTRY(evhist_second_import_takes_only_newer_records),
+  SD_TEST_ENTRY(evhist_live_notes_are_a_ring),
+  SD_TEST_ENTRY(evhist_track_replays_the_state_of_each_mount),
+  SD_TEST_ENTRY(hk_row_details_show_comment_added_origin_and_md5),
+  SD_TEST_ENTRY(hk_store_extras_reach_the_row),
   SD_TEST_ENTRY(dlg_empty_template_parses),
   SD_TEST_ENTRY(dlg_items_aligned_and_counted),
   SD_TEST_ENTRY(dlg_controls_have_expected_classes_and_ids),

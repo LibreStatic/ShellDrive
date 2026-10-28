@@ -117,11 +117,18 @@ static void refresh_view(void)
   EnableWindow(g_ev.btn_clear, g_log.count > 0);
 }
 
+static void add_entry(ui_ev_kind kind, const ui_ev_time *t, const wchar_t *subject, const wchar_t *text)
+{
+  log_init_once();
+  (void)ui_ev_add(&g_log, kind, t, subject, text);
+  if (g_ev.wnd != NULL)
+    refresh_view();
+}
+
 void ui_events_record(ui_ev_kind kind, const wchar_t *subject, const wchar_t *text)
 {
   SYSTEMTIME st;
   ui_ev_time t;
-  log_init_once();
   GetLocalTime(&st);
   t.year = st.wYear;
   t.month = st.wMonth;
@@ -129,9 +136,34 @@ void ui_events_record(ui_ev_kind kind, const wchar_t *subject, const wchar_t *te
   t.hour = st.wHour;
   t.minute = st.wMinute;
   t.second = st.wSecond;
-  (void)ui_ev_add(&g_log, kind, &t, subject, text);
-  if (g_ev.wnd != NULL)
-    refresh_view();
+  add_entry(kind, &t, subject, text);
+}
+
+void ui_events_record_at(ui_ev_kind kind, long long unix_time, const wchar_t *subject, const wchar_t *text)
+{
+  ULARGE_INTEGER u;
+  FILETIME utc, local;
+  SYSTEMTIME st;
+  ui_ev_time t;
+  if (unix_time <= 0) {
+    ui_events_record(kind, subject, text);
+    return;
+  }
+  /* seconds since 1970 to 100 ns ticks since 1601, then to the local time of the user */
+  u.QuadPart = ((unsigned long long)unix_time + 11644473600ull) * 10000000ull;
+  utc.dwLowDateTime = u.LowPart;
+  utc.dwHighDateTime = u.HighPart;
+  if (!FileTimeToLocalFileTime(&utc, &local) || !FileTimeToSystemTime(&local, &st)) {
+    ui_events_record(kind, subject, text);
+    return;
+  }
+  t.year = st.wYear;
+  t.month = st.wMonth;
+  t.day = st.wDay;
+  t.hour = st.wHour;
+  t.minute = st.wMinute;
+  t.second = st.wSecond;
+  add_entry(kind, &t, subject, text);
 }
 
 size_t ui_events_count(void)
@@ -351,6 +383,13 @@ int ui_events_controls_ok(void)
   SetWindowTextW(g_ev.search, L"smoke");
   refresh_view();
   ok = ok && ListView_GetItemCount(g_ev.list) == 2;
+  /* an entry of the agent's history carries the time it happened (2001-09-09 01:46:40 UTC is 1000000000) */
+  ui_events_record_at(UI_EV_DRIVE, 1000000000ll, L"G:", k_text);
+  ok = ok && ListView_GetItemCount(g_ev.list) == 3;
+  {
+    const ui_ev_entry *e = ui_ev_at(&g_log, g_log.count - 1);
+    ok = ok && e != NULL && e->time.year >= 2001 && e->time.year <= 2001 && e->time.month >= 9 && e->time.month <= 9;
+  }
   SetWindowTextW(g_ev.search, L"");
   clear_list();
   ok = ok && ListView_GetItemCount(g_ev.list) == 0 && !IsWindowEnabled(g_ev.btn_copy) &&

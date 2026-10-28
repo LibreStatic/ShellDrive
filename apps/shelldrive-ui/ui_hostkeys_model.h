@@ -18,6 +18,8 @@
 #define UI_HK_HOST_MAX   256
 #define UI_HK_TYPE_MAX   48
 #define UI_HK_FP_MAX     64
+#define UI_HK_COMMENT_MAX 256
+#define UI_HK_ADDED_MAX  16
 #define UI_HK_CELLS      5             /* host, port, key type, SHA256 fingerprint, source */
 #define UI_HK_CELL_MAX   300
 
@@ -35,7 +37,25 @@ typedef struct ui_hk_row {
   char type[UI_HK_TYPE_MAX];
   char fp[UI_HK_FP_MAX];
   uint32_t line;
+  char md5[UI_HK_FP_MAX];            /* "MD5:xx:..." for the details pane ("" when not computed) */
+  char comment[UI_HK_COMMENT_MAX];   /* the trailing comment of the line, "" if none */
+  char added[UI_HK_ADDED_MAX];       /* "YYYY-MM-DD" from the added= member of the comment, or "" */
+  int origin;                        /* ui_hk_origin, the order of sd_kh_origin (sd_known_hosts_list_all) */
 } ui_hk_row;
+
+/* Where a line came from (03 5.1, 7.5). The values are those of sd_kh_origin so the window can pass them on as they are. */
+typedef enum ui_hk_origin {
+  UI_HK_ORIGIN_OTHER = 0,            /* another tool, or a hand-written line */
+  UI_HK_ORIGIN_SHELLDRIVE,           /* by=shelldrive, or a bare added= */
+  UI_HK_ORIGIN_PUTTY,                /* imported-from=putty: "Copied from PuTTY" */
+  UI_HK_ORIGIN_OPENSSH,              /* imported-from=openssh: "Copied from OpenSSH" */
+  UI_HK_ORIGIN_SERVER,               /* updated-by=hostkeys-00: "Updated by server" */
+  UI_HK_ORIGINS
+} ui_hk_origin;
+
+/* Sets what sd_known_hosts_list_all reports beyond the key itself: the MD5 fingerprint, the trailing comment, the added
+   date and the origin. Text longer than the fields is cut; an origin out of range is "other". NULL is "". */
+void ui_hk_row_set_extras(ui_hk_row *row, const char *md5, const char *comment, const char *added, int origin);
 
 /* Fills the derived fields of a row from its store, pattern, key type, fingerprint and line. */
 sd_err ui_hk_row_init(ui_hk_row *row, ui_hk_store store, const char *pattern, int hashed, const char *type,
@@ -46,14 +66,18 @@ sd_err ui_hk_row_init(ui_hk_row *row, ui_hk_store store, const char *pattern, in
 void ui_hk_row_cells(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
                      const wchar_t *user_text, wchar_t cells[UI_HK_CELLS][UI_HK_CELL_MAX]);
 
-/* Details of the selected key (the pane under the Known keys list): host, port, key type, SHA256 fingerprint, store and
-   line in its file. A hashed entry shows hashed_text as the host and no port. The agent's known_hosts reader gives no
-   comment, added date or MD5 fingerprint (backend missing), so the pane does not show them. */
-#define UI_HK_DETAILS 6
-typedef enum ui_hk_detail { UI_HK_DET_HOST = 0, UI_HK_DET_PORT, UI_HK_DET_TYPE, UI_HK_DET_FP, UI_HK_DET_STORE,
-                            UI_HK_DET_LINE } ui_hk_detail;
+/* Details of the selected key (the pane under the Known keys list): host, port, key type, SHA256 and MD5 fingerprints,
+   store, line in its file, the source (origin of the line), the date it was added and the comment of the line. A hashed
+   entry shows hashed_text as the host and no port. origin_text[o]: the text of ui_hk_origin o ("ShellDrive", "Copied from
+   PuTTY", ...). The fields the line does not have (MD5 not computed, origin other, no added date, no comment) are empty,
+   and the window leaves their lines out. */
+#define UI_HK_DETAILS 10
+typedef enum ui_hk_detail { UI_HK_DET_HOST = 0, UI_HK_DET_PORT, UI_HK_DET_TYPE, UI_HK_DET_FP, UI_HK_DET_MD5,
+                            UI_HK_DET_STORE, UI_HK_DET_LINE, UI_HK_DET_ORIGIN, UI_HK_DET_ADDED,
+                            UI_HK_DET_COMMENT } ui_hk_detail;
 void ui_hk_row_details(const ui_hk_row *row, const wchar_t *hashed_text, const wchar_t *machine_text,
-                       const wchar_t *user_text, wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX]);
+                       const wchar_t *user_text, const wchar_t *const origin_text[UI_HK_ORIGINS],
+                       wchar_t values[UI_HK_DETAILS][UI_HK_CELL_MAX]);
 
 /* The hostkey.announced.reject request {"id": ...} for an announcement the user declined (03 2.4). Fails with
    SD_E_INVALID_PARAM for an id that ui_hk_id_ok refuses or when cap is too small. */

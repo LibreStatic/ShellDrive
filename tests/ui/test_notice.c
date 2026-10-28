@@ -111,3 +111,65 @@ SD_TEST(notice_proxy_password_once_per_profile_and_proxy)
   /* a key that does not fit is refused, not cut silently */
   SD_CHECK_EQ_INT(ui_nt_once_key("0123456789", "0123456789", k1, 10), 0);
 }
+
+SD_TEST(notice_hostkey_source_warning_has_its_notice_and_switch)
+{
+  sd_settings s;
+  SD_CHECK_EQ_INT((int)ui_nt_of_warning_code("hostkey_source_insecure"), (int)UI_NT_HOSTKEYS_SOURCE);
+  SD_CHECK_EQ_INT(ui_nt_switch_of(UI_NT_HOSTKEYS_SOURCE), (int)SD_NOTIFY_HOSTKEYS_SOURCE);
+  /* the switch is the one the agent and the settings map for this code, and it is on by default (7.7) */
+  SD_CHECK_EQ_INT(sd_notify_kind_from_code("hostkey_source_insecure"), (int)SD_NOTIFY_HOSTKEYS_SOURCE);
+  sd_settings_defaults(&s);
+  SD_CHECK_EQ_INT(sd_settings_notify_on(&s, ui_nt_switch_of(UI_NT_HOSTKEYS_SOURCE)), 1);
+  s.notify_kind[SD_NOTIFY_HOSTKEYS_SOURCE] = 0;
+  SD_CHECK_EQ_INT(sd_settings_notify_on(&s, ui_nt_switch_of(UI_NT_HOSTKEYS_SOURCE)), 0);
+  s.notify_kind[SD_NOTIFY_HOSTKEYS_SOURCE] = 1;
+  s.notify = 0;
+  SD_CHECK_EQ_INT(sd_settings_notify_on(&s, ui_nt_switch_of(UI_NT_HOSTKEYS_SOURCE)), 0);
+}
+
+SD_TEST(notice_source_names)
+{
+  SD_CHECK_STR(ui_nt_source_name("openssh"), "OpenSSH");
+  SD_CHECK_STR(ui_nt_source_name("putty"), "PuTTY");
+  SD_CHECK(ui_nt_source_name("registry") == NULL);       /* an unknown detail is not shown as a name */
+  SD_CHECK(ui_nt_source_name("") == NULL);
+  SD_CHECK(ui_nt_source_name(NULL) == NULL);
+}
+
+SD_TEST(notice_reconnect_reason_makes_the_reconnected_notice)
+{
+  /* offline -> mounted is a reconnect with or without a reason */
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("offline", "mounted", NULL, "timeout"), (int)UI_NT_RECONNECTED);
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("offline", "mounted", NULL, NULL), (int)UI_NT_RECONNECTED);
+  /* connecting and authenticating come between offline and mounted: the reason says it was a reconnect */
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("connecting", "mounted", NULL, "disconnected"), (int)UI_NT_RECONNECTED);
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("authenticating", "mounted", NULL, "timeout"), (int)UI_NT_RECONNECTED);
+  /* a first mount carries no reason */
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("connecting", "mounted", NULL, NULL), (int)UI_NT_MOUNTED);
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("connecting", "mounted", NULL, ""), (int)UI_NT_MOUNTED);
+  /* the same state again is no notice, reason or not */
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("mounted", "mounted", NULL, "timeout"), (int)UI_NT_NONE);
+  /* the reason does not change the other states */
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("mounted", "offline", NULL, "timeout"), (int)UI_NT_CONNECTION_LOST);
+  SD_CHECK_EQ_INT((int)ui_nt_of_mount_state_r("connecting", "connecting", NULL, "timeout"), (int)UI_NT_NONE);
+}
+
+SD_TEST(notice_reason_codes_known_and_unknown)
+{
+  static const char *const known[UI_NT_REASONS] = {
+    "disconnected", "timeout", "dns_failed", "conn_refused", "net_unreachable", "protocol", "auth_failed",
+    "proxy_connect_failed"
+  };
+  int i, seen = 0;
+  for (i = 0; i < UI_NT_REASONS; i++) {
+    SD_CHECK_EQ_INT(ui_nt_reason_index(known[i]), i);
+    seen |= 1 << i;
+  }
+  SD_CHECK_EQ_INT(seen, (1 << UI_NT_REASONS) - 1);
+  /* any other code is shown as it is (the caller prints the code) */
+  SD_CHECK_EQ_INT(ui_nt_reason_index("something_new"), -1);
+  SD_CHECK_EQ_INT(ui_nt_reason_index(""), -1);
+  SD_CHECK_EQ_INT(ui_nt_reason_index(NULL), -1);
+  SD_CHECK_EQ_INT(ui_nt_reason_index("Timeout"), -1);     /* codes are exact */
+}
