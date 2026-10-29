@@ -9,14 +9,23 @@
 #       Builds the payload CAB of this tree for <flavour> with makecab (build time only, 04 §6.1): the four
 #       shipping binaries of the current preset plus uninstall.exe, which is the payload-less stub. With
 #       SD_BUILD_MSI the per-machine MSI of the flavour is a member too, as ShellDrive.msi (the elevated stage 2
-#       runs msiexec on it, 04 §6.4). Then tools/sd-payload attaches the CAB and the PAYLOAD_TABLE hash to a copy
-#       of the stub as RT_RCDATA, with --channel SD_SETUP_CHANNEL and, when SD_PAYLOAD_SIG names a file, the
-#       PAYLOAD_SIG resource made offline by tools/sd-release (TM-R38).
+#       runs msiexec on it, 04 §6.4). The members are staged first with a fixed file time
+#       (tools/sd-cab-stage.ps1, SD_PAYLOAD_EPOCH): makecab stores each member's date and time in the
+#       cabinet, and sd-payload embeds the CAB and its hash in shelldrive-setup.exe, so the build clock
+#       would break the reproducible-build check (04 §12.2). Then tools/sd-payload attaches the CAB and the
+#       PAYLOAD_TABLE hash to a copy of the stub as RT_RCDATA, with --channel SD_SETUP_CHANNEL and, when
+#       SD_PAYLOAD_SIG names a file, the PAYLOAD_SIG resource made offline by tools/sd-release (TM-R38).
 #       Result: <out_exe>, a custom target shelldrive-setup depends on it.
 
 # Channel of the payload table (stable or beta; the stub refuses a table of the other channel, TM-R38).
 set(SD_SETUP_CHANNEL "stable" CACHE STRING "Channel of the setup payload table: stable or beta (04 §6.1, TM-R38)")
 set_property(CACHE SD_SETUP_CHANNEL PROPERTY STRINGS stable beta)
+# UNIX time stamped into the staged cabinet members (04 §12.2: SOURCE_DATE_EPOCH-derived file times).
+# The release pipeline may set SOURCE_DATE_EPOCH; plain builds use 1980-01-01Z, the DOS floor.
+set(SD_PAYLOAD_EPOCH "315619200" CACHE STRING "UNIX time stamped into the payload cabinet members (04 §12.2)")
+if(DEFINED ENV{SOURCE_DATE_EPOCH})
+  set(SD_PAYLOAD_EPOCH "$ENV{SOURCE_DATE_EPOCH}")
+endif()
 # One-line signature of the payload table (sd-release sign --kind payload --sig-only). Empty: no PAYLOAD_SIG, and the
 # stub refuses the payload until one is attached (the release pipeline supplies it).
 set(SD_PAYLOAD_SIG "" CACHE FILEPATH "Signature file of the payload table (PAYLOAD_SIG); empty: none")
@@ -99,23 +108,28 @@ function(sd_setup_add_payload stub_target out_exe flavour)
   set(_cab "${_dir}/payload.cab")
   set(_rpt "${_dir}/payload.rpt")
   set(_inf "${_dir}/payload.inf")
+  # One shared stage folder for both configurations: each one stages and packs back to back.
+  set(_stage "${_dir}/stage")
   file(MAKE_DIRECTORY "${_dir}")
 
+  # Members as "source|cabinet name" pairs. The sources may be generator expressions, resolved per
+  # configuration when the staging command is generated below. The stage folder and the DDF then
+  # reference the fixed-time copies only, so the cabinet never sees the build clock (04 §12.2).
+  set(_members "")
+  set(_member_deps "")   # file dependencies for the CAB command (target ordering comes from add_dependencies)
+  set(_ui_targets "")    # member targets of this preset, for add_dependencies
   # ARM32 ships the CLI and the host only (04 §5.1): no UI and no shell extension, so no such members or dependencies.
-  set(_ui_members "")
-  set(_ui_deps "")
   if(NOT SD_ARM32)
-    set(_ui_members "\"$<TARGET_FILE:shelldrive-ui>\" shelldrive-ui.exe\n\"$<TARGET_FILE:shelldrive-shellext>\" shelldrive-shellext.dll\n")
-    set(_ui_deps shelldrive-ui shelldrive-shellext)
+    list(APPEND _members "$<TARGET_FILE:shelldrive-ui>|shelldrive-ui.exe"
+                         "$<TARGET_FILE:shelldrive-shellext>|shelldrive-shellext.dll")
+    list(APPEND _ui_targets shelldrive-ui shelldrive-shellext)
   endif()
 
   # The per-machine MSI of this flavour (packaging/msi, SD_BUILD_MSI). Without it the stage 2 reports msi_missing.
-  set(_msi_member "")
-  set(_msi_deps "")
   set(_msi_target "")
   if(SD_BUILD_MSI AND DEFINED SD_MSI_PACKAGE)
-    set(_msi_member "\"${SD_MSI_PACKAGE}\" ShellDrive.msi\n")
-    set(_msi_deps "${SD_MSI_PACKAGE}")
+    list(APPEND _members "${SD_MSI_PACKAGE}|ShellDrive.msi")
+    list(APPEND _member_deps "${SD_MSI_PACKAGE}")
     set(_msi_target msi)
   endif()
 
@@ -123,14 +137,11 @@ function(sd_setup_add_payload stub_target out_exe flavour)
   # It comes from the nested x86 configure (cmake/SdShellExtX86.cmake), the same copy the x64 MSI carries. The
   # per-user setup registers it in the 32-bit view (setup_reg.c, sd_setup_shell32_wanted). The arm64 payload does not
   # carry it here: its cross-included DLLs are the release pipeline's (apps/shelldrive-setup/CMakeLists.txt).
-  set(_x86_member "")
-  set(_x86_deps "")
   set(_x86_target "")
   if(flavour MATCHES "^x64-")
     include(SdShellExtX86)
     sd_add_x86_shellext(_sd_x86_shellext_target)
-    set(_x86_member "\"$<TARGET_FILE:sd_shellext_x86_dll>\" x86\\shelldrive-shellext.dll\n")
-    set(_x86_deps "$<TARGET_FILE:sd_shellext_x86_dll>")
+    list(APPEND _members "$<TARGET_FILE:sd_shellext_x86_dll>|x86/shelldrive-shellext.dll")
     set(_x86_target sd_shellext_x86)
     # The same audits as the MSI copy (tests/msi/CMakeLists.txt, x86-sse2 rules), on the file the CAB carries.
     add_test(NAME importcheck.payload.${flavour}.shellext-x86
@@ -144,9 +155,24 @@ function(sd_setup_add_payload stub_target out_exe flavour)
                      "$<TARGET_FILE:sd_shellext_x86_dll>")
     set_tests_properties(isacheck.payload.${flavour}.shellext-x86 PROPERTIES LABELS isacheck)
   endif()
+  # uninstall.exe is the payload-less stub.
+  list(APPEND _members "$<TARGET_FILE:${stub_target}>|uninstall.exe")
 
-  # The member list is generated per configuration: the binaries of this tree, and the stub as uninstall.exe.
-  file(GENERATE OUTPUT "${_dir}/payload-$<CONFIG>.ddf" CONTENT
+  set(_ddf_members "")
+  # The argument is built as a plain string: a CMake list would split each pair at its ';'.
+  set(_members_arg "")
+  foreach(_m IN LISTS _members)
+    string(REPLACE "|" ";" _pair "${_m}")
+    list(GET _pair 0 _src)
+    list(GET _pair 1 _name)
+    string(REPLACE "/" "\\" _name_ddf "${_name}")
+    string(APPEND _ddf_members "\"${_stage}/${_name}\" ${_name_ddf}\n")
+    if(_members_arg)
+      string(APPEND _members_arg "|")
+    endif()
+    string(APPEND _members_arg "${_src};${_name}")
+  endforeach()
+  file(GENERATE OUTPUT "${_ddf}" CONTENT
 ".OPTION EXPLICIT
 .Set CabinetNameTemplate=payload.cab
 .Set DiskDirectoryTemplate=${_dir}/
@@ -157,20 +183,20 @@ function(sd_setup_add_payload stub_target out_exe flavour)
 .Set Compress=ON
 .Set Cabinet=ON
 .Set MaxDiskSize=0
-\"$<TARGET_FILE:shelldrive>\" shelldrive.exe
-\"$<TARGET_FILE:shelldrive-host>\" shelldrive-host.exe
-${_ui_members}\"$<TARGET_FILE:${stub_target}>\" uninstall.exe
-${_msi_member}${_x86_member}")
+${_ddf_members}")
 
   find_program(SD_MAKECAB makecab REQUIRED)
   add_custom_command(
     OUTPUT "${_cab}"
-    COMMAND "${SD_MAKECAB}" /F "${_dir}/payload-$<CONFIG>.ddf"
-    DEPENDS "${_dir}/payload-$<CONFIG>.ddf" ${_msi_deps} ${_x86_deps}
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/sd-cab-stage.ps1"
+            -StageDir "${_stage}" -Epoch "${SD_PAYLOAD_EPOCH}" -Members "${_members_arg}"
+    COMMAND "${SD_MAKECAB}" /F "${_ddf}"
+    DEPENDS "${_ddf}" "${CMAKE_SOURCE_DIR}/tools/sd-cab-stage.ps1" ${_member_deps}
     COMMENT "makecab: payload ${flavour}"
     VERBATIM)
   add_custom_target(shelldrive-setup-payload-${flavour} DEPENDS "${_cab}")
-  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_deps} ${stub_target} ${_msi_target} ${_x86_target})
+  add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_targets} ${stub_target} ${_msi_target} ${_x86_target})
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
 
   # The table channel and, when given, the PAYLOAD_SIG file (tools/sd-release sign --kind payload --sig-only).
@@ -192,7 +218,7 @@ ${_msi_member}${_x86_member}")
     VERBATIM)
   add_custom_target(shelldrive-setup ALL DEPENDS "${_final}")
   sd_add_tool_dependency(shelldrive-setup sd-payload)
-  # The payload target builds the CAB after the four shipping binaries of this preset (its dependencies).
+  # The setup target builds the CAB target first, so the CAB always has this preset's shipping binaries.
   add_dependencies(shelldrive-setup shelldrive-setup-payload-${flavour})
   set_target_properties(shelldrive-setup PROPERTIES FOLDER "apps")
   set(${out_exe} "${_final}" PARENT_SCOPE)

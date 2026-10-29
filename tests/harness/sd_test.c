@@ -51,6 +51,24 @@ size_t sd_test_unhex(const char *hex, uint8_t *out, size_t cap)
   return hex[0] ? SIZE_MAX : n;
 }
 
+int sd_test_exe_dir_path(const char *rel, char *out, size_t cap)
+{
+  char exe[MAX_PATH];
+  size_t n, rl = strlen(rel);
+  DWORD m = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+  if (m == 0 || m >= sizeof(exe))
+    return 0;
+  n = strlen(exe);
+  while (n > 0 && exe[n - 1] != '\\' && exe[n - 1] != '/')
+    n--;
+  if (n == 0 || n + rl + 2 > cap)
+    return 0;
+  memcpy(out, exe, n);
+  out[n] = '\\';
+  memcpy(out + n + 1, rel, rl + 1);
+  return 1;
+}
+
 /* Tests run on one thread, so plain accesses are enough. */
 static LONG g_alloc_countdown = -1;
 

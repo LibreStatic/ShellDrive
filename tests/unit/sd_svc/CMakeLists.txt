@@ -23,7 +23,15 @@ add_dependencies(sd-test-svc sd_svc_events)
 target_compile_definitions(sd-test-svc PRIVATE SD_SVC_TEST_HOOKS=1)
 # test_evtmsg.c reads the generated Event Log source and resolves every id in the built shelldrive-host.exe (03 §10.3).
 add_dependencies(sd-test-svc shelldrive-host)
+# Both paths resolve at run time against the test's own directory (sd_test_exe_dir_path): a
+# compile-time absolute path would bake the build directory into the binary and break the
+# reproducible-build check (04 §12.2). The .mc lives under the build tree's generated/ dir. The
+# .anchor component on the base side only adds the depth of the per-config directory (bin/<Config>,
+# where the executable actually sits): the relative path comes out one level deeper than bin/.
+file(RELATIVE_PATH _mc_rel
+  "${CMAKE_BINARY_DIR}/bin/.anchor"
+  "${SD_GENERATED_DIR}/svc_events")
 target_compile_definitions(sd-test-svc PRIVATE
-  "SD_SVC_EVENTS_MC=\"${SD_GENERATED_DIR}/svc_events/$<CONFIG>/svc_events.mc\""
-  "SD_SVC_HOST_EXE=\"$<TARGET_FILE:shelldrive-host>\"")
+  "SD_SVC_EVENTS_MC=\"${_mc_rel}/$<CONFIG>/svc_events.mc\""
+  "SD_SVC_HOST_EXE=\"shelldrive-host.exe\"")
 set_tests_properties(unit.svc PROPERTIES TIMEOUT 600)

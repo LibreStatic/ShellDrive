@@ -11,6 +11,7 @@
 #include "sd_base/sd_mem.h"
 #include "sd_crypto/sd_crypto.h"
 #include "sd_platform/sd_platform.h"
+#include "sd_test.h"
 
 #ifndef SD_TEST_UPDSIGN
 #error "SD_TEST_UPDSIGN must name the sd-updsign executable (tests/unit/sd_update/CMakeLists.txt)"
@@ -205,6 +206,7 @@ static int make_key(fx *f, const wchar_t *name, fx_key *k)
 int fx_init(fx *f, const char *name)
 {
   wchar_t tmp[MAX_PATH], wname[64];
+  char tmp8[MAX_PATH];
   LARGE_INTEGER qpc;
   DWORD tick;
   QueryPerformanceCounter(&qpc);
@@ -224,14 +226,16 @@ int fx_init(fx *f, const char *name)
   if (!CreateDirectoryW(f->dir, NULL))
     return 0;
 
-  /* the tool path comes from CMake as UTF-8 */
-  wlen = MultiByteToWideChar(CP_UTF8, 0, SD_TEST_UPDSIGN, -1, NULL, 0);
+  /* the tool sits next to this test executable; the name comes from CMake as UTF-8 */
+  if (!sd_test_exe_dir_path(SD_TEST_UPDSIGN, tmp8, sizeof(tmp8)))
+    return 0;
+  wlen = MultiByteToWideChar(CP_UTF8, 0, tmp8, -1, NULL, 0);
   if (wlen <= 0 || wlen > MAX_PATH)
     return 0;
   wsrc = (wchar_t *)sd_alloc((size_t)wlen * sizeof(wchar_t));
   if (wsrc == NULL)
     return 0;
-  MultiByteToWideChar(CP_UTF8, 0, SD_TEST_UPDSIGN, -1, wsrc, wlen);
+  MultiByteToWideChar(CP_UTF8, 0, tmp8, -1, wsrc, wlen);
   wcscpy_s(f->tool, SD_COUNTOF(f->tool), wsrc);
   sd_free(wsrc);
 

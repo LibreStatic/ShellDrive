@@ -42,8 +42,12 @@ typedef struct sc {
 
 static int fakeapp_bytes(uint8_t **buf, size_t *n)
 {
+  char path8[MAX_PATH];
   wchar_t path[MAX_PATH];
-  int wl = MultiByteToWideChar(CP_UTF8, 0, SD_TEST_FAKEAPP, -1, path, MAX_PATH);
+  int wl;
+  if (!sd_test_exe_dir_path(SD_TEST_FAKEAPP, path8, sizeof(path8)))
+    return 0;
+  wl = MultiByteToWideChar(CP_UTF8, 0, path8, -1, path, MAX_PATH);
   if (wl <= 0)
     return 0;
   return fx_read(path, buf, n);

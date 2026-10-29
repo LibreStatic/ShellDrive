@@ -15,10 +15,10 @@
 #include "svc_events.h"
 
 #ifndef SD_SVC_EVENTS_MC
-#error "SD_SVC_EVENTS_MC must name the generated svc_events.mc"
+#error "SD_SVC_EVENTS_MC must name the generated svc_events.mc (relative to the test executable)"
 #endif
 #ifndef SD_SVC_HOST_EXE
-#error "SD_SVC_HOST_EXE must name the built shelldrive-host.exe"
+#error "SD_SVC_HOST_EXE must name the built shelldrive-host.exe (relative to the test executable)"
 #endif
 
 /* sdl10n write_mc: 17 en + 22 es + 7 fr + 3 pt + 3 it + 6 de LANGIDs (SDK SUBLANG values, with the neutral ids). */
@@ -41,8 +41,10 @@ static wchar_t *read_mc(size_t *units_out)
   long n;
   unsigned char *buf;
   wchar_t *w;
+  char mc[MAX_PATH];
   size_t i, units;
-  if (fopen_s(&f, SD_SVC_EVENTS_MC, "rb") != 0 || !f) return NULL;
+  if (!sd_test_exe_dir_path(SD_SVC_EVENTS_MC, mc, sizeof(mc))) return NULL;
+  if (fopen_s(&f, mc, "rb") != 0 || !f) return NULL;
   if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
   n = ftell(f);
   if (fseek(f, 0, SEEK_SET) != 0 || n < 4 || (n & 1)) { fclose(f); return NULL; }
@@ -222,8 +224,14 @@ SD_TEST(evtmsg_mc_has_every_langid_for_every_id)
 
 SD_TEST(evtmsg_module_resolves_every_id_in_every_langid)
 {
-  HMODULE hm = LoadLibraryExA(SD_SVC_HOST_EXE, NULL, LOAD_LIBRARY_AS_DATAFILE);
+  char host[MAX_PATH];
+  HMODULE hm;
   int blocks;
+  if (!sd_test_exe_dir_path(SD_SVC_HOST_EXE, host, sizeof(host))) {
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "cannot resolve %s next to the test executable", SD_SVC_HOST_EXE);
+    return;
+  }
+  hm = LoadLibraryExA(host, NULL, LOAD_LIBRARY_AS_DATAFILE);
   SD_REQUIRE(hm != NULL);
   blocks = walk_mc(sd_t_, hm);
   SD_CHECK(blocks >= MC_EVENTS_MIN);
