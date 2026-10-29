@@ -80,6 +80,18 @@ function Get-OutputFiles([string]$buildDir) {
   return $found
 }
 
+function Get-Sha256Hex([string]$Path)
+{
+  # .NET directly: Get-FileHash does not resolve in the ctest child environment on the CI runners
+  # (its module autoload fails there), and the hash must not depend on that.
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '') }
+    finally { $sha.Dispose() }
+  } finally { $stream.Dispose() }
+}
+
 $bin = Find-CMakeBin
 $cmake = Join-Path $bin 'cmake.exe'
 $drive = Find-FreeDrive
@@ -120,8 +132,8 @@ try {
     if (-not $filesA.ContainsKey($name)) { $differ += "$name (only in repro-b)"; continue }
     if (-not $filesB.ContainsKey($name)) { $differ += "$name (only in repro-a)"; continue }
     $checked++
-    $ha = (Get-FileHash -LiteralPath $filesA[$name] -Algorithm SHA256).Hash
-    $hb = (Get-FileHash -LiteralPath $filesB[$name] -Algorithm SHA256).Hash
+    $ha = Get-Sha256Hex $filesA[$name]
+    $hb = Get-Sha256Hex $filesB[$name]
     if ($ha -ne $hb) { $differ += "$name ($ha vs $hb)" }
   }
   if ($checked -eq 0) { throw 'no output files found to compare' }

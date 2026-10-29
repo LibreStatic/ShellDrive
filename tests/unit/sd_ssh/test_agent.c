@@ -120,8 +120,28 @@ static void agent_answer(ta_agent *a, const uint8_t *req, size_t n, sd_wr *out)
 
 static HANDLE ta_pipe_create(const wchar_t *name)
 {
-  return CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                          PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, NULL);
+  /* CI runners run the tests as an elevated administrator, and Windows makes objects created by an
+     elevated administrator owned by the Administrators GROUP. The client's user-pipe owner check
+     (agent_pipe.c verify_pipe, TM-R08) rightly refuses such a pipe: a real SSH_AUTH_SOCK pipe is
+     owned by the user. Give the fake that owner explicitly, so it looks like the real thing. */
+  SECURITY_ATTRIBUTES sa, *psa = NULL;
+  SECURITY_DESCRIPTOR sd;
+  HANDLE tok = NULL, h;
+  BYTE ubuf[64];
+  DWORD need = 0;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok) &&
+      GetTokenInformation(tok, TokenUser, ubuf, sizeof(ubuf), &need) &&
+      InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
+      SetSecurityDescriptorOwner(&sd, ((TOKEN_USER *)ubuf)->User.Sid, FALSE)) {
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = &sd;   /* no DACL set: the token's default DACL applies */
+    sa.bInheritHandle = FALSE;
+    psa = &sa;
+  }
+  if (tok) CloseHandle(tok);
+  h = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                       PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, psa);
+  return h;
 }
 
 /* One overlapped read or write that gives up when stop is signaled. Returns the byte count or -1. */

@@ -166,7 +166,9 @@ static sd_err wh_probe(const wh_api *a, uint16_t port, const wchar_t *path, int 
   if (session == NULL)
     return SD_E_FAILURE;
   a->set_timeouts(session, 5000, 5000, 5000, 5000);
-  conn = a->connect(session, L"localhost", (INTERNET_PORT)port, 0);
+  /* numeric IPv4 loopback: "localhost" resolves to ::1 first on some systems, where the server
+     does not listen, and this probe is about this machine's server only (never leaves it) */
+  conn = a->connect(session, L"127.0.0.1", (INTERNET_PORT)port, 0);
   if (conn == NULL)
     goto out;
   req = a->open_request(conn, L"PROPFIND", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
