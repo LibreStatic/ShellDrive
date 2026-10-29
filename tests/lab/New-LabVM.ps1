@@ -7,7 +7,8 @@
   \\.\pipe\sd-lab-<name> (read by Read-LabSerial.ps1; Set-VMComPort works on both generations),
   standard checkpoints, no automatic checkpoints. The config's Generation field selects the VM
   generation (1 by default; Windows 11 and Server 2022 use 2 with Secure Boot, and Windows 11
-  also with a virtual TPM via Tpm = $true).
+  also with a virtual TPM via Tpm = $true). CompatOlderOs = $true limits the guest's CPUID set
+  (generation 1 only; off by default, set it for XP).
   With BaseVhdx a differencing disk is created on top of it (the base image is never written).
   Without it, a 20 GB dynamic disk is created and InstallIso is attached for a manual Windows setup.
 
@@ -69,12 +70,11 @@ foreach ($v in $vms) {
   $vm = New-VM -Name $v.Name -Generation $gen -MemoryStartupBytes ([int64]$v.MemoryMB * 1MB) -VHDPath $disk -Path $dir
   Set-VM -VM $vm -CheckpointType Standard -AutomaticStopAction TurnOff -AutomaticCheckpointsEnabled $false
   Set-VMMemory -VM $vm -DynamicMemoryEnabled $false
-  if ($gen -eq 1) {
-    # NT 5.x / 6.1 guests need the reduced CPUID set (it also keeps the guest's view of the CPU stable).
-    Set-VMProcessor -VM $vm -Count $v.Cpus -CompatibilityForOlderOperatingSystemsEnabled $true
-  } else {
-    Set-VMProcessor -VM $vm -Count $v.Cpus
-  }
+  $wantCompat = $false
+  if ($v.ContainsKey('CompatOlderOs')) { $wantCompat = [bool]$v.CompatOlderOs }
+  if ($wantCompat -and $gen -ne 1) { throw "$($v.Name): CompatOlderOs needs Generation 1." }
+  # Reduced CPUID set, opt-in per VM: only pre-Windows 7 guests (XP) need it.
+  Set-VMProcessor -VM $vm -Count $v.Cpus -CompatibilityForOlderOperatingSystemsEnabled $wantCompat
   Get-VMNetworkAdapter -VM $vm | Remove-VMNetworkAdapter
   if ($cfg.SwitchName) {
     if ($gen -eq 1) {
