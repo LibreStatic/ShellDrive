@@ -58,12 +58,12 @@ jobs:
       - name: Test Release
         if: matrix.preset != 'arm64' && matrix.preset != 'arm32'
         shell: pwsh
-        run: ctest --preset ${{ matrix.preset }} --output-junit "${{ github.workspace }}/build/ctest-${{ matrix.preset }}.xml"
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure --output-junit "${{ github.workspace }}/build/ctest-${{ matrix.preset }}.xml"
 
       - name: Test Debug
         if: matrix.preset != 'arm64' && matrix.preset != 'arm32'
         shell: pwsh
-        run: ctest --preset ${{ matrix.preset }}-debug
+        run: ctest --preset ${{ matrix.preset }}-debug --output-on-failure
 
       - name: Upload binaries
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -95,7 +95,7 @@ jobs:
 
       - name: Test
         shell: pwsh
-        run: ctest --preset x64-analysis
+        run: ctest --preset x64-analysis --output-on-failure
 
   # TM-R39 / TST-32: the workflow lint (tools/check-workflows.ps1). Read-only; CODEOWNERS is reported as a warning
   # until the maintainer review owner is recorded.
