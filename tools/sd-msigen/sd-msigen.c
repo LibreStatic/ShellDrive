@@ -6,11 +6,13 @@
  *       (04 §12.2). UpgradeCodes are not derived: they are fixed in 04 §8.2.
  *
  *   sd-msigen registry --in <packaging/registration.txt> --out <Registry.wxi> --flavour <name>
- *                      --family <name> --win64 yes|no --shellext32 yes|no
+ *                      --family <name> --win64 yes|no --shellext32 yes|no --ui yes|no
  *       Turns the registry rows into a WiX include. Every row becomes one Component with one RegistryValue
  *       (HKLM); the components are grouped by feature into SD_RegCore (core), SD_RegAutostart (autostart),
  *       SD_RegShellExt (shellext, referenced by the ShellExt feature) and SD_RegShellExt32 (shellext32: the 32-bit
  *       view of the shell extension, Win64="no", written only with --shellext32 yes, 04 §8.3, 03 §8.5).
+ *       --ui no (the ARM32 package: CLI and host only, 04 §5.1) leaves out the shellext and shellext32 rows and every
+ *       row whose data names shelldrive-ui.exe (App Paths): the package has neither file.
  *       The rows of Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive are skipped: Windows Installer
  *       writes the Add/Remove Programs entry of an MSI itself (04 §6.7). [VERSION] becomes [ProductVersion],
  *       [INSTALLDIR] stays (MSI formats it), [INSTALLDIR32] becomes [SD_INSTALLDIR32] (the 32-bit folder, Program
@@ -228,6 +230,7 @@ static int cmd_registry(int argc, char **argv)
   const char *family = need_arg(argc, argv, "--family");
   const char *win64 = need_arg(argc, argv, "--win64");
   const char *shellext32 = need_arg(argc, argv, "--shellext32");
+  const char *ui = need_arg(argc, argv, "--ui");
   FILE *f, *o;
   char *line;
   reg_item *items = NULL;
@@ -238,6 +241,10 @@ static int cmd_registry(int argc, char **argv)
     die("--win64 must be yes or no%s", NULL);
   if (strcmp(shellext32, "yes") != 0 && strcmp(shellext32, "no") != 0)
     die("--shellext32 must be yes or no%s", NULL);
+  if (strcmp(ui, "yes") != 0 && strcmp(ui, "no") != 0)
+    die("--ui must be yes or no%s", NULL);
+  if (strcmp(ui, "no") == 0 && strcmp(shellext32, "yes") == 0)
+    die("--shellext32 yes needs --ui yes%s", NULL);
   f = fopen(in, "rb");
   if (!f)
     die("cannot open %s", in);
@@ -257,6 +264,12 @@ static int cmd_registry(int argc, char **argv)
         item.view32 = strcmp(item.feature, "shellext32") == 0;
         if (item.view32 && strcmp(shellext32, "no") == 0) {
           /* the 32-bit view rows exist only in the packages that carry the x86 shell extension */
+          free(line);
+          continue;
+        }
+        if (strcmp(ui, "no") == 0 &&
+            (strcmp(item.feature, "shellext") == 0 || strstr(item.data, "shelldrive-ui.exe") != NULL)) {
+          /* no UI and no shell extension in this package: their rows would point at missing files */
           free(line);
           continue;
         }

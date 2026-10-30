@@ -8,10 +8,12 @@
 
   Defines: SD_VERSION, SD_FLAVOUR, SD_PRODUCT_CODE, SD_PACKAGE_CODE, SD_UPGRADE_CODE, SD_INSTALLER_VERSION,
   SD_PF_DIR (ProgramFilesFolder or ProgramFiles64Folder), SD_WIN64 (yes/no), SD_BIN_DIR, SD_ICON,
-  SD_LAUNCH (none or win10), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6), SD_LICENSE_RTF (the
+  SD_LAUNCH (none, win10 or arm32), SD_WITH_SERVICE (0 or 1, 0 until the service exists: M5, D6), SD_LICENSE_RTF (the
   LICENSE of the repository converted to RTF by build-msi.cmake, shown by the license page),
   SD_SHELLEXT32 (1 on the x64 flavours: the x86-sse2 shell extension in INSTALLDIR, Win64="no", 04 §8.3) and
-  SD_BIN32_DIR (the folder of that x86 DLL).
+  SD_BIN32_DIR (the folder of that x86 DLL), SD_UI (1: the UI, the shell extension and the Start menu shortcut; 0 in the
+  ARM32 package, which has the CLI and the host only, 04 §5.1) and SD_DOKANY (1: the options page offers Dokany; 0 in
+  the ARM32 package, which has no Dokany, 04 §7.1).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <?include Guids.wxi?>
@@ -75,9 +77,15 @@
     <!-- Checkbox state of the options page (SD_UI_*, "1" = checked) and the effective state written to the registry
          and settings.ini (SD_*_STATE, SD_ELC_WRITE = 1 when the value is written and owned by this package). The
          defaults below apply until the init rows run (InstallUISequence, and InstallExecuteSequence for a silent run). -->
+    <?if $(var.SD_DOKANY) = "1" ?>
     <Property Id="SD_UI_DOKANY" Value="1" />
-    <Property Id="SD_UI_ELC" Value="0" />
     <Property Id="SD_DOKANY_STATE" Value="1" />
+    <?else?>
+    <!-- No Dokany for this architecture (04 §7.1): WebDAV is the only backend and the options page does not offer it. -->
+    <Property Id="SD_UI_DOKANY" Value="0" />
+    <Property Id="SD_DOKANY_STATE" Value="0" />
+    <?endif?>
+    <Property Id="SD_UI_ELC" Value="0" />
     <Property Id="SD_ELC_STATE" Value="0" />
     <Property Id="SD_ELC_WRITE" Value="0" />
     <!-- Init, once per run (SD_UI_INIT is set by the last init row): command line first, then the remembered choice. -->
@@ -94,6 +102,14 @@
     <?if $(var.SD_LAUNCH) = "win10" ?>
     <!-- Windows 10 or later: CurrentMajorVersionNumber exists only there (04 §8.2). -->
     <Condition Message="!(loc.OsRequired)"><![CDATA[Installed OR (SD_OSMAJOR <> "" AND SD_OSMAJOR >= 10)]]></Condition>
+    <?elseif $(var.SD_LAUNCH) = "arm32" ?>
+    <!-- ARM32 (04 §5.1): Windows 10 on ARM or Windows 11 up to 23H2. Windows 11 24H2 (build 26100) and later run no
+         ARM32 apps; Windows RT 8.1 has no CurrentMajorVersionNumber, so the first test refuses it too. -->
+    <Property Id="SD_OSBUILD">
+      <RegistrySearch Id="SD_OSBUILD_RS" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber" Type="raw" Win64="$(var.SD_WIN64)" />
+    </Property>
+    <Condition Message="!(loc.OsArm32)"><![CDATA[Installed OR (SD_OSMAJOR <> "" AND SD_OSMAJOR >= 10 AND SD_OSBUILD <> "" AND SD_OSBUILD < 26100)]]></Condition>
     <?endif?>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -115,6 +131,7 @@
               <?endif?>
             </Component>
 
+            <?if $(var.SD_UI) = "1" ?>
             <Component Id="C_Core_Ui" Guid="$(var.G_C_Core_Ui)" Win64="$(var.SD_WIN64)">
               <File Id="F_shelldrive_ui" Name="shelldrive-ui.exe" Source="$(var.SD_BIN_DIR)\shelldrive-ui.exe" KeyPath="yes" />
             </Component>
@@ -122,6 +139,7 @@
             <Component Id="C_ShellExt" Guid="$(var.G_C_ShellExt)" Win64="$(var.SD_WIN64)">
               <File Id="F_shelldrive_shellext" Name="shelldrive-shellext.dll" Source="$(var.SD_BIN_DIR)\shelldrive-shellext.dll" KeyPath="yes" />
             </Component>
+            <?endif?>
 
           </Directory>
         </Directory>
@@ -142,6 +160,7 @@
       </Directory>
       <?endif?>
 
+      <?if $(var.SD_UI) = "1" ?>
       <Directory Id="ProgramMenuFolder">
         <Directory Id="SD_STARTMENU" Name="ShellDrive">
           <Component Id="C_StartMenu" Guid="$(var.G_C_StartMenu)" Win64="$(var.SD_WIN64)">
@@ -152,6 +171,7 @@
           </Component>
         </Directory>
       </Directory>
+      <?endif?>
 
       <!-- Machine settings and data (04 §6.7, §8.3). Written by the MSI only; removed on uninstall as stated there. -->
       <Directory Id="CommonAppDataFolder">
@@ -259,7 +279,9 @@
       <Feature Id="Core" Title="!(loc.FeatureCoreTitle)" Description="!(loc.FeatureCoreDesc)" Level="1" Absent="disallow" AllowAdvertise="no">
         <ComponentRef Id="C_Core_Cli" />
         <ComponentRef Id="C_Core_Host" />
+        <?if $(var.SD_UI) = "1" ?>
         <ComponentRef Id="C_Core_Ui" />
+        <?endif?>
         <ComponentRef Id="C_Ini_Update" />
         <ComponentRef Id="C_Ini_UpdateUrl" />
         <ComponentRef Id="C_Ini_Backend" />
@@ -274,6 +296,7 @@
         <ComponentRef Id="C_Rm_DataService" />
         <ComponentGroupRef Id="SD_RegCore" />
       </Feature>
+      <?if $(var.SD_UI) = "1" ?>
       <Feature Id="ShellExt" Title="!(loc.FeatureShellextTitle)" Description="!(loc.FeatureShellextDesc)" Level="1" AllowAdvertise="no">
         <ComponentRef Id="C_ShellExt" />
         <!-- CLSIDs, handlers (Drive, Directory, *, This PC) and Approved entries of the shell extension (03 §8.5). -->
@@ -287,6 +310,7 @@
       <Feature Id="StartMenu" Title="!(loc.FeatureStartmenuTitle)" Description="!(loc.FeatureStartmenuDesc)" Level="1" AllowAdvertise="no">
         <ComponentRef Id="C_StartMenu" />
       </Feature>
+      <?endif?>
       <Feature Id="Autostart" Title="!(loc.FeatureAutostartTitle)" Description="!(loc.FeatureAutostartDesc)" Level="1" AllowAdvertise="no">
         <Condition Level="0"><![CDATA[AUTOSTART = "0"]]></Condition>
         <ComponentGroupRef Id="SD_RegAutostart" />
@@ -370,10 +394,12 @@
                  Text="!(loc.OptionsDescription)" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
 
+        <?if $(var.SD_DOKANY) = "1" ?>
         <Control Id="DokanyCheckBox" Type="CheckBox" X="20" Y="62" Width="330" Height="18" CheckBoxValue="1" Property="SD_UI_DOKANY"
                  Text="!(loc.OptionsDokanyCheckbox)" />
         <Control Id="DokanyHint" Type="Text" X="38" Y="82" Width="312" Height="36" Transparent="yes" NoPrefix="yes"
                  Text="!(loc.OptionsDokanyHint)" />
+        <?endif?>
         <Control Id="LinkedConnectionsCheckBox" Type="CheckBox" X="20" Y="130" Width="330" Height="18" CheckBoxValue="1"
                  Property="SD_UI_ELC" Text="!(loc.OptionsLinkedCheckbox)" />
         <Control Id="LinkedConnectionsHint" Type="Text" X="38" Y="150" Width="312" Height="48" Transparent="yes" NoPrefix="yes"

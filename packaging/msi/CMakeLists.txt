@@ -4,14 +4,16 @@
 #
 # builds the MSI of this preset's flavour from the binaries of the preset (packaging/msi/build-msi.cmake):
 # sd-msigen, candle, light (ICE validation on the base package), torch and sd-msiembed. The MSI tools run on the
-# build host, so an ARM64 tree cannot build it (the ARM64 MSI is M6, 04 §1.1).
+# build host: an ARM64 or ARM32 tree takes sd-msigen and sd-msiembed from its nested x64 build (cmake/SdHostTools.cmake,
+# SD_HOST_TOOLS_MSI), the way it takes sdl10n; WiX is an x86 .NET program that the host runs either way.
 
-if(SD_ARM64)
-  message(FATAL_ERROR "SD_BUILD_MSI needs an x86 or x64 preset: the MSI tools run on the build host (04 §8).")
+if(SD_CROSS_HOST_TOOLS)
+  set(_msi_tool_deps "")   # the msi target depends on sd_host_tools instead
+else()
+  add_subdirectory(${CMAKE_SOURCE_DIR}/tools/sd-msigen ${CMAKE_BINARY_DIR}/tools/sd-msigen)
+  add_subdirectory(${CMAKE_SOURCE_DIR}/tools/sd-msiembed ${CMAKE_BINARY_DIR}/tools/sd-msiembed)
+  set(_msi_tool_deps sd-msigen sd-msiembed)
 endif()
-
-add_subdirectory(${CMAKE_SOURCE_DIR}/tools/sd-msigen ${CMAKE_BINARY_DIR}/tools/sd-msigen)
-add_subdirectory(${CMAKE_SOURCE_DIR}/tools/sd-msiembed ${CMAKE_BINARY_DIR}/tools/sd-msiembed)
 
 # WiX Toolset 3.14 (04 §8.1): the WIX environment variable of the WiX installer, else its default folder.
 if(DEFINED ENV{WIX} AND NOT "$ENV{WIX}" STREQUAL "")
@@ -26,8 +28,9 @@ if(NOT EXISTS "${SD_WIX_DIR}/bin/candle.exe")
 endif()
 
 # Per-flavour package parameters (04 §8.2). UpgradeCodes are fixed forever; the x86 pair and the x64 pair share one.
-# The arm32 row is authored for the day an arm32 preset exists (D31); there is none, so it is not built.
 #   family  arch  Program Files folder           win64  installer  launch   UpgradeCode
+# ARM32 (D31, 04 §5.1) has the CLI and the host only: no UI, no shell extension, no Start menu, no Dokany (_ui 0).
+set(_ui 1)
 if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "x86-sse2")
   set(_family x86)
   set(_arch x86)
@@ -52,19 +55,37 @@ elseif(SD_FLAVOUR STREQUAL "x64-modern")
   set(_installer 500)
   set(_launch win10)
   set(_upgrade "{37D2227E-A917-46A7-8F8E-0F9A8146CA5F}")
+elseif(SD_FLAVOUR STREQUAL "arm64")
+  set(_family arm64)
+  set(_arch arm64)
+  set(_pf ProgramFiles64Folder)
+  set(_win64 yes)
+  set(_installer 500)
+  set(_launch none)
+  set(_upgrade "{1438051B-3E86-459D-8199-E8D786F5A32B}")
+elseif(SD_FLAVOUR STREQUAL "arm32")
+  set(_family arm32)
+  set(_arch arm)
+  set(_pf ProgramFilesFolder)
+  set(_win64 no)
+  set(_installer 500)
+  set(_launch arm32)
+  set(_upgrade "{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}")
+  set(_ui 0)
 else()
   message(FATAL_ERROR "SD_BUILD_MSI: no MSI for the flavour ${SD_FLAVOUR} (04 §8.2)")
 endif()
 
-# The 32-bit shell extension (04 §6.2, §8.3; 03 §8.5). An x64 package also carries the x86-sse2 copy of the DLL in
-# INSTALLDIR and registers it in the 32-bit registry view (32-bit apps' file dialogs load it). The copy comes from
-# a nested x86 configure (cmake/SdShellExtX86.cmake). The x86 packages have no 32-bit view to add: their DLL is the
-# 32-bit one already.
+# The 32-bit shell extension (04 §6.2, §8.3; 03 §8.5). An x64 or ARM64 package also carries the x86-sse2 copy of the
+# DLL in Program Files (x86) and registers it in the 32-bit registry view (32-bit apps' file dialogs load it; on ARM64
+# the x86 apps run under WOW64 with the same view). The copy comes from a nested x86 configure
+# (cmake/SdShellExtX86.cmake). The x86 packages have no 32-bit view to add: their DLL is the 32-bit one already. The
+# ARM32 package has no shell extension.
 set(SD_MSI_SHELLEXT32 0)
-set(SD_MSI_BIN32 "$<TARGET_FILE_DIR:shelldrive-shellext>")
+set(SD_MSI_BIN32 "$<TARGET_FILE_DIR:shelldrive>")   # any existing folder when there is no 32-bit copy
 set(_msi_x86_deps "")
 set(SD_MSI_TEST_X86_DLL "")
-if(_arch STREQUAL "x64")
+if(_arch STREQUAL "x64" OR _arch STREQUAL "arm64")
   include(SdShellExtX86)
   sd_add_x86_shellext(_sd_x86_shellext_target)
   set(SD_MSI_SHELLEXT32 1)
@@ -75,6 +96,11 @@ endif()
 
 # The service (M5, D6) is not there yet: its ServiceInstall stays behind this define (ShellDrive.wxs).
 set(SD_MSI_WITH_SERVICE 0 CACHE STRING "1 once the service binary exists (M5): ServiceInstall/ServiceControl on")
+
+set(_msi_ui_deps "")
+if(_ui)
+  set(_msi_ui_deps shelldrive-ui shelldrive-shellext)
+endif()
 
 set(_msi_version "${SD_VERSION_MAJOR}.${SD_VERSION_MINOR}.${SD_VERSION_PATCH}")
 set(_msi_dir "${CMAKE_BINARY_DIR}/msi/$<CONFIG>")
@@ -99,6 +125,8 @@ add_custom_command(
           "-DSD_MSI_BIN=$<TARGET_FILE_DIR:shelldrive>"
           "-DSD_MSI_SHELLEXT32=${SD_MSI_SHELLEXT32}"
           "-DSD_MSI_BIN32=${SD_MSI_BIN32}"
+          "-DSD_MSI_UI=${_ui}"
+          "-DSD_MSI_DOKANY=${_ui}"
           "-DSD_MSI_ICON=${CMAKE_SOURCE_DIR}/res/icons/shelldrive.ico"
           "-DSD_MSI_SRC=${CMAKE_CURRENT_SOURCE_DIR}"
           "-DSD_MSI_GEN=${_msi_gen}"
@@ -110,7 +138,7 @@ add_custom_command(
           "-DSD_MSIGEN=$<TARGET_FILE:sd-msigen>"
           "-DSD_MSIEMBED=$<TARGET_FILE:sd-msiembed>"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake"
-  DEPENDS sd-msigen sd-msiembed shelldrive shelldrive-host shelldrive-ui shelldrive-shellext ${_msi_x86_deps}
+  DEPENDS ${_msi_tool_deps} shelldrive shelldrive-host ${_msi_ui_deps} ${_msi_x86_deps}
           "${CMAKE_CURRENT_SOURCE_DIR}/build-msi.cmake" "${CMAKE_CURRENT_SOURCE_DIR}/ShellDrive.wxs"
           "${CMAKE_SOURCE_DIR}/packaging/registration.txt" "${CMAKE_SOURCE_DIR}/LICENSE" ${_msi_po} ${_msi_wixui}
   COMMENT "msi: ShellDrive ${SD_FLAVOUR} ${_msi_version}"
@@ -118,17 +146,25 @@ add_custom_command(
 
 add_custom_target(msi DEPENDS "${_msi_out}")
 set_target_properties(msi PROPERTIES FOLDER "packaging")
+if(SD_CROSS_HOST_TOOLS)
+  add_dependencies(msi sd_host_tools)
+endif()
 if(SD_MSI_SHELLEXT32)
   add_dependencies(msi sd_shellext_x86)
 endif()
 
-# Parameters of the CTest checks in tests/msi (the root scope sees them: packaging/msi is added first).
+# Parameters of the CTest checks in tests/msi (the root scope sees them: packaging/msi is added first). The platform is
+# the Template prefix of the summary information (04 §8.2).
 if(_arch STREQUAL "x86")
   set(_platform Intel)
-else()
+elseif(_arch STREQUAL "x64")
   set(_platform x64)
+elseif(_arch STREQUAL "arm64")
+  set(_platform Arm64)
+else()
+  set(_platform Arm)
 endif()
-if(_launch STREQUAL "win10")
+if(NOT _launch STREQUAL "none")
   set(_launch_count 2)
 else()
   set(_launch_count 1)
@@ -141,3 +177,4 @@ set(SD_MSI_TEST_INSTALLER "${_installer}" PARENT_SCOPE)
 set(SD_MSI_TEST_LAUNCH_COUNT "${_launch_count}" PARENT_SCOPE)
 set(SD_MSI_TEST_SHELLEXT32 "${SD_MSI_SHELLEXT32}" PARENT_SCOPE)
 set(SD_MSI_TEST_X86_DLL "${SD_MSI_TEST_X86_DLL}" PARENT_SCOPE)
+set(SD_MSI_TEST_UI "${_ui}" PARENT_SCOPE)

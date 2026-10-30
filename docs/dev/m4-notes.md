@@ -730,3 +730,174 @@ install; the 32-bit shell registration; empty keys left by the per-user removal)
   never depends on the log). The two tests that caught it (`setup_elev_parent_malformed_block_writes_nothing`,
   `setup_elev_parent_oversized_block_writes_nothing`) were unregistered before this branch.
 - Also fixed: a use of `run_machine_elevated` before its definition, and an analysis warning (NULL `out`) in `key_sz`.
+
+## C31: Dokany VC++ dependency check (first week of M4)
+
+The risk table (`docs/design/00-integration-review.md`, C31) asks for `dumpbin /dependents dokan2.dll` on every
+architecture of the Dokany bundle we embed, to choose between the official per-arch MSIs (D32 form a) and the upstream
+`DokanSetup.exe` bundle (form b). Run on 2026-10-30.
+
+**Method.** The three installers were downloaded from the pinned release
+`v2.3.1.1000` (`https://github.com/dokan-dev/dokany/releases/tag/v2.3.1.1000`); their sizes and SHA-256 match the
+GitHub asset `digest` values and the facts recorded in 04 §7.1. Each package was expanded with
+`msiexec /a <msi> TARGETDIR=<empty dir>` (an admin image needs no elevation and runs on the x64 host), and the
+installed copy of the DLL (`Windows\System32\dokan2.dll` of each image) was read with
+`dumpbin /dependents` (MSVC 14.44, `dumpbin` 14.44.35229.0) on a Windows 11 IoT Enterprise LTSC 2024 x64 host.
+
+| Architecture | Package (size, SHA-256) | `dokan2.dll` SHA-256 | Imported modules |
+|---|---|---|---|
+| x86 | `Dokan_x86.msi`, 5,128,192 B, `c833fd51f67c44a467eeade419b8934033445ee847119f82cbef1fddc84ef618` | `516da99d541961260888631c8cad3869a9e4e5021904560aa6534ac7ae549c75` | KERNEL32, USER32, ADVAPI32, SHELL32 |
+| x64 | `Dokan_x64.msi`, 9,269,248 B, `69ff8cb37bfec3a75921c85ffd1c6370b50a9ec4ecef2cf3a009d488dcbf5465` | `75600aba867acbdfdb85fcd142b524da769bdc611b855a760aeb0c6e2eaae17a` | KERNEL32, USER32, ADVAPI32, SHELL32 |
+| ARM64 | `Dokan_ARM64.msi`, 5,128,192 B, `f812a5bf11c15bc3910a1f0f53830ff771ceb3c80458f10686b0f45b0db91d2e` | `52206ef6a5948f29bfb2d217fbb7d3a961072bf98aab520951abd306683db96a` | KERNEL32, USER32, ADVAPI32, SHELL32 |
+
+**Conclusion: no VC++ runtime dependency on any architecture.** `dokan2.dll` 2.3.1 imports no
+`vcruntime140*.dll`, no `msvcp140*.dll` and no other non-OS module. D32 therefore selects form (a):
+
+- the offline setup EXEs embed the unmodified official `Dokan_<arch>.msi` (`Dokan_x86.msi` for `x86-ia32` and
+  `x86-sse2`, `Dokan_x64.msi` for `x64-xp` and `x64-modern`, `Dokan_ARM64.msi` for `arm64`);
+- the MSI deployments for GPO/Intune use the same upstream packages and the VC++ 2015–2022 redistributable is **not**
+  a prerequisite (04 §7.1's "otherwise" branch does not apply);
+- the upstream `DokanSetup.exe` bundle is not needed and is not embedded;
+- the ARM32 flavour chains no Dokany package: there is no ARM32 Dokany installer (04 §7.1). The ARM32 MSI (D31)
+  installs CLI + agent + WebDAV only.
+
+`installer/dokany/dokany.lock` (not yet in the tree) records `vcruntime = none` for the three architectures, with the
+package sizes and SHA-256 above, the DLL hashes and this tool output. The [lab-verify] signer-subject and
+service-name items of 04 §7.1/§7.3 stay open.
+
+## M4 row audit (2026-10-30)
+
+Requirement by requirement against `docs/design/00-integration-review.md` §6 (M4 row) and `decisions.md` (which
+overrides the review's recommendation column where they differ). Status words: **Done** = implemented and checked;
+**Partial** = some of it exists; **Missing** = not in the tree; **Blocked** = needs the lab, the release keys, or
+another milestone. Evidence paths are relative to the repository root.
+
+| Requirement | Status | Evidence and remaining work |
+|---|---|---|
+| Setup stub from the `x86-ia32` preset, CAB payloads | **Done** | `apps/shelldrive-setup/` (`shelldrive-setup-stub`, `shelldrive-setup`), `cmake/SdPayload.cmake` (FDI CAB via `cabinet.dll`, fixed member times), `tests/setup` (`sd-test-engine`, 54 tests), import and ISA audits |
+| Per-user, per-machine and portable | **Done in code; lab pending** | `setup_install.c`, `setup_elevate.c` (two stages, pipe relay, per-machine uninstall), `tests/setup/test_elevate.c`. Lab: UAC/Run As, msiexec, 3010 (04 §11.4) |
+| Six flavours and stub selection by CPU and OS (D4, D28) | **Partial** | Presets for all six (`CMakePresets.json`); `sd_setup_select_flavour` covers x86 SSE2, x64 by OS version and the ARM paths. Stub and payload targets exist only in the `x86-ia32`, `arm64` and `arm32` presets: **no preset builds an x64 stub or payload**, and the universal EXE that carries `PAYLOAD_X86_SSE2`, `PAYLOAD_X64_XP` and `PAYLOAD_X64_MODERN` is release-pipeline work (`tools/sd-payload` attaches one flavour per run). The `x86-ia32` EXE built here therefore selects `x86-sse2` on an SSE2 host and reports `payload_missing` until the pipeline assembles the universal EXE. ARM stubs are cross-built and cannot run here (04 §11.4) |
+| WiX MSIs per flavour, incl. ARM32 (D31 best effort per D5) | **Done (build and `msiexec /a` checks); install lab pending** | All six flavours build. x86 pair and x64 pair as before; ARM64 and ARM32 added later in this change (section "ARM64 and ARM32 MSIs" below). `msi.<flavour>.tables`, `.admin` (admin image only) and `.wixui` pass on `x86-ia32`, `x64-modern`, `arm64` and `arm32` |
+| Language transforms (C43) | **Partial** | `sd-msigen` LCID table (es under 3082/11274/1034/2058/21514/…, pt-BR under 1046/2070), `sd-msiembed`, checked by `msi.<flavour>.tables`. **The setup EXE never passes `TRANSFORMS` explicitly** (the string appears only in `sd-msiembed`), so a `/lang=` choice that differs from the OS language gets the OS transform on a per-machine install |
+| Dokany chaining (C31, D32) | **Partial** | `setup_dokany.c`: decision, PE import reader, command lines and run gate, 5 tests. Nothing calls `sd_setup_dokany_run`; no `DOKANY_<ARCH>` payload member, no `installer/dokany/dokany.lock`, no post-install `--selftest` probe. C31 fixes the form: official per-arch MSIs |
+| `webdav-tune` and the other installer hooks | **Partial → webdav-tune closed here** | `signal-shutdown`, `user-cleanup` and `programdata-secure` implemented; `modern-menu` is a deliberate no-op until the sparse package exists (D27); `webdav-tune` was a silent no-op and is implemented in this change (below) |
+| Upgrade with running processes (C3, C4) | **Partial** | C3 step 1 done and tested: the agent creates the manual-reset `Global\…\agent.shutdown.<SID>.<session>` event with the `user, SY, BA` DACL, waits on it (`agent_shutdown_event_stops_agent`), setup signals it and waits 15 s (`setup_host.c`, `setup_install.c`), locked files are renamed aside. Missing: the Restart Manager step 2 and C4's versioned `shellext\<version>\` directory (the fixed path plus rename-aside is used). Lab pending |
+| Signed manifest | **Done; blocked on the release roots** | `src/sd_update` (parse, chain, rollback, freshness, tests). `k_trust` in `update_ipc.c` is empty, so every verification fails closed until `installer/keys` exists |
+| Static HTTP mirror (D30) | **Partial; blocked on the domain** | `manifest_alt` fallback after a network error and the redirect allow list exist; the default URL is the GitHub release URL only. The mirror URL is an operational choice (D30) |
+| Updater UI and rollback | **Done** | `apps/shelldrive-ui/ui_update.c` (Settings group, consent dialog, tray balloon) over `update.check` / `update.apply`; `update_engine.c` apply with `.rollback`, `--selftest` and byte-for-byte restore, covered by the update tests |
+| ADMX/ADML for every 03 §3.5 policy | **Done** | 21 policies in `res/policy/policies.txt`; `tools/sd-admxgen` emits the ADMX, six ADML files, `sd_policy_ids.h`/`sd_policy_table.h`; `policy.*`, `unit.admxgen`, `unit.policy`, `l10n.policy_catalogs_complete` |
+| Sparse MSIX build switch (D27) | **Missing** | No `packaging/msix`, no `SD_SPARSE_MSIX` option; `modern-menu` stays a no-op. D27 defers *shipping* until the certificate exists, not the build switch |
+| Reproducible-build check | **Done; notes placeholder** | `tools/check-repro.ps1` and `repro.*` (excluded from the default gate). The "Results" section above still says `RESULTS_PLACEHOLDER` |
+| Service installed and enabled by default per machine (D6) | **Blocked (M5)** | `SD_MSI_WITH_SERVICE=0` until the service binary exists; the `ServiceInstall`/`ServiceControl` authoring is behind the define |
+| `ENABLELINKEDCONNECTIONS` (D24) | **Done** | MSI property default 0; `AppSearch` ownership rules so an admin's pre-existing value is neither written nor removed; `msi.<flavour>.tables` |
+| `DEFAULTPROFILES` (C9) | **Done (authored); install lab pending** | `MoveFile` custom table and `C_DefaultProfiles` in `packaging/msi/ShellDrive.wxs` |
+| Signed payload tables (TM-R38) | **Partial; blocked on the keys** | Verifier, domain separation, resource check and 14 tests (`tests/setup/test_payload_sig.c`). `setup_keyring.inc` holds a revoked placeholder; `installer/keys`, the generated keyring and the package step's `--sig` input are release work |
+| Release pipeline and two offline signing sessions (D42) | **Partial** | `.github/workflows/release.yml` skeleton stops at `package`/`finalize`; `sd-release session/sign/verify/gates` exist with tests; `resign` and `installer/` (keys, `release-gates.txt`, `dokany.lock`) are missing; the workflow lint reports the missing `CODEOWNERS` |
+| Security-test support TST-29/31/32 | **Partial** | `tools/check-workflows.ps1` (TST-32) runs in `ci.yml` and `nightly.yml`; `tools/sd-msilang --dump-sequences` (TST-29) does not exist; the TST-27/31 lab checks were not run |
+
+Two earlier open items in this file are superseded: open item 6 of the setup section (the agent shutdown event) is
+implemented in `src/sd_ipc/ipc_common.c` and `agent.c` and covered by `agent_shutdown_event_stops_agent`; and the
+"21 policies" figure is current.
+
+### Gap closed in this change: `webdav-tune` (C28)
+
+**Why this one.** Of the M4-row gaps that are neither blocked on the release keys/domain nor on the lab, `webdav-tune`
+is the one that silently degrades a shipped per-machine install: without it the WebClient redirector keeps its 50 MB
+file and 1 MB attribute limits, so the WebDAV backend fails on large files and large folders while the documentation
+promises the tuning. Dokany chaining, the universal multi-flavour EXE and the ARM MSIs are higher-impact but need
+upstream packaging and the lab; the sparse MSIX switch needs the certificate that D27 makes a condition.
+
+**Implementation** (`apps/shelldrive-host/installer_hooks.c`):
+
+- `--apply` sets `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters\FileSizeLimitInBytes = 0xFFFFFFFF` and
+  `FileAttributesLimitInBytes = 100000000` (02 §7.1, C28). No other value is read or written: in particular
+  `BasicAuthLevel` is never touched (A2, C26).
+- The previous values are recorded **before** the first write in
+  `%ProgramData%\LibreStatic\ShellDrive\service\state\webdav-tune.ini` (03 §6.1) as
+  `[webdav-tune] file_size_limit_in_bytes = <decimal|absent>` and `file_attributes_limit_in_bytes = ...`. The file is
+  written to a temporary name and renamed. A repair run or a second install finds the record and **does not overwrite
+  it**, so the values restored later are the ones of the first install.
+- `--revert` restores each recorded value (a DWORD, or deletes the value when the record says `absent`) and removes
+  the record. With no record it succeeds without touching the registry (the hook never applied, or an older install).
+- Fail closed: a value of another registry type, an unreadable record or a record with an unknown value refuses the
+  hook (exit 1) and leaves the registry alone. A damaged record is never replaced by a guess.
+- The MSI actions were already authored (`CA_WebDavTune_Apply` deferred, `Impersonate="no"`, after `InstallFiles`,
+  condition `WEBDAV_TUNING = "1" AND NOT REMOVE~="ALL"`; `CA_WebDavTune_Revert` before `RemoveFiles`, condition
+  `REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE`), so GPO/Intune installs run it as SYSTEM. The per-user setup does not
+  call it (no HKLM access); 02 §7.1 tells the user to run `shelldrive --installer-hook webdav-tune --apply` elevated.
+
+**Tests** (`tests/apps/test_hooks.c`, 5 new, registered in `tests/apps/main.c`): the hook runs as a real process
+(`sd-test-host-fake.exe --installer-hook webdav-tune ...`) with two test-only overrides under `SD_HOST_TEST_HOOKS`:
+`SHELLDRIVE_TEST_WEBDAV_PARAMS` (an HKCU key instead of the HKLM parameters key) and `SHELLDRIVE_TEST_PROGRAMDATA`
+(a temporary folder instead of `%ProgramData%`). No real machine value, key or folder is touched.
+
+1. `hooks_webdav_tune_apply_and_revert_restore_originals`: both limits set, the record written, `BasicAuthLevel`
+   untouched, originals restored and the record removed by `--revert`.
+2. `hooks_webdav_tune_records_absence_and_repeat_apply_keeps_originals`: values absent before the first apply are
+   deleted on revert; a repeat apply after the values were changed elsewhere keeps the first originals.
+3. `hooks_webdav_tune_revert_without_state_is_a_noop`.
+4. `hooks_webdav_tune_refuses_a_damaged_state`: both verbs refuse and leave the values alone.
+5. `hooks_webdav_tune_refuses_a_value_of_another_type`: a `REG_SZ` value is refused and no record is written.
+
+The test key is removed with `RegDeleteKeyW` (it holds values only): `RegDeleteTreeW` is not declared for the XP
+presets, which is what broke the first gate run on `x64-xp`, `x86-ia32` and `x86-sse2`.
+
+Gate note for worktrees: the WSL sshd fixture writes `tests/fixtures/wsl-sshd/state/env` inside the checkout that
+started it. When sshd on port 2222 was started from another checkout, `start.ps1` reports "already running" and this
+worktree has no `state/env`, so `interop.ssh`, `interop.zlib` and `interop.sftp_ssh` exit 77 and `ci-local` fails on
+the skip. Run the gate with `SD_SSH_WSL_FIXTURE_DIR` set to the `tests/fixtures/wsl-sshd` folder of the checkout that
+owns the running fixture.
+
+## ARM64 and ARM32 MSIs (D31, built in M4)
+
+Decision (maintainer, 2026-10-30): the ARM MSIs are built in M4, not deferred to M6 with the ARM64 test job.
+
+**How an ARM tree builds its MSI.** The MSI tools must run on the x64 build host, and an ARM tree's own executables
+cannot. The ARM presets already build their build-time tools (`sdl10n`, `sd-importcheck`, ...) in a nested x64
+configure (`cmake/SdHostTools.cmake`, 04 §2.5). With `-DSD_BUILD_MSI=ON` that nested build also gets
+`SD_HOST_TOOLS_MSI=ON` and builds `sd-msigen`, `sd-msiembed` and `sd-test-msi`; the ARM tree uses them as imported
+executables, and its `msi` target depends on `sd_host_tools`. WiX (candle, light, torch) is an x86 .NET program, so
+nothing else changes. The package is built from the ARM tree's own binaries: no second build directory is involved.
+
+| | `arm64` | `arm32` |
+|---|---|---|
+| candle `-arch`, Template | `arm64`, `Arm64;1033,...` | `arm`, `Arm;1033,...` |
+| Program Files folder, `Win64` | `ProgramFiles64Folder`, yes | `ProgramFilesFolder`, no |
+| `InstallerVersion` | 500 | 500 |
+| UpgradeCode (04 §8.2) | `{1438051B-3E86-459D-8199-E8D786F5A32B}` | `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}` |
+| Contents | as x64: CLI, host, UI, shell extension, Start menu, plus the x86-sse2 shell extension in the 32-bit view (x86 apps under WOW64) | `Core` (CLI and host) and `Autostart` only (04 §5.1) |
+| Options page | Dokany and linked connections | linked connections only; `SD_DOKANY_STATE` = 0 (no ARM32 Dokany, 04 §7.1) |
+| Launch condition | none beyond the downgrade check | `SD_OSMAJOR >= 10 AND SD_OSBUILD < 26100` |
+
+ARM32 details:
+
+- `ShellDrive.wxs` has two new defines, `SD_UI` and `SD_DOKANY` (both 0 for ARM32). They leave out `C_Core_Ui`,
+  `C_ShellExt`, `C_StartMenu`, the `ShellExt` and `StartMenu` features and the Dokany checkbox.
+- `sd-msigen registry --ui no` drops the shellext rows and the `App Paths\shelldrive-ui.exe` row: their components share
+  one fragment with the core rows, so leaving them in would link components that no feature references.
+- The launch condition: Windows RT 8.1 has no `CurrentMajorVersionNumber`, so `SD_OSMAJOR >= 10` refuses it; build 26100
+  (Windows 11 24H2) and later run no ARM32 app. `SD_OSBUILD` is `CurrentBuildNumber` (REG_SZ). The message is the new
+  installer string `msi.os.arm32` (WiX id `OsArm32`), in all six catalogs. **[lab-verify]** the 32-bit registry view
+  of an ARM32 package on ARM64 has `CurrentBuildNumber`, and Windows Installer compares it as a number.
+
+**Checks** (`sd-test-msi`, from the nested x64 build). The ARM ctest presets now select `^msi[.]`. Without the MSI
+nothing matches and ctest still exits 0. `tools/ci-local.ps1` configures `arm64` and `arm32` with `SD_BUILD_MSI` when
+WiX 3.14 is installed and runs those checks in Release. The Debug configuration and the GitHub `ci.yml` stay build-only.
+
+- `tables` takes a new `<ui>` argument. With 0 it checks: no UI, shell extension or Start menu component, feature, file
+  or row; no `App Paths` row; no Dokany control; `SD_DOKANY_STATE` = 0; the ARM32 launch condition and its
+  `SD_OSBUILD` search.
+- `admin` now takes `<platform> <shellext32> <ui>`. It checks the files of the flavour (two for ARM32, and that the
+  UI and the DLL are absent), and that `shelldrive.exe` in the admin image is a PE of the package's machine: i386,
+  AMD64, ARM64 or ARMNT. `msiexec /a` of the ARM packages works on this x64 host.
+
+Open (lab or later):
+
+- The 04 §5.1 [lab-verify] items: Windows Installer on ARM64 accepts the `Arm` template; the folder ARM32 packages
+  resolve to.
+- The ARM64 package carries no x64 shell extension for x64 apps under emulation (04 §11.4 row "11 ARM64").
+- The setup EXE's own ARM32 24H2/RT refusal (04 §5.1) is not implemented.
+- The release pipeline's `package` job is still a stub. GitHub CI (`ci.yml`) builds the MSIs on `x86-ia32`,
+  `x64-modern`, `arm64` and `arm32` with the runner's WiX 3.14, runs their `msi.*` checks and uploads the packages.
+  The `x64-modern` and `arm64` jobs now also install `v141_xp` for the x86 shell extension, which adds several
+  minutes to each.

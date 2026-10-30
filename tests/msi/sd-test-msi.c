@@ -1,6 +1,6 @@
 /* sd-test-msi: checks of a built per-machine MSI (docs/design/04 §8, CTest label msi). Opt-in (SD_BUILD_MSI=ON).
  *
- *   sd-test-msi tables <package.msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32>
+ *   sd-test-msi tables <package.msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32> <ui>
  *       Reads the package through msi.dll only (nothing is installed):
  *         - ProductVersion, UpgradeCode, ProductName and Manufacturer of the Property table;
  *         - the Template summary: the platform prefix, and every LCID of the language table is listed (C43);
@@ -13,10 +13,14 @@
  *         - with shellext32 = 1 (the x64 flavours, 04 §8.3, 03 §8.5): the x86 shell extension component in
  *           Program Files (x86)\LibreStatic\ShellDrive with Win64 = no, in the ShellExt feature, and its 32-bit
  *           registry rows in components without the 64-bit attribute; with 0 there is no such component or row.
- *   sd-test-msi admin <package.msi> <work-dir> [shellext32]
+ *         - with ui = 0 (the ARM32 package, 04 §5.1): no UI, shell extension or Start menu component, feature, file or
+ *           registry row, no Dokany option, and the ARM32 launch condition (Windows 10 or later, build below 26100).
+ *       <platform> is the Template prefix: Intel, x64, Arm64 or Arm.
+ *   sd-test-msi admin <package.msi> <work-dir> <platform> <shellext32> <ui>
  *       Administrative install (msiexec /a) into <work-dir>\target: no registry, service or system change. Checks
- *       that the four binaries are laid out and, with shellext32 = 1, that the x64 shell extension is there (a PE image
- *       of machine AMD64; the x86 copy has the same path in an admin image, see the admin check).
+ *       that the binaries of the flavour are laid out (four, or the CLI and the host with ui = 0), that shelldrive.exe
+ *       is a PE image of the platform's machine and, with shellext32 = 1, that the native shell extension is there
+ *       (the x86 copy has the same path in an admin image, see the admin check).
  *       The caller removes <work-dir>.
  *
  * Exit code 0 when every check passes; each check prints "ok" or "FAIL" with its name.
@@ -314,7 +318,7 @@ static int count_files_containing(MSIHANDLE db, const wchar_t *text)
 }
 
 static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t *upgrade, const wchar_t *platform,
-                      int installer_version, int launch_count, int shellext32)
+                      int installer_version, int launch_count, int shellext32, int ui)
 {
   MSIHANDLE db = 0;
   wchar_t buf[2048], tmpl[1024], copy[MAX_PATH], temp_dir[MAX_PATH];
@@ -322,10 +326,13 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
   unsigned i;
   int ival = 0, ok;
   const wchar_t *components[] = {
-    L"C_Core_Cli", L"C_Core_Host", L"C_Core_Ui", L"C_ShellExt", L"C_StartMenu", L"C_Ini_Update",
-    L"C_Ini_Backend", L"C_LinkedConn", L"C_Installer", L"C_Rm_Secrets", L"C_Rm_Keys", L"C_Rm_Data", L"SD_Reg_000"
+    L"C_Core_Cli", L"C_Core_Host", L"C_Ini_Update", L"C_Ini_Backend", L"C_LinkedConn", L"C_Installer",
+    L"C_Rm_Secrets", L"C_Rm_Keys", L"C_Rm_Data", L"SD_Reg_000"
   };
-  const wchar_t *features[] = { L"ShellDrive", L"Core", L"ShellExt", L"StartMenu", L"Autostart" };
+  const wchar_t *features[] = { L"ShellDrive", L"Core", L"Autostart" };
+  /* The UI, the shell extension and the Start menu: in every package but ARM32 (04 §5.1). */
+  const wchar_t *ui_components[] = { L"C_Core_Ui", L"C_ShellExt", L"C_StartMenu" };
+  const wchar_t *ui_features[] = { L"ShellExt", L"StartMenu" };
   const wchar_t *hooks[] = { L"CA_ProgramDataSecure", L"CA_WebDavTune_Apply", L"CA_WebDavTune_Revert",
                              L"CA_SignalShutdown", L"CA_UserCleanup" };
   const size_t nhooks = sizeof(hooks) / sizeof(hooks[0]);
@@ -347,7 +354,7 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
 
   ok = summary_read(msi, PID_TEMPLATE_PROP, tmpl, 1024, NULL);
   check(ok && wcsncmp(tmpl, platform, wcslen(platform)) == 0 && tmpl[wcslen(platform)] == L';',
-        "Template platform prefix (Intel, x64, Arm64)");
+        "Template platform prefix (Intel, x64, Arm64, Arm)");
   ok = 1;
   for (i = 0; i < N_LCIDS; i++) {
     if (!template_lists(tmpl, g_lcids[i])) {
@@ -405,13 +412,44 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
   }
   check(ok, "feature tree of 04 §8.3 present");
 
+  ok = 1;
+  for (i = 0; i < sizeof(ui_components) / sizeof(ui_components[0]); i++) {
+    swprintf_s(sql, 512, L"SELECT `Component` FROM `Component` WHERE `Component` = '%ls'", ui_components[i]);
+    if (count_rows(db, sql) != (ui ? 1 : 0)) {
+      printf("     component %ls %s\n", ui_components[i], ui ? "missing" : "present");
+      ok = 0;
+    }
+  }
+  for (i = 0; i < sizeof(ui_features) / sizeof(ui_features[0]); i++) {
+    swprintf_s(sql, 512, L"SELECT `Feature` FROM `Feature` WHERE `Feature` = '%ls'", ui_features[i]);
+    if (count_rows(db, sql) != (ui ? 1 : 0)) {
+      printf("     feature %ls %s\n", ui_features[i], ui ? "missing" : "present");
+      ok = 0;
+    }
+  }
+  check(ok, ui ? "UI, shell extension and Start menu components and features present"
+               : "no UI, shell extension or Start menu component or feature (ARM32, 04 §5.1)");
+  check(count_files_containing(db, L"shelldrive-ui.exe") == (ui ? 1 : 0) &&
+        any_key_contains(db, L"App Paths\\shelldrive-ui.exe") == ui,
+        ui ? "the UI file and its App Paths row" : "no UI file and no App Paths row naming it (ARM32)");
+  /* The Dokany option (04 §7.1): offered where a Dokany package exists, absent in ARM32, where WebDAV is the backend. */
+  check(count_rows(db, L"SELECT `Control` FROM `Control` WHERE `Dialog_` = 'OptionsDlg' AND `Control` = 'DokanyCheckBox'") == ui &&
+        query_first(db, L"SELECT `Value` FROM `Property` WHERE `Property` = 'SD_DOKANY_STATE'", buf, 2048) &&
+        wcscmp(buf, ui ? L"1" : L"0") == 0,
+        ui ? "options page offers Dokany, on by default" : "no Dokany option, WebDAV backend by default (ARM32)");
+
   check(query_first(db, L"SELECT `Value` FROM `Registry` WHERE `Key` = 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'"
                         L" AND `Name` = 'ShellDrive'", buf, 2048),
         "HKLM Run value of the autostart feature");
   check(query_first(db, L"SELECT `Value` FROM `Registry` WHERE `Key` = 'Software\\LibreStatic\\ShellDrive'"
                         L" AND `Name` = 'Version'", buf, 2048),
         "LibreStatic Version marker for Intune detection (04 §8.3)");
-  {
+  if (!ui) {
+    check(count_files_containing(db, L"shelldrive-shellext.dll") == 0 && !any_key_contains(db, L"ContextMenuHandlers") &&
+          !any_key_contains(db, L"{C2A44993-862B-42AB-B40B-254EFB1F5C43}"),
+          "no shell extension file or registration row (ARM32)");
+  }
+  if (ui) {
     /* The shell extension rows (packaging/registration.txt, feature shellext, 03 §8.5): the same keys and values as the
        per-user registration in apps/shelldrive-shellext/shellext_register.c, all in the ShellExt feature. */
     static const struct { const wchar_t *key; const wchar_t *name; const wchar_t *value; } rows[] = {
@@ -446,7 +484,7 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
     check(ok_values, "shell extension rows: CLSIDs with the DLL and Apartment, Drive/Directory/* and This PC handlers, Approved (03 §8.5)");
     check(ok_feature, "shell extension rows are in the ShellExt feature (no registration without the DLL)");
   }
-  {
+  if (ui) {
     /* The 32-bit view of the shell extension (04 §8.3, 03 §8.5): the x86 DLL in INSTALLDIR\x86 (Win64 = no) and the
        CLSID and handler rows of the same keys with the x86 path, in components without the 64-bit attribute. The 64-bit
        rows of the same keys stay in 64-bit components. With shellext32 = 0 the package has none of this. */
@@ -513,6 +551,29 @@ static int run_tables(const wchar_t *msi, const wchar_t *version, const wchar_t 
         "no Uninstall key of ShellDrive from the registration rows (Windows Installer writes the ARP entry)");
   check(count_rows(db, L"SELECT `Condition` FROM `LaunchCondition`") == launch_count,
         "launch conditions: MajorUpgrade downgrade check plus the OS check of the flavour (04 §8.2)");
+  if (wcscmp(platform, L"Arm") == 0) {
+    /* ARM32 (04 §5.1): Windows 10 or later (RT 8.1 has no CurrentMajorVersionNumber) and a build below 26100 (Windows 11
+       24H2 runs no ARM32 app). */
+    MSIHANDLE view = 0, rec = 0;
+    int found = 0;
+    check(count_rows(db, L"SELECT `Property` FROM `AppSearch` WHERE `Property` = 'SD_OSBUILD'") == 1 &&
+          query_first(db, L"SELECT `Name` FROM `RegLocator` WHERE `Signature_` = 'SD_OSBUILD_RS'", buf, 2048) &&
+          wcscmp(buf, L"CurrentBuildNumber") == 0,
+          "ARM32: SD_OSBUILD reads CurrentBuildNumber (04 §5.1)");
+    if (MsiDatabaseOpenViewW(db, L"SELECT `Condition` FROM `LaunchCondition`", &view) == ERROR_SUCCESS) {
+      if (MsiViewExecute(view, 0) == ERROR_SUCCESS) {
+        while (!found && MsiViewFetch(view, &rec) == ERROR_SUCCESS) {
+          DWORD cch = 2048;
+          if (MsiRecordGetStringW(rec, 1, buf, &cch) == ERROR_SUCCESS)
+            found = contains_ci(buf, L"SD_OSMAJOR >= 10") && contains_ci(buf, L"SD_OSBUILD < 26100");
+          MsiCloseHandle(rec);
+          rec = 0;
+        }
+      }
+      MsiCloseHandle(view);
+    }
+    check(found, "ARM32 launch condition: Windows 10 or later and a build below 26100 (Windows 11 24H2)");
+  }
   check(count_rows(db, L"SELECT `Section` FROM `IniFile` WHERE `Section` = 'update'") >= 2,
         "settings.ini [update] lines for the public properties (04 §8.4)");
 
@@ -703,7 +764,21 @@ static int find_pe_suffix(const wchar_t *dir, const wchar_t *suffix, WORD machin
   return found;
 }
 
-static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, int shellext32)
+/* PE machine of a Template platform prefix: i386, AMD64, ARM64, ARMNT (Thumb-2); 0 for an unknown prefix. */
+static WORD platform_machine(const wchar_t *platform)
+{
+  if (wcscmp(platform, L"Intel") == 0)
+    return 0x014c;
+  if (wcscmp(platform, L"x64") == 0)
+    return 0x8664;
+  if (wcscmp(platform, L"Arm64") == 0)
+    return 0xAA64;
+  if (wcscmp(platform, L"Arm") == 0)
+    return 0x01C4;
+  return 0;
+}
+
+static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, const wchar_t *platform, int shellext32, int ui)
 {
   wchar_t msi[MAX_PATH], work[MAX_PATH], target[MAX_PATH], copy[MAX_PATH], cmd[2048];
   STARTUPINFOW si;
@@ -711,6 +786,8 @@ static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, int shellext
   DWORD code = 1;
   const wchar_t *files[] = { L"shelldrive.exe", L"shelldrive-host.exe", L"shelldrive-ui.exe",
                              L"shelldrive-shellext.dll" };
+  const unsigned nfiles = ui ? 4 : 2; /* ARM32: the CLI and the host only (04 §5.1) */
+  WORD machine = platform_machine(platform);
   unsigned i;
   int ok = 1;
 
@@ -748,19 +825,24 @@ static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, int shellext
   check(code == 0, "admin install: msiexec exits 0");
 
   for (i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
-    if (!find_file(target, files[i])) {
-      printf("     %ls not copied\n", files[i]);
+    if (find_file(target, files[i]) != (i < nfiles)) {
+      printf("     %ls %s\n", files[i], i < nfiles ? "not copied" : "present in a package without it");
       ok = 0;
     }
   }
   check(ok, "admin install: the binaries of the flavour are laid out");
+  {
+    int native = machine != 0 && find_pe_suffix(target, L"\\LibreStatic\\ShellDrive\\shelldrive.exe", machine);
+    check(native, "admin install: shelldrive.exe is built for the package platform");
+    ok = ok && native;
+  }
   if (shellext32) {
     /* msiexec /a lays the folders out below TARGETDIR without their root, so Program Files and Program Files (x86)
-       both become LibreStatic\ShellDrive here and the 32-bit copy is not visible. The x64 copy is checked by its PE
+       both become LibreStatic\ShellDrive here and the 32-bit copy is not visible. The native copy is checked by its PE
        machine type; the 32-bit copy is checked by its File, Component and Directory rows in the tables check. */
-    int x64 = find_pe_suffix(target, L"\\LibreStatic\\ShellDrive\\shelldrive-shellext.dll", 0x8664);
-    check(x64, "admin install: the x64 shell extension is laid out (04 §8.3)");
-    ok = ok && x64;
+    int native = find_pe_suffix(target, L"\\LibreStatic\\ShellDrive\\shelldrive-shellext.dll", machine);
+    check(native, "admin install: the native shell extension is laid out (04 §8.3)");
+    ok = ok && native;
   }
   return ok && code == 0;
 }
@@ -768,13 +850,14 @@ static int run_admin(const wchar_t *msi_in, const wchar_t *work_in, int shellext
 int wmain(int argc, wchar_t **argv)
 {
   int ok;
-  if (argc == 9 && wcscmp(argv[1], L"tables") == 0) {
-    ok = run_tables(argv[2], argv[3], argv[4], argv[5], _wtoi(argv[6]), _wtoi(argv[7]), _wtoi(argv[8]));
-  } else if ((argc == 4 || argc == 5) && wcscmp(argv[1], L"admin") == 0) {
-    ok = run_admin(argv[2], argv[3], argc == 5 && _wtoi(argv[4]) == 1);
+  if (argc == 10 && wcscmp(argv[1], L"tables") == 0) {
+    ok = run_tables(argv[2], argv[3], argv[4], argv[5], _wtoi(argv[6]), _wtoi(argv[7]), _wtoi(argv[8]),
+                    _wtoi(argv[9]) == 1);
+  } else if (argc == 7 && wcscmp(argv[1], L"admin") == 0) {
+    ok = run_admin(argv[2], argv[3], argv[4], _wtoi(argv[5]) == 1, _wtoi(argv[6]) == 1);
   } else {
-    fprintf(stderr, "usage: sd-test-msi tables <msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32>\n"
-                    "       sd-test-msi admin <msi> <work-dir> [shellext32]\n");
+    fprintf(stderr, "usage: sd-test-msi tables <msi> <version> <upgrade-code> <platform> <installer-version> <launch-count> <shellext32> <ui>\n"
+                    "       sd-test-msi admin <msi> <work-dir> <platform> <shellext32> <ui>\n");
     return 2;
   }
   printf("%s\n", ok ? "PASS" : "FAILED");
