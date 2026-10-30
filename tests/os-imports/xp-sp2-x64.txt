@@ -556,3 +556,9 @@ user32.dll!EnableMenuItem
 version.dll!GetFileVersionInfoSizeW
 version.dll!GetFileVersionInfoW
 version.dll!VerQueryValueW
+
+# Round 20 (profile editor page scroll, apps/shelldrive-ui/ui_editor.c): documented from Windows 2000,
+# so present on XP SP2/SP3. Pending the clean-VM capture (04 section 11.4).
+user32.dll!GetWindow
+user32.dll!ScrollWindowEx
+user32.dll!SetScrollInfo
