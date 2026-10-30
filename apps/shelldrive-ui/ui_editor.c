@@ -30,6 +30,7 @@
 #include "ui_int.h"
 #include "ui_measure.h"
 #include "ui_profile_model.h"
+#include "ui_win.h"
 
 #define ED_WIDTH      300                 /* dialog units; every page of the sheet has this width */
 #define ED_PAGES      5
@@ -823,7 +824,8 @@ int ui_editor_run(HWND owner, ui_edit_mode mode, sd_profile *p)
   }
   memset(&hdr, 0, sizeof(hdr));
   hdr.dwSize = sizeof(hdr);
-  hdr.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP;
+  hdr.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+  hdr.pfnCallback = ui_win_sheet_callback;
   hdr.hwndParent = owner;
   hdr.hInstance = g_app.inst;
   hdr.pszCaption = sd_l10n_get(mode == UI_EDIT_NEW ? SD_MSG_UI_EDITOR_CAPTION_NEW

@@ -1621,6 +1621,36 @@ msgid "Help"
 msgstr "Aiuto"
 
 
+#. Property sheets (wizard, profile editor): the OK button.
+#. sdl10n:maxlen=32
+msgctxt "ui.sheet.ok"
+msgid "OK"
+msgstr "OK"
+
+#. Property sheets (wizard, profile editor): the Cancel button.
+#. sdl10n:maxlen=32
+msgctxt "ui.sheet.cancel"
+msgid "Cancel"
+msgstr "Annulla"
+
+#. First-run wizard: the Back button. Mnemonic B.
+#. sdl10n:maxlen=32
+msgctxt "ui.sheet.back"
+msgid "< &Back"
+msgstr "< &Indietro"
+
+#. First-run wizard: the Next button. Mnemonic N.
+#. sdl10n:maxlen=32
+msgctxt "ui.sheet.next"
+msgid "&Next >"
+msgstr "&Avanti >"
+
+#. First-run wizard: the Finish button on the last page.
+#. sdl10n:maxlen=32
+msgctxt "ui.sheet.finish"
+msgid "Finish"
+msgstr "Fine"
+
 #. First-run wizard: the title of the sheet.
 msgctxt "ui.wizard.caption"
 msgid "Set up ShellDrive"
