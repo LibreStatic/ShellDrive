@@ -777,7 +777,7 @@ another milestone. Evidence paths are relative to the repository root.
 | Setup stub from the `x86-ia32` preset, CAB payloads | **Done** | `apps/shelldrive-setup/` (`shelldrive-setup-stub`, `shelldrive-setup`), `cmake/SdPayload.cmake` (FDI CAB via `cabinet.dll`, fixed member times), `tests/setup` (`sd-test-engine`, 54 tests), import and ISA audits |
 | Per-user, per-machine and portable | **Done in code; lab pending** | `setup_install.c`, `setup_elevate.c` (two stages, pipe relay, per-machine uninstall), `tests/setup/test_elevate.c`. Lab: UAC/Run As, msiexec, 3010 (04 §11.4) |
 | Six flavours and stub selection by CPU and OS (D4, D28) | **Partial** | Presets for all six (`CMakePresets.json`); `sd_setup_select_flavour` covers x86 SSE2, x64 by OS version and the ARM paths. Stub and payload targets exist only in the `x86-ia32`, `arm64` and `arm32` presets: **no preset builds an x64 stub or payload**, and the universal EXE that carries `PAYLOAD_X86_SSE2`, `PAYLOAD_X64_XP` and `PAYLOAD_X64_MODERN` is release-pipeline work (`tools/sd-payload` attaches one flavour per run). The `x86-ia32` EXE built here therefore selects `x86-sse2` on an SSE2 host and reports `payload_missing` until the pipeline assembles the universal EXE. ARM stubs are cross-built and cannot run here (04 §11.4) |
-| WiX MSIs per flavour, incl. ARM32 (D31 best effort per D5) | **Partial / Missing (ARM)** | x86 pair and x64 pair build; `msi.<flavour>.tables`, `.admin` (admin image only) and `.wixui` pass. `packaging/msi/CMakeLists.txt` refuses `SD_ARM64` and has no ARM32 row. `decisions.md` D31 requires the ARM32 MSI (the review table's "(a) no" is superseded). Both need a cross-tree `msi` target with host-built generator tools |
+| WiX MSIs per flavour, incl. ARM32 (D31 best effort per D5) | **Done (build and `msiexec /a` checks); install lab pending** | All six flavours build. x86 pair and x64 pair as before; ARM64 and ARM32 added later in this change (section "ARM64 and ARM32 MSIs" below). `msi.<flavour>.tables`, `.admin` (admin image only) and `.wixui` pass on `x86-ia32`, `x64-modern`, `arm64` and `arm32` |
 | Language transforms (C43) | **Partial** | `sd-msigen` LCID table (es under 3082/11274/1034/2058/21514/…, pt-BR under 1046/2070), `sd-msiembed`, checked by `msi.<flavour>.tables`. **The setup EXE never passes `TRANSFORMS` explicitly** (the string appears only in `sd-msiembed`), so a `/lang=` choice that differs from the OS language gets the OS transform on a per-machine install |
 | Dokany chaining (C31, D32) | **Partial** | `setup_dokany.c`: decision, PE import reader, command lines and run gate, 5 tests. Nothing calls `sd_setup_dokany_run`; no `DOKANY_<ARCH>` payload member, no `installer/dokany/dokany.lock`, no post-install `--selftest` probe. C31 fixes the form: official per-arch MSIs |
 | `webdav-tune` and the other installer hooks | **Partial → webdav-tune closed here** | `signal-shutdown`, `user-cleanup` and `programdata-secure` implemented; `modern-menu` is a deliberate no-op until the sparse package exists (D27); `webdav-tune` was a silent no-op and is implemented in this change (below) |
@@ -847,3 +847,55 @@ started it. When sshd on port 2222 was started from another checkout, `start.ps1
 worktree has no `state/env`, so `interop.ssh`, `interop.zlib` and `interop.sftp_ssh` exit 77 and `ci-local` fails on
 the skip. Run the gate with `SD_SSH_WSL_FIXTURE_DIR` set to the `tests/fixtures/wsl-sshd` folder of the checkout that
 owns the running fixture.
+
+## ARM64 and ARM32 MSIs (D31, built in M4)
+
+Decision (maintainer, 2026-10-30): the ARM MSIs are built in M4, not deferred to M6 with the ARM64 test job.
+
+**How an ARM tree builds its MSI.** The MSI tools must run on the x64 build host, and an ARM tree's own executables
+cannot. The ARM presets already build their build-time tools (`sdl10n`, `sd-importcheck`, ...) in a nested x64
+configure (`cmake/SdHostTools.cmake`, 04 §2.5). With `-DSD_BUILD_MSI=ON` that nested build also gets
+`SD_HOST_TOOLS_MSI=ON` and builds `sd-msigen`, `sd-msiembed` and `sd-test-msi`; the ARM tree uses them as imported
+executables, and its `msi` target depends on `sd_host_tools`. WiX (candle, light, torch) is an x86 .NET program, so
+nothing else changes. The package is built from the ARM tree's own binaries: no second build directory is involved.
+
+| | `arm64` | `arm32` |
+|---|---|---|
+| candle `-arch`, Template | `arm64`, `Arm64;1033,...` | `arm`, `Arm;1033,...` |
+| Program Files folder, `Win64` | `ProgramFiles64Folder`, yes | `ProgramFilesFolder`, no |
+| `InstallerVersion` | 500 | 500 |
+| UpgradeCode (04 §8.2) | `{1438051B-3E86-459D-8199-E8D786F5A32B}` | `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}` |
+| Contents | as x64: CLI, host, UI, shell extension, Start menu, plus the x86-sse2 shell extension in the 32-bit view (x86 apps under WOW64) | `Core` (CLI and host) and `Autostart` only (04 §5.1) |
+| Options page | Dokany and linked connections | linked connections only; `SD_DOKANY_STATE` = 0 (no ARM32 Dokany, 04 §7.1) |
+| Launch condition | none beyond the downgrade check | `SD_OSMAJOR >= 10 AND SD_OSBUILD < 26100` |
+
+ARM32 details:
+
+- `ShellDrive.wxs` has two new defines, `SD_UI` and `SD_DOKANY` (both 0 for ARM32). They leave out `C_Core_Ui`,
+  `C_ShellExt`, `C_StartMenu`, the `ShellExt` and `StartMenu` features and the Dokany checkbox.
+- `sd-msigen registry --ui no` drops the shellext rows and the `App Paths\shelldrive-ui.exe` row: their components share
+  one fragment with the core rows, so leaving them in would link components that no feature references.
+- The launch condition: Windows RT 8.1 has no `CurrentMajorVersionNumber`, so `SD_OSMAJOR >= 10` refuses it; build 26100
+  (Windows 11 24H2) and later run no ARM32 app. `SD_OSBUILD` is `CurrentBuildNumber` (REG_SZ). The message is the new
+  installer string `msi.os.arm32` (WiX id `OsArm32`), in all six catalogs. **[lab-verify]** the 32-bit registry view
+  of an ARM32 package on ARM64 has `CurrentBuildNumber`, and Windows Installer compares it as a number.
+
+**Checks** (`sd-test-msi`, from the nested x64 build). The ARM ctest presets now select `^msi[.]`. Without the MSI
+nothing matches and ctest still exits 0. `tools/ci-local.ps1` configures `arm64` and `arm32` with `SD_BUILD_MSI` when
+WiX 3.14 is installed and runs those checks in Release. The Debug configuration and the GitHub `ci.yml` stay build-only.
+
+- `tables` takes a new `<ui>` argument. With 0 it checks: no UI, shell extension or Start menu component, feature, file
+  or row; no `App Paths` row; no Dokany control; `SD_DOKANY_STATE` = 0; the ARM32 launch condition and its
+  `SD_OSBUILD` search.
+- `admin` now takes `<platform> <shellext32> <ui>`. It checks the files of the flavour (two for ARM32, and that the
+  UI and the DLL are absent), and that `shelldrive.exe` in the admin image is a PE of the package's machine: i386,
+  AMD64, ARM64 or ARMNT. `msiexec /a` of the ARM packages works on this x64 host.
+
+Open (lab or later):
+
+- The 04 §5.1 [lab-verify] items: Windows Installer on ARM64 accepts the `Arm` template; the folder ARM32 packages
+  resolve to.
+- The ARM64 package carries no x64 shell extension for x64 apps under emulation (04 §11.4 row "11 ARM64").
+- The setup EXE's own ARM32 24H2/RT refusal (04 §5.1) is not implemented.
+- GitHub CI does not build any MSI (`ci.yml` passes no `SD_BUILD_MSI`); the release pipeline's `package` job is still
+  a stub.
