@@ -160,6 +160,21 @@ Why these four and not one:
   session 0, which is the first console user's session, but we **design as if session 0 isolation exists on XP
   too**: no `SERVICE_INTERACTIVE_PROCESS`, no windows, no message boxes. One code path, no XP-only UI.
 
+**M5 decisions (part 1, implemented; details in `docs/dev/m5-notes.md`).**
+
+- One core, `svc_run`, runs under the SCM (`shelldrive-host.exe service`) and in the console
+  (`service-debug`, Ctrl+C stops it). The SCM handler accepts stop, shutdown and pre-shutdown, logs power and session
+  changes without acting on them, and reports `SERVICE_RUNNING` once the control pipe listens.
+- The service logs to `<machine root>\logs\service.log`. Its console and SCM text is localized in the `svc` domain
+  (03 §9.1); its log lines and codes stay English.
+- Global mounts are Dokany only in this part. Startup creates the machine folders with the DACLs of 3.2 when they
+  are missing and refuses the whole tree (idle service) when a folder is a reparse point or has a foreign owner, and
+  logs Event 3102 for the first one refused. Existing folders are not re-ACLed yet (left, 3.2); `service repair-data`
+  does the repair.
+- A `scope = service` profile is loaded only when it validates: a user is named, `auth.agent` is not `pageant` or
+  `openssh` (D17), `kbdint` is not offered, no jump hosts or proxies (not in this part), no WebDAV backend (D11), and
+  every `service_access` entry resolves. Other machine profiles load without a warning.
+
 ### 1.4 The UI (`shelldrive-ui.exe`)
 
 - One instance per (user, session): mutex `Local\com.librestatic.shelldrive.ui.<SID>` (explicit DACL as in 2.2, TM-R26); a second
@@ -183,7 +198,13 @@ Why these four and not one:
   default (open main window), `--prompt-host` (started by the agent when a prompt needs a UI and none is
   connected; shows only the prompt then stays as a tray if the user's setting says so), `--action <verb> <target>`
   (used by the shell extension: unmount, reconnect, mount, show), `--elevated-admin` (re-launched with `runas` to
-  answer service prompts or edit machine profiles; exits when done).
+  answer service prompts or edit machine profiles; exits when done), `--elevated-service` (re-launched with
+  `runas` by the Service page's **Repair data...** button; shows only the Service page, no tray, no agent, exits when the
+  page is closed).
+- **A prompt host never starts an agent (M3, 2.5 step 3).** `--prompt-host` connects to the agent of its session
+  without starting one. It exits when the agent cannot be reached (after the connect timeout) and when its connection
+  to the agent ends, because the agent that launched it is then gone. Without this rule a stray prompt host would start
+  the default-instance agent of the user.
 - Always connects to its session's agent (starting it if needed) and, if the service is installed, to the service
   pipe for read-only status of global mounts.
 - Not running is a supported state: everything still works from the CLI.
@@ -375,9 +396,18 @@ resolve profile + overrides + policy → secrets (4) → known_hosts store list 
 | Agent ready event | agent | `Local\com.librestatic.shelldrive.agent.ready.<UserSidString>` |
 | Agent shutdown event (manual reset, 1.2) | agent | `Global\com.librestatic.shelldrive.agent.shutdown.<UserSidString>.<SessionId>` |
 | State snapshot (read-only shared memory) | agent | `Local\com.librestatic.shelldrive.state.<UserSidString>` |
+| UI instance mutex | UI | `Local\com.librestatic.shelldrive.ui.<UserSidString>` (held while a UI runs; the agent starts a UI only when it is free) |
 | UI forwarding | UI | `WM_COPYDATA` to window class `com.librestatic.shelldrive.ui.<UserSidString>` (same session only) |
 
 `<UserSidString>` from `ConvertSidToStringSidW` (XP+), session ID from `ProcessIdToSessionId` (XP+).
+
+**Object scope rule (M3).** D45 fixes the name prefix `com.librestatic.shelldrive.` but not the namespace. Objects
+that exist once per logon session use `Local\`: the agent mutex, the agent ready event, the UI mutex and the state
+section. A second logon session of the same user therefore has its own instances. Objects that are machine-wide use
+`Global\`; the agent shutdown event is the only one, and it carries the session id in its name so that the installer
+and the service can signal one session's agent. `sd_ipc_object_name` produces these names; the state section is
+created and opened with `sd_ipc_state_create` and `sd_ipc_state_open` (file mapping, 8.2.1).
+
 
 ### 2.2 Security
 
@@ -409,8 +439,11 @@ Server side:
   interactive user, so it is rationed:
   - At most **4 concurrent instances per client user SID** (checked at `hello`; the 5th is closed with
     `too_many_connections`), and **2 of the 32 instances are reserved** for elevated administrators: once 30
-    instances are in use, a new client that is not an elevated admin is closed at `hello`. The listener always keeps
-    one pending instance so that an admin can reach `hello`.
+    instances are in use, a new client that is not an elevated admin is refused as it connects (reply
+    `too_many_connections`, then closed; the class is read from the client token at connect, not at `hello`). The
+    listener always keeps one pending instance so that an admin can reach `hello`.
+  - A non-admin instance that does not send `hello` within **5 s** of connecting is closed (the hello deadline; 03 does not
+    give a value, 5 s is this build's choice). Admin instances keep the 60 s idle timeout.
   - Clients that are not elevated admins: request cap **64 KiB** (instead of 1 MiB), at most 10 requests per second
     per connection (excess requests get `rate_limited`), idle timeout **60 s** for non-subscribed connections, and
     at most one subscription per connection. A connection that sends malformed JSON is closed.
@@ -474,39 +507,83 @@ Error `code` strings are stable English identifiers; `detail` is English (for lo
 
 ### 2.4 Methods and events (proto 1)
 
-| Method | Agent | Service | Notes |
-|---|---|---|---|
-| `hello` | x | x | version negotiation |
-| `subscribe` `{topics:[...]}` | x | x | topics: `mount`, `prompt`, `log`, `warning`, `config`, `hostkeys`, `update`, `attention` (service only); on the service, `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
-| `mount` `{profile_id \| adhoc:{...}, overrides, prompt_mode}` | x | x (admin) | returns `mount_id` immediately; completion via `mount.state` event or `wait:true` |
-| `unmount` `{mount_id \| target, force}` | x | x (admin) | |
-| `list` | x | x | mounts with state, backend, target, negotiated algorithm summary, warnings; service: filtered for non-admins (2.2, TM-R25) |
-| `status` `{mount_id, stats}` | x | x (admin, elevated, for details) | detailed: reconnect count, cache stats, last error, pool size and `pool_limited` reason, proxy legs in use; `stats:true` adds `sd_vfs_stats` and `sd_sftp_session_stats` (RTT, throughput) |
-| `refresh` `{mount_id \| target, path}` | x | x (admin) | drops metadata TTLs for a subtree (02 §4.1) |
-| `profile.test` `{profile_id \| adhoc:{...}}` | x | x (admin) | connect + auth + `realpath` without mounting ("Test connection", 7.5); prompts route as for `mount` |
-| `mount.attach_info` `{mount_id}` | x | x (read-only) | agent: elevated-view support (1.7.2). Service: global WebDAV drives in `attach` mode (1.3); returned only when the caller's SID is in the profile's `service_access`. WebDAV only; returns the UNC with the path token, never a credential |
-| `hostkey.announced.accept` `{announce_id, add[], remove[]}` | x | x (admin, elevated) | applies an UpdateHostKeys announcement (5.6) |
-| `update.check` `{manifest?}` / `update.apply` `{version}` | x | — | update flow owned by the agent (04 §9); `manifest` is the developer override of `update check --manifest` |
-| `selftest` | x | x | same checks as `shelldrive-host.exe --selftest`, as JSON |
-| `prompt.answer` `{prompt_id, action, responses[], save}` | x | x (admin, elevated) | first answer wins |
-| `cache.clear` `{profile_id \| all}` | x | x (admin) | |
-| `config.reload` | x | x (admin) | normally automatic |
-| `secret.set` / `secret.delete` `{target, kind, value}` | — | x (admin) | service secrets are write-only over IPC (4.5) |
-| `hostkey.trust` `{host, port, key}` | — | x (admin) | machine known_hosts edits by the service |
-| `log.tail` `{lines, follow}` | x | x (admin) | follow streams `log` events |
-| `diag.collect` | x | x (admin) | returns a JSON report (10.5) |
-| `agent.shutdown` `{unmount:true}` | x | — | |
+Every request is `{"type":"req","id":n,"method":...,"params":{...}}`. Unknown request fields are ignored; unknown reply
+fields and events are ignored by clients (2.3). Errors are `{"code","detail","exit_code"}` with the codes of 6.2 and the
+IPC-only codes of the table below. `busy` (`SD_E_BUSY`) is exit 8 (6.2) and carries the IPC codes `too_many_connections`
+and `rate_limited`; exit 10 is `conflict`, never busy. Unknown methods answer `usage` (exit 2). Methods marked **M4/M5** are not
+implemented in M3 and are not listed in `hello` `features` (2.8).
 
-Events: `mount.state {mount_id, state: connecting|authenticating|mounted|offline|auth_required|failed|unmounting|unmounted, error?}`,
-`prompt.request`, `prompt.closed {prompt_id, reason: answered|cancelled|timeout}`,
-`warning {code:"legacy_algorithms"|"terrapin_exposed"|"elevated_view_missing"|"write_failed"|"pool_limited"|"proxy_cleartext"|"hostkey_source_insecure"|"agent_untrusted"|"disk_cache_refused"|"named_object_squatted"|"dokany_denied"|..., mount_id, data}`,
-`hostkeys.announced {announce_id, mount_id, host, port, add:[{type, fp}], remove:[{type, fp}]}` (5.6),
-`update.available {version, notes_url}`, `update.stale {days}` (TM-R36, 7.7), `config.changed`, `log {line}`,
-`attention {count}` (service only: number of global mounts waiting for an administrator, no other content; 2.6).
-`hello` replies carry `server_pid` (used by the agent watch, 1.4).
+| Method | Agent | Service | Access and notes |
+|---|---|---|---|
+| `hello` | x | x | version negotiation; the reply carries `features` (2.8) |
+| `subscribe {topics}` | x | x | topic names must match `[a-z0-9._-]`, at most 23 bytes; invalid names are dropped from the reply, valid unknown names are kept. `prompt` needs cap `prompts.ui` to receive `prompt.request` (2.5). On the service `prompt`, `log` and `hostkeys` need an elevated admin (2.2, TM-R25) |
+| `mount {profile \| adhoc:{...}, target?, backend?, prompt_mode?}` | x | x (admin, M5) | returns `mount_id` at once; completion through `mount.state`. `wait` is not implemented |
+| `unmount {mount_id \| target \| profile \| all, force?}` | x | x (admin, M5) | `force` (M3, first unmount of the mount): the write-behind drain gets no budget, data still queued is reported as `write_failed` (02 §4.4). Test mounts (`profile.test`) are never unmounted |
+| `list` | x | x | `mounts` (write_mount_json) and `warnings`: the recent warning codes of this agent, oldest first, at most 32, `{code, mount_id?}`. Each mount also has `scope` (`user`, `machine_template` for scope = users, `global` for scope = service), `legacy` (bool: an outdated algorithm is negotiated now), `legacy_algorithms` (`[{category: kex\|hostkey\|cipher\|mac, name}]`, current connection, one entry per name), and `terrapin_exposed` (bool, current connection). The warnings of a mount leave the ring when the mount is gone. Service: filtered for non-admins (2.2) |
+| `status {mount_id \| target, stats?}` | x | x (admin, M5) | the list object of the mount, `last_error {code, detail}` when failed or offline, and `proxy_legs` (`[{hop, kind, host, port}]`, no credentials). `stats: true` (M3) adds `stats`: `session` (srtt, rttvar, rx/tx rates and totals, inflight, queued, channels, generation, reconnect attempts), `pool` (`ready`, `wanted`, `members[]` with one entry per SFTP connection), `cache` (hits, misses, bytes, write_failed, `write_behind_bytes`, reconnects). Pool limits are still M4 |
+| `refresh {mount_id \| target, path}` | x | x (admin, M5) | M3 (agent): drops the attribute and listing caches under `path` (`""` or `"/"` = the whole mount). `not_mounted` (exit 3) before MOUNTED |
+| `profile.test {profile_id \| adhoc}` | x | x (admin, M5) | M3 (agent): connect, authenticate and realpath of `remote_path`, no drive, no vfs. The prompts go through the normal broker. The reply is deferred until the test ends (`sd_ipc_defer`). Result: `{profile, host, port, user, remote_path, hostkey_fingerprint, server_version, algorithms{kex, hostkey, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c}, legacy, hops}` |
+| `mount.attach_info {mount_id \| target}` | x | x (M5) | M3 (agent): `backend`, `state`, `mounted` and, for WebDAV, `webdav {host, port, unc_root, xp_url}` with the loopback port and the share root only (`\\localhost@<port>\DavWWWRoot`). The export token (`s-<token>`) is never returned; never a credential |
+| `cache.clear {profile_id \| mount_id \| target \| all, force?}` | x | x (admin, M5) | M3 (agent): drops the memory blocks and the disk-tier files of the matching mounts. While write-behind data is queued on one of them the whole request is refused with `write_behind_pending` (busy, exit 8) unless `force`; queued data is never dropped by a clear |
+| `config.reload {scope?}` | x (user) | x (admin, M5) | reloads `settings.ini` and counts the profiles. Reply `{profiles:{loaded, errors:[]}, settings: "reloaded"\|"unchanged", restart_required:[]}`. `scope: "machine"` on the agent is `unsupported`. `restart_required` is empty in M3 |
+| `prompt.answer {prompt_id, action, responses?, save?, save_comment?}` | x | x (admin, elevated, M5) | `action` accept, once, answer, reject or cancel. The first accepted answer wins; a second answer, or one for a prompt that is not open, is `not_found` (2.5) |
+| `prompt.list` | x | x (admin, M5) | `{prompts:[{prompt_id, mount_id, profile_id, kind, queued, deadline_ms}]}`, `deadline_ms` is the time left |
+| `log.tail {lines?, cursor?, level?, component?, follow?}` | x | x (admin, M5) | the ring of 4096 records (2.4.1). `follow: true` is `unsupported` in M3 (the `log` topic is M4) |
+| `selftest` | x | x | `{healthy, checks:[{name, result: pass\|fail\|skip, code?, detail}]}`; the CLI maps `healthy: false` to exit 17 |
+| `diag.collect` | x | x (admin, M5) | M4 (10.5) |
+| `events.recent {limit?}` | x | — | Open to every client, like `list`. Reply `{events: [{seq, time, event, mount_id?, state?, code?}], last_seq}`: the newest records of the agent's event history, oldest first, at most 200 (`limit` 1 to 200, default 200; a ring, the oldest dropped first). Recorded: every `mount.state` (with `state`, and `code` of a failed state), every `warning` (`code`), every `hostkeys.announced` (`mount_id`), and a failed mount create (`state: failed`). `seq` counts from 1 in this agent process and is never reused; `time` is unix seconds. A UI that starts later fills its event list from this, then follows the events. Prompts are not recorded. Feature `events.recent` |
+| `agent.shutdown {unmount?}` | x | — | stops the agent; every mount is unmounted (1.2) |
+| `hostkey.announced.list` | x | x (admin, M5) | `{announcements:[{id, mount_id, host, lookup_name, hop, add, remove}]}` |
+| `hostkey.announced.accept {id, add_only}` | x | x (admin, elevated, M5) | applies an announcement (5.6). The argument shape is `{id, add_only}` (`add_only: true` skips the removals) |
+| `hostkey.announced.reject {id}` | x | x (admin, elevated, M5 follow-up) | drops a kept announcement (an offer of `hostkey add` or an UpdateHostKeys review) without changing any store. Reply `{host, rejected: true}`. `announcement_not_found` (exit 3) for an unknown or already answered id. The CLI sends it when the user answers no to a `hostkey add` offer (6.1, docs/dev/m5-notes.md part 10), so a refused offer leaves `hostkey list --announced` at once. The UI sends it when the user answers "Don't add" in the review of **Add key from server...** and from the **Dismiss offer** button of the Announced keys tab |
+| `hostkey.add {host, port, lookup, type?, expect?, profile?}` | x | x (admin, elevated, M5) | per-user `hostkey add --from-server` (6.1, part 6 of docs/dev/m5-notes.md): connects offering only the stored key types, collects the other keys inside that connection, and either stores the `expect` key or keeps them as an announcement (`id`) for `hostkey.announced.accept {id, add_only: true}`. Service (part 9 of docs/dev/m5-notes.md, `hostkey add --machine`): the machine profile whose host and port match (or the one named by `profile`) connects with its service credentials only (every prompt except the host-key question is refused), the keys are read from and the `expect` key is written to the machine store (5.6, owner and DACL checked first); the deferred reply is the same shape. `profile_not_found` (exit 3) when no service profile uses the host and port. Reply `{host, lookup_name, verified, keys[{type, fingerprint}], id?, added?, removed?}`. `host_key_mismatch` (exit 6) for a stored key that does not match, `host_key_rejected` (exit 5) for an `expect` that matches nothing on first contact; `not_implemented` only when the backend has no hostkey connection (the real connect: docs/dev/m5-notes.md part 8) |
+| `update.check`, `update.apply` | x | — | M4 (the updater engine, 04 §9). Settings shows the update group disabled while `update.check` is missing from `features` |
+| `service.status` | — | x | the facts of `shelldrive service status --json` as the service sees them (`svc_status.c`, one writer for both): `installed`, `state` (`running`, `stopped`, `starting`, `stopping`, `paused`, `unknown`), `start_type`, `program {path, check: ok\|unquoted\|other\|unknown}`, `event_source {state: registered\|missing\|other\|unknown, message_file}`, `pipe {reachable: true, healthy, global_drives, prompts}`, and `machine {state: ok\|refused, reason?: owner\|reparse_point\|not_directory\|acl\|not_file, path?, profiles}` (the machine data folder as found at start, 3.2; `path`, the first refused folder, only for an elevated administrator). Open to every client; no secrets |
+| `service.repair_data` | — | x (admin, elevated) | runs `svc_repair_data` (the code of `shelldrive service repair-data`, 3.2, TM-R34) on `%ProgramData%`, then checks the layout again as the start does and, when it is trusted, leaves the idle state and loads the machine profiles. Reply `{moved, moved_to, folders, healthy}` (the CLI's `--json` members plus `healthy`). Errors: `access_denied`, `busy` (a global drive exists: the repair can move the folder that holds its secrets), `repair_refused` (a link or junction at the base; nothing changed), `io_error`. The service closes its log around the move |
+| `secret.set`, `secret.delete` | — | x (admin, elevated) | M5 (4.5): in M3 machine passwords are CLI-only. `kind: "proxy"` with `proxy: "http://user@host:port"` or `"socks5://user@host:port"` (no password in the spec) and `value` stores or removes the service proxy secret of that leg (`shelldrive secret set --machine --proxy`); the reply never holds the secret |
+
+Not on the pipe, by design: profile create/edit/delete, settings and overrides (direct `sd_config` writes under
+`sd_config_lock`, 3.6), host-key store list, import and remove (direct `sd_known_hosts`, 5.0), and `hostkey.trust`
+(dropped: machine store writes are direct and elevated).
+
+Events (`{"type":"evt","event":<name>,"data":{...}}`, after `subscribe`; the topic is in brackets):
+
+| Event | Topic | Data | When |
+|---|---|---|---|
+| `mount.state` | [mount] | `mount_id, state, target, error?{code, detail, exit_code, host?, lookup_name?, stored_type?, stored_fp?, offered_type?, offered_fp?, store_path?, store_line?, store_kind?, stored_types?, offered_types?}, reason?, connection{...}` | every mount state change and connection sub-state change (connecting, mounted, offline, reconnect attempts) |
+
+`reason` (round 19, additive) is the error code that took the mount offline, a string. The agent sends it with `connecting`,
+`authenticating` and `mounted` while the connection comes back from that offline period, so the UI can say why the drive
+reconnected; the `mounted` event that ends the period carries it too. A failed, unmounting or unmounted mount forgets it. The
+offline event itself keeps its `error` object. Absent when the mount has no offline period behind it.
+
+Host key error members (5.2, 5.4). `host`, `lookup_name` (the name the key was looked up under: `host`, `[host]:port` or the alias) and
+`offered_type`/`offered_fp` are sent for `host_key_mismatch` and `host_key_type_unavailable`. A mismatch adds `stored_type`,
+`stored_fp`, `store_path` (the file of the old key; `""` for the PuTTY registry), `store_line` (0 when not applicable) and
+`store_kind` (`machine`, `user`, `openssh` or `putty`: the store of the old key). A type-unavailable failure adds
+`stored_types` (array of the stored key types of the name) and `offered_types` (array of the server's host key algorithms);
+`stored_type` repeats the stored types as one comma-joined string for clients that show one value. No fingerprint of a stored
+key is sent for type-unavailable (the known_hosts type list has none).
+| `prompt.request` | [prompt] | `prompt_id, mount_id, profile_id, profile_name, kind, host, port, user, hop, hops, via_host?, is_reconnect, hostkey_just_accepted, can_save, queued, deadline_ms`, and the kind-specific objects of 2.5 | a prompt is routed (2.5); again, with `queued: true`, when a UI subscribes and drains the queue |
+| `prompt.closed` | [prompt] (and the initiator) | `prompt_id, mount_id, reason: answered\|cancelled\|timeout\|superseded, answered_by?: cli\|ui` | the prompt leaves the open or queued state (2.5); once per recipient |
+| `warning` | [warning], and [mount] (proto 1) | `code, mount_id?, data` (codes of 2.4 and 7.6) | a warning is raised. The copy on [mount] stays through proto 1 (2.8) |
+| `hostkeys.announced` | [hostkeys], and [mount] (proto 1) | as 5.6 | an UpdateHostKeys announcement is ready for review |
+| `attention` | [attention] (service) | `{count}` | 2.6 rule 3 |
+| `config.changed` | — (every client that completed hello) | `{what: "settings" \| "profiles", ids?}` | M3: the profiles folder or `settings.ini` changed. One event per debounced batch (500 ms of quiet). `ids` (profiles only) are the profile ids of the changed files that still exist. Nothing is reloaded in flight: clients call `config.reload` |
+| `agent.stopping` | — (every client that completed hello) | `{reason: "request" \| "event" \| "idle"}` | M3: the shutdown sequence starts |
+| `log`, `update.*` | — | — | M4 (`follow`, the updater) |
 
 `write_failed` (C45) is raised when data acknowledged to an application under write-behind could not be written
 (02 §4.4); it is always delivered, cannot be disabled and is mirrored in the event list (7.7).
+
+#### 2.4.1 Log ring and `log.tail` cursor
+
+The agent keeps the last 4096 log records in memory (about 4.5 MiB at most), fed from an `sd_log` sink, so each record is
+already formatted and redacted (10.1). A record is `{seq, time, level, component, mount_id?, text}`; `text` is at most 1 KiB.
+The cursor is `"<pid hex>.<boot tick hex>.<seq dec>"`. Without a cursor `log.tail` returns the last `lines` matching records.
+With a cursor it returns the records after `seq`, and `reset: true` with `dropped` = the number of records lost when the cursor is
+older than the ring, or when it names another agent process (a foreign or malformed cursor starts at the oldest record). The reply
+cursor is the position to resume from.
 
 ### 2.5 Prompt routing
 
@@ -548,19 +625,51 @@ automatically." with the saved value not pre-filled. Pool members are not opened
 (the pool stays at 1 until the next connection, which then verifies the stored key normally). The flag ends with the
 connection: a later reconnect that matches the now stored key behaves normally.
 
-**Agent routing order** (first that applies):
+**Agent routing (M3).** The agent keeps a record for every prompt from the moment sd_mount raises it until its
+`prompt.closed`. Each record is routed as follows:
 
-1. The client that initiated the operation, if it declared `prompts.console` in `hello` and is still connected
-   (CLI on an interactive console with `--prompt auto|console`). The CLI reads input with `ReadConsoleW` and echo
-   disabled via `SetConsoleMode`.
-2. All UI clients in the agent's session subscribed to `prompt` (normally exactly one tray).
-3. If none, and the session is active (not locked/disconnected), the agent launches `shelldrive-ui.exe
-   --prompt-host` in its own session (`CreateProcessW`, same token) and the prompt is delivered when it subscribes.
-4. Otherwise queue (1.7.4). If `prompt_mode = none` (CLI `--prompt none`, scripts) the operation fails immediately
-   with `prompt_required` (exit code 4 for auth, 5 for unknown host key).
+1. The initiator, when it is still connected and declared `prompts.console` or `prompts.ui` in `hello` (a CLI on an
+   interactive console with `--prompt auto|console`). Delivery is `sd_ipc_send_to`. The CLI reads input with `ReadConsoleW`
+   and echo disabled via `SetConsoleMode`.
+2. Every client subscribed to `prompt` with cap `prompts.ui`, except the initiator of step 1, so that no client receives
+   the same event twice. The broadcast returns `delivered`, the number of recipients queued.
+3. If `delivered` is 0 and no UI runs (the UI mutex `Local\com.librestatic.shelldrive.ui.<SID>` is not held), the agent
+   starts `shelldrive-ui.exe --prompt-host` from its own directory with its own token, at most once per 30 s. The prompt
+   host connects to this agent only and never starts one (1.4). Test builds of the agent start no UI unless
+   `SHELLDRIVE_TEST_UI_LAUNCH=1` (tests/apps set it to 0). Session
+   lock state is not probed in M3 (a UI started while locked waits for its first subscription). A missing executable
+   is not an error.
+4. The prompt is queued. The queue holds 16 prompts; a 17th evicts the oldest queued one, which is rejected with
+   `prompt.closed` reason `superseded` and fails its mount with `prompt_unavailable`.
 
-Several clients may display the same prompt; the first `prompt.answer` wins and the others receive
-`prompt.closed`. Secrets in answers are wiped (`SecureZeroMemory`) after being handed to `sd_ssh`.
+When a client subscribes to `prompt` with `prompts.ui`, every queued prompt is sent to it first, oldest first, with
+`queued: true` and the remaining `deadline_ms`; each becomes open. No prompt is sent twice to one client. A
+`prompt_mode = none` mount (CLI `--prompt none`, scripts, clients without a prompt capability) fails at once with
+`prompt_required` (exit 4), or `host_key_unknown` (exit 5) for a host key.
+
+Accounting: `delivered` counts queued sends. A recipient that disconnects after it was counted but before the pipe
+thread writes never answers, and the deadline covers it. Enqueueing never blocks the agent.
+
+**Deadlines.** 120 000 ms for user-initiated operations and 600 000 ms for prompts raised by a reconnect (1.7.4). The
+deadline is an absolute tick kept by the agent; the control thread checks it once a second, so an expired prompt is
+rejected within about 1 s. Clients receive the remaining time as `deadline_ms`. There is no per-profile override in M3.
+
+**Answers and closing.** The first accepted `prompt.answer` wins. The agent sets the close reason before it hands the
+answer to sd_mount, so `prompt.closed` carries the right reason:
+
+| Reason | Set when | Mount outcome | `answered_by` |
+|---|---|---|---|
+| `answered` | a `prompt.answer` with action accept, once, answer or reject was accepted (a rejection is an answer) | continues, or fails with the sd_mount error (`host_key_rejected`, `prompt_required`, ...) | `cli` or `ui`, from the hello `client` |
+| `cancelled` | `prompt.answer` with action cancel; the mount is unmounted; the initiator disconnected with no prompt-capable UI subscribed (below); a prompt the agent did not answer was closed by sd_mount | exit 13 (`cancelled`) | — |
+| `timeout` | the deadline passed | `prompt_unavailable` (exit 4) | — |
+| `superseded` | evicted from the queue (16 entries) | `prompt_unavailable` | — |
+
+Clients treat an unknown reason as `cancelled`. `prompt.closed` goes to the initiator once and to the UI subscribers
+of `prompt` except the initiator.
+
+**Initiator disconnect (M3 lead decision, 2026-10-27).** When the initiator of a mount disconnects, its prompts are cancelled
+only if no client with `prompts.ui` is subscribed to `prompt`. Otherwise the mount keeps routing its prompts to that UI,
+so a tray restart does not kill a mount.
 
 **ProxyJump:** each hop prompts separately; the prompt carries `hop`/`hops` and the hop's host so the dialog says
 "Jump host 1 of 2: bastion.example.org". For hop i ≥ 1 (and the target behind jump hosts) prompts and the host key
@@ -616,6 +725,22 @@ Agent ↔ service cooperation is deliberately thin:
   `WTSQueryUserToken` + `CreateProcessAsUserW` — makes the service mandatory and puts user-session lifecycle into a
   SYSTEM process for no gain.
 
+**M5 decisions (part 1, implemented; details in `docs/dev/m5-notes.md`).**
+
+- Admin methods (`mount`, `unmount`, `secret.set`, `secret.delete`, `prompt.list`, `prompt.answer`, `config.reload`,
+  and `status` details) need an elevated administrator (`sd_ipc_client_is_admin`). Topics `prompt`, `log` and
+  `hostkeys` are refused to other clients at subscribe time (`access_denied`, the whole request). `list` and `status`
+  answer every client, filtered by `service_access` (2.2): the letter for everyone, state for members and admins, the
+  rest in `reserved_letters`.
+- Routing of a service prompt (2.6 rule 3): a password or passphrase prompt goes to an elevated admin that subscribed
+  to `prompt` with `prompts.ui`, and is rejected after 120 s without an answer. With no such admin the mount fails
+  with `prompt_unavailable`. A host-key prompt is never routed: the mount fails with `host_key_unknown` (2.6 rule 2).
+- A service mount never saves a secret it was given. Service secrets are DPAPI files under `service\secrets\` (4.5),
+  written through `sd_secret` with the service scope; the user scope is never read by the service.
+- The volume descriptor of a global mount (02 §6.4) encodes `service_access` (read/traverse) and
+  `service_access_write` (full control), with SYSTEM and Administrators in full. This is the only per-drive
+  enforcement in this part; the per-request check in `sd_vfs` is left.
+
 ### 2.7 Header sketch
 
 ```c
@@ -653,6 +778,28 @@ int  sd_ipc_client_is_elevated(sd_ipc_client *client);   /* via impersonation; 0
 int  sd_ipc_client_is_admin(sd_ipc_client *client);      /* elevated + BUILTIN\Administrators */
 void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const sd_json *event);
 ```
+
+### 2.8 Versioning and features (M3)
+
+- **Proto stays 1.** M3 changes are additive in the sense of 2.3: new methods, optional request fields, reply fields,
+  events, topics, `features` strings, error codes and `prompt.closed` reasons, and `prompt.request` fields (`profile_id`,
+  `queued`). Behaviour changes without a wire change: prompts are queued instead of rejected, deadlines are enforced,
+  `prompt.closed` carries real reasons, the initiator is not sent a duplicate, and `mount` copies of warnings are kept.
+  Clients treat unknown `prompt.closed` reasons as `cancelled` and unknown error codes as exit 1.
+- **Features.** The `hello` reply carries `features: [...]` with the names this build implements: the methods `status`,
+  `config.reload`, `log.tail`, `selftest`, `prompt.list` and the behaviour `prompt.queued`. M3 adds the methods `refresh`,
+  `cache.clear`, `profile.test` and `mount.attach_info`, the status details `status.stats` and `status.proxy_legs`, and
+  the events `config.changed` and `agent.stopping` (listed as names, as the others). The agent also lists `diag.collect`,
+  `update`, `update.check`, `update.apply` and `events.recent` (round 18: the event history, 2.4). Still planned:
+  `log.follow` and the `log` topic (M4). A client calls a method only if its name is listed and degrades
+  otherwise (the Logs viewer shows
+  that the agent is too old for log viewing without `log.tail`).
+- **Skew.** A server supports proto N and N-1 (2.3). An M3 UI talking to an M2 agent gets `features` without the M3 names
+  and degrades. An M2 UI talking to an M3 agent is unaffected: it ignores unknown events, and its `mount`-topic warnings
+  still arrive.
+- **Deprecation.** The `mount` copies of `warning` and `hostkeys.announced` are removed at proto 2.
+- **Shell extension and `--action`.** No IPC. The snapshot layout skew rules are in 8.2.1; `--action` verbs are additive
+  only (1.6).
 
 ---
 
@@ -834,6 +981,7 @@ the value from `sd_mount`.
 | `proxy.proxy_fallback_direct`, `proxy.proxy_fallback_direct.N` | bool (`no`); only for `proxy = system` | `sd_ssh` (01 §5.2) | `AllowSystemProxy` |
 | `connection.connections` | `1..4` (`1`) | `sd_sftp` pool (`sd_sftp_options.connections`, D18, 01 §10.9) | — |
 | `connection.channels` | `1 \| 2` (`2`) | `sd_sftp` (D19) | — |
+| `connection.compression` | `yes \| no` (`no`); `yes` offers `zlib@openssh.com` (delayed, 01 section 4.7) | `sd_mount` -> `sd_ssh` (`SD_SSH_CFG_COMPRESS`) | — |
 | `mount.target`, `mount.backend` | (`auto`, `auto`) | `sd_mount` | `AllowedBackends` |
 | `mount.read_only` | bool (`no`) | `sd_vfs` | — |
 | `mount.write_mode` | `through \| behind` (`through`, D9) | `sd_vfs` (`write_mode`; `wb_window` 16 MiB node / 64 MiB mount for `behind`) | `ForceWriteThrough` |
@@ -844,15 +992,18 @@ the value from `sd_mount`.
 | `mount.shell_active_files` | `show \| block` (`block` when `security.trust = untrusted`, the default, `show` when `trusted`; blocks opening for every process, D41, TM-R14) | `sd_vfs` / backends (02 §4.1, §6.4) | — |
 | `mount.mark_of_the_web` | `off \| internet` (`off`; opt-in per profile, not derived from `security.trust`, which D41 ties to shell-active files only; Dokany only, enabled after TST-21, TM-R15) | `sd_dokan` (02 §1.1, §6.4) | — |
 | `mount.case`, `mount.remote_case` | `insensitive \| sensitive` (`insensitive`); `auto \| sensitive \| insensitive` (`auto`) | `sd_vfs` | — |
-| `mount.remote_charset` | code page (empty = UTF-8) | `sd_vfs` (stage 1 of the name map, C23) | — |
-| `mount.umask`, `mount.map_readonly`, `mount.show_special`, `mount.allow_system`, `mount.strict_acl` | (`022`, `yes`, `no`, `yes`, `no`) | `sd_vfs` | — |
+| `mount.remote_charset` | code page name (empty or `utf-8` = UTF-8; `cp` + number or a number otherwise, 1 to 31 characters of letters, digits, `.`, `_`, `-`) (M3: parsed only; the vfs refuses any code page other than UTF-8, so the key has no effect yet) | `sd_vfs` (stage 1 of the name map, C23) | — |
+| `mount.umask`, `mount.map_readonly`, `mount.show_special`, `mount.allow_system`, `mount.strict_acl` | (`022`, `yes`, `no`, `yes`, `no`); `umask` is octal `001` to `777` (`000` is refused: the vfs reads 0 as the default 022) | `sd_vfs` (`allow_system` is M5, parsed only; `strict_acl` parsed only, no consumer yet) | — |
 | `mount.identity_probe` | `owner \| exec` (`owner`, D10) | `sd_sftp` (`exec` sets `SD_SFTP_OPT_IDENTITY_EXEC`, 01 §11) → `sd_vfs` via `server_info.identity` (02 §3.4) | — |
 | `mount.fs_name` | string (`NTFS`, D23) | `sd_dokan` (`sd_vfs_options.volume_fs_name`) | — |
 | `mount.offline_hint_over_mb` | integer MB (`0` = off, D22) | `sd_webdav` | — |
 | `mount.offline_wait`, `mount.reconnect_grace` | (`3s`, `60s`) | `sd_vfs` | — |
-| `mount.autostart`, `mount.autostart_sessions` | (`no`, `any`) | `sd_mount` | — |
-| `mount.open_after_mount`, `mount.network_location` | (`no`, `yes`; `network_location` ignored for `scope = service`) | UI / `sd_mount` (8.7) | — |
-| `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate` | (`30s`, `30s`, `10s`, `1s`) | `sd_vfs` | — |
+| `mount.autostart` | `no \| logon \| boot` (`no`; `boot` is valid only with `scope = service`, otherwise `mount.autostart` is the bad key; `logon` mounts when the agent starts, D25/03 §1.2; `boot` is applied by the service, M5) | agent (`sd_mount`), 03 §1.2 | — |
+| `mount.autostart_sessions` | `any \| console \| remote` (`any`); checked against the session of the agent at its start | agent (`sd_mount`) | — |
+| `mount.open_after_mount`, `mount.network_location` | (`no`, `yes`; `network_location` ignored for `scope = service`); `open_after_mount` opens the drive root once, after the first MOUNTED of a user-initiated mount, never on a reconnect or a logon mount | agent / UI, `sd_mount` (8.7) | — |
+| `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl` | durations (`30s`, `30s`, `10s`); `0` is refused (the vfs reads 0 as the default), range 1 ms to 1 h. Legacy names `metadata_ttl`, `directory_ttl` are read once | `sd_vfs` | — |
+| `cache.open_revalidate` | duration (`1s`) or `never`; `0` is refused, `never` = revalidate on every open (vfs `-1`) | `sd_vfs` | — |
+| `cache.max_readahead` | size (`8M`), 64 KiB to 1 GiB; `0` is refused (the vfs reads 0 as the default) | `sd_vfs` | — |
 | `cache.disk` | size (`0`) | `sd_vfs` (`disk_cache_mb`, dir from 3.2) | — |
 | `cache.max_readahead` | size (`8M`) | `sd_vfs` | — |
 | `security.trust` | `untrusted \| trusted` (`untrusted`, D41) | `sd_mount`: selects the default of `shell_active_files` (D41, TM-R14) | — |
@@ -907,7 +1058,12 @@ Semantics owned by this layer:
   global mounts, letters with remembered persistent connections (`WNetOpenEnum(RESOURCE_REMEMBERED)`), and A:/B:.
   Folder targets must be empty directories on a local NTFS volume (validated at mount).
 - Scope `users`: machine-provided template; each user's agent mounts it with the user's own credentials and
-  known_hosts. **Per-user overrides are limited to `mount.target`, `mount.autostart` and
+  known_hosts. The UI lists them under "Provided by your organization" through `sd_profile_enum_templates` (sd_config):
+  the machine store `%ProgramData%\LibreStatic\ShellDrive\profiles` only, read-only, each folder and file checked on its
+  handle (plain, owned by SYSTEM or Administrators, no write right for others; 3.2). Test roots use `<override>\machine`.
+  The UI's profile list reads them after the user's profiles (a template whose id the user's store also has is skipped); Edit,
+  Duplicate and Delete do not apply to them, Mount does. The agent mounts them through `sd_profile_find_mountable` (the user's
+  store first, then the templates; `sd_profile_find` stays the user's store only). **Per-user overrides are limited to `mount.target`, `mount.autostart` and
   `mount.autostart_sessions` (D25)**, plus hiding the template. They are stored in
   `%APPDATA%\LibreStatic\ShellDrive\overrides\<profile id>.ini` (`[override] target, autostart, autostart_sessions, hidden`);
   any other key in that file is ignored with a log line. The profile editor shows a template read-only except the
@@ -941,7 +1097,36 @@ makes `backend = auto` resolve to WebDAV, 04 §8.4, D36). The MSI properties `UP
 `[update] enabled` and `manifest_url` of the machine `settings.ini`; per-user values override machine values
 unless a policy is set.
 
+**Settings schema rows added in round 17 (`sd_settings` in `src/sd_config`; defaults are the `sd_settings_defaults` values):**
+
+| Key | Values (default) | Consumer | Policy |
+|---|---|---|---|
+| `[defaults] write_mode` | `through \| behind` (`through`, D9) | agent and service resolve every mount with `sd_profile_effective_write_mode`: a profile without `mount.write_mode` takes it (`sd_profile.write_mode_set` = 0) | `ForceWriteThrough` = 1 clamps a default to through and refuses an explicit `behind` (`policy_denied`) |
+| `[log] privacy` | `standard \| strict` (`standard`) | `sd_log_set_privacy`: `%Hs` host, `%Us` user and `%Rs` remote path are printed (standard; a path only at error, debug and trace) or replaced by HMAC-SHA-256 hashes under `state\log.key` (strict) | `LogPrivacy` (0 standard, 1 strict) overrides the file (10.1, TM-R31) |
+| `[ui] notify` | `yes \| no` (`yes`), the master switch | every balloon except `write_failed` (7.7) | none |
+| `[ui] notify_connection_lost`, `notify_reconnected`, `notify_mount_failed`, `notify_mounted` | `yes \| no` (on, on, on, off) | tray balloons derived from `mount.state` changes (connection lost, reconnected, mount failed, mounted) | none |
+| `[ui] notify_legacy_algorithms`, `notify_terrapin` | `yes \| no` (on) | tray balloons for the warning codes `legacy_algorithms` and `terrapin_exposed` | none |
+| `[ui] notify_hostkeys_offered` | `yes \| no` (on) | tray balloon for `hostkeys.announced` (5.6) | none |
+| `[ui] notify_hostkeys_saved`, `notify_proxy_password`, `notify_service_attention` | `yes \| no` (on) | balloons: `hostkeys.announced` with `applied` (saved), warning `proxy_cleartext` (once per profile and proxy; the code `proxy_password` maps to the same kind, round 19), the service `attention` count going up | none |
+| `[ui] notify_pool_limited` | `yes \| no` (off) | warning code `pool_limited` | none |
+| `[ui] notify_update_available`, `notify_update_stale` | `yes \| no` (on) | update balloons (`update.available`); code `update_stale` (mapped) | none |
+| `[ui] notify_hostkeys_source`, `notify_disk_cache` | `yes \| no` (on) | warning codes `hostkey_source_insecure` (the agent sends it, round 19, see below; the UI shows the balloon, round 20) and `disk_cache_refused` | none |
+
+`warning hostkey_source_insecure` (round 19, TM-R06): when a mount starts, the agent checks each live source that is enabled
+(OpenSSH, PuTTY) with `sd_known_hosts_source_state`; a source other users can write is reported once per source and agent run,
+on the mount that started first, with `data.detail` = `openssh` or `putty`. Its `mount_id` is that mount's.
+| `[agent] start_at_logon` | `yes \| no` (`no`) | the agent's HKCU Run value `ShellDriveAgent` (`"<dir>\shelldrive-host.exe" agent --logon`), written by the Settings save when `sd_settings_agent_run_wanted` (this key or a profile with `autostart = logon`) | none |
+
+The always-on kinds (host key changed, write failed, agent stopped unexpectedly, session objects interference) have no
+switch. The tray Run value `ShellDriveTray` (start tray at sign-in) is separate from `[agent] start_at_logon`.
+
 ### 3.5 Group Policy values (registry, read-only for us)
+
+Machine reads of the service (M5, `docs/dev/m5-notes.md` Part 12): the service (LocalSystem) reads these values from HKLM only, through
+`sd_policy_machine_get_dword` / `sd_policy_machine_get_sz`; its HKCU is the SYSTEM profile, and 2.6 rule 1 says it never reads HKCU. The
+agent and the UI keep the HKLM-then-HKCU order above. The service reads `AllowSystemProxy` and `AllowSystemProxySspi` at each
+`proxy = system` leg (AllowSystemProxy 0 refuses it with `usage`; AllowSystemProxySspi 1 lets that leg use the Kerberos-only
+Negotiate of `proxy_auth = auto`, nothing else; no Basic, no NTLM).
 
 All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (HKLM wins), listed here once (C8):
 `LegacyAlgorithms` (0 allow, 1 warn, 2 refuse), `AllowUserProfiles`, `AllowAdHocMounts`, `AllowedBackends`
@@ -951,10 +1136,28 @@ All values live in the single key `HKLM|HKCU\Software\Policies\LibreStatic\Shell
 (1 = `write_mode = behind` refused), `ProxyServer` (a proxy spec forced as leg 1 for every profile),
 `AllowSystemProxy`, `AllowSystemProxySspi` (0 default: SSPI is never answered to a proxy that came from `proxy = system`,
 WPAD or PAC; 1 lifts that restriction, the scheme rules of 3.8 still apply; TM-R10), `AllowWebDavTokenOnly` (1 default; 0 forbids the
-token-only WebDAV fallback, 02 §7.4, TM-R19), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
+token-only WebDAV fallback, 02 §7.4, TM-R19; the answer is asked per enable, there is no profile key), `UILanguage`, `DisableUpdateCheck`, `UpdateChannel`, `UpdateUrl`,
 `HideTrayIcon`, `DisableNetworkLocations`, `DisableModernContextMenu`, `LogPrivacy` (0 standard, 1 strict; 10.1,
 TM-R31). ADMX/ADML produced by 04 (target namespace `com.librestatic.shelldrive.policies`, D45), localized from our catalogs
 (`sdl10n` emits the ADML, C41).
+
+Implementation (M4, branch `wip/m4-admx`). The table above is one machine-readable file, `res/policy/policies.txt`
+(an `@key` line, then one line per value: name, class, type, params, supported, category). Three consumers read it:
+- `tools/sd-admxgen` (C, build-time, no third-party code) writes `ShellDrive.admx`, one `ShellDrive.adml` per culture
+  (en-US, es-ES, fr-FR, pt-BR, it-IT, de-DE) and two headers: the `sd_policy_id` enum and the name, kind, registry type
+  and range table. Texts come from the `policy` domain, `l10n/policy/<lang>.po`, which `sdl10n --check` validates
+  (complete in six locales, no plurals). Types: `boolean` (REG_DWORD 1/0), `enum` (REG_DWORD when every value is
+  decimal, REG_SZ otherwise), `text` (REG_SZ with a maximum length), `decimal` (REG_DWORD with min and max; the table
+  has no decimal policy yet). `supportedOn` is `xp` (Windows XP SP3 or later) or `win11`. Categories sit under
+  LibreStatic > ShellDrive.
+- `src/sd_policy` reads the values (HKLM first, then HKCU) by the generated names and types only. `UILanguage` and
+  `DisableNetworkLocations` are read through it.
+- `tests/policy` checks the output offline: `check-admx.ps1` (well-formedness, references, unique ids, table against
+  ADMX and ADML, all six cultures) and `check-raw-reads.ps1` (fails when a source reads the key or a value name
+  directly).
+Deviation from C41's wording: `sd-admxgen` produces the ADML from the policy catalogs, while `sdl10n` keeps its
+completeness and register checks on the same domain. Enum items are catalog keys `policy.<name>.opt.<value>`. All msgctxt
+keys are lower case, because sdl10n accepts `[a-z0-9_.-]` only.
 
 ### 3.6 Concurrency
 
@@ -1215,7 +1418,13 @@ mutex.
   never hashed (the file is ACL-protected and readable entries help support); hashed entries from other tools are
   read fine.
 - Each line we write gets an end-of-line comment: `# added=2026-10-24 by=shelldrive`, `# imported-from=putty`,
-  `# imported-from=openssh` or `# updated-by=hostkeys-00 added=…` (5.6).
+  `# imported-from=openssh` or `# updated-by=hostkeys-00 added=…` (5.6). The host key manager reads each line through
+  `sd_known_hosts_list_all` (user and machine stores), which also returns the trailing comment, the `added` date and the
+  origin: `ShellDrive` (`by=shelldrive` or a bare `added=`), `Copied from PuTTY`, `Copied from OpenSSH`, `Updated by server`
+  (`updated-by=`), or other (no source comment). Live sources are not listed (5.1). The reply of the agent carries no host
+  key store list: the UI reads the stores itself (5.1 "store list is not on the pipe").
+- The MD5 fingerprint (`MD5:xx:xx:...`, legacy display, 5.2) comes from `sd_hostkey_fingerprint_md5` (sd_crypto MD5, RFC
+  1321); the host key prompt carries it in `fp_md5`.
 - The store key for jump hops and aliases is `host_key_alias` if set, else the hop's host/port.
 
 ### 5.2 First-connection (TOFU) dialog
@@ -1301,7 +1510,9 @@ here:
     host keys for example.org." (default on, can be turned off). Removals still need the review dialog.
   - `no`: announcements are logged at info and ignored.
 - **Machine store:** never updated from a user's connection. The service updates the machine store only when the
-  policy `UpdateHostKeys = 2` is set; otherwise it writes Event Log warning 2300 and publishes `hostkeys.announced`
+  policy `UpdateHostKeys = 2` is set (read at each announcement; HKLM wins). Then the proven new keys are added to the
+  machine known_hosts at once (add only, the checks of the accept: the file is checked on its handle first), and the
+  removals are kept for review as usual. Otherwise (policy 0, 1 or unset) it writes Event Log warning 2300 and publishes `hostkeys.announced`
   on the service pipe, and an elevated admin can apply it from the "A global ShellDrive drive needs attention"
   flow (2.6) or `shelldrive hostkey list --announced --machine` / `hostkey accept-announced <id> --machine`.
 - If the verifying key matched a live read-only source only (it was just copied, 5.1), additions go to the user
@@ -1333,7 +1544,8 @@ shelldrive hostkey list [host] [--announced] | add --from-server host[:port] [--
                    | accept-announced <id> [--add-only]
 shelldrive location add <profile> | remove <profile> | repair     Network location entries (8.7)
 shelldrive service install | uninstall | start | stop | status | repair-data     (repair-data: 3.2, TM-R34)
-shelldrive cache clear [<profile>|--all]
+shelldrive secret set | delete --machine --proxy SPEC [--stdin]     password of a service proxy leg (4.5, 3.8); elevated; read without echo, never printed
+shelldrive cache clear [<profile>|X:|mount-id] | --all [--force]     --force: clear although write-behind data is queued (kept)
 shelldrive logs [--component agent|service|ui] [--lines N] [--follow] [--path]
 shelldrive diag [--check] [--bundle FILE.zip [--include-dumps] [--no-anonymize]] [--fix linked-connections|webclient]
 shelldrive diag bench <X:> [--scenario NAME] [--json]           developer/support benchmark (02 §11)
@@ -1405,12 +1617,12 @@ On XP the check is plain group membership.
 | 0 | success | |
 | 1 | generic failure | `internal`, `io_error` |
 | 2 | usage error | `usage`, `service_access_required` |
-| 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found` |
-| 4 | authentication failed or required | `auth_failed`, `prompt_required` |
+| 3 | not found (profile, mount, host key) | `profile_not_found`, `mount_not_found`, `not_mounted` (refresh of a drive without a file system) |
+| 4 | authentication failed or required | `auth_failed`, `prompt_required`, `auth_unavailable` (no SSPI for WebDAV; 02 §7.4), `token_only_refused` (token-only WebDAV not confirmed; TM-R19) |
 | 5 | host key unknown and not accepted | `host_key_unknown`, `host_key_rejected` |
 | 6 | host key mismatch, or no stored key type offered by a known host | `host_key_mismatch`, `host_key_type_unavailable` (TM-R04) |
 | 7 | network / connection failure | `connect_failed`, `dns_failed`, `disconnected` |
-| 8 | agent/service unavailable | `agent_unavailable`, `service_not_installed`, `too_many_connections`, `rate_limited` (TM-R25) |
+| 8 | agent/service unavailable, or busy (`SD_E_BUSY`) | `agent_unavailable`, `service_not_installed`, `busy`, `write_behind_pending` (cache clear with queued writes), `too_many_connections`, `rate_limited` (TM-R25) |
 | 9 | elevation or permission required | `elevation_required`, `access_denied` |
 | 10 | conflict | `target_in_use`, `already_mounted` |
 | 11 | backend unavailable | `backend_unavailable`, `webclient_disabled` |
@@ -1537,7 +1749,9 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
 - ListView (report view, groups "My connections" / "Provided by your organization" / "Global drives" using
   ListView groups, v6 XP+): columns Name, Server, Drive/Folder, Backend, Status, Security. Status and Security show
   icon **and** text ("Connected", "Reconnecting (3)", "Legacy encryption").
-- Status bar: agent state ("ShellDrive is running", "Agent not running — Start").
+- Status bar: agent state ("ShellDrive is running", "Agent not running — Start"). **Start** calls
+  `sd_ipc_connect_agent_or_start` (`src/sd_ipc`): the same spawn and 10 s timeout as the CLI's `connect_agent`, with no UI code
+  in it. The status bar shows the result (the agent's `hello` on success; `agent_unavailable`, `agent_untrusted` otherwise).
 - Double-click/Enter: mount, or open in Explorer if mounted. Delete key: delete with confirmation.
 - Profile editor: property sheet with pages General (name, host, port, user, remote path), Authentication (methods,
   key file with "Browse…", "Keep a protected copy", certificate, agent, saved password management), Connection
@@ -1560,6 +1774,15 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   updates from servers" group for `hostkeys.announced` items (5.6). Live-source keys not yet copied are not listed
   (they are read on demand); a note says which sources are active. Machine entries are read-only unless elevated
   ("Edit machine keys…" relaunches elevated).
+- Service page (Tools menu and tray menu): the install state, start type, registered program with its path check, the Event
+  Log source and, when the service runs and answers, the machine data folder (trusted, or refused with the reason; the
+  refused folder's path for an elevated administrator), the global drives, the open administrator prompts and the
+  loaded machine profiles. The status is `service.status`, or the Service Control Manager read-only when the service is
+  not installed, not running or too old. **Repair data...** (`service.repair_data`, or the same code in process when
+  the service is not running) is enabled for administrators only, with the UAC shield on Vista+ while the process is not
+  elevated: a click offers to reopen the page elevated (`--elevated-service`); an elevated administrator gets a
+  confirmation (default button: Cancel) that says a folder with an untrusted owner or a link is moved aside and nothing
+  from it is imported.
 - Logs viewer: read-only multiline edit with the last 2000 lines from `log.tail`, filter by level, "Open log
   folder", "Create diagnostic bundle…".
 - Settings: language (with "System default"), start at sign-in (agent / tray separately), notifications per type,
@@ -1574,6 +1797,13 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
   your files." (**Continue**, **Cancel**; no default button). The question is not offered, and the mount fails with
   `policy_denied`, on Remote Desktop Session Hosts, when more than one interactive session is active, or with policy
   `AllowWebDavTokenOnly = 0`.
+  **Implementation status (r10):** the question is the prompt kind `webdav_token_only` (sd_mount
+  `SD_MP_WEBDAV_TOKEN_ONLY`) routed through the normal prompt broker: the CLI answers y/N (default no), the UI
+  dialog has Continue (accept) and Cancel (reject) with no default button. The answer applies to that enable only
+  and is not stored; there is no profile key for it. A rejected question fails the mount with IPC code
+  `token_only_refused`. The environment refusals (RDSH, several sessions, policy, global mount) come from
+  `sd_webdav` as `SD_E_ACCESS_DENIED`; they are not yet mapped to `policy_denied` as this section asks. The trigger
+  is currently the no-SSPI case only (02 §7.4).
 - First-run wizard (`PropertySheet` with `PSH_WIZARD97`, XP+): welcome, import (5.5), create first profile, finish.
   The finish page and the admin guide recommend full-disk encryption (BitLocker/device encryption) when keys are
   kept by ShellDrive or the disk cache is turned on, and explain that saved passwords are only as safe as the
@@ -1685,6 +1915,108 @@ transient balloon.
   one lands in 1.x.
 - Robustness: no exception filters installed in the host, `__try/__except` only around our entry points, no
   static CRT state that blocks `DllCanUnloadNow`, no threads created.
+
+#### 8.2.1 State section layout v1 (M3, specification)
+
+The section `Local\com.librestatic.shelldrive.state.<UserSidString>` is written only by the agent. It is created by
+`sd_ipc_state_create` (256 KiB, `PAGE_READWRITE`, the owner and label DACL of 2.2) and read by the shell extension through
+`sd_ipc_state_open` with `FILE_MAP_READ | READ_CONTROL` [verify on XP, 7 and 10/11: a reader that cannot read the owner fails
+closed]. This section specifies the binary layout; the codec and the agent producer are `sd_state` and the host's state producer (M3, decisions in 8.8). This binary layout supersedes the content summary given in 1.6 and 8.2.
+
+Header, 64 bytes. Integers are little-endian with fixed width; there are no pointers. Strings are UTF-16LE in fixed slots,
+measured in code units; a string is NUL-terminated when it fits, and a full slot without NUL means the slot length.
+
+| Offset | Size | Field | Rule |
+|---|---|---|---|
+| 0 | u32 | `magic` | `0x54534453` (bytes "SDST") |
+| 4 | u16 | `layout_version` | `1` |
+| 6 | u16 | `header_size` | `64` |
+| 8 | u32 | `total_size` | `header_size + entry_count * entry_size`, at most 262144 |
+| 12 | u32 | `entry_size` | `1792` |
+| 16 | u32 | `entry_count` | 0 to 128 |
+| 20 | u32 | `seq` | seqlock counter: even when stable, odd while a write is in progress |
+| 24 | u32 | `writer_pid` | agent process id (diagnostics only) |
+| 28 | u32 | `writer_session` | session id (diagnostics only) |
+| 32 | u64 | `published_filetime` | FILETIME (UTC) of the last completed publish |
+| 40 | u32 | `flags` | bit 0: the agent is shutting down (entries are advisory) |
+| 44 | u32 | `max_entries` | `128` (informational) |
+| 48 | 16 B | reserved | zero |
+
+Entry *i* starts at `64 + i * 1792`:
+
+| Offset | Size | Field | Rule |
+|---|---|---|---|
+| 0 | u32 | `flags` | bit 0 IN_USE, bit 1 GLOBAL, bit 2 READ_ONLY, bit 3 HAS_REMOTE_URL, bit 4 TRUNCATED, bit 5 NEEDS_ADMIN, bit 6 NETWORK_LOCATION; other bits zero |
+| 4 | u32 | `state` | 0 unknown, 1 connecting, 2 authenticating, 3 mounted, 4 offline, 5 auth_required, 6 failed, 7 unmounting, 8 unmounted; other values read as 0 |
+| 8 | u32 | `backend` | 0 unknown, 1 webdav, 2 dokany; other values read as 0 |
+| 12 | u32 | `mount_num` | agent-local number; 0 for global entries |
+| 16 | u16 | `letter` | `'A'`..`'Z'` for a drive letter, else 0 |
+| 18 | u16 | reserved | 0 |
+| 20 | u32 | reserved | 0 |
+| 24 | WCHAR[32] | `mount_id` | e.g. `m-3` |
+| 88 | WCHAR[32] | `profile_id` | 32 lowercase hex digits; empty for ad hoc mounts and for global entries the caller may not see |
+| 152 | WCHAR[128] | `profile_name` | display name |
+| 408 | WCHAR[260] | `target` | `X:`, a folder path, or the WebDAV UNC |
+| 928 | WCHAR[64] | `label` | drive label as Explorer shows it |
+| 1056 | WCHAR[320] | `remote_url` | `sftp://user@host:port/path`; never credentials |
+| 1696 | 96 B | reserved | zero |
+
+Global entries (service-owned, GLOBAL) carry only `letter`, `label`, `state` and `flags` when the caller is not in
+`service_access`; the shell extension offers "Open" only for them, never unmount (2.2).
+
+Writer rules (agent): one writer, under the agent's state lock. A publish sets `seq` odd (`InterlockedIncrement`) with a
+full barrier, writes the entries and header fields, sets a full barrier and makes `seq` even again. Publish on every
+`mount.state`, on mount add or remove, on a profile label change, on a change of the global view (at most every 30 s) and,
+empty with bit 0 set, at shutdown. Strings longer than their slot are cut and set TRUNCATED. Secrets, passwords, prompt
+text and host key material are never written; `remote_url` has the path only.
+
+Reader rules (shell extension, inside `QueryContextMenu`, never the network): open, verify the owner and label on the
+handle (failure is "no data"), map read-only, then up to three tries of: read `seq` (retry if odd), copy the header and
+`total_size` bytes into a local buffer, read `seq` again (retry if it changed). After three failures there are no drive
+items. Entries are parsed from the local copy and validated (magic, `layout_version` 1 or 2, `header_size` ≥ 64,
+`entry_size` ≥ 1792 and a multiple of 8 and at most 4096, `entry_count` ≤ 128, `total_size` consistent and at most 256 KiB;
+per entry: IN_USE, `state` ≤ 8, `backend` ≤ 2, `letter` valid, strings valid UTF-16, `profile_id` is 32 hex digits or
+empty). A bad header means no data; a bad entry is dropped. Bidi and zero-width characters are stripped before display
+(2.5). Actions pass only `--action <verb> <profile_id>` or `--action <verb> <letter>`, never a target or URL, and the UI
+checks them again (1.4).
+
+Version skew: a reader of layout N accepts N-1 and N+1 (where it can read the v1 fields at their v1 offsets; a v2 may only
+add fields in reserved areas or after the entry tail). A non-additive change needs a new magic and a `.v2` section name.
+The DLL reads the same layout on every architecture (fixed widths, no pointers).
+
+#### 8.2.2 menu.cache v1 and the menu items (R16, specification and implementation notes)
+
+`%LOCALAPPDATA%\LibreStatic\ShellDrive\state\menu.cache` lists the profiles of the This PC submenu. It is plain UTF-8
+(a BOM is allowed; LF or CRLF line ends), at most 64 KiB and 256 profiles. First line `SDMENU 1`; then one profile per
+line, `<32 lowercase hex digits of the profile id><TAB><display name>`. Blank lines and lines starting with `#` are
+skipped. A malformed line (id not 32 lowercase hex digits, no TAB, empty name, name over 128 UTF-16 units, invalid UTF-8,
+control characters) or a repeated id is dropped on its own; a wrong first line or a file over the cap is no data. The
+shell extension opens it read-only and only when its owner is the user (or the default owner of the user's token); the
+parser is `shx_menucache_parse` (`shellext_model.c`). The writer is `sd_menucache_rewrite` (`src/sd_config/menucache.c`,
+format and name sanitizing in `menucache_format.c`), so the CLI, the UI and the agent share it: `sd_profile_save` and
+`sd_profile_delete` rewrite the file while holding `config.lock`, `sd_import_write` rewrites it once after its saves,
+and the agent rewrites it at start. The file is written to `menu.cache.<pid>.tmp` in the same folder, then moved over
+`menu.cache` with `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` (available on XP; no separate path). It holds only the
+ids and names: no host, user or secret. Names have control, bidi and zero-width characters removed and are cut at 128
+UTF-16 units, and a profile with an id or name that cannot be written is left out.
+
+Items, by class (the two classes of the DLL are `SHX_CLSID_CONTEXT_MENU` for Drive, Directory and `*`, and
+`SHX_CLSID_COMPUTER_MENU` for This PC; the second keeps the code from guessing which menu Explorer asked for):
+
+| Selection | Items |
+|---|---|
+| Root of a ShellDrive drive | Open in ShellDrive; Unmount and Reconnect (per-user entries, by state); Copy remote path (entry has `HAS_REMOTE_URL`) |
+| File or folder inside a ShellDrive drive | Copy remote path (same condition) |
+| This PC | Submenu "Mount with ShellDrive" (up to 32 profiles from `menu.cache`, then "More connections..." which opens the window; a disabled "No connections set up" without data), and "Open ShellDrive" |
+
+**Copy remote path** puts `remote_url` of the drive's entry, plus the path below the drive root, on the clipboard as text,
+in process (no UI process). The base URL is used as the agent wrote it; each component of the appended path is
+percent-encoded as UTF-8 (`sftp://user@host:22/var/www` + `my docs\a b.txt` gives
+`sftp://user@host:22/var/www/my%20docs/a%20b.txt`). `.` and `..` components, a URL that is not `sftp://`, or one with control,
+bidi or zero-width characters give no item. Global drives of callers outside `service_access` carry no URL, so they get no
+Copy item. Profile names in the submenu have bidi and control characters removed and `&` doubled, so a name never
+creates a mnemonic; the items have no mnemonics of their own, so none can collide in any locale. Selecting several items
+gives no items.
 
 ### 8.3 Drive labels and icons
 
@@ -1819,16 +2151,79 @@ Design:
 - **Not done:** no entries in the machine-wide `All Users` NetHood (it does not exist on Vista+), no namespace
   extension (8.4).
 
+#### 8.8 M3 implementation decisions (producer and Explorer data)
+
+Written with the M3 agent package (`src/sd_state`, `apps/shelldrive-host/state_producer.c`, `explorer_data.c`).
+Where 8.2.1 is silent or ambiguous, the choice below applies; each open point is marked [verify] or [open].
+
+- **Module.** `sd_state` (codec and section helpers) depends on sd_base, sd_platform and sd_ipc only. The codec works
+  on any byte buffer; `sd_state_read_section` opens, maps read-only, copies and unmaps within one call and keeps no
+  handle, so the shell DLL can call it from `QueryContextMenu`.
+- **Header and entry base.** Entries start at `header_size` (64 for layout 1). A reader accepts `header_size` of 64 or
+  more, `entry_size` from 1792 to 4096 in multiples of 8, `entry_count` up to 128, and `total_size` equal to
+  `header_size + entry_count * entry_size` and at most 256 KiB and the mapped size. Any other header value is "no data".
+- **Entries.** An entry without IN_USE, with a letter other than 0 or `A`..`Z`, with an unpaired surrogate in a string,
+  or with a `profile_id` that is neither empty nor 32 lowercase hex digits is dropped (the others stay). An out-of-range
+  `state` or `backend` reads as unknown (0) and keeps the entry. Unknown flag bits are ignored.
+- **Strings.** A string of at most the slot length fits (a full slot without NUL is the slot length, 8.2.1). A longer
+  one is cut by the producer with `sd_state_set_string` to slot length minus one unit, never inside a surrogate pair,
+  NUL-terminated, and the entry gets TRUNCATED. The codec never splits a string itself: the decoded struct has no
+  room for a string longer than its slot.
+- **Writer seqlock.** A stale odd `seq` (a writer that died mid-write) is made even before the next publish. The section
+  is created before the pipe and the ready event exist, so a client never sees "no section" for a running agent.
+- **Publish triggers.** Start (empty), every `mount.state` (through the state callback), the add of a mount (state
+  CONNECTING), the removal of a mount (finished or never started), and shutdown (empty with bit 0 set). Warnings do
+  **not** trigger a publish: the layout has no warning field, so a warning cannot change what the entry shows. Labels
+  are read when a mount starts, so a profile label change needs no publish. [open] A warning count would need a
+  layout change (v2 field in the reserved area) and is not made here.
+- **Remote URL.** `sftp://user@host:port/path`, IPv6 literals in brackets, path only. Passwords and key material never
+  reach the section (8.2.1).
+- **Drive present.** An entry's drive is "present" in `mounted`, `offline` and `auth_required`. Icons and the Network
+  location target follow this flag; no other state maps a drive.
+- **Drive icons (8.3).** Per user: `HKCU\Software\Classes\Applications\Explorer.exe\Drives\<Letter>\DefaultIcon` =
+  `"<install dir>\shelldrive-ui.exe",-1`, written when the drive becomes present and removed when it stops being
+  present. Removal happens only when the value still starts with our binary path. The letters written are listed in
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\state\explorer.ini` (`[icons] letters = ...`) and removed at the next start
+  and at shutdown (crash cleanup). Icon index 1 refers to an icon resource of `shelldrive-ui.exe` that the repository
+  does not contain yet [open]: until it is added Explorer shows the generic network drive icon. Global drives
+  (`HKLM DriveIcons`) belong to the service (M5) and are not written.
+- **SHChangeNotify.** `SHCNE_DRIVEADD` and `SHCNE_UPDATEITEM` (on `X:\`) when a drive becomes present,
+  `SHCNE_DRIVEREMOVED` when it stops, `SHCNE_UPDATEDIR` on the NetHood folder after a Network location changes.
+- **Labels (8.3).** The host writes no label value. The WebDAV label is written by `sd_webdav_map` (`_LabelFromReg`,
+  MountPoints2), and the Dokany label is the volume label; a second writer would duplicate the first.
+- **Network locations (8.7).** Profile key `mount.network_location` (default `yes`, 3.4.1) is parsed and written back
+  only when it is off or already present. Entry folders are named after the profile (reserved characters and control
+  characters become `_`, trailing dots and spaces are trimmed, an empty name becomes `ShellDrive`); a name collision
+  with a foreign folder gets ` (2)`, ` (3)` and so on. Placeholder files live in
+  `%LOCALAPPDATA%\LibreStatic\ShellDrive\places\<id>\Connect to <name>.sdmount`. `target.lnk` is written through
+  `IShellLinkW` and `IPersistFile::Save` to a temp file that is moved over the old link.
+- **Start reconciliation (8.7 lifecycle).** Agent start deletes every NetHood folder with a `[ShellDrive] profile=` marker
+  whose profile is gone or no longer asks for a Network location, and recreates the folders that are missing. Folders
+  without the marker are never touched. The policy `DisableNetworkLocations` (HKLM wins over HKCU) turns the feature off.
+- **Not done in M3 (8.7).** No hook at profile save (creation is at agent start only), no portable-mode
+  check (the agent does not know yet whether it runs portable), no per-user protected DACL on the placeholder and state
+  folders (3.2 asks for one) [open]. `shelldrive location add | remove | repair` is done in round 20 (`cli_location.c`,
+  `explorer_data.c`, no agent needed): add and remove write `mount.network_location` under the profile save lock and
+  refuse `scope = service`; repair holds config.lock; all three refuse under `DisableNetworkLocations`. The entry of a
+  mounted profile created by the CLI points at its placeholder until the agent's next profile change or start.
+- **Test isolation.** Test builds (`SD_HOST_TEST_HOOKS`) write icons and Network locations only when
+  `SHELLDRIVE_TEST_EXPLORER_KEY` and `SHELLDRIVE_TEST_NETHOOD` name test locations; the test placeholders then go under the
+  test configuration root. Without them a test build writes nothing to the user's keys or folders.
+- **[verify] on lab machines:** (1) `desktop.ini` honoured with the read-only folder attribute on XP, 7, 10 and 11, and
+  the `CLSID2` key name (8.7); (2) `target.lnk` re-resolved by open Explorer windows after MoveFileEx (8.7); (3) the
+  drive icon key on 7, 10 and 11 (8.3); (4) `SHChangeNotify` refresh of `This PC` after DRIVEADD and DRIVEREMOVED.
+
 ---
 
 ## 9. Localization
 
 ### 9.1 Decision: our own message catalog compiled into each binary
 
-Authoring format: **gettext PO files** `locale/<lang>/<domain>.po` with `msgctxt` = stable symbolic ID,
+Authoring format: **gettext PO files** `l10n/<domain>/<lang>.po` with `msgctxt` = stable symbolic ID,
 `msgid` = English source, `msgid_plural`, `msgstr[n]`, translator comments `#.`. The English `en` file is the source
 of truth; the other five are translations. A build tool `tools/sdl10n` (C, built for the build host) validates and
-compiles them into a generated C source per domain (`sd_l10n_<domain>.c`): for each language a table of UTF-8
+compiles them into a generated C source per catalog, one catalog per binary's domain set (`sd_l10n_<catalog>.c`, in the
+build tree under `generated/l10n/<config>/`): for each language a table of UTF-8
 strings indexed by an enum generated into `sd_l10n_ids.h`. The tables are compiled into the binaries that use the
 domain. Domains: `common`, `cli`, `ui`, `shell`, `svc`, `installer`.
 
@@ -1839,8 +2234,12 @@ ADMX template. Nothing is maintained by hand in `.wxl` or ADML. Canonical langua
 `pt` is accepted as an alias of `pt-BR` everywhere a code is typed (`--lang`, `/lang=`, settings, policy) (C42).
 The MSI embeds the `es` transform under LCIDs 11274 (es-AR), 3082, 2058 (es-MX), 21514 (es-US) and 1034, and the
 `pt-BR` transform under 1046 and 2070; the setup EXE always passes `TRANSFORMS` explicitly from its own language
-resolution (C43, packaging in 04). A build-only pseudo-locale `qps` (accented, +40 % length) exists for layout
-tests; it is never shipped and is not a supported language.
+resolution (C43, packaging in 04). A build-only pseudo-locale `qps-ploc` exists for layout tests. `sdl10n --qps`
+generates it from the English entries (accented letters, `[` `]` brackets, `~` padding to +40 % length; placeholders,
+`{{`/`}}` escapes and the letter after an `&` mnemonic are kept), so GUI truncation shows up in a Debug build. CMake
+passes `--qps` only for Debug configurations when `SD_L10N_QPS` is ON (the default); Release tables never contain it.
+The runtime selects it only with `--lang`/`SHELLDRIVE_LANG` `qps-ploc` and only when the catalog carries the table.
+It is never shipped and is not a supported language.
 
 Why not the alternatives:
 
@@ -1862,20 +2261,39 @@ Exception — strings Windows itself loads from our files: the service display n
 product name "ShellDrive", which is not translated; its menu texts come from our catalog at run time through
 `IExplorerCommand::GetTitle`.) For these the tool also emits small per-language `STRINGTABLE` blocks
 (`LANG_*`/`SUBLANG_*`) into `shelldrive-host.exe`/`shelldrive-ui.exe` resources, from the same PO files; on XP the
-English plain string is used. The **Event Log message file is English only** (Event Log messages are logs under
-AGENTS.md, C44; 10.3). The installer (MSI) consumes `.wxl` files generated from the `installer` domain (04).
+English plain string is used. The Event Log message table is localized too: the owner decided that Event Log messages
+are user-visible (they were English only under the earlier reading of AGENTS.md, C44). The `svc` domain carries them
+in all six languages, and `sdl10n --out-mc` compiles them into the message table (10.3). The installer (MSI) consumes
+`.wxl` files generated from the `installer` domain (04).
 
 ### 9.2 Build-time checks (fail the build)
 
 Missing translation in any locale; `msgstr` placeholders not equal to the `msgid` placeholder set; plural entry
 missing any `msgstr[n]` the language's category list requires (9.4: three forms for es/fr/it/pt-BR, two for en/de);
-a `Plural-Forms` header that differs from the canonical one in 9.4; mnemonic `&` duplicated within one dialog/menu for the same language (dialog tables declare
-which IDs share a mnemonic scope); string longer than a declared hard limit (tray tooltip 127 chars incl. NUL, balloon
-title 63, balloon text 255 — `NOTIFYICONDATAW` field sizes); invalid UTF-8; fuzzy entries.
+a `Plural-Forms` header that differs from the canonical one in 9.4; invalid UTF-8; fuzzy entries. `sdl10n` also runs
+these checks (fixtures in `tests/l10n/fixtures`):
 
-Register (AGENTS.md) is a review rule enforced by a glossary and a lint: `es` voseo (lint flags `tú`-forms of common
-imperatives like "elige", "haz clic" and the `usted` forms "elija", "haga"), `fr` vous, `pt-BR`, `de`/`it` informal
-imperative (lint flags `Sie`/`Lei` imperative patterns). The lint is heuristic and warns; reviewers decide.
+- **Register (lint, error).** A translation uses a word of the wrong register (AGENTS.md). Rules are word lists in
+  `sdl10n.c` (`k_reg_*`), kept conservative: `es` (voseo) flags `usted`, `ustedes`, `tú` and the usted imperatives
+  `elija`, `seleccione`, `haga`, `ingrese`, `intente`, `verifique`, `introduzca`, plus tú imperatives at the start of a
+  sentence (`elige`, `haz`, `pulsa`, `introduce`, `selecciona`, `ingresa`); `fr` (vous) flags `tu`, `ton`, `ta`, `tes`
+  and tú imperatives at the start of a sentence (`sélectionne`, `saisis`, `clique`, `choisis`, `ouvre`, `tape`,
+  `vérifie`); `de` (Sie) flags the capitalized `Sie`, `Ihr`, `Ihre`, `Ihrem`, `Ihren`, `Ihrer`, `Ihres`, `Ihnen`
+  (lowercase `sie` and `ihr` are fine); `it` (informal) flags the capitalized `Lei` and the formal imperatives
+  `prema`, `selezioni`, `inserisca`, `verifichi`, `scelga`, `digiti`, `immetta`. `en` and `pt-BR` have no rules.
+  Words match ASCII-case-insensitively unless listed capitalized; text inside `{placeholders}` is skipped. A
+  translator comment `#. sdl10n:register-ok` on the entry opts it out. The lists are heuristics; reviewers decide
+  whatever they miss, and a list change needs a fixture.
+- **Mnemonics.** A translation drops the `&X` mnemonic that the English source has (error). A *mnemonic group* is the
+  set of entries whose msgctxt has the same prefix up to its last `.` (`menu.file.open` and `menu.file.save` share
+  `menu.file`; msgctxts without a dot share the group ""). Within one group and one language, a letter used twice in
+  one string, or by two entries, is a warning. `&&` is a literal ampersand and does not count. Groups replace the
+  earlier "dialog tables declare their scope" idea: name the entries of one dialog or menu with one prefix.
+- **Length.** `#. sdl10n:maxlen=N` on the en entry limits each translation (and the English text) to N-1 UTF-16 units,
+  because N is the buffer size including the terminating NUL, as in the `NOTIFYICONDATAW` field sizes (tray tooltip
+  127, balloon title 63, balloon text 255). A longer translation is an error.
+- **Event Log messages (10.3).** An entry with `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` must exist in every locale, even
+  with `--allow-incomplete`, and each translation must use the `%N` placeholders of the English text in the same order.
 
 ### 9.3 Language selection
 
@@ -2014,6 +2432,13 @@ plural entries with every CLDR form of 9.4. Log lines, Event Log messages and JS
     configuration and `diag --check` output); `--no-anonymize` (CLI) or unchecking "Hide server names and file
     paths" (UI, checked by default) opts out.
   - The Event Log follows the same rule for remote paths except Event 1200, whose purpose is attribution (3.4.1).
+  - Call sites: every log call that formats a host name, a lookup name (`[host]:port`), a user name or a remote path
+    uses the typed specifier (`%Hs`, `%Us`, `%Rs`); local paths, error names, algorithm names and profile ids stay
+    `%s`. The restricted format language is not printf, so `sd_log` and `ssh_log` are not annotated. `ssh_log` formats
+    with its record level (`sd_log_format_level`), so a `%Rs` there follows the level rule above (round 19)
+    `_Printf_format_string_` (`/analyze` would reject the typed specifiers). `tests/logpriv/check-log-privacy.ps1`
+    (run by ctest) fails on an untyped host, user or path, on an unknown conversion, and on a conversion and
+    argument count that differ.
 - `OutputDebugStringW` sink at debug level when a debugger is attached (`IsDebuggerPresent`).
 
 ### 10.2 ETW (optional, Vista+)
@@ -2030,7 +2455,23 @@ v1.0 (can ship in v1.x without format changes).
   name stays the readable product name, D45; the publisher `LibreStatic` appears through the message file's version
   resource `CompanyName`),
   `EventMessageFile = <path>\shelldrive-host.exe`, `TypesSupported = 7`. Registered by the installer/`service install`.
-- One message table (`.mc` compiled by `mc.exe`), **English only**, few event IDs, each with `%1`… inserts:
+- One message table (`.mc` compiled by `mc.exe -u`), **localized into all six languages** (en, es, fr, pt-BR, it, de;
+  owner decision, supersedes the earlier English-only rule). The source of truth is the `svc` catalog
+  (`l10n/svc/<lang>.po`, 9.1): each event is a PO entry whose `#. sdl10n:event=<id>,<Severity>,<SYMBOL>` comment gives its
+  MessageId, severity and symbolic name. `sdl10n --out-mc` writes `svc_events.mc` at build time with one `Language=` block
+  per LANGID for every id. FormatMessage and the Event Viewer match the exact LANGID, so each language's one text is
+  emitted under every sublanguage LANGID that Windows defines for that primary language (SUBLANG_* in winnt.h), plus the
+  primary-neutral LANGID as a fallback: English 17 LANGIDs (0x0009 neutral, 0x0409, 0x0809, ...), Spanish 22 (0x000A,
+  0x040A, 0x080A, 0x0C0A, 0x2C0A, ... 0x540A), French 7 (0x000C, 0x040C, 0x080C, 0x0C0C, ...), Portuguese 3 (0x0016,
+  0x0416 pt-BR, 0x0816 pt-PT), Italian 3 (0x0010, 0x0410, 0x0810), German 6 (0x0007, 0x0407, 0x0807, 0x0C07, 0x1007,
+  0x1407): 58 `LanguageNames` entries. This mirrors the UI (`lang_from_langid` in sd_l10n: the primary language selects
+  the text, so es-ES and es-MX get the voseo text, pt-PT gets Brazilian Portuguese, as already documented in 9.3).
+  The build fails if any locale lacks an event, even with `--allow-incomplete`; every translation keeps the `%N`
+  placeholders of en in the same order. Event Log insert strings (the `%N` values: paths, SIDs, reason codes such as
+  `owner`, `reparse_point`, `acl`, `not_directory`, the profile and host names) are data and are not translated. The
+  unit test `unit.svc` (`evtmsg_module_resolves_every_id_in_every_langid`) resolves every id in every LANGID of the
+  table through FormatMessage on the built shelldrive-host.exe.
+  Event IDs, each with `%1`… inserts:
   1000 service started, 1001 stopped, 1100 global drive mounted (`%1` profile, `%2` target, `%3` host),
   1101 unmounted, 2100 mount failed (`%1` profile, `%2` code, `%3` detail), 2101 reconnecting, 2200 legacy algorithms
   negotiated, 3000 host key mismatch (`%1` host, `%2` expected fingerprint, `%3` received fingerprint), 3001 prompt
@@ -2039,7 +2480,8 @@ v1.0 (can ship in v1.x without format changes).
   waiting for user sign-in (`attach` mode, 1.3), 1200 change through a global drive (info; `%1` profile, `%2` user
   SID, `%3` account name, `%4` operation, `%5` remote path; coalesced per 60 s; D35/TM-R24), 3101 service pipe client
   refused or over quota (warning, at most once per SID per 10 min; `%1` SID, `%2` reason; TM-R25), 3102 untrusted
-  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`; TM-R27, TM-R34).
+  data folder or service input refused (`%1` path, `%2` reason: `owner`, `reparse_point`, `acl`, `not_directory` for a file where a folder belongs;
+  TM-R27, TM-R34).
   `ReportEventW` (XP+).
 - The agent does not write to the Event Log (users cannot register sources; its file log is enough).
 
@@ -2507,3 +2949,41 @@ entropy strings `com.librestatic.shelldrive/...` (3.8, 4.2-4.4); ProgID `LibreSt
 identity `com.librestatic.shelldrive.shellext`, `PublisherDisplayName` `LibreStatic` (8.6); ADMX namespace
 `com.librestatic.shelldrive.policies` (3.5); ETW provider `com.librestatic.shelldrive` (10.2); Event Log source stays
 `ShellDrive` (10.3).
+
+## Changelog: M3 IPC, prompt routing and snapshot contracts (2026-10-27)
+
+- Object scope rule: `Local\` for per-session objects (agent mutex and ready event, UI mutex, state section), `Global\`
+  for machine objects (2.1). The UI mutex and the state section are new named objects (`SD_IPC_OBJ_UI_MUTEX`,
+  `SD_IPC_OBJ_STATE`).
+- Prompt routing: initiator, then UI subscribers with delivery accounting, a 16-entry queue drained on subscribe,
+  enforced deadlines (120 s, 600 s on reconnect) and the four `prompt.closed` reasons (2.5).
+- Initiator disconnect cancels its prompts only when no UI is subscribed to `prompt` (2.5).
+- Methods: `hostkey.announced.accept` takes `{id, add_only}`; `status`, `config.reload`, `log.tail`, `selftest` and
+  `prompt.list` are in M3; `refresh`, `profile.test`, `mount.attach_info`, `cache.clear`, `diag.collect`, `update.*` and
+  `secret.*` are planned for later milestones (2.4).
+- Snapshot section layout v1 specified in 8.2.1; the agent producer and the Explorer data (drive icons, Network
+  locations) are in M3 (8.8). The shell DLL reader is a later package.
+
+## Changelog: M3 profile keys and CLI (2026-10-27)
+
+- 3.4.1 audit: every key the M3 backend review listed exists in the table under the name given (none is misspelled).
+  The keys are now parsed and validated in `src/sd_config/profile_m3.c`. Applied: `mount.shell_active_files` (derived
+  from `security.trust`), `mount.hide_dotfiles`, `mount.show_special`, `mount.case`, `mount.remote_case`,
+  `mount.umask`, `mount.map_readonly`, `mount.fsync_on_flush`, `mount.fs_name`, `mount.identity_probe`,
+  `cache.attr_ttl`, `cache.dir_ttl`, `cache.neg_ttl`, `cache.open_revalidate`, `cache.max_readahead`,
+  `mount.autostart`, `mount.autostart_sessions`, `mount.open_after_mount`. Parsed only (no consumer or refused by the
+  consumer, listed in docs/dev/m3-notes.md): `mount.exec_hint`, `mount.atomic_put`, `mount.strict_acl`,
+  `mount.remote_charset`, `mount.mark_of_the_web`, `mount.offline_hint_over_mb`, `security.crypto_backend`.
+  M5 (parsed and validated only): `profile.scope`, `profile.service_access`, `profile.service_access_write`,
+  `mount.allow_system`.
+- Spec issues fixed in 3.4.1: the value sets of `mount.autostart` (`no | logon | boot`, `boot` only for
+  `scope = service`) and `mount.autostart_sessions` (`any | console | remote`) were missing; `cache.open_revalidate`
+  accepts `never` (the vfs value -1); a zero TTL, read-ahead size or umask is refused, because the vfs reads 0 as
+  its default and cannot express "off"; `mount.remote_charset` and `mount.mark_of_the_web` are refused by the vfs
+  until a later milestone, so they are parsed only.
+- Default change: `mount.hide_dotfiles`, `mount.map_readonly` and `mount.fsync_on_flush` now reach the vfs with their
+  3.4.1 defaults (`yes`). The agent passed FALSE before M3, so dot files are hidden by default from this build on.
+- 6.1: the profile test command is `shelldrive profile test <p>` (the table of 3.4.1 and 6.1 list it under `profile`;
+  there is no top-level `test`). `cache clear` takes `<profile>|X:|mount-id` or `--all`, and `--force`.
+  `mount --open` is listed in the command line and implemented (it sends `open` to the agent).
+- 6.2: exit 3 has `not_mounted` (refresh of a drive without a file system) and exit 8 has `write_behind_pending`.

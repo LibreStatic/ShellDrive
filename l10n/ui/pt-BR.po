@@ -1,0 +1,2965 @@
+# ShellDrive UI strings, pt-BR (03 §9.1). msgctxt is the stable symbolic id; msgid is the English source.
+msgid ""
+msgstr ""
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=((n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+#. Tray icon tooltip when no drive is mounted.
+#. sdl10n:maxlen=128
+msgctxt "ui.tray.tip_none"
+msgid "ShellDrive: no drives mounted"
+msgstr "ShellDrive: nenhuma unidade montada"
+
+#. Tray icon tooltip with the number of mounted drives.
+#. sdl10n:maxlen=128
+#, plural-arg=count
+msgctxt "ui.tray.tip_count"
+msgid "ShellDrive: {count} drive mounted."
+msgid_plural "ShellDrive: {count} drives mounted."
+msgstr[0] "ShellDrive: {count} unidade montada."
+msgstr[1] "ShellDrive: {count} de unidades montadas."
+msgstr[2] "ShellDrive: {count} unidades montadas."
+
+#. Tray menu: opens the main window.
+msgctxt "ui.tray.open"
+msgid "Open ShellDrive"
+msgstr "Abrir o ShellDrive"
+
+#. Tray menu: quits the tray application. Mounts and the agent keep running.
+msgctxt "ui.tray.exit"
+msgid "Exit"
+msgstr "Sair"
+
+#. Tray menu: disabled item shown when no drive is mounted.
+msgctxt "ui.tray.no_drives"
+msgid "No drives mounted"
+msgstr "Nenhuma unidade montada"
+
+#. Tray menu item for one mounted drive. {drive} is a letter such as E:, {profile} is the profile name.
+msgctxt "ui.tray.unmount"
+msgid "Unmount {drive} ({profile})"
+msgstr "Desmontar {drive} ({profile})"
+
+#. Main window list column: profile name.
+msgctxt "ui.main.col_name"
+msgid "Name"
+msgstr "Nome"
+
+#. Main window list column: drive letter.
+msgctxt "ui.main.col_drive"
+msgid "Drive"
+msgstr "Unidade"
+
+#. Main window list column: connection state.
+msgctxt "ui.main.col_state"
+msgid "State"
+msgstr "Estado"
+
+#. Main window list column: storage backend (product names Dokany or WebDAV).
+msgctxt "ui.main.col_backend"
+msgid "Backend"
+msgstr "Backend"
+
+#. Main window list column: server host name.
+msgctxt "ui.main.col_server"
+msgid "Server"
+msgstr "Servidor"
+
+#. Main window button that mounts the selected connection.
+msgctxt "ui.main.mount"
+msgid "Mount"
+msgstr "Montar"
+
+#. Main window button that unmounts the selected drive.
+msgctxt "ui.main.unmount"
+msgid "Unmount"
+msgstr "Desmontar"
+
+#. Main window button that asks the agent for the mount list again.
+msgctxt "ui.main.refresh"
+msgid "Refresh"
+msgstr "Atualizar"
+
+#. Status bar summary of the mounts.
+#, plural-arg=count
+msgctxt "ui.status.count"
+msgid "{count} drive mounted."
+msgid_plural "{count} drives mounted."
+msgstr[0] "{count} unidade montada."
+msgstr[1] "{count} de unidades montadas."
+msgstr[2] "{count} unidades montadas."
+
+#. Status bar when the agent is not running.
+msgctxt "ui.status.agent_down"
+msgid "ShellDrive is not running. Click here to start it."
+msgstr "O ShellDrive não está em execução. Clique aqui para iniciá-lo."
+
+#. Mount state in the list: the agent is opening the connection.
+msgctxt "ui.state.connecting"
+msgid "Connecting"
+msgstr "Conectando"
+
+#. Mount state in the list: signing in to the server.
+msgctxt "ui.state.authenticating"
+msgid "Signing in"
+msgstr "Autenticando"
+
+#. Mount state in the list: the drive is mounted and usable.
+msgctxt "ui.state.mounted"
+msgid "Connected"
+msgstr "Conectado"
+
+#. Mount state in the list: the connection is lost and ShellDrive retries.
+msgctxt "ui.state.offline"
+msgid "Offline"
+msgstr "Sem conexão"
+
+#. Mount state in the list: the user has to sign in again.
+msgctxt "ui.state.auth_required"
+msgid "Sign-in required"
+msgstr "Login necessário"
+
+#. Mount state in the list: the mount failed.
+msgctxt "ui.state.failed"
+msgid "Failed"
+msgstr "Falhou"
+
+#. Mount state in the list: the drive is being unmounted.
+msgctxt "ui.state.unmounting"
+msgid "Disconnecting"
+msgstr "Desmontando"
+
+#. Mount state in the list: the drive is no longer mounted.
+msgctxt "ui.state.unmounted"
+msgid "Not mounted"
+msgstr "Desmontado"
+
+#. Balloon title for warnings from the agent.
+#. sdl10n:maxlen=64
+msgctxt "ui.warn.title"
+msgid "ShellDrive warning"
+msgstr "Aviso do ShellDrive"
+
+#. Balloon text: the connection uses outdated algorithms. {drive} is a drive letter such as E:.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.legacy"
+msgid "Drive {drive} uses outdated security. Open ShellDrive for details."
+msgstr "A unidade {drive} usa uma segurança desatualizada. Abra o ShellDrive para ver os detalhes."
+
+#. Balloon text: the connection is open to a known attack until the server is updated.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.terrapin"
+msgid "Drive {drive} is open to a known attack until the server is updated."
+msgstr "A unidade {drive} está exposta a um ataque conhecido até que o servidor seja atualizado."
+
+#. Balloon text: changes could not be written to the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.write_failed"
+msgid "Changes to drive {drive} could not be saved."
+msgstr "Não foi possível salvar as alterações da unidade {drive}."
+
+#. Balloon text for any other warning.
+#. sdl10n:maxlen=256
+msgctxt "ui.warn.generic"
+msgid "Drive {drive} needs your attention. Open ShellDrive for details."
+msgstr "A unidade {drive} precisa de atenção. Abra o ShellDrive para ver os detalhes."
+
+#. Message box when the agent refuses to unmount a drive.
+msgctxt "ui.error.unmount"
+msgid "Could not unmount drive {drive}."
+msgstr "Não foi possível desmontar a unidade {drive}."
+
+#. Prompt dialog title for a server whose host key is not known yet (first connection).
+msgctxt "ui.prompt.title_hostkey"
+msgid "Unknown server"
+msgstr "Servidor desconhecido"
+
+#. Prompt dialog title when a known server presents a different host key. ShellDrive never offers to accept it.
+msgctxt "ui.prompt.title_changed"
+msgid "Server identity changed"
+msgstr "A identidade do servidor mudou"
+
+#. Prompt dialog title for a password. {host} is the server name.
+msgctxt "ui.prompt.title_password"
+msgid "Sign in to {host}"
+msgstr "Entrar em {host}"
+
+#. Prompt dialog title for a key passphrase. {profile} is the profile name.
+msgctxt "ui.prompt.title_passphrase"
+msgid "Passphrase for {profile}"
+msgstr "Frase-senha de {profile}"
+
+#. Prompt dialog title for keyboard-interactive questions. {host} is the server name.
+msgctxt "ui.prompt.title_kbdint"
+msgid "Verification from {host}"
+msgstr "Verificação de {host}"
+
+#. Prompt dialog title when the server requires a password change. {host} is the server name.
+msgctxt "ui.prompt.title_change"
+msgid "Change your password on {host}"
+msgstr "Altere sua senha em {host}"
+
+#. Prompt dialog title for outdated security algorithms. {host} is the server name.
+msgctxt "ui.prompt.title_legacy"
+msgid "Outdated security on {host}"
+msgstr "Segurança desatualizada em {host}"
+
+#. Prompt dialog title for a proxy password. {profile} is the profile name.
+msgctxt "ui.prompt.title_proxy"
+msgid "Proxy password for {profile}"
+msgstr "Senha do proxy de {profile}"
+
+#. Prompt dialog: first line for a host key or keyboard prompt. {host} and {port} are the server and its port.
+msgctxt "ui.prompt.hostkey_intro"
+msgid "The authenticity of host {host} (port {port}) can't be established."
+msgstr "Não é possível verificar a autenticidade do host {host} (porta {port})."
+
+#. Prompt dialog: a jump host chain. {hop} is this hop (from 1) and {hops} the total number of hops.
+msgctxt "ui.prompt.hop_info"
+msgid "Jump host {hop} of {hops}."
+msgstr "Host de salto {hop} de {hops}."
+
+#. Prompt dialog: names the jump host the connection went through. {via} is that host name.
+msgctxt "ui.prompt.reach_via"
+msgid "Reached through jump host {via}."
+msgstr "Alcançado pelo host de salto {via}."
+
+#. Prompt dialog: the profile line, outside the server text. {profile} is the profile name.
+msgctxt "ui.prompt.profile_line"
+msgid "Profile: {profile}"
+msgstr "Perfil: {profile}"
+
+#. Prompt dialog: the server and user line of a sign-in prompt. {host} and {user} are the server and the account.
+msgctxt "ui.prompt.target_line"
+msgid "Server: {host}, user: {user}"
+msgstr "Servidor: {host}, usuário: {user}"
+
+#. Prompt dialog: key type of a new host key. {type} is the algorithm name, such as ED25519.
+msgctxt "ui.prompt.key_type"
+msgid "Key type: {type}"
+msgstr "Tipo de chave: {type}"
+
+#. Prompt dialog: label of the read-only fingerprint field. The mnemonic letter moves focus to the field.
+msgctxt "ui.prompt.field.fingerprint"
+msgid "&Fingerprint (SHA-256):"
+msgstr "Impressão &digital (SHA-256):"
+
+#. Prompt dialog: asks the user to check a new host key with the administrator.
+msgctxt "ui.prompt.hostkey_check"
+msgid "Ask the server's administrator to confirm this fingerprint before you trust it."
+msgstr "Peça ao administrador do servidor para confirmar esta impressão digital antes de confiar nela."
+
+#. Prompt dialog: explains the two trust buttons. Use the same words as the button captions.
+msgctxt "ui.prompt.hostkey_choice"
+msgid "Trust and connect saves this server's key for next time. Connect once uses it only for this connection."
+msgstr "Confiar e conectar salva a chave deste servidor para a próxima vez. Conectar uma vez usa a chave só nesta conexão."
+
+#. Prompt dialog: screen reader hint, because no button is the default for a trust decision.
+msgctxt "ui.prompt.choose_button"
+msgid "Choose a button to continue."
+msgstr "Escolha um botão para continuar."
+
+#. Prompt dialog button: trusts the new host key, saves it and connects.
+msgctxt "ui.prompt.btn.trust"
+msgid "&Trust and connect"
+msgstr "Con&fiar e conectar"
+
+#. Prompt dialog button: connects once with a new host key, without saving it.
+msgctxt "ui.prompt.btn.once"
+msgid "Connect &once"
+msgstr "Conectar &uma vez"
+
+#. Prompt dialog button: closes the dialog without answering the request (rejects it).
+msgctxt "ui.prompt.btn.cancel"
+msgid "&Cancel"
+msgstr "&Cancelar"
+
+#. Prompt dialog button for the host key change notice: closes it.
+msgctxt "ui.prompt.btn.close"
+msgid "Clos&e"
+msgstr "Fec&har"
+
+#. Prompt dialog button: sends the password or passphrase and connects.
+msgctxt "ui.prompt.btn.connect"
+msgid "Co&nnect"
+msgstr "Co&nectar"
+
+#. Prompt dialog button: sends the keyboard-interactive answers.
+msgctxt "ui.prompt.btn.verify"
+msgid "&Verify"
+msgstr "&Verificar"
+
+#. Prompt dialog button: sends the old and new passwords.
+msgctxt "ui.prompt.btn.change"
+msgid "Chan&ge password"
+msgstr "Alterar &senha"
+
+#. Prompt dialog button: continues with the outdated algorithms, once.
+msgctxt "ui.prompt.btn.anyway"
+msgid "Continue &anyway"
+msgstr "Continuar &mesmo assim"
+
+#. Prompt dialog: a host key change notice. {host} is the server name.
+msgctxt "ui.prompt.changed_intro"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection."
+msgstr "A identidade de {host} mudou. O ShellDrive interrompeu a conexão."
+
+#. Prompt dialog: warning under the host key change notice.
+msgctxt "ui.prompt.changed_warning"
+msgid "This can mean someone is intercepting the connection. Ask the server's administrator before you change anything."
+msgstr "Isso pode significar que alguém está interceptando a conexão. Consulte o administrador do servidor antes de mudar qualquer coisa."
+
+#. Prompt dialog: the key ShellDrive has stored. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.changed_stored"
+msgid "Stored key: {fingerprint}"
+msgstr "Chave salva: {fingerprint}"
+
+#. Prompt dialog: the key the server offers now. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.changed_offered"
+msgid "Offered key: {fingerprint}"
+msgstr "Chave oferecida: {fingerprint}"
+
+#. Prompt dialog: the server sent its own text (name, instruction) above the answer fields.
+msgctxt "ui.prompt.server_caption"
+msgid "From the server (ShellDrive does not check this text):"
+msgstr "Do servidor (o ShellDrive não verifica este texto):"
+
+#. Prompt dialog: appended to a password prompt after a host key was accepted in this connection.
+msgctxt "ui.prompt.just_accepted"
+msgid "You just accepted this server's identity. ShellDrive did not send your saved password automatically."
+msgstr "Você acabou de aceitar a identidade deste servidor. O ShellDrive não enviou sua senha salva automaticamente."
+
+#. Prompt dialog: the password is asked again because the connection was lost.
+msgctxt "ui.prompt.reconnect"
+msgid "The connection was lost. Enter your password to reconnect."
+msgstr "A conexão foi perdida. Digite sua senha para reconectar."
+
+#. Prompt dialog: label of the password field. The mnemonic letter moves focus to the field.
+msgctxt "ui.prompt.field.password"
+msgid "&Password:"
+msgstr "&Senha:"
+
+#. Prompt dialog: label of the key passphrase field.
+msgctxt "ui.prompt.field.passphrase"
+msgid "Passph&rase:"
+msgstr "Frase de c&have:"
+
+#. Prompt dialog: label of the proxy password field.
+msgctxt "ui.prompt.field.proxy"
+msgid "Pro&xy password:"
+msgstr "Senha do pro&xy:"
+
+#. Prompt dialog: label of the current password in a password change.
+msgctxt "ui.prompt.field.current"
+msgid "C&urrent password:"
+msgstr "Senha &atual:"
+
+#. Prompt dialog: label of the new password in a password change.
+msgctxt "ui.prompt.field.new"
+msgid "Ne&w password:"
+msgstr "&Nova senha:"
+
+#. Prompt dialog: label of the repeated new password in a password change.
+msgctxt "ui.prompt.field.retype"
+msgid "Re&type new password:"
+msgstr "Re&pita a nova senha:"
+
+#. Prompt dialog: check box that keeps the secret on this computer, shown only when it can be saved.
+msgctxt "ui.prompt.check.save"
+msgid "&Save on this computer"
+msgstr "Sal&var neste computador"
+
+#. Prompt dialog: shows the fingerprint of the key that unlocks a key file. {fingerprint} is a SHA256 fingerprint.
+msgctxt "ui.prompt.key_fingerprint"
+msgid "Key fingerprint: {fingerprint}"
+msgstr "Impressão digital da chave: {fingerprint}"
+
+#. Prompt dialog: the server asks a password change. {user} is the account name.
+msgctxt "ui.prompt.change_intro"
+msgid "The server asks you to choose a new password for {user}."
+msgstr "O servidor pede que você escolha uma nova senha para {user}."
+
+#. Prompt dialog: the new passwords differ.
+msgctxt "ui.prompt.mismatch"
+msgid "The new passwords do not match."
+msgstr "As novas senhas não coincidem."
+
+#. Prompt dialog: a field is empty.
+msgctxt "ui.prompt.empty"
+msgid "Fill in every field."
+msgstr "Preencha todos os campos."
+
+#. Prompt dialog: the answer could not be queued for the agent; the dialog stays open.
+msgctxt "ui.prompt.send_failed"
+msgid "ShellDrive could not send your answer. Try again."
+msgstr "O ShellDrive não conseguiu enviar sua resposta. Tente novamente."
+
+#. Prompt dialog: label above one keyboard-interactive answer field. {n} is this field and {total} the count.
+msgctxt "ui.prompt.kbd_answer"
+msgid "Answer {n} of {total}:"
+msgstr "Resposta {n} de {total}:"
+
+#. Prompt dialog: the server asks questions. {host} is the server name and {port} its port.
+msgctxt "ui.prompt.kbdint_intro"
+msgid "The server {host} (port {port}) asks you to answer these questions."
+msgstr "O servidor {host} (porta {port}) pede que você responda estas perguntas."
+
+#. Prompt dialog: a proxy needs a password. {proxy_host} and {proxy_port} are the proxy, {host} the server.
+msgctxt "ui.prompt.proxy_intro"
+msgid "The proxy {proxy_host}:{proxy_port} needs a password to reach {host}."
+msgstr "O proxy {proxy_host}:{proxy_port} precisa de uma senha para alcançar {host}."
+
+#. Prompt dialog: the proxy user name. {user} is the user name.
+msgctxt "ui.prompt.proxy_user"
+msgid "Proxy user: {user}"
+msgstr "Usuário do proxy: {user}"
+
+#. Prompt dialog: outdated algorithms. {host} is the server, {algorithms} a list such as hmac-sha1, 3des-cbc.
+msgctxt "ui.prompt.legacy_intro"
+msgid "{host} uses outdated security algorithms: {algorithms}."
+msgstr "{host} usa algoritmos de segurança desatualizados: {algorithms}."
+
+#. Prompt dialog: explains the outdated algorithms warning.
+msgctxt "ui.prompt.legacy_text"
+msgid "The connection works, but these algorithms are easier to attack. Continue only if you trust this server."
+msgstr "A conexão funciona, mas estes algoritmos são mais fáceis de atacar. Continue só se confiar neste servidor."
+
+#. Prompt dialog: remaining time, shown as text only. {count} is the number of minutes, at least 1.
+#, plural-arg=count
+msgctxt "ui.prompt.deadline"
+msgid "Time left to answer: about {count} minute."
+msgid_plural "Time left to answer: about {count} minutes."
+msgstr[0] "Tempo restante para responder: cerca de {count} minuto."
+msgstr[1] "Tempo restante para responder: cerca de {count} minutos."
+msgstr[2] "Tempo restante para responder: cerca de {count} minutos."
+
+#. Tray balloon when a prompt expired without an answer. {profile} is the profile name.
+msgctxt "ui.prompt.timeout"
+msgid "A sign-in for {profile} timed out. Open ShellDrive to try again."
+msgstr "A autenticação em {profile} expirou. Abra o ShellDrive para tentar de novo."
+
+#. Property sheet tab: general connection settings.
+msgctxt "ui.tab.general"
+msgid "General"
+msgstr "Geral"
+
+#. Property sheet tab: how to sign in.
+msgctxt "ui.tab.auth"
+msgid "Authentication"
+msgstr "Autenticação"
+
+#. Property sheet tab: jump hosts, proxy and connection count.
+msgctxt "ui.tab.conn"
+msgid "Connection"
+msgstr "Conexão"
+
+#. Property sheet tab: the drive that is shown.
+msgctxt "ui.tab.mount"
+msgid "Mount"
+msgstr "Montagem"
+
+#. Property sheet tab: algorithms and host keys.
+msgctxt "ui.tab.security"
+msgid "Security"
+msgstr "Segurança"
+
+#. Caption of the editor opened by New.
+msgctxt "ui.editor.caption_new"
+msgid "New connection"
+msgstr "Nova conexão"
+
+#. Caption of the editor opened by Edit.
+msgctxt "ui.editor.caption_edit"
+msgid "Edit connection"
+msgstr "Editar conexão"
+
+#. Caption of the quick mount dialog (no saved profile).
+msgctxt "ui.editor.caption_adhoc"
+msgid "Quick mount"
+msgstr "Montagem rápida"
+
+#. General page: one line of help above the fields.
+msgctxt "ui.general.intro"
+msgid "Where the server is and which folder to show. Leave the user name empty to use your Windows user name."
+msgstr "Informe onde fica o servidor e a pasta a mostrar. Deixe o nome de usuário em branco para usar o do Windows."
+
+#. General page: the name of the saved connection.
+msgctxt "ui.general.name"
+msgid "Name"
+msgstr "Nome"
+
+#. General page: server name or address.
+msgctxt "ui.general.host"
+msgid "Server address"
+msgstr "Endereço do servidor"
+
+#. General page: SSH port number.
+msgctxt "ui.general.port"
+msgid "Port"
+msgstr "Porta"
+
+#. General page: user name on the server.
+msgctxt "ui.general.user"
+msgid "User name"
+msgstr "Nome de usuário"
+
+#. General page: folder on the server that the drive shows.
+msgctxt "ui.general.remote_path"
+msgid "Remote folder (empty = the login folder)"
+msgstr "Pasta remota (vazia = pasta inicial)"
+
+#. Authentication page: key file sign-in check box.
+msgctxt "ui.auth.method_publickey"
+msgid "Use a &key file"
+msgstr "Usar um &arquivo de chave"
+
+#. Authentication page: keyboard-interactive check box.
+msgctxt "ui.auth.method_kbdint"
+msgid "Use &questions from the server (keyboard-interactive)"
+msgstr "Usar &perguntas do servidor (keyboard-interactive)"
+
+#. Authentication page: password sign-in check box.
+msgctxt "ui.auth.method_password"
+msgid "Use a &password"
+msgstr "Usar uma &senha"
+
+#. Authentication page: label of the key file path.
+msgctxt "ui.auth.identity"
+msgid "Key file"
+msgstr "Arquivo de chave"
+
+#. Authentication page: button that opens a file picker for the key file.
+msgctxt "ui.auth.browse"
+msgid "&Browse…"
+msgstr "Pro&curar…"
+
+#. Authentication page: label of the certificate file.
+msgctxt "ui.auth.certificate"
+msgid "Certificate file (optional)"
+msgstr "Arquivo de certificado (opcional)"
+
+#. Authentication page: label of the key agent list.
+msgctxt "ui.auth.agent"
+msgid "Key agent"
+msgstr "Agente de chaves"
+
+#. Authentication page: label of the identities-only list.
+msgctxt "ui.auth.identities_only"
+msgid "Offer only the selected keys (recommended)"
+msgstr "Oferecer somente as chaves selecionadas (recomendado)"
+
+#. Authentication page: keep the password on this computer.
+msgctxt "ui.auth.save_password"
+msgid "&Save the password on this computer"
+msgstr "Salvar a senha &neste computador"
+
+#. Authentication page: remember the password for reconnects.
+msgctxt "ui.auth.cache_secrets"
+msgid "Re&member the password for reconnects"
+msgstr "Lembrar a senha para reconec&tar"
+
+#. Connection page: one line of help above the fields.
+msgctxt "ui.conn.intro"
+msgid "How to reach the server: a jump host, a proxy and the number of connections."
+msgstr "Como alcançar o servidor: um host de salto, um proxy e o número de conexões."
+
+#. Connection page: jump host list (profile names or host names).
+msgctxt "ui.conn.jump"
+msgid "Jump hosts (profile names or host names, separated by commas)"
+msgstr "Hosts de salto (nomes de perfil ou de host, separados por vírgulas)"
+
+#. Connection page: proxy type list.
+msgctxt "ui.conn.proxy_kind"
+msgid "Proxy"
+msgstr "Proxy"
+
+#. Connection page: proxy server name or address.
+msgctxt "ui.conn.proxy_host"
+msgid "Proxy server"
+msgstr "Servidor proxy"
+
+#. Connection page: proxy port number.
+msgctxt "ui.conn.proxy_port"
+msgid "Proxy port"
+msgstr "Porta do proxy"
+
+#. Connection page: proxy user name; its password is asked when needed.
+msgctxt "ui.conn.proxy_user"
+msgid "Proxy user name (the password is asked when needed)"
+msgstr "Usuário do proxy (a senha é pedida quando necessário)"
+
+#. Connection page: proxy authentication list.
+msgctxt "ui.conn.proxy_auth"
+msgid "Proxy authentication"
+msgstr "Autenticação do proxy"
+
+#. Connection page: number of parallel connections list.
+msgctxt "ui.conn.connections"
+msgid "Parallel connections (1 to 4; use 1 with two-step sign-in)"
+msgstr "Conexões em paralelo (1 a 4; use 1 com autenticação em duas etapas)"
+
+#. Connection page: keepalive interval in milliseconds.
+msgctxt "ui.conn.keepalive"
+msgid "Keepalive interval in milliseconds (0 = default)"
+msgstr "Intervalo de keepalive em milissegundos (0 = padrão)"
+
+#. Connection page: connect timeout in milliseconds.
+msgctxt "ui.conn.connect_timeout"
+msgid "Connect timeout in milliseconds (0 = default)"
+msgstr "Tempo limite de conexão em milissegundos (0 = padrão)"
+
+#. Mount page: drive letter list; auto lets Windows choose.
+msgctxt "ui.mount.target"
+msgid "Drive letter"
+msgstr "Letra da unidade"
+
+#. Mount page: storage backend list.
+msgctxt "ui.mount.backend"
+msgid "Backend"
+msgstr "Backend"
+
+#. Mount page: read-only check box (mount group letters must be unique).
+msgctxt "ui.mount.read_only"
+msgid "&Read only"
+msgstr "Somente &leitura"
+
+#. Mount page: write mode list.
+msgctxt "ui.mount.write_mode"
+msgid "Writes"
+msgstr "Gravações"
+
+#. Mount page: symbolic link handling list.
+msgctxt "ui.mount.symlinks"
+msgid "Symbolic links"
+msgstr "Links simbólicos"
+
+#. Mount page: label of the drive in Explorer.
+msgctxt "ui.mount.label"
+msgid "Drive label"
+msgstr "Nome da unidade"
+
+#. Mount page: how long to wait for the server when offline, in milliseconds.
+msgctxt "ui.mount.offline_wait"
+msgid "Wait for the server when offline, in milliseconds (0 = default)"
+msgstr "Aguardar o servidor quando offline, em milissegundos (0 = padrão)"
+
+#. Mount page: adds a Network locations entry in This PC (mount group letters must be unique).
+msgctxt "ui.mount.network_location"
+msgid "&Show in This PC under Network locations"
+msgstr "&Mostrar em Este Computador, em Locais de rede"
+
+#. Mount page: size of the disk cache in megabytes.
+msgctxt "ui.mount.disk_cache"
+msgid "Disk cache size in MB (0 = off)"
+msgstr "Tamanho do cache em disco em MB (0 = desativado)"
+
+#. Drive letter list: first entry, Windows chooses the letter.
+msgctxt "ui.target.auto"
+msgid "Choose automatically"
+msgstr "Escolher automaticamente"
+
+#. Backend list: Windows chooses the backend.
+msgctxt "ui.backend.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Backend list: the Dokany driver (a product name).
+msgctxt "ui.backend.dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+#. Backend list: WebDAV (a protocol name).
+msgctxt "ui.backend.webdav"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+#. Writes list: wait for the server on every write (default).
+msgctxt "ui.write.through"
+msgid "Wait for the server to confirm each write (safer)"
+msgstr "Aguardar a confirmação do servidor em cada gravação (mais seguro)"
+
+#. Writes list: acknowledge writes before the server confirms them.
+msgctxt "ui.write.behind"
+msgid "Write in the background (faster; recent changes can be lost if the connection drops)"
+msgstr "Gravar em segundo plano (mais rápido; mudanças recentes podem ser perdidas se a conexão cair)"
+
+#. Symbolic links list: links must stay inside the remote folder (default).
+msgctxt "ui.symlinks.inside"
+msgid "Stay inside the remote folder"
+msgstr "Permanecer dentro da pasta remota"
+
+#. Symbolic links list: follow links.
+msgctxt "ui.symlinks.follow"
+msgid "Follow"
+msgstr "Seguir"
+
+#. Symbolic links list: hide links.
+msgctxt "ui.symlinks.hide"
+msgid "Hide"
+msgstr "Ocultar"
+
+#. Security page: explains the outdated algorithms setting (03 7.6 warning).
+msgctxt "ui.security.legacy_text"
+msgid "Some servers still offer old encryption methods. They work, but they are easier to attack."
+msgstr "Alguns servidores ainda oferecem métodos de criptografia antigos. Eles funcionam, mas são mais fáceis de atacar."
+
+#. Security page: outdated algorithms list.
+msgctxt "ui.security.legacy"
+msgid "Outdated algorithms"
+msgstr "Algoritmos desatualizados"
+
+#. Security page: optional host key name.
+msgctxt "ui.security.host_key_alias"
+msgid "Host key name (optional)"
+msgstr "Nome da chave do host (opcional)"
+
+#. Security page: what to do when the server offers new host keys.
+msgctxt "ui.security.update_host_keys"
+msgid "When the server offers new host keys"
+msgstr "Quando o servidor oferecer novas chaves de host"
+
+#. Security page: refuse servers open to the Terrapin attack (group ui.security).
+msgctxt "ui.security.refuse_terrapin"
+msgid "&Refuse servers that are open to the Terrapin attack"
+msgstr "&Recusar servidores expostos ao ataque Terrapin"
+
+#. Outdated algorithms list: allow silently.
+msgctxt "ui.legacy.allow"
+msgid "Allow"
+msgstr "Permitir"
+
+#. Outdated algorithms list: warn once per server (default).
+msgctxt "ui.legacy.warn"
+msgid "Warn (default)"
+msgstr "Avisar (padrão)"
+
+#. Outdated algorithms list: ask before the connection starts.
+msgctxt "ui.legacy.ask"
+msgid "Ask first"
+msgstr "Perguntar antes"
+
+#. Outdated algorithms list: refuse outdated algorithms.
+msgctxt "ui.legacy.refuse"
+msgid "Refuse"
+msgstr "Recusar"
+
+#. Host key update list: ask the user.
+msgctxt "ui.hku.ask"
+msgid "Ask me"
+msgstr "Me perguntar"
+
+#. Host key update list: save new keys automatically.
+msgctxt "ui.hku.save"
+msgid "Save them automatically"
+msgstr "Salvar automaticamente"
+
+#. Host key update list: ignore the new keys.
+msgctxt "ui.hku.ignore"
+msgid "Ignore"
+msgstr "Ignorar"
+
+#. Key agent list: Automatic.
+msgctxt "ui.agent.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Key agent list: the Pageant key agent (a product name).
+msgctxt "ui.agent.pageant"
+msgid "Pageant"
+msgstr "Pageant"
+
+#. Key agent list: the OpenSSH agent of Windows.
+msgctxt "ui.agent.openssh"
+msgid "OpenSSH agent"
+msgstr "Agente OpenSSH"
+
+#. Key agent list: no agent.
+msgctxt "ui.agent.none"
+msgid "None"
+msgstr "Nenhum"
+
+#. Identities-only list: the default when no setting is saved.
+msgctxt "ui.idonly.unset"
+msgid "Automatic (on when a key file is set)"
+msgstr "Automático (ativo quando há um arquivo de chave)"
+
+#. Identities-only list: yes.
+msgctxt "ui.idonly.yes"
+msgid "Yes"
+msgstr "Sim"
+
+#. Identities-only list: no.
+msgctxt "ui.idonly.no"
+msgid "No"
+msgstr "Não"
+
+#. Proxy list: no proxy.
+msgctxt "ui.proxy.none"
+msgid "No proxy"
+msgstr "Sem proxy"
+
+#. Proxy list: HTTP proxy (a protocol name).
+msgctxt "ui.proxy.http"
+msgid "HTTP proxy"
+msgstr "Proxy HTTP"
+
+#. Proxy list: SOCKS5 proxy (a protocol name).
+msgctxt "ui.proxy.socks5"
+msgid "SOCKS5 proxy"
+msgstr "Proxy SOCKS5"
+
+#. Proxy list: the proxy of the Windows settings.
+msgctxt "ui.proxy.system"
+msgid "Use the system proxy settings"
+msgstr "Usar as configurações de proxy do sistema"
+
+#. Proxy authentication list: automatic.
+msgctxt "ui.pauth.auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Proxy authentication list: basic authentication.
+msgctxt "ui.pauth.basic"
+msgid "Basic"
+msgstr "Básica"
+
+#. Proxy authentication list: Negotiate, the Windows sign-in.
+msgctxt "ui.pauth.negotiate"
+msgid "Negotiate (Windows sign-in)"
+msgstr "Negotiate (login do Windows)"
+
+#. Proxy authentication list: no authentication.
+msgctxt "ui.pauth.none"
+msgid "None"
+msgstr "Nenhuma"
+
+#. Main window button: new connection.
+msgctxt "ui.main.new"
+msgid "New"
+msgstr "Nova"
+
+#. Main window button: edit the selected connection.
+msgctxt "ui.main.edit"
+msgid "Edit"
+msgstr "Editar"
+
+#. Main window button: copy the selected connection.
+msgctxt "ui.main.duplicate"
+msgid "Duplicate"
+msgstr "Duplicar"
+
+#. Main window button: delete the selected connection.
+msgctxt "ui.main.delete"
+msgid "Delete"
+msgstr "Excluir"
+
+#. Main window button: mount a connection that is not saved. The ellipsis marks a dialog.
+msgctxt "ui.main.quick_mount"
+msgid "Quick mount…"
+msgstr "Montagem rápida…"
+
+#. Main window button: show the selected mounted drive in Explorer.
+msgctxt "ui.main.open"
+msgid "Open"
+msgstr "Abrir"
+
+#. Main window state column: the connection is saved but not mounted.
+msgctxt "ui.main.not_mounted"
+msgid "Not mounted"
+msgstr "Não montada"
+
+#. Shown when a connection cannot be written to the profile store.
+msgctxt "ui.error.save"
+msgid "The connection could not be saved. Check that you can write to your ShellDrive folder."
+msgstr "Não foi possível salvar a conexão. Verifique se é possível gravar na pasta do ShellDrive."
+
+#. Shown when a connection cannot be deleted.
+msgctxt "ui.error.delete"
+msgid "The connection could not be deleted."
+msgstr "Não foi possível excluir a conexão."
+
+#. Shown when a mount request does not start in the agent.
+msgctxt "ui.error.mount"
+msgid "ShellDrive could not start this connection. Check the settings, then try again."
+msgstr "O ShellDrive não conseguiu iniciar esta conexão. Verifique as configurações e tente de novo."
+
+#. Editor error: the name is empty.
+msgctxt "ui.error.name"
+msgid "Enter a name for this connection."
+msgstr "Digite um nome para esta conexão."
+
+#. Editor error: the server address is empty.
+msgctxt "ui.error.host"
+msgid "Enter the server address."
+msgstr "Digite o endereço do servidor."
+
+#. Editor error: the port is not 1 to 65535.
+msgctxt "ui.error.port"
+msgid "Enter a port number from 1 to 65535."
+msgstr "Digite um número de porta de 1 a 65535."
+
+#. Editor error: a number field holds text.
+msgctxt "ui.error.number"
+msgid "Enter a whole number in this field."
+msgstr "Digite um número inteiro neste campo."
+
+#. Editor error: the parallel connections are not 1 to 4.
+msgctxt "ui.error.connections"
+msgid "Choose 1 to 4 parallel connections."
+msgstr "Escolha de 1 a 4 conexões em paralelo."
+
+#. Editor error: no sign-in method is selected.
+msgctxt "ui.error.methods"
+msgid "Choose at least one way to sign in."
+msgstr "Escolha pelo menos uma forma de autenticação."
+
+#. Editor error: a proxy is selected without a server.
+msgctxt "ui.error.proxy_host"
+msgid "Enter the proxy server address."
+msgstr "Digite o endereço do servidor proxy."
+
+#. Editor error: the proxy port is not 1 to 65535.
+msgctxt "ui.error.proxy_port"
+msgid "Enter a proxy port number from 1 to 65535."
+msgstr "Digite uma porta de proxy de 1 a 65535."
+
+#. Editor error: sd_config rejects a value that has no field of its own.
+msgctxt "ui.error.other"
+msgid "This setting is not valid. Check the value."
+msgstr "Esta configuração não é válida. Verifique o valor."
+
+#. File picker filter: all files.
+msgctxt "ui.file.any"
+msgid "All files"
+msgstr "Todos os arquivos"
+
+#. Title of the delete confirmation.
+msgctxt "ui.delete.title"
+msgid "Delete connection"
+msgstr "Excluir conexão"
+
+#. Delete confirmation text. {name} is the connection name.
+msgctxt "ui.delete.text"
+msgid "Delete the connection {name}? Its saved settings are removed. Drives that are mounted stay mounted."
+msgstr "Excluir a conexão {name}? As configurações salvas serão removidas. As unidades montadas continuam montadas."
+
+#. Delete confirmation: the destructive button.
+msgctxt "ui.delete.yes"
+msgid "Delete"
+msgstr "Excluir"
+
+#. Delete confirmation: keeps the connection.
+msgctxt "ui.delete.no"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Title of the .sdmount confirmation (the product name).
+msgctxt "ui.mount_file.title"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+#. Shown for an .sdmount file that is invalid or names no profile of the user (03 8.1).
+msgctxt "ui.mount_file.invalid"
+msgid "This file does not refer to one of your ShellDrive connections."
+msgstr "Este arquivo não se refere a nenhuma das suas conexões do ShellDrive."
+
+#. Question for a .sdmount file that came from another computer. {name} is the connection.
+msgctxt "ui.mount_file.mark"
+msgid "This file came from another computer. Connect to {name}?"
+msgstr "Este arquivo veio de outro computador. Conectar a {name}?"
+
+#. Button of the .sdmount question: connect.
+msgctxt "ui.mount_file.connect"
+msgid "Connect"
+msgstr "Conectar"
+
+#. Button of the .sdmount question: do nothing.
+msgctxt "ui.mount_file.cancel"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Main window button: import connections from PuTTY or OpenSSH. The ellipsis marks a dialog.
+msgctxt "ui.main.import"
+msgid "Import…"
+msgstr "Importar…"
+
+#. Title of the import dialog.
+msgctxt "ui.import.title"
+msgid "Import connections"
+msgstr "Importar conexões"
+
+#. Import dialog: how the preview works.
+msgctxt "ui.import.intro"
+msgid "Read connections from PuTTY or from your OpenSSH config file. Check the ones to add. Connections that already exist are not checked."
+msgstr "Leia as conexões do PuTTY ou do arquivo de configuração do OpenSSH. Marque as que deseja adicionar; as que já existem não vêm marcadas."
+
+#. Import dialog: read the PuTTY saved sessions.
+msgctxt "ui.import.putty"
+msgid "PuTTY sessions"
+msgstr "Sessões do PuTTY"
+
+#. Import dialog: read the OpenSSH client configuration file.
+msgctxt "ui.import.openssh"
+msgid "OpenSSH config"
+msgstr "Configuração do OpenSSH"
+
+#. Import dialog: writes the checked connections.
+msgctxt "ui.import.run"
+msgid "Import"
+msgstr "Importar"
+
+#. Import dialog: closes without writing.
+msgctxt "ui.import.close"
+msgid "Close"
+msgstr "Fechar"
+
+#. Import list column: connection name.
+msgctxt "ui.import.col_name"
+msgid "Name"
+msgstr "Nome"
+
+#. Import list column: server name or address.
+msgctxt "ui.import.col_server"
+msgid "Server"
+msgstr "Servidor"
+
+#. Import list column: user name.
+msgctxt "ui.import.col_user"
+msgid "User"
+msgstr "Usuário"
+
+#. Import list column: why a row is unchecked or skipped.
+msgctxt "ui.import.col_note"
+msgid "Note"
+msgstr "Observação"
+
+#. Import list note: a connection with the same host, port and user exists.
+msgctxt "ui.import.note_duplicate"
+msgid "Already saved"
+msgstr "Já salva"
+
+#. Import list note: an imported key file is the only key offered (D37).
+msgctxt "ui.import.note_only_key"
+msgid "Only this key is offered"
+msgstr "Somente esta chave é oferecida"
+
+#. Import list note: an entry the importer does not support. {item} is the setting.
+msgctxt "ui.import.note_skipped"
+msgid "Not imported: {item}"
+msgstr "Não importado: {item}"
+
+#. Shown when the PuTTY sessions cannot be read.
+msgctxt "ui.import.error_putty"
+msgid "No PuTTY sessions could be read."
+msgstr "Não foi possível ler as sessões do PuTTY."
+
+#. Shown when the OpenSSH config file cannot be read.
+msgctxt "ui.import.error_openssh"
+msgid "The OpenSSH config file could not be read."
+msgstr "Não foi possível ler o arquivo de configuração do OpenSSH."
+
+#. Host key manager window title.
+msgctxt "ui.hostkeys.title"
+msgid "Host keys"
+msgstr "Chaves de host"
+
+#. Host key manager tab: keys stored in the known hosts files.
+msgctxt "ui.hostkeys.tab_known"
+msgid "Known keys"
+msgstr "Chaves conhecidas"
+
+#. Host key manager tab: keys the server offered to add or remove (UpdateHostKeys).
+msgctxt "ui.hostkeys.tab_announced"
+msgid "Announced keys"
+msgstr "Chaves anunciadas"
+
+#. Host key list column: host name.
+msgctxt "ui.hostkeys.col_host"
+msgid "Host"
+msgstr "Host"
+
+#. Host key list column: TCP port.
+msgctxt "ui.hostkeys.col_port"
+msgid "Port"
+msgstr "Porta"
+
+#. Host key list column: SSH key type.
+msgctxt "ui.hostkeys.col_type"
+msgid "Key type"
+msgstr "Tipo de chave"
+
+#. Host key list column: SHA256 fingerprint of the key.
+msgctxt "ui.hostkeys.col_fp"
+msgid "SHA256 fingerprint"
+msgstr "Impressão digital SHA256"
+
+#. Host key list column: the store the key comes from.
+msgctxt "ui.hostkeys.col_source"
+msgid "Source"
+msgstr "Origem"
+
+#. Announced keys column: whether the key is added or removed.
+msgctxt "ui.hostkeys.col_change"
+msgid "Change"
+msgstr "Alteração"
+
+#. Host key list: the host name of a hashed known_hosts entry (it cannot be read).
+msgctxt "ui.hostkeys.hashed"
+msgid "(hashed)"
+msgstr "(com hash)"
+
+#. Host key list: source of a key in the machine store (read-only here).
+msgctxt "ui.hostkeys.src_machine"
+msgid "Machine (read-only)"
+msgstr "Máquina (somente leitura)"
+
+#. Host key list: source of a key in the user store.
+msgctxt "ui.hostkeys.src_user"
+msgid "ShellDrive (user)"
+msgstr "ShellDrive (usuário)"
+
+#. Announced keys: the key is added to the store.
+msgctxt "ui.hostkeys.action_add"
+msgid "Add"
+msgstr "Adicionar"
+
+#. Announced keys: the key is removed from the store.
+msgctxt "ui.hostkeys.action_remove"
+msgid "Remove"
+msgstr "Remover"
+
+#. Host key manager button: removes the selected key from the user store.
+msgctxt "ui.hostkeys.btn_remove"
+msgid "Remove"
+msgstr "Remover"
+
+#. Host key manager button: copies the PuTTY host keys into the user store.
+msgctxt "ui.hostkeys.btn_import_putty"
+msgid "Import from PuTTY"
+msgstr "Importar do PuTTY"
+
+#. Host key manager button: opens a known_hosts file and copies its keys.
+msgctxt "ui.hostkeys.btn_import_openssh"
+msgid "Import from OpenSSH…"
+msgstr "Importar do OpenSSH…"
+
+#. Announced keys button: adds the proven keys of the announcement.
+msgctxt "ui.hostkeys.btn_add"
+msgid "Add keys"
+msgstr "Adicionar chaves"
+
+#. Announced keys button: adds the keys and removes the ones the server no longer uses.
+msgctxt "ui.hostkeys.btn_add_all"
+msgid "Add and remove"
+msgstr "Adicionar e remover"
+
+#. Confirmation before a key is removed. {host} is the host name, {type} the key type.
+msgctxt "ui.hostkeys.confirm_remove"
+msgid "Remove the {type} key of {host} from your known hosts? ShellDrive asks again the next time it connects to {host}. If you did not expect the key to change, someone may be intercepting your connection."
+msgstr "Remover a chave {type} de {host} dos seus hosts conhecidos? O ShellDrive vai perguntar de novo na próxima conexão com {host}. Se você não esperava que a chave mudasse, alguém pode estar interceptando sua conexão."
+
+#. Confirmation before an announcement that also removes keys is applied.
+msgctxt "ui.hostkeys.confirm_accept_removals"
+msgid "Also remove the keys the server no longer uses? They are deleted from your known hosts."
+msgstr "Remover também as chaves que o servidor não usa mais? Elas serão apagadas dos seus hosts conhecidos."
+
+#. File filter name in the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.file_all"
+msgid "All files"
+msgstr "Todos os arquivos"
+
+#. Title of the OpenSSH known_hosts file picker.
+msgctxt "ui.hostkeys.pick_title"
+msgid "Choose an OpenSSH known_hosts file"
+msgstr "Escolha um arquivo known_hosts do OpenSSH"
+
+#. Host key manager: the known hosts files could not be opened.
+msgctxt "ui.hostkeys.store_failed"
+msgid "The known hosts could not be opened."
+msgstr "Não foi possível abrir os hosts conhecidos."
+
+#. Host key manager: a key was removed.
+msgctxt "ui.hostkeys.removed"
+msgid "The host key was removed."
+msgstr "A chave do host foi removida."
+
+#. Host key manager: a key could not be removed. {code} is the error name.
+msgctxt "ui.hostkeys.remove_failed"
+msgid "The host key could not be removed ({code})."
+msgstr "Não foi possível remover a chave do host ({code})."
+
+#. Host key manager: the import failed. {code} is the error name.
+msgctxt "ui.hostkeys.import_failed"
+msgid "The host keys could not be imported ({code})."
+msgstr "Não foi possível importar as chaves ({code})."
+
+#. Host key manager: the import source had no keys.
+msgctxt "ui.hostkeys.import_none"
+msgid "No host keys were found in that source."
+msgstr "Nenhuma chave foi encontrada nessa origem."
+
+#. Host key manager: number of keys imported.
+#, plural-arg=count
+msgctxt "ui.hostkeys.imported"
+msgid "{count} host key imported."
+msgid_plural "{count} host keys imported."
+msgstr[0] "{count} chave importada."
+msgstr[1] "{count} chaves importadas."
+msgstr[2] "{count} chaves importadas."
+
+#. Host key manager: the agent is not running, so announcements cannot be read.
+msgctxt "ui.hostkeys.agent_down"
+msgid "The agent is not running."
+msgstr "O agente não está em execução."
+
+#. Host key manager: the announcements could not be read.
+msgctxt "ui.hostkeys.announced_failed"
+msgid "The announced keys could not be read."
+msgstr "Não foi possível ler as chaves anunciadas."
+
+#. Host key manager: applying an announcement failed. {code} is the error name.
+msgctxt "ui.hostkeys.accept_failed"
+msgid "The host keys could not be applied ({code})."
+msgstr "Não foi possível aplicar as chaves ({code})."
+
+#. Host key manager: the request could not be queued for the agent.
+msgctxt "ui.hostkeys.accept_failed_queue"
+msgid "The request could not be sent to the agent. Try again."
+msgstr "Não foi possível enviar o pedido ao agente. Tente novamente."
+
+#. Host key manager: an announcement was applied. {host} is the host name.
+msgctxt "ui.hostkeys.accepted"
+msgid "Host keys for {host} were updated."
+msgstr "As chaves de {host} foram atualizadas."
+
+#. Host key manager status line: number of keys listed.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_known"
+msgid "{count} host key."
+msgid_plural "{count} host keys."
+msgstr[0] "{count} chave."
+msgstr[1] "{count} chaves."
+msgstr[2] "{count} chaves."
+
+#. Host key manager status line: number of announced keys.
+#, plural-arg=count
+msgctxt "ui.hostkeys.status_announced"
+msgid "{count} announced key."
+msgid_plural "{count} announced keys."
+msgstr[0] "{count} chave anunciada."
+msgstr[1] "{count} chaves anunciadas."
+msgstr[2] "{count} chaves anunciadas."
+
+#. Host key manager button (Known keys tab): asks a server for its host keys and adds the ones the user confirms.
+msgctxt "ui.hostkeys.btn_add_server"
+msgid "Add key from server…"
+msgstr "Adicionar chave do servidor…"
+
+#. Title of the dialog that asks for the server to get host keys from.
+msgctxt "ui.hostkeys.add.title"
+msgid "Add a host key from a server"
+msgstr "Adicionar uma chave de host de um servidor"
+
+#. Intro of the dialog that asks for the server. The user types a host name, optionally followed by :port.
+msgctxt "ui.hostkeys.add.intro"
+msgid "ShellDrive connects to the server and asks for the host keys it has. Nothing is saved until you have checked the fingerprints. Type the server name, or name:port."
+msgstr "O ShellDrive se conecta ao servidor e pede as chaves de host que ele tem. Nada é salvo até você conferir as impressões digitais. Digite o nome do servidor, ou nome:porta."
+
+#. Label of the server field. The mnemonic letter moves focus to the field.
+msgctxt "ui.hostkeys.add.host_label"
+msgid "&Server:"
+msgstr "&Servidor:"
+
+#. Button of the server dialog: connects and asks the server for its host keys.
+msgctxt "ui.hostkeys.add.btn_ok"
+msgid "&Look up"
+msgstr "&Procurar"
+
+#. Button of the server dialog: closes it without doing anything.
+msgctxt "ui.hostkeys.add.btn_cancel"
+msgid "&Cancel"
+msgstr "&Cancelar"
+
+#. Server dialog: the field does not hold a usable server name.
+msgctxt "ui.hostkeys.add.invalid_host"
+msgid "Type a server name such as example.org or example.org:2222. Use letters, digits, dots and hyphens only."
+msgstr "Digite um nome de servidor como example.org ou example.org:2222. Use apenas letras, dígitos, pontos e hifens."
+
+#. Host key manager status line while the agent connects to the server. {host} is the server name.
+msgctxt "ui.hostkeys.add.working"
+msgid "Asking {host} for its host keys…"
+msgstr "Pedindo as chaves de host a {host}…"
+
+#. Host key manager status line: the server offered no key that is not stored yet. {host} is the server name.
+msgctxt "ui.hostkeys.add.none"
+msgid "{host} has no other host keys to add."
+msgstr "{host} não tem outras chaves de host para adicionar."
+
+#. Title of the dialog that shows the host keys a server offered.
+msgctxt "ui.hostkeys.add.review_title"
+msgid "Add host keys"
+msgstr "Adicionar chaves de host"
+
+#. Review dialog for a server whose key ShellDrive already stores: it offers {count} more. {host} is the server name.
+#, plural-arg=count
+msgctxt "ui.hostkeys.add.review_verified"
+msgid "{host} also has {count} other host key. Add it?"
+msgid_plural "{host} also has {count} other host keys. Add them?"
+msgstr[0] "{host} também tem {count} outra chave de host. Quer adicioná-la?"
+msgstr[1] "{host} também tem {count} de outras chaves de host. Quer adicioná-las?"
+msgstr[2] "{host} também tem {count} outras chaves de host. Quer adicioná-las?"
+
+#. Review dialog for a server ShellDrive has no stored key for (first contact, 03 5.2). {host} is the server name.
+msgctxt "ui.hostkeys.add.review_first"
+msgid "ShellDrive has no key stored for {host}, so it cannot tell whether this is the server you mean. Compare the fingerprint with the one the server's administrator gave you."
+msgstr "O ShellDrive não tem nenhuma chave salva de {host} e não consegue saber se este é o servidor que você quer. Compare a impressão digital com a que o administrador do servidor passou para você."
+
+#. Label of the read-only list of keys the server offered (type and SHA-256 fingerprint). The mnemonic letter moves focus to the list.
+msgctxt "ui.hostkeys.add.review_list_label"
+msgid "&Keys offered by the server:"
+msgstr "Cha&ves oferecidas pelo servidor:"
+
+#. Review dialog button: stores the keys in the user's known hosts.
+msgctxt "ui.hostkeys.add.review_btn_add"
+msgid "&Add"
+msgstr "&Adicionar"
+
+#. Review dialog button: closes the dialog without adding anything. It is the default button.
+msgctxt "ui.hostkeys.add.review_btn_skip"
+msgid "&Don't add"
+msgstr "&Não adicionar"
+
+#. Host key manager status line: the user did not add the offered keys.
+msgctxt "ui.hostkeys.add.declined"
+msgid "No key was added."
+msgstr "Nenhuma chave foi adicionada."
+
+#. Host key manager: this build of the agent cannot connect to a server to collect its host keys yet.
+msgctxt "ui.hostkeys.add.err_unsupported"
+msgid "ShellDrive cannot collect host keys from a server in this version yet."
+msgstr "Esta versão do ShellDrive ainda não consegue obter chaves de host de um servidor."
+
+#. Host key manager: the server presented a key that does not match the stored one. {host} is the server name.
+msgctxt "ui.hostkeys.add.err_mismatch"
+msgid "The host key {host} presented does not match the one stored for it. Nothing was added."
+msgstr "A chave de host apresentada por {host} não corresponde à que está salva. Nada foi adicionado."
+
+#. Host key manager: the host keys of a server could not be collected. {host} is the server name, {code} the error name.
+msgctxt "ui.hostkeys.add.err_connect"
+msgid "ShellDrive could not get the host keys of {host} ({code})."
+msgstr "O ShellDrive não conseguiu obter as chaves de host de {host} ({code})."
+
+#. Logs viewer window title.
+msgctxt "ui.logs.title"
+msgid "Logs"
+msgstr "Registros"
+
+#. Logs viewer: label of the level filter.
+msgctxt "ui.logs.level_label"
+msgid "Show"
+msgstr "Mostrar"
+
+#. Logs viewer: label of the search box.
+msgctxt "ui.logs.search_label"
+msgid "Search"
+msgstr "Pesquisar"
+
+#. Logs viewer level filter: errors only.
+msgctxt "ui.logs.level_error"
+msgid "Errors only"
+msgstr "Somente erros"
+
+#. Logs viewer level filter: warnings and errors.
+msgctxt "ui.logs.level_warn"
+msgid "Warnings and errors"
+msgstr "Avisos e erros"
+
+#. Logs viewer level filter: information and more severe records.
+msgctxt "ui.logs.level_info"
+msgid "Information and above"
+msgstr "Informação e acima"
+
+#. Logs viewer level filter: debug and more severe records.
+msgctxt "ui.logs.level_debug"
+msgid "Debug and above"
+msgstr "Depuração e acima"
+
+#. Logs viewer level filter: every record.
+msgctxt "ui.logs.level_trace"
+msgid "All records"
+msgstr "Todos os registros"
+
+#. Logs viewer button: copies the selected lines (all lines when nothing is selected).
+msgctxt "ui.logs.btn_copy"
+msgid "Copy selection"
+msgstr "Copiar seleção"
+
+#. Logs viewer button: opens the folder with the log files.
+msgctxt "ui.logs.btn_folder"
+msgid "Open log folder"
+msgstr "Abrir pasta de registros"
+
+#. Logs viewer status line: number of records shown.
+#, plural-arg=count
+msgctxt "ui.logs.status_count"
+msgid "{count} record shown."
+msgid_plural "{count} records shown."
+msgstr[0] "{count} registro exibido."
+msgstr[1] "{count} registros exibidos."
+msgstr[2] "{count} registros exibidos."
+
+#. Logs viewer status line: records the agent dropped before the ones shown.
+#, plural-arg=count
+msgctxt "ui.logs.dropped"
+msgid "{count} older record was dropped."
+msgid_plural "{count} older records were dropped."
+msgstr[0] "{count} registro anterior foi perdido."
+msgstr[1] "{count} registros anteriores foram perdidos."
+msgstr[2] "{count} registros anteriores foram perdidos."
+
+#. Logs viewer: the agent is not running; the records already shown stay.
+msgctxt "ui.logs.agent_down"
+msgid "The agent is not running. Records already shown are kept."
+msgstr "O agente não está em execução. Os registros já exibidos foram mantidos."
+
+#. Logs viewer: the running agent has no log.tail method.
+msgctxt "ui.logs.old_agent"
+msgid "The running agent is too old to show its log."
+msgstr "O agente em execução é antigo demais para mostrar o registro."
+
+#. Logs viewer: reading the log failed. {code} is the error name.
+msgctxt "ui.logs.read_failed"
+msgid "The log could not be read ({code})."
+msgstr "Não foi possível ler o registro ({code})."
+
+#. Logs viewer: the agent sent a malformed log.tail reply.
+msgctxt "ui.logs.bad_reply"
+msgid "The agent sent a log that could not be read."
+msgstr "O agente enviou um registro que não pôde ser lido."
+
+#. Logs viewer: the log folder could not be opened.
+msgctxt "ui.logs.open_failed"
+msgid "The log folder could not be opened."
+msgstr "Não foi possível abrir a pasta de registros."
+
+#. Logs viewer: first poll in progress.
+msgctxt "ui.logs.loading"
+msgid "Loading the log…"
+msgstr "Carregando o registro…"
+
+#. Settings window title.
+msgctxt "ui.settings.title"
+msgid "Settings"
+msgstr "Configurações"
+
+#. Settings: label of the language list.
+msgctxt "ui.settings.language"
+msgid "Language"
+msgstr "Idioma"
+
+#. Settings: the first language entry, the Windows language.
+msgctxt "ui.settings.lang_system"
+msgid "System default"
+msgstr "Padrão do sistema"
+
+#. Settings: checkbox for balloon notifications.
+msgctxt "ui.settings.notify"
+msgid "Show notifications"
+msgstr "Mostrar notificações"
+
+#. Settings: checkbox that starts the tray icon at sign-in (Run key, this user only).
+msgctxt "ui.settings.logon"
+msgid "Start the tray icon at sign-in"
+msgstr "Iniciar o ícone da bandeja ao entrar"
+
+#. Settings: label of the default backend list.
+msgctxt "ui.settings.backend"
+msgid "Default backend"
+msgstr "Backend padrão"
+
+#. Settings: default backend choice, chosen by Windows.
+msgctxt "ui.settings.backend_auto"
+msgid "Automatic"
+msgstr "Automático"
+
+#. Settings: default backend choice, the Dokany product name.
+msgctxt "ui.settings.backend_dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+#. Settings: default backend choice, the WebDAV protocol name.
+msgctxt "ui.settings.backend_webdav"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+#. Settings: label of the memory cache budget field.
+msgctxt "ui.settings.cache"
+msgid "Memory cache (MB)"
+msgstr "Cache de memória (MB)"
+
+#. Settings: explains the values of the memory cache budget field.
+msgctxt "ui.settings.cache_hint"
+msgid "0 uses the default. Otherwise 16 to 65536."
+msgstr "0 usa o padrão. Caso contrário, de 16 a 65536."
+
+#. Settings: heading of the update group.
+msgctxt "ui.settings.group_updates"
+msgid "Updates"
+msgstr "Atualizações"
+
+#. Settings: checkbox for automatic update checks (disabled until the agent offers it).
+msgctxt "ui.settings.check_updates"
+msgid "Check for updates automatically"
+msgstr "Verificar atualizações automaticamente"
+
+#. Settings: shown when the agent cannot check for updates.
+msgctxt "ui.settings.updates_unavailable"
+msgid "Updates are not available in this version of the agent."
+msgstr "As atualizações não estão disponíveis nesta versão do agente."
+
+#. Settings: which changes take effect without a restart.
+msgctxt "ui.settings.live_note"
+msgid "Notifications, the backend and the cache apply to new mounts and connections after the agent reloads the file."
+msgstr "As notificações, o backend e o cache valem para novas montagens e conexões depois que o agente recarrega o arquivo."
+
+#. Settings: shown after a language change, which is read at start-up.
+msgctxt "ui.settings.restart_note"
+msgid "The language changes when you restart ShellDrive."
+msgstr "O idioma muda quando você reiniciar o ShellDrive."
+
+#. Settings button: saves the file and applies it.
+msgctxt "ui.settings.btn_save"
+msgid "Save"
+msgstr "Salvar"
+
+#. Settings button: closes without saving.
+msgctxt "ui.settings.btn_cancel"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Settings: the memory cache field holds a value outside 0 and 16 to 65536.
+msgctxt "ui.settings.cache_invalid"
+msgid "Enter 0, or a size from 16 to 65536 MB."
+msgstr "Digite 0 ou um tamanho de 16 a 65536 MB."
+
+#. Settings: saving settings.ini failed. {code} is the error name.
+msgctxt "ui.settings.save_failed"
+msgid "The settings could not be saved ({code})."
+msgstr "Não foi possível salvar as configurações ({code})."
+
+#. Settings: the Run key for start at sign-in could not be written.
+msgctxt "ui.settings.run_failed"
+msgid "Start at sign-in could not be changed."
+msgstr "Não foi possível alterar a inicialização com o login."
+
+#. About window title.
+msgctxt "ui.about.title"
+msgid "About ShellDrive"
+msgstr "Sobre o ShellDrive"
+
+#. About window: the version line. {version} is the product version.
+msgctxt "ui.about.version"
+msgid "Version {version}"
+msgstr "Versão {version}"
+
+#. About window: the license line.
+msgctxt "ui.about.license"
+msgid "Licensed under the MIT License."
+msgstr "Licença MIT."
+
+#. About window: the copyright line.
+msgctxt "ui.about.copyright"
+msgid "Copyright (C) LibreStatic"
+msgstr "Direitos autorais (C) LibreStatic"
+
+#. About window button: opens the project web page in the browser.
+msgctxt "ui.about.btn_project"
+msgid "Project page"
+msgstr "Página do projeto"
+
+#. About window button: closes the window.
+msgctxt "ui.about.btn_close"
+msgid "Close"
+msgstr "Fechar"
+
+#. About window: the browser could not be started.
+msgctxt "ui.about.open_failed"
+msgid "The project page could not be opened in the browser."
+msgstr "Não foi possível abrir a página do projeto no navegador."
+
+#. Menu item: opens the host key manager.
+msgctxt "ui.menu.hostkeys"
+msgid "Host keys…"
+msgstr "Chaves de host…"
+
+#. Menu item: opens the Logs viewer.
+msgctxt "ui.menu.logs"
+msgid "Logs…"
+msgstr "Registros…"
+
+#. Menu item: opens Settings.
+msgctxt "ui.menu.settings"
+msgid "Settings…"
+msgstr "Configurações…"
+
+#. Menu item: opens the About window.
+msgctxt "ui.menu.about"
+msgid "About ShellDrive"
+msgstr "Sobre o ShellDrive"
+
+#. Menu bar: the Tools menu.
+msgctxt "ui.menu.tools"
+msgid "Tools"
+msgstr "Ferramentas"
+
+#. Menu bar: the Help menu.
+msgctxt "ui.menu.help"
+msgid "Help"
+msgstr "Ajuda"
+
+
+#. First-run wizard: the title of the sheet.
+msgctxt "ui.wizard.caption"
+msgid "Set up ShellDrive"
+msgstr "Configurar o ShellDrive"
+
+#. First-run wizard, welcome page: title.
+msgctxt "ui.wizard.welcome_title"
+msgid "Welcome to ShellDrive"
+msgstr "Bem-vindo ao ShellDrive"
+
+#. First-run wizard, welcome page: what a profile is.
+msgctxt "ui.wizard.welcome_text"
+msgid "ShellDrive shows folders on SFTP servers as Windows drives. Each connection is a profile: a server, a user name and a folder on that server."
+msgstr "O ShellDrive mostra pastas de servidores SFTP como unidades do Windows. Cada conexão é um perfil: um servidor, um nome de usuário e uma pasta nesse servidor."
+
+#. First-run wizard, welcome page: what to do next.
+msgctxt "ui.wizard.welcome_next"
+msgid "Choose Next to set up your first connection. You can close this wizard at any time."
+msgstr "Clique em Avançar para configurar sua primeira conexão. Você pode fechar este assistente a qualquer momento."
+
+#. First-run wizard, backend page: title.
+msgctxt "ui.wizard.backend_title"
+msgid "How drives are shown"
+msgstr "Como as unidades são exibidas"
+
+#. First-run wizard, backend page: explains Dokany (a driver) and WebDAV (the Windows network redirector). Product names stay.
+msgctxt "ui.wizard.backend_text"
+msgid "ShellDrive uses one of two ways to show a drive in Windows. Dokany is a driver that is fast and is used when it is installed. WebDAV uses the Windows network redirector and needs no driver."
+msgstr "O ShellDrive usa uma de duas formas para mostrar uma unidade no Windows. O Dokany é um driver rápido, usado quando está instalado. O WebDAV usa o redirecionador de rede do Windows e não precisa de driver."
+
+#. First-run wizard, backend page: Dokany is installed on this computer.
+msgctxt "ui.wizard.backend_dokany_yes"
+msgid "Dokany is installed on this computer. Automatic will use it."
+msgstr "O Dokany está instalado neste computador. O modo automático vai usá-lo."
+
+#. First-run wizard, backend page: Dokany is missing, so the automatic choice is WebDAV.
+msgctxt "ui.wizard.backend_dokany_no"
+msgid "Dokany is not installed on this computer. Automatic will use WebDAV."
+msgstr "O Dokany não está instalado neste computador. O modo automático vai usar o WebDAV."
+
+#. First-run wizard, import page: title.
+msgctxt "ui.wizard.import_title"
+msgid "Import existing connections"
+msgstr "Importar conexões existentes"
+
+#. First-run wizard, import page: what the importers read.
+msgctxt "ui.wizard.import_text"
+msgid "ShellDrive can read the sessions of PuTTY and the hosts of your OpenSSH configuration file and offer them as profiles."
+msgstr "O ShellDrive pode ler as sessões do PuTTY e os hosts do arquivo de configuração do OpenSSH e oferecê-los como perfis."
+
+#. First-run wizard, import page: host keys are trusted from PuTTY and OpenSSH live.
+msgctxt "ui.wizard.import_trust"
+msgid "ShellDrive also trusts the host keys you already accepted in PuTTY and OpenSSH. You can turn this off in Settings."
+msgstr "O ShellDrive também confia nas chaves de host que você já aceitou no PuTTY e no OpenSSH. Você pode desativar isso nas Configurações."
+
+#. First-run wizard, import page: opens the import dialog. Mnemonic I.
+msgctxt "ui.wizard.import_button"
+msgid "&Import…"
+msgstr "&Importar…"
+
+#. First-run wizard, create page: title.
+msgctxt "ui.wizard.create_title"
+msgid "Create your first profile"
+msgstr "Criar seu primeiro perfil"
+
+#. First-run wizard, create page: what a profile holds.
+msgctxt "ui.wizard.create_text"
+msgid "A profile holds the server, your user name and the folder to show. You can create more profiles later."
+msgstr "Um perfil guarda o servidor, o nome de usuário e a pasta que será exibida. Você pode criar outros perfis depois."
+
+#. First-run wizard, create page: opens the profile editor. Mnemonic C.
+msgctxt "ui.wizard.create_button"
+msgid "&Create a profile…"
+msgstr "&Criar um perfil…"
+
+#. First-run wizard, create page: shown after a profile was saved. {name} is the profile name.
+msgctxt "ui.wizard.create_saved"
+msgid "Saved: {name}. Choose Next to continue."
+msgstr "Salvo: {name}. Clique em Avançar para continuar."
+
+#. First-run wizard, finish page: title.
+msgctxt "ui.wizard.finish_title"
+msgid "Setup complete"
+msgstr "Configuração concluída"
+
+#. First-run wizard, finish page: the tray icon keeps running.
+msgctxt "ui.wizard.finish_text"
+msgid "When you close the main window, ShellDrive keeps running in the notification area."
+msgstr "Quando você fecha a janela principal, o ShellDrive continua na área de notificação."
+
+#. First-run wizard, finish page: full-disk encryption advice (TM-R31).
+msgctxt "ui.wizard.fde_note"
+msgid "Saved passwords and keys are only as safe as your Windows password. Turn on BitLocker or device encryption if you keep keys in ShellDrive or use the disk cache."
+msgstr "Senhas e chaves salvas são tão seguras quanto a sua senha do Windows. Ative o BitLocker ou a criptografia do dispositivo se guardar chaves no ShellDrive ou usar o cache em disco."
+
+#. First-run wizard, finish page: mounts the profile created on the create page. Mnemonic M.
+msgctxt "ui.wizard.mount_now"
+msgid "&Mount the new profile now"
+msgstr "&Montar o novo perfil agora"
+
+#. Balloon title for notifications that are not warnings.
+#. sdl10n:maxlen=64
+msgctxt "ui.notify.title"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+#. Balloon text: the server offered new host keys (03 5.6). {host} is the host name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notify.hostkeys"
+msgid "{host} offered new host keys. Review"
+msgstr "{host} ofereceu novas chaves de host. Revise-as"
+
+#. Settings: label of the update channel list (stable or beta).
+msgctxt "ui.settings.update_channel"
+msgid "Channel"
+msgstr "Canal"
+
+#. Settings: the stable update channel.
+msgctxt "ui.settings.channel_stable"
+msgid "Stable"
+msgstr "Estável"
+
+#. Settings: the beta update channel. Beta is a product term and is not translated.
+msgctxt "ui.settings.channel_beta"
+msgid "Beta"
+msgstr "Beta"
+
+#. Settings: button that asks the agent for the latest manifest now.
+msgctxt "ui.settings.update_check_now"
+msgid "Check now"
+msgstr "Verificar agora"
+
+#. Settings: button that installs an offered update after consent.
+msgctxt "ui.settings.update_install"
+msgid "Install update"
+msgstr "Instalar atualização"
+
+#. Settings: button that opens the release notes of the offered version in the browser.
+msgctxt "ui.settings.update_notes"
+msgid "Release notes"
+msgstr "Notas da versão"
+
+#. Settings: shown next to a control that a group policy sets.
+msgctxt "ui.settings.update_managed"
+msgid "Managed by your organization."
+msgstr "Gerenciado pela sua organização."
+
+#. Settings: update checks are disabled by a group policy.
+msgctxt "ui.settings.update_off_policy"
+msgid "Update checks are turned off by your organization."
+msgstr "Sua organização desativou a verificação de atualizações."
+
+#. Settings: update checks are disabled in settings.ini.
+msgctxt "ui.settings.update_off_settings"
+msgid "Update checks are turned off in settings."
+msgstr "A verificação de atualizações está desativada nas configurações."
+
+#. Update status: no check has run in this session yet.
+msgctxt "ui.update.status_idle"
+msgid "No update check has run in this session."
+msgstr "Nenhuma verificação de atualização foi feita nesta sessão."
+
+#. Update status: a check is running.
+msgctxt "ui.update.status_checking"
+msgid "Checking for updates..."
+msgstr "Verificando atualizações..."
+
+#. Update status: the installed version is the newest one. {channel} is stable or beta.
+msgctxt "ui.update.status_current"
+msgid "ShellDrive is up to date ({channel} channel)."
+msgstr "O ShellDrive está atualizado (canal {channel})."
+
+#. Update status: a newer version is offered. {size} is in kilobytes.
+msgctxt "ui.update.status_available"
+msgid "Version {version} is available ({size} KB)."
+msgstr "A versão {version} está disponível ({size} KB)."
+
+#. Update status: the last successful check is old. {days} is at least 14.
+msgctxt "ui.update.status_stale"
+msgid "The last successful update check was {days} days ago."
+msgstr "A última verificação de atualização bem-sucedida foi há {days} dias."
+
+#. Update status: the check or the install failed. {code} is the error name.
+msgctxt "ui.update.status_failed"
+msgid "The update check failed ({code})."
+msgstr "A verificação de atualização falhou ({code})."
+
+#. Update status: an update is being installed. {version} is the new version.
+msgctxt "ui.update.status_installing"
+msgid "Installing version {version}. ShellDrive restarts when it is done."
+msgstr "Instalando a versão {version}. O ShellDrive reinicia ao terminar."
+
+#. Update progress: the new version is downloaded.
+msgctxt "ui.update.stage_downloading"
+msgid "Downloading the update..."
+msgstr "Baixando a atualização..."
+
+#. Update progress: the downloaded version is installed.
+msgctxt "ui.update.stage_applying"
+msgid "Installing the update..."
+msgstr "Instalando a atualização..."
+
+#. Update progress: the update is installed.
+msgctxt "ui.update.stage_done"
+msgid "The update is installed."
+msgstr "A atualização foi instalada."
+
+#. Update progress: the install failed. {code} is the error name.
+msgctxt "ui.update.stage_failed"
+msgid "The update could not be installed ({code})."
+msgstr "Não foi possível instalar a atualização ({code})."
+
+#. Title of the consent dialog before an update is installed.
+msgctxt "ui.update.consent_title"
+msgid "Install the update"
+msgstr "Instalar a atualização"
+
+#. Consent dialog: what happens. {version} is the offered version.
+msgctxt "ui.update.consent_text"
+msgid "ShellDrive {name} will be downloaded, its signature and checksum will be checked, and it will be installed. ShellDrive restarts when the installation ends."
+msgstr "O ShellDrive {name} será baixado, a assinatura e a soma de verificação serão conferidas e ele será instalado. O ShellDrive reinicia quando a instalação terminar."
+
+#. Consent dialog: the button that starts the install.
+msgctxt "ui.update.consent_yes"
+msgid "Install and restart"
+msgstr "Instalar e reiniciar"
+
+#. Consent dialog: the button that leaves the update for later.
+msgctxt "ui.update.consent_no"
+msgid "Not now"
+msgstr "Agora não"
+
+#. Balloon when a newer version is offered. {version} is the offered version.
+msgctxt "ui.notify.update"
+msgid "ShellDrive {version} is available. Open Settings to install it."
+msgstr "O ShellDrive {version} está disponível. Abra as configurações para instalá-lo."
+
+#. Tray tooltip and tray menu header: a global drive waits for an administrator (03 §2.6 rule 3).
+#. sdl10n:maxlen=128
+msgctxt "ui.tray.admin_tip"
+msgid "A global ShellDrive drive needs attention"
+msgstr "Uma unidade global do ShellDrive precisa de atenção"
+
+#. Tray menu item: opens the administrator window. {count} is the number of prompts waiting.
+#, plural-arg=count
+msgctxt "ui.tray.admin_prompts"
+msgid "{count} prompt waiting for an administrator"
+msgid_plural "{count} prompts waiting for an administrator"
+msgstr[0] "{count} solicitação aguardando um administrador"
+msgstr[1] "{count} solicitações aguardando um administrador"
+msgstr[2] "{count} solicitações aguardando um administrador"
+
+#. Shown when the administrator window cannot be started (not when the UAC prompt is declined).
+msgctxt "ui.admin.launch_failed"
+msgid "ShellDrive could not open its administrator window. Try again from the tray menu."
+msgstr "O ShellDrive não conseguiu abrir a janela de administração. Tente de novo pelo menu da bandeja."
+
+#. Prompt dialog text for token-only WebDAV (03 7.5, TM-R19). Shown when Windows cannot sign in, every time it is enabled.
+msgctxt "ui.webdav.token_only_ask"
+msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgstr "O Windows não conseguiu entrar no servidor local de arquivos do ShellDrive. Continuar com uma conexão menos protegida? Outros programas que descobrirem o endereço da unidade podem ler seus arquivos."
+
+#. Prompt dialog title for the token-only WebDAV question (03 7.5).
+msgctxt "ui.prompt.title_token_only"
+msgid "Less protected connection"
+msgstr "Conexão menos protegida"
+
+#. Prompt dialog button: continue with the token-only connection for this enable (answers accept).
+msgctxt "ui.prompt.btn.token_continue"
+msgid "Contin&ue"
+msgstr "Con&tinuar"
+
+#. Settings: tab label of the host key and password settings.
+msgctxt "ui.settings.tab_security"
+msgid "Security"
+msgstr "Segurança"
+
+#. Settings: checkbox, read the host keys PuTTY has accepted (5.1).
+msgctxt "ui.settings.trust_putty"
+msgid "Trust host keys accepted in PuTTY"
+msgstr "Confiar nas chaves de host aceitas no PuTTY"
+
+#. Settings: checkbox, read the host keys OpenSSH has accepted (5.1).
+msgctxt "ui.settings.trust_openssh"
+msgid "Trust host keys accepted in OpenSSH"
+msgstr "Confiar nas chaves de host aceitas no OpenSSH"
+
+#. Settings: a host key source file is ignored because other users can change it (TM-R06).
+msgctxt "ui.settings.src_insecure"
+msgid "Ignored: other users can change this file."
+msgstr "Ignorado: outros usuários podem alterar este arquivo."
+
+#. Settings: checkbox, store saved passwords so they roam with the Windows profile (3.4).
+msgctxt "ui.settings.roam"
+msgid "Roam saved passwords with my profile"
+msgstr "Itinerar as senhas salvas com o meu perfil"
+
+#. Settings: warning under the roaming checkbox.
+msgctxt "ui.settings.roam_hint"
+msgid "Saved SSH passwords then exist on every computer your roaming profile is used on."
+msgstr "As senhas SSH salvas passam a existir em todos os computadores em que o seu perfil móvel for usado."
+
+#. Settings: tab label of the general settings.
+msgctxt "ui.settings.tab_general"
+msgid "General"
+msgstr "Geral"
+
+#. Settings: label of the WebClient service state (read-only).
+msgctxt "ui.settings.webclient"
+msgid "WebClient service:"
+msgstr "Serviço WebClient:"
+
+#. Settings: the WebClient service is running.
+msgctxt "ui.settings.webclient_running"
+msgid "Running"
+msgstr "Em execução"
+
+#. Settings: the WebClient service is stopped; ShellDrive starts it when a WebDAV drive needs it.
+msgctxt "ui.settings.webclient_stopped"
+msgid "Stopped (ShellDrive starts it when a drive needs it)"
+msgstr "Parado (o ShellDrive o inicia quando uma unidade precisa dele)"
+
+#. Settings: the WebClient service is disabled and only an administrator can enable it.
+msgctxt "ui.settings.webclient_disabled"
+msgid "Disabled (an administrator must enable it to use the WebDAV backend)"
+msgstr "Desabilitado (um administrador precisa habilitá-lo para usar o mecanismo WebDAV)"
+
+#. Settings: the WebClient service is not installed.
+msgctxt "ui.settings.webclient_missing"
+msgid "Not installed (the WebDAV backend is not available)"
+msgstr "Não instalado (o mecanismo WebDAV não está disponível)"
+
+#. Settings: the WebClient service state could not be read.
+msgctxt "ui.settings.webclient_unknown"
+msgid "Unknown"
+msgstr "Desconhecido"
+
+#. Menu item: opens the Service page (status of the ShellDrive service and the machine data folder repair).
+msgctxt "ui.menu.service"
+msgid "Service…"
+msgstr "Serviço…"
+
+#. Service page window title.
+msgctxt "ui.service.title"
+msgid "ShellDrive service"
+msgstr "Serviço do ShellDrive"
+
+#. Service page: the service is not installed.
+msgctxt "ui.service.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "O serviço ShellDrive não está instalado."
+
+#. Service page. {state} is one of the state words below.
+msgctxt "ui.service.state_line"
+msgid "Service state: {state}."
+msgstr "Estado do serviço: {state}."
+
+#. Service page: service state word, shown after "Service state:".
+msgctxt "ui.service.state.running"
+msgid "running"
+msgstr "em execução"
+
+msgctxt "ui.service.state.stopped"
+msgid "stopped"
+msgstr "parado"
+
+msgctxt "ui.service.state.starting"
+msgid "starting"
+msgstr "iniciando"
+
+msgctxt "ui.service.state.stopping"
+msgid "stopping"
+msgstr "parando"
+
+msgctxt "ui.service.state.paused"
+msgid "paused"
+msgstr "pausado"
+
+msgctxt "ui.service.state.unknown"
+msgid "unknown"
+msgstr "desconhecido"
+
+#. Service page. {type} is one of the start type words below.
+msgctxt "ui.service.start_line"
+msgid "Start type: {type}."
+msgstr "Tipo de inicialização: {type}."
+
+#. Service page: start type word, shown after "Start type:".
+msgctxt "ui.service.start_type.automatic"
+msgid "automatic"
+msgstr "automático"
+
+msgctxt "ui.service.start_type.manual"
+msgid "manual"
+msgstr "manual"
+
+msgctxt "ui.service.start_type.disabled"
+msgid "disabled"
+msgstr "desabilitado"
+
+msgctxt "ui.service.start_type.unknown"
+msgid "unknown"
+msgstr "desconhecido"
+
+#. Service page. {path} is the program path registered with the Service Control Manager.
+msgctxt "ui.service.program_line"
+msgid "Program: {path}"
+msgstr "Programa: {path}"
+
+#. Service page: check of the registered program path (quoted, this install).
+msgctxt "ui.service.program.ok"
+msgid "The program path is quoted and points at this install."
+msgstr "O caminho do programa está entre aspas e aponta para esta instalação."
+
+#. Service page: the program path is not quoted.
+msgctxt "ui.service.program.unquoted"
+msgid "The program path is not quoted. Remove the service and install it again."
+msgstr "O caminho do programa não está entre aspas. Remova o serviço e instale-o novamente."
+
+#. Service page: the program path is quoted but names another program or install.
+msgctxt "ui.service.program.other"
+msgid "The program path points at another install. Remove the service and install it again from this one."
+msgstr "O caminho do programa aponta para outra instalação. Remova o serviço e instale-o novamente a partir desta."
+
+#. Service page: the program path cannot be checked.
+msgctxt "ui.service.program.unknown"
+msgid "The program path cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "O caminho do programa não pode ser verificado: o shelldrive-host.exe não está ao lado deste programa."
+
+#. Service page: Event Log source check, registered for this install.
+msgctxt "ui.service.source.ok"
+msgid "The Event Log source is registered for this install."
+msgstr "A origem do Log de Eventos está registrada para esta instalação."
+
+#. Service page: no Event Log source is registered.
+msgctxt "ui.service.source.missing"
+msgid "The Event Log source is not registered."
+msgstr "A origem do Log de Eventos não está registrada."
+
+#. Service page: the Event Log source names another program.
+msgctxt "ui.service.source.other"
+msgid "The Event Log source is registered for another program."
+msgstr "A origem do Log de Eventos está registrada para outro programa."
+
+#. Service page: the Event Log source cannot be checked.
+msgctxt "ui.service.source.unknown"
+msgid "The Event Log source cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "A origem do Log de Eventos não pode ser verificada: o shelldrive-host.exe não está ao lado deste programa."
+
+#. Service page: the service runs but does not answer on its pipe.
+msgctxt "ui.service.pipe_down"
+msgid "The service is running but does not answer on its pipe."
+msgstr "O serviço está em execução, mas não responde pelo seu canal."
+
+#. Service page: the service answers but is too old to report its machine data folder.
+msgctxt "ui.service.old_service"
+msgid "The running service is an older version and does not report its machine data folder."
+msgstr "O serviço em execução é uma versão mais antiga e não informa o estado da sua pasta de dados da máquina."
+
+#. Service page: the machine data folder is trusted.
+msgctxt "ui.service.machine_ok"
+msgid "The machine data folder is in order."
+msgstr "A pasta de dados da máquina está em ordem."
+
+#. Service page: the machine data folder is refused because of its owner (the service stays idle).
+msgctxt "ui.service.machine_owner"
+msgid "The machine data folder belongs to an account that is not trusted, so the service stays idle."
+msgstr "A pasta de dados da máquina pertence a uma conta que não é confiável, então o serviço fica inativo."
+
+#. Service page: the machine data folder is refused because of a link or junction.
+msgctxt "ui.service.machine_link"
+msgid "The machine data folder is or holds a link or junction, so the service stays idle."
+msgstr "A pasta de dados da máquina é ou contém um link ou uma junção, então o serviço fica inativo."
+
+#. Service page: the machine data folder is refused because other accounts can change it.
+msgctxt "ui.service.machine_acl"
+msgid "Other accounts can change the machine data folder, so the service stays idle."
+msgstr "Outras contas podem alterar a pasta de dados da máquina, então o serviço fica inativo."
+
+#. Service page: the machine data folder is refused for another reason.
+msgctxt "ui.service.machine_other"
+msgid "The machine data folder is refused, so the service stays idle."
+msgstr "A pasta de dados da máquina foi recusada, então o serviço fica inativo."
+
+#. Service page, administrators only. {path} is the folder the service refused.
+msgctxt "ui.service.machine_path"
+msgid "Refused folder: {path}"
+msgstr "Pasta recusada: {path}"
+
+#. Service page: global drives of the service. {count} is the number of mounts.
+#, plural-arg=count
+msgctxt "ui.service.drives"
+msgid "{count} global drive mounted."
+msgid_plural "{count} global drives mounted."
+msgstr[0] "{count} unidade global montada."
+msgstr[1] "{count} unidades globais montadas."
+msgstr[2] "{count} unidades globais montadas."
+
+#. Service page: open administrator prompts of the service. {count} is their number.
+#, plural-arg=count
+msgctxt "ui.service.prompts"
+msgid "{count} administrator prompt waiting."
+msgid_plural "{count} administrator prompts waiting."
+msgstr[0] "{count} solicitação de administrador pendente."
+msgstr[1] "{count} de solicitações de administrador pendentes."
+msgstr[2] "{count} solicitações de administrador pendentes."
+
+#. Service page: machine profiles the service loaded. {count} is their number.
+#, plural-arg=count
+msgctxt "ui.service.profiles"
+msgid "{count} machine profile loaded."
+msgid_plural "{count} machine profiles loaded."
+msgstr[0] "{count} perfil da máquina carregado."
+msgstr[1] "{count} perfis da máquina carregados."
+msgstr[2] "{count} perfis da máquina carregados."
+
+#. Service page: shown while the first status is being read.
+msgctxt "ui.service.loading"
+msgid "Reading the service status…"
+msgstr "Lendo o estado do serviço…"
+
+#. Service page: the Service Control Manager query failed. {code} is the Windows error number.
+msgctxt "ui.service.read_failed"
+msgid "The service status could not be read (error {code})."
+msgstr "Não foi possível ler o estado do serviço (erro {code})."
+
+#. Service page button: reads the status again.
+msgctxt "ui.service.btn_refresh"
+msgid "Refresh"
+msgstr "Atualizar"
+
+#. Service page button: repairs the machine data folder (carries the UAC shield for an administrator that is not elevated).
+msgctxt "ui.service.btn_repair"
+msgid "Repair data…"
+msgstr "Reparar dados…"
+
+#. Service page button: closes the page.
+msgctxt "ui.service.btn_close"
+msgid "Close"
+msgstr "Fechar"
+
+#. Service page note under the status: the repair button is off because the user is not an administrator.
+msgctxt "ui.service.note_admin_only"
+msgid "Repairing the machine data folder is for administrators."
+msgstr "Reparar a pasta de dados da máquina é só para administradores."
+
+#. Service page note under the status: the repair button asks for administrator rights.
+msgctxt "ui.service.note_elevate"
+msgid "Repair data asks for administrator rights."
+msgstr "Reparar dados pede direitos de administrador."
+
+#. Service page note under the status: a repair is running.
+msgctxt "ui.service.note_repairing"
+msgid "Repairing the machine data folder…"
+msgstr "Reparando a pasta de dados da máquina…"
+
+#. Repair confirmation dialog title.
+msgctxt "ui.service.repair_title"
+msgid "Repair the machine data folder"
+msgstr "Reparar a pasta de dados da máquina"
+
+#. Repair confirmation dialog: what the repair does.
+msgctxt "ui.service.repair_text"
+msgid "ShellDrive checks the machine data folder and sets its permissions again. A folder that belongs to an account that is not trusted, or that holds a link, is moved aside and replaced by an empty one. Nothing from the moved folder is imported, so stored service passwords and keys must be entered again."
+msgstr "O ShellDrive confere a pasta de dados da máquina e aplica suas permissões novamente. Uma pasta que pertence a uma conta que não é confiável, ou que contém um link, é movida para o lado e substituída por uma vazia. Nada da pasta movida é importado, então as senhas e chaves do serviço guardadas precisam ser informadas novamente."
+
+#. Repair confirmation dialog: the button that starts the repair.
+msgctxt "ui.service.repair_yes"
+msgid "Repair data"
+msgstr "Reparar dados"
+
+#. Repair confirmation dialog: the button that leaves the folder alone. It is the default button.
+msgctxt "ui.service.repair_no"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Dialog title: the repair needs administrator rights.
+msgctxt "ui.service.elevate_title"
+msgid "Administrator rights needed"
+msgstr "Direitos de administrador necessários"
+
+#. Dialog text: the repair needs administrator rights; the Service page can be opened again elevated (UAC).
+msgctxt "ui.service.elevate_text"
+msgid "Repairing the machine data folder needs administrator rights. ShellDrive can open this page again as an administrator."
+msgstr "Reparar a pasta de dados da máquina exige direitos de administrador. O ShellDrive pode abrir esta página de novo como administrador."
+
+#. Dialog button: reopens the Service page as an administrator.
+msgctxt "ui.service.elevate_yes"
+msgid "Open as administrator"
+msgstr "Abrir como administrador"
+
+#. Dialog button: does nothing.
+msgctxt "ui.service.elevate_no"
+msgid "Cancel"
+msgstr "Cancelar"
+
+#. Repair result: the folder was in order and its permissions were set again.
+msgctxt "ui.service.repair_done"
+msgid "The machine data folder is in order. Its permissions were set again."
+msgstr "A pasta de dados da máquina está em ordem. Suas permissões foram aplicadas novamente."
+
+#. Repair result: an untrusted folder was moved aside and replaced.
+msgctxt "ui.service.repair_moved"
+msgid "An untrusted machine data folder was moved aside and a new one was created. Nothing from the old folder is imported, so stored service passwords and keys must be entered again."
+msgstr "Uma pasta de dados da máquina que não era confiável foi movida para o lado e uma nova foi criada. Nada da pasta antiga é importado, então as senhas e chaves do serviço guardadas precisam ser informadas novamente."
+
+#. Repair result: the repair worked but the service still refuses the folder.
+msgctxt "ui.service.repair_still_refused"
+msgid "The machine data folder was repaired, but the service still refuses it. The status shows the reason."
+msgstr "A pasta de dados da máquina foi reparada, mas o serviço ainda a recusa. O estado mostra o motivo."
+
+#. Repair result: refused because global drives are mounted.
+msgctxt "ui.service.repair_busy"
+msgid "Unmount the global drives first, then try again."
+msgstr "Desmonte primeiro as unidades globais e tente de novo."
+
+#. Repair result: refused because the caller is not an elevated administrator.
+msgctxt "ui.service.repair_denied"
+msgid "Only an administrator with elevated rights can repair the machine data folder."
+msgstr "Somente um administrador com direitos elevados pode reparar a pasta de dados da máquina."
+
+#. Repair result: a link or junction blocked the repair; nothing was changed.
+msgctxt "ui.service.repair_link"
+msgid "A link or junction is in the machine data folder, so nothing was changed. Remove it yourself, then try again."
+msgstr "Há um link ou uma junção na pasta de dados da máquina, então nada foi alterado. Remova-o você mesmo e tente de novo."
+
+#. Repair result: the running service does not know the repair method.
+msgctxt "ui.service.repair_unsupported"
+msgid "The running service is an older version and cannot do this repair. Update ShellDrive, then try again."
+msgstr "O serviço em execução é uma versão mais antiga e não consegue fazer este reparo. Atualize o ShellDrive e tente de novo."
+
+#. Repair result: the repair failed. {code} is the error.
+msgctxt "ui.service.repair_failed"
+msgid "The machine data folder could not be repaired (error {code})."
+msgstr "Não foi possível reparar a pasta de dados da máquina (erro {code})."
+
+#. Menu bar: the Connection menu of the main window.
+msgctxt "ui.menu.connection"
+msgid "Connection"
+msgstr "Conexão"
+
+#. Connection menu item: opens the legacy and Terrapin details of the selected drive. The ellipsis marks a dialog.
+msgctxt "ui.menu.security"
+msgid "Security details…"
+msgstr "Detalhes de segurança…"
+
+#. Main window list column: security warnings of the connection (legacy encryption, Terrapin).
+msgctxt "ui.main.col_security"
+msgid "Security"
+msgstr "Segurança"
+
+#. Main window list group: the user's own connections.
+msgctxt "ui.main.group_mine"
+msgid "My connections"
+msgstr "Minhas conexões"
+
+#. Main window list group: connections that an administrator provides for all users.
+msgctxt "ui.main.group_org"
+msgid "Provided by your organization"
+msgstr "Fornecidas pela sua organização"
+
+#. Main window list group: drives that the service mounts for all users.
+msgctxt "ui.main.group_global"
+msgid "Global drives"
+msgstr "Unidades globais"
+
+#. Main window status cell while the connection retries. {attempt} is the number of the attempt.
+msgctxt "ui.main.status_reconnecting"
+msgid "Reconnecting ({attempt})"
+msgstr "Reconectando ({attempt})"
+
+#. Main window security cell: the connection uses outdated encryption algorithms.
+msgctxt "ui.main.sec_legacy"
+msgid "Legacy encryption"
+msgstr "Criptografia obsoleta"
+
+#. Main window security cell: the connection is open to the Terrapin attack.
+msgctxt "ui.main.sec_terrapin"
+msgid "Open to the Terrapin attack"
+msgstr "Exposta ao ataque Terrapin"
+
+#. Main window security cell: outdated encryption and open to the Terrapin attack.
+msgctxt "ui.main.sec_both"
+msgid "Legacy encryption, Terrapin"
+msgstr "Criptografia obsoleta, Terrapin"
+
+#. Balloon: the host key of a server changed and ShellDrive stopped the connection. {host} is the server. A click opens the details.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_changed"
+msgid "The identity of {host} has changed. ShellDrive stopped the connection. Click for details."
+msgstr "A identidade de {host} mudou. O ShellDrive interrompeu a conexão. Clique para ver os detalhes."
+
+#. Balloon: the server offered none of the host key types ShellDrive has stored for it. {host} is the server. A click opens the host key manager.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_type"
+msgid "{host} did not offer the type of key ShellDrive knows for it. ShellDrive stopped the connection. Click to manage host keys."
+msgstr "{host} não ofereceu o tipo de chave que o ShellDrive conhece para ele. O ShellDrive interrompeu a conexão. Clique para gerenciar as chaves de host."
+
+#. Balloon: like the previous one, with the key type ShellDrive has stored. {host} is the server, {stored} the stored key type.
+#. sdl10n:maxlen=256
+msgctxt "ui.hki.notify_type_stored"
+msgid "{host} did not offer the type of key ShellDrive knows for it (stored: {stored}). ShellDrive stopped the connection. Click to manage host keys."
+msgstr "{host} não ofereceu o tipo de chave que o ShellDrive conhece para ele (salva: {stored}). O ShellDrive interrompeu a conexão. Clique para gerenciar as chaves de host."
+
+#. Title of the dialog that explains a changed host key.
+msgctxt "ui.hki.title"
+msgid "Host key changed"
+msgstr "A chave de host mudou"
+
+#. Changed host key dialog: what happened. {host} is the server. There is no connect-anyway option.
+msgctxt "ui.hki.intro"
+msgid "ShellDrive stopped the connection to {host} because the server presented a different host key than the one stored for it. The server may have been reinstalled, or someone may be intercepting your connection. ShellDrive does not offer to connect anyway."
+msgstr "O ShellDrive interrompeu a conexão com {host} porque o servidor apresentou uma chave de host diferente da que está salva. O servidor pode ter sido reinstalado, ou alguém pode estar interceptando sua conexão. O ShellDrive não oferece a opção de conectar mesmo assim."
+
+#. Label of the read-only field with the stored and the offered key. The mnemonic letter moves focus to the field.
+msgctxt "ui.hki.keys_label"
+msgid "&Fingerprints:"
+msgstr "&Impressões digitais:"
+
+#. Changed host key dialog: the stored key. {type} is the key type, {fp} the SHA-256 fingerprint.
+msgctxt "ui.hki.line_stored"
+msgid "Stored key: {type}  {fp}"
+msgstr "Chave salva: {type}  {fp}"
+
+#. Changed host key dialog: the key the server presented now. {type} is the key type, {fp} the SHA-256 fingerprint.
+msgctxt "ui.hki.line_offered"
+msgid "Offered now: {type}  {fp}"
+msgstr "Oferecida agora: {type}  {fp}"
+
+#. Changed host key dialog: the old key is in the user's own list. {line} is the line number.
+msgctxt "ui.hki.where_user"
+msgid "The stored key is in your ShellDrive list, line {line}."
+msgstr "A chave salva está na sua lista do ShellDrive, linha {line}."
+
+#. Changed host key dialog: the old key is in the list for all users of the computer. {line} is the line number.
+msgctxt "ui.hki.where_machine"
+msgid "The stored key is in the ShellDrive list for all users of this computer, line {line}."
+msgstr "A chave salva está na lista do ShellDrive para todos os usuários deste computador, linha {line}."
+
+#. Changed host key dialog: the old key is in a file another program owns. {path} is the file, {line} the line number.
+msgctxt "ui.hki.where_file"
+msgid "The stored key is in {path}, line {line}."
+msgstr "A chave salva está em {path}, linha {line}."
+
+#. Changed host key dialog: the old key is in the host keys PuTTY saved in the Windows registry.
+msgctxt "ui.hki.where_putty"
+msgid "The stored key is in the host keys PuTTY saved (Windows registry)."
+msgstr "A chave salva está nas chaves de host salvas pelo PuTTY (registro do Windows)."
+
+#. Changed host key dialog: what to do when the old key is in the user's own list.
+msgctxt "ui.hki.todo_user"
+msgid "If you expected this change, remove the old key in the host key manager, connect again and check the new fingerprint with the server's administrator before you trust it. If you did not expect it, do not connect."
+msgstr "Se você esperava essa mudança, remova a chave antiga no gerenciador de chaves de host, conecte novamente e confira a nova impressão digital com o administrador do servidor antes de confiar nela. Se não esperava, não conecte."
+
+#. Changed host key dialog: what to do when the old key is in the list for all users of the computer.
+msgctxt "ui.hki.todo_machine"
+msgid "This list is shared by all users of this computer, so only an administrator can change it. Ask your administrator to check the key."
+msgstr "Esta lista é compartilhada por todos os usuários deste computador, então só um administrador pode alterá-la. Peça ao seu administrador para verificar a chave."
+
+#. Changed host key dialog: what to do when the old key is in a source ShellDrive only reads (OpenSSH file, PuTTY registry).
+msgctxt "ui.hki.todo_source"
+msgid "ShellDrive only reads this source and cannot remove the key. Correct the entry in the program that owns it, or stop using keys from this source. A mismatch in any source blocks the connection."
+msgstr "O ShellDrive apenas lê esta origem e não pode remover a chave. Corrija a entrada no programa responsável por ela ou pare de usar as chaves desta origem. Uma divergência em qualquer origem bloqueia a conexão."
+
+#. Changed host key dialog button: opens the host key manager. The ellipsis marks a window.
+msgctxt "ui.hki.btn_manage"
+msgid "&Manage host keys…"
+msgstr "&Gerenciar chaves de host…"
+
+#. Changed host key dialog button: shows the file with the old key in Explorer.
+msgctxt "ui.hki.btn_open"
+msgid "&Open file location"
+msgstr "A&brir local do arquivo"
+
+#. Changed host key dialog button: turns off reading host keys from the source (OpenSSH or PuTTY) of the old key.
+msgctxt "ui.hki.btn_stop"
+msgid "&Stop using keys from this source"
+msgstr "&Parar de usar chaves desta origem"
+
+#. Changed host key dialog button: closes the dialog. It is the default button.
+msgctxt "ui.hki.btn_close"
+msgid "&Close"
+msgstr "&Fechar"
+
+#. Question before host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
+msgctxt "ui.hki.stop_confirm"
+msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again. Stop using this source?"
+msgstr "O ShellDrive deixará de ler as chaves de host salvas pelo {source}. Os servidores conhecidos apenas ali pedirão que você confirme a chave novamente. Parar de usar esta origem?"
+
+#. Message after host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
+msgctxt "ui.hki.stop_done"
+msgid "ShellDrive stopped using the host keys saved by {source}. Connect again to continue."
+msgstr "O ShellDrive parou de usar as chaves de host salvas pelo {source}. Conecte novamente para continuar."
+
+#. Title of the dialog with the legacy algorithm and Terrapin details of a connection.
+msgctxt "ui.secdlg.title"
+msgid "Security details"
+msgstr "Detalhes de segurança"
+
+#. Security details: the connection uses outdated algorithms. {host} is the server.
+msgctxt "ui.secdlg.legacy"
+msgid "{host} uses outdated security algorithms. The connection works, but it is easier to attack."
+msgstr "{host} usa algoritmos de segurança obsoletos. A conexão funciona, mas é mais fácil de atacar."
+
+#. Security details: the server is open to the Terrapin attack. {host} is the server.
+msgctxt "ui.secdlg.terrapin"
+msgid "The connection to {host} is open to a known attack (Terrapin) because the server is out of date. Ask the server's administrator to update OpenSSH."
+msgstr "A conexão com {host} está exposta a um ataque conhecido (Terrapin) porque o servidor está desatualizado. Peça ao administrador do servidor para atualizar o OpenSSH."
+
+#. Security details: label of the read-only list of outdated algorithms. The mnemonic letter moves focus to the list.
+msgctxt "ui.secdlg.list_label"
+msgid "&Algorithms:"
+msgstr "&Algoritmos:"
+
+#. Security details: the algorithm names were not reported for this connection.
+msgctxt "ui.secdlg.list_unknown"
+msgid "The names of the outdated algorithms are not available for this connection. Unmount the drive and mount it again to see them."
+msgstr "Os nomes dos algoritmos obsoletos não estão disponíveis para esta conexão. Desmonte a unidade e monte-a novamente para vê-los."
+
+#. Security details: one outdated algorithm. {category} is its kind, {algorithm} its name, {reason} a short reason.
+msgctxt "ui.secdlg.algo_line"
+msgid "{category}: {algorithm} ({reason})"
+msgstr "{category}: {algorithm} ({reason})"
+
+#. Security details: kind of algorithm, key exchange.
+msgctxt "ui.secdlg.cat_kex"
+msgid "Key exchange"
+msgstr "Troca de chaves"
+
+#. Security details: kind of algorithm, host key.
+msgctxt "ui.secdlg.cat_hostkey"
+msgid "Host key"
+msgstr "Chave de host"
+
+#. Security details: kind of algorithm, encryption cipher.
+msgctxt "ui.secdlg.cat_cipher"
+msgid "Cipher"
+msgstr "Cifra"
+
+#. Security details: kind of algorithm, message authentication code.
+msgctxt "ui.secdlg.cat_mac"
+msgid "Message check (MAC)"
+msgstr "Verificação de mensagens (MAC)"
+
+#. Security details: kind of algorithm, not recognized.
+msgctxt "ui.secdlg.cat_other"
+msgid "Algorithm"
+msgstr "Algoritmo"
+
+#. Security details: reason, shown in parentheses after a key exchange name.
+msgctxt "ui.secdlg.why_kex"
+msgid "built on SHA-1 or a small fixed group"
+msgstr "baseado em SHA-1 ou em um grupo fixo pequeno"
+
+#. Security details: reason, shown in parentheses after a CBC cipher name.
+msgctxt "ui.secdlg.why_cbc"
+msgid "CBC mode is open to padding attacks"
+msgstr "o modo CBC é vulnerável a ataques de preenchimento"
+
+#. Security details: reason, shown in parentheses after a message check name.
+msgctxt "ui.secdlg.why_mac"
+msgid "built on SHA-1"
+msgstr "baseada em SHA-1"
+
+#. Security details: reason, shown in parentheses after a host key name.
+msgctxt "ui.secdlg.why_hostkey"
+msgid "its signatures use SHA-1"
+msgstr "suas assinaturas usam SHA-1"
+
+#. Security details: reason, shown in parentheses after an algorithm of an unknown kind.
+msgctxt "ui.secdlg.why_other"
+msgid "considered outdated"
+msgstr "considerado obsoleto"
+
+#. Security details button: stops warning about this set of algorithms for this server.
+msgctxt "ui.secdlg.btn_keep"
+msgid "&Don't warn again for this server"
+msgstr "&Não avisar mais sobre este servidor"
+
+#. Security details button: refuses outdated algorithms for this server from now on.
+msgctxt "ui.secdlg.btn_refuse"
+msgid "&Refuse outdated algorithms for this server"
+msgstr "&Recusar algoritmos obsoletos neste servidor"
+
+#. Security details button: closes the dialog. It is the default button.
+msgctxt "ui.secdlg.btn_close"
+msgid "&Close"
+msgstr "&Fechar"
+
+#. Security details: confirmation after Don't warn again.
+msgctxt "ui.secdlg.keep_done"
+msgid "ShellDrive will not warn about these algorithms for this server again. A different set of outdated algorithms warns again."
+msgstr "O ShellDrive não avisará mais sobre estes algoritmos neste servidor. Outro conjunto de algoritmos obsoletos avisará novamente."
+
+#. Security details: question after the setting was saved. {drive} is the drive letter.
+msgctxt "ui.secdlg.refuse_ask"
+msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
+msgstr "A partir de agora, os algoritmos obsoletos são recusados neste servidor. Reconectar {drive} agora?"
+
+#. Host key manager button: copies the SHA256 fingerprint of the selected key.
+msgctxt "ui.hostkeys.btn_copy_fp"
+msgid "Copy fingerprint"
+msgstr "Copiar impressão digital"
+
+#. Host key manager status line: the fingerprint is on the clipboard.
+msgctxt "ui.hostkeys.fp_copied"
+msgid "Fingerprint copied."
+msgstr "A impressão digital foi copiada."
+
+#. Announced keys button: drops the selected offer without changing any stored key.
+msgctxt "ui.hostkeys.btn_reject"
+msgid "Dismiss offer"
+msgstr "Descartar oferta"
+
+#. Host key manager status line after an offer was dismissed. {host} is the server.
+msgctxt "ui.hostkeys.rejected"
+msgid "The offer from {host} was dismissed. No key was changed."
+msgstr "A oferta de {host} foi descartada. Nenhuma chave foi alterada."
+
+#. Host key manager status line: the agent did not drop the offer. {code} is the error name.
+msgctxt "ui.hostkeys.reject_failed"
+msgid "The offer could not be dismissed ({code})."
+msgstr "Não foi possível descartar a oferta ({code})."
+
+#. Host key manager details pane when no key is selected.
+msgctxt "ui.hostkeys.det_none"
+msgid "Select a key to see its details."
+msgstr "Selecione uma chave para ver os detalhes."
+
+#. Host key details line. {value} is the host name.
+msgctxt "ui.hostkeys.det_host"
+msgid "Host: {value}"
+msgstr "Host: {value}"
+
+#. Host key details line. {value} is the TCP port.
+msgctxt "ui.hostkeys.det_port"
+msgid "Port: {value}"
+msgstr "Porta: {value}"
+
+#. Host key details line. {value} is the key type, such as ssh-ed25519.
+msgctxt "ui.hostkeys.det_type"
+msgid "Key type: {value}"
+msgstr "Tipo de chave: {value}"
+
+#. Host key details line. {value} is the SHA256 fingerprint.
+msgctxt "ui.hostkeys.det_fp"
+msgid "SHA256 fingerprint: {value}"
+msgstr "Impressão digital SHA256: {value}"
+
+#. Host key details line. {value} says which store holds the key.
+msgctxt "ui.hostkeys.det_store"
+msgid "Stored in: {value}"
+msgstr "Armazenada em: {value}"
+
+#. Host key details line. {value} is the line number of the key in its known_hosts file.
+msgctxt "ui.hostkeys.det_line"
+msgid "Line in the file: {value}"
+msgstr "Linha no arquivo: {value}"
+
+#. Host key details: note for a key of the machine store.
+msgctxt "ui.hostkeys.det_readonly"
+msgid "Machine keys can only be changed by an administrator."
+msgstr "Somente um administrador pode alterar as chaves da máquina."
+
+#. Tools menu and tray menu: opens the list of recent events.
+msgctxt "ui.menu.events"
+msgid "Events…"
+msgstr "Eventos…"
+
+#. Title of the event list window.
+msgctxt "ui.events.title"
+msgid "ShellDrive events"
+msgstr "Eventos do ShellDrive"
+
+#. Event list column: when the event happened.
+msgctxt "ui.events.col_time"
+msgid "Time"
+msgstr "Hora"
+
+#. Event list column: the drive letter or server the event is about.
+msgctxt "ui.events.col_subject"
+msgid "Drive or server"
+msgstr "Unidade ou servidor"
+
+#. Event list column: the kind of event.
+msgctxt "ui.events.col_kind"
+msgid "Kind"
+msgstr "Tipo"
+
+#. Event list column: what happened.
+msgctxt "ui.events.col_text"
+msgid "Event"
+msgstr "Evento"
+
+#. Event kind: a drive changed state.
+msgctxt "ui.events.kind_drive"
+msgid "Drive"
+msgstr "Unidade"
+
+#. Event kind: a host key problem or offer.
+msgctxt "ui.events.kind_hostkey"
+msgid "Host key"
+msgstr "Chave do host"
+
+#. Event kind: a warning.
+msgctxt "ui.events.kind_warning"
+msgid "Warning"
+msgstr "Aviso"
+
+#. Event kind: something failed.
+msgctxt "ui.events.kind_error"
+msgid "Error"
+msgstr "Erro"
+
+#. Event kind: information, such as an update.
+msgctxt "ui.events.kind_info"
+msgid "Information"
+msgstr "Informação"
+
+#. Event list button: copies the listed events to the clipboard.
+msgctxt "ui.events.btn_copy"
+msgid "Copy list"
+msgstr "Copiar lista"
+
+#. Event list button: forgets the recorded events.
+msgctxt "ui.events.btn_clear"
+msgid "Clear list"
+msgstr "Limpar lista"
+
+#. Event text: a mount failed. {code} is the error name.
+msgctxt "ui.events.text_failed"
+msgid "Failed ({code})."
+msgstr "Falhou ({code})."
+
+#. Event list status line: number of events shown.
+#, plural-arg=count
+msgctxt "ui.events.status_count"
+msgid "{count} event."
+msgid_plural "{count} events."
+msgstr[0] "{count} evento."
+msgstr[1] "{count} de eventos."
+msgstr[2] "{count} eventos."
+
+#. Settings: title of the Notifications tab.
+msgctxt "ui.settings.tab_notifications"
+msgid "Notifications"
+msgstr "Notificações"
+
+#. Settings: label of the list that sets the default write mode of connections that do not choose one (3.4).
+msgctxt "ui.settings.write_default"
+msgid "Default for writes"
+msgstr "Gravações por padrão"
+
+#. Settings: default write mode list, wait for the server on every write.
+msgctxt "ui.settings.write_through"
+msgid "Wait for the server (safer)"
+msgstr "Aguardar o servidor (mais seguro)"
+
+#. Settings: default write mode list, acknowledge writes before the server confirms them.
+msgctxt "ui.settings.write_behind"
+msgid "Write in the background (faster)"
+msgstr "Gravar em segundo plano (mais rápido)"
+
+#. Settings: checkbox that starts the ShellDrive agent at sign-in (Run key, this user only).
+msgctxt "ui.settings.agent_logon"
+msgid "Start the ShellDrive agent at sign-in"
+msgstr "Iniciar o agente do ShellDrive ao entrar"
+
+#. Settings: checkbox, strict log privacy (10.1).
+msgctxt "ui.settings.log_privacy"
+msgid "Keep host names and file paths out of log files"
+msgstr "Não incluir nomes de servidor nem caminhos de arquivo nos logs"
+
+#. Settings: text above the list of notification switches.
+msgctxt "ui.settings.notify_hint"
+msgid "Choose which notifications appear. Important problems, such as a changed host key or a write that failed, are always shown."
+msgstr "Escolha quais notificações aparecem. Problemas importantes, como uma chave de host alterada ou uma gravação que falhou, sempre são exibidos."
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_connection_lost"
+msgid "Connection lost"
+msgstr "Conexão perdida"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_reconnected"
+msgid "Connection restored"
+msgstr "Conexão restabelecida"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mount_failed"
+msgid "A drive could not be connected"
+msgstr "Não foi possível conectar uma unidade"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_mounted"
+msgid "A drive was connected"
+msgstr "Uma unidade foi conectada"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_legacy_algorithms"
+msgid "A connection uses outdated encryption"
+msgstr "Uma conexão usa criptografia obsoleta"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_offered"
+msgid "A server offers new host keys"
+msgstr "Um servidor oferece novas chaves de host"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_saved"
+msgid "New host keys were saved automatically"
+msgstr "Novas chaves de host foram salvas automaticamente"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_proxy_password"
+msgid "A proxy sends the password unencrypted"
+msgstr "Um proxy envia a senha sem criptografia"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_pool_limited"
+msgid "Extra connections not used because signing in needs typing"
+msgstr "Conexões extras não usadas porque entrar exige digitação"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_service_attention"
+msgid "The ShellDrive service needs attention"
+msgstr "O serviço do ShellDrive precisa de atenção"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_available"
+msgid "An update is available"
+msgstr "Há uma atualização disponível"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_update_stale"
+msgid "Update information is out of date"
+msgstr "As informações de atualização estão desatualizadas"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_terrapin"
+msgid "A connection is open to the Terrapin attack"
+msgstr "Uma conexão está exposta ao ataque Terrapin"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_hostkeys_source"
+msgid "A host key file was ignored because other users can change it"
+msgstr "Um arquivo de chaves de host foi ignorado porque outros usuários podem alterá-lo"
+
+#. Settings: notification switch (7.7).
+msgctxt "ui.settings.nk_disk_cache"
+msgid "Disk cache refused on a volume without permissions"
+msgstr "Cache em disco recusado em um volume sem permissões"
+
+#. Status bar while ShellDrive is being started after a click on the not-running text.
+msgctxt "ui.status.agent_starting"
+msgid "Starting ShellDrive…"
+msgstr "Iniciando o ShellDrive…"
+
+#. Message when the click on the status bar could not start ShellDrive. {code} is the error name.
+msgctxt "ui.status.agent_start_failed"
+msgid "ShellDrive could not be started ({code}). Try again in a moment."
+msgstr "Não foi possível iniciar o ShellDrive ({code}). Tente novamente em instantes."
+
+#. Balloon: a mounted drive lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.lost"
+msgid "{name}: the connection was lost. ShellDrive is trying to reconnect."
+msgstr "{name}: a conexão foi perdida. O ShellDrive está tentando reconectar."
+
+#. Balloon: a drive is connected again after it lost its connection (03 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected"
+msgid "{name}: connected again."
+msgstr "{name}: conectado novamente."
+
+#. Balloon: a drive could not be connected (03 7.7). {name} is the drive letter or the connection name, {code} the error name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mount_failed"
+msgid "ShellDrive could not connect {name} ({code}). Open ShellDrive for details."
+msgstr "O ShellDrive não conseguiu conectar {name} ({code}). Abra o ShellDrive para ver os detalhes."
+
+#. Balloon: a drive is connected (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.mounted"
+msgid "{name}: connected."
+msgstr "{name}: conectado."
+
+#. Balloon: the proxy of a connection receives the proxy password unencrypted (03 3.8, 7.7). {name} is the connection, {proxy} the proxy as host:port.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.proxy_password"
+msgid "{name}: the proxy {proxy} receives your proxy password unencrypted."
+msgstr "{name}: o proxy {proxy} recebe sua senha de proxy sem criptografia."
+
+#. Balloon: extra connections of a drive are not used because signing in needs typing (03 7.7, off by default). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.pool_limited"
+msgid "{name}: extra connections are not used because signing in needs you to type."
+msgstr "{name}: as conexões extras não são usadas porque o login exige que você digite algo."
+
+#. Balloon: ShellDrive saved new host keys of a server by itself (03 5.6, 7.7). {host} is the server.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkeys_saved"
+msgid "ShellDrive saved new host keys for {host}."
+msgstr "O ShellDrive salvou novas chaves de host de {host}."
+
+#. Balloon: the disk cache was not used because its folder is on a volume without file permissions (03 1.9, 7.7). {name} is the drive letter or the connection name.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.disk_cache"
+msgid "{name}: ShellDrive did not use the disk cache because its folder is on a volume without file permissions."
+msgstr "{name}: o ShellDrive não usou o cache em disco porque a pasta dele está em um volume sem permissões de arquivo."
+
+#. Title of the dialog that explains a wrong host key type (03 5.2).
+msgctxt "ui.hki.type_title"
+msgid "Host key type not offered"
+msgstr "Tipo de chave de host não oferecido"
+
+#. Wrong host key type dialog: what happened. {host} is the server. Nothing is trusted automatically.
+msgctxt "ui.hki.type_intro"
+msgid "ShellDrive stopped the connection to {host} because the server did not offer any of the host key types ShellDrive has stored for it. The server may have been reinstalled or upgraded, or someone may be intercepting your connection. ShellDrive does not trust a key of another type by itself."
+msgstr "O ShellDrive interrompeu a conexão com {host} porque o servidor não ofereceu nenhum dos tipos de chave de host que o ShellDrive guardou para ele. O servidor pode ter sido reinstalado ou atualizado, ou alguém pode estar interceptando sua conexão. O ShellDrive não confia por conta própria em uma chave de outro tipo."
+
+#. Wrong host key type dialog: the key types stored for the server. {types} is a comma separated list.
+msgctxt "ui.hki.line_stored_types"
+msgid "Stored key types: {types}"
+msgstr "Tipos de chave guardados: {types}"
+
+#. Wrong host key type dialog: the host key types the server offers. {types} is a comma separated list.
+msgctxt "ui.hki.line_offered_types"
+msgid "Types the server offers: {types}"
+msgstr "Tipos oferecidos pelo servidor: {types}"
+
+#. Wrong host key type dialog: shown in place of the list of key types when there is none.
+msgctxt "ui.hki.types_none"
+msgid "none"
+msgstr "nenhum"
+
+#. Wrong host key type dialog: what to do. It names the button Add key from server.
+msgctxt "ui.hki.type_todo"
+msgid "If you expected this change, check the new fingerprint with the server's administrator, then add the key with the Add key from server button. If you did not expect it, do not connect."
+msgstr "Se você esperava essa mudança, confira a nova impressão digital com o administrador do servidor e depois adicione a chave com o botão Adicionar chave do servidor. Se não esperava, não se conecte."
+
+#. Wrong host key type dialog button: opens the host key manager and the review of the server's keys. The ellipsis marks a window.
+msgctxt "ui.hki.btn_add"
+msgid "&Add key from server…"
+msgstr "&Adicionar chave do servidor…"
+
+#. Balloon: a drive is connected again and the agent says why the connection was lost (03 2.4 mount.state reason, 7.7). {name} is the drive letter or the connection name, {reason} says what interrupted the connection (a short phrase, such as "timeout", or an error code).
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.reconnected_reason"
+msgid "{name}: reconnected after: {reason}."
+msgstr "{name}: reconectado após: {reason}."
+
+#. Balloon: a live known_hosts file of another program is ignored because other users can change it (03 5.1, 7.7, TM-R06). {source} is OpenSSH or PuTTY. A click opens Settings on the Security page.
+#. sdl10n:maxlen=256
+msgctxt "ui.notice.hostkey_source"
+msgid "ShellDrive ignores your {source} known_hosts because other users can change it. Click to open Settings > Security."
+msgstr "O ShellDrive ignora o known_hosts do {source} porque outros usuários podem alterá-lo. Clique para abrir Configurações > Segurança."
+
+#. Event text: a drive changed state while it comes back after a lost connection. {state} is the new state (such as Connecting), {reason} what interrupted the connection (a short phrase or an error code).
+msgctxt "ui.events.text_reason"
+msgid "{state} (after: {reason})"
+msgstr "{state} (após: {reason})"
+
+#. Reason a connection was lost, after "reconnected after:" (a short phrase without a final period): the connection was closed.
+msgctxt "ui.notice.reason_disconnected"
+msgid "connection closed"
+msgstr "conexão encerrada"
+
+#. Reason a connection was lost (short phrase): the server did not answer in time.
+msgctxt "ui.notice.reason_timeout"
+msgid "timeout"
+msgstr "tempo esgotado"
+
+#. Reason a connection was lost (short phrase): the server name could not be resolved.
+msgctxt "ui.notice.reason_dns_failed"
+msgid "name lookup failed"
+msgstr "falha na resolução do nome"
+
+#. Reason a connection was lost (short phrase): the server refused the connection.
+msgctxt "ui.notice.reason_conn_refused"
+msgid "connection refused"
+msgstr "conexão recusada"
+
+#. Reason a connection was lost (short phrase): there is no route to the server.
+msgctxt "ui.notice.reason_net_unreachable"
+msgid "network unreachable"
+msgstr "rede inacessível"
+
+#. Reason a connection was lost (short phrase): the server broke the protocol.
+msgctxt "ui.notice.reason_protocol"
+msgid "protocol error"
+msgstr "erro de protocolo"
+
+#. Reason a connection was lost (short phrase): signing in again was refused.
+msgctxt "ui.notice.reason_auth_failed"
+msgid "sign-in failed"
+msgstr "falha na autenticação"
+
+#. Reason a connection was lost (short phrase): the proxy could not be reached.
+msgctxt "ui.notice.reason_proxy_failed"
+msgid "proxy connection failed"
+msgstr "falha na conexão com o proxy"
+
+#. Host key details line. {value} is the MD5 fingerprint (MD5:xx:xx:...), for comparing with old servers.
+msgctxt "ui.hostkeys.det_md5"
+msgid "MD5 fingerprint: {value}"
+msgstr "Impressão digital MD5: {value}"
+
+#. Host key details line. {value} says where the key came from (ShellDrive, copied from PuTTY or OpenSSH, updated by the server).
+msgctxt "ui.hostkeys.det_origin"
+msgid "Source: {value}"
+msgstr "Origem: {value}"
+
+#. Host key details line. {value} is the date the key was added (YYYY-MM-DD).
+msgctxt "ui.hostkeys.det_added"
+msgid "Added: {value}"
+msgstr "Adicionada: {value}"
+
+#. Host key details line. {value} is the comment at the end of the key's line in the known_hosts file.
+msgctxt "ui.hostkeys.det_comment"
+msgid "Comment: {value}"
+msgstr "Comentário: {value}"
+
+#. Host key source: the key was added by ShellDrive. The product name stays as it is.
+msgctxt "ui.hostkeys.origin_shelldrive"
+msgid "ShellDrive"
+msgstr "ShellDrive"
+
+#. Host key source: the key was copied from the PuTTY host keys of the user.
+msgctxt "ui.hostkeys.origin_putty"
+msgid "Copied from PuTTY"
+msgstr "Copiada do PuTTY"
+
+#. Host key source: the key was copied from the OpenSSH known_hosts file of the user.
+msgctxt "ui.hostkeys.origin_openssh"
+msgid "Copied from OpenSSH"
+msgstr "Copiada do OpenSSH"
+
+#. Host key source: the server announced the key and the user accepted it (UpdateHostKeys).
+msgctxt "ui.hostkeys.origin_server"
+msgid "Updated by server"
+msgstr "Atualizada pelo servidor"

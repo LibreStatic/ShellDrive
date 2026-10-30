@@ -1,0 +1,13 @@
+# sd-isacheck --ct-allow: constant-time functions (01 section 2.4.1) whose forward conditional branches were reviewed
+# and branch on PUBLIC data only. One undecorated name or glob per line, then "#" and the reason. A line exempts the
+# function from the forward-branch rule only: DIV/IDIV is never exempt, and a new branch on secret data in one of
+# these functions is not caught by the gate, so every change to a listed function needs a review of its branches.
+# Reviewed 2026-10-27 (sd_crypto, x86-ia32 Release objects; the x86-sse2 and x64 gates judge the same list and pass
+# with these entries, round 12):
+sd_bn_ct_mul       # argument and allocation checks on public sizes and pointers (a->n, b->n, SD_MP_MAX)
+sd_bn_ct_mod       # argument checks; the modulus is public and its limb count is trimmed with a public-length loop
+sd_bn_ct_modexp    # argument checks on public sizes; exp_bits and exp->n are public lengths
+sd_mp_modexp_ct    # "if (bit + 4 > ebits)": the window position and exponent length are public (2.7.x top window)
+sd_aes_sbox_ct     # "if (inverse)": the direction is a public flag chosen by the caller (encrypt or decrypt)
+sd_bn_ct_modinv    # "if (!ok)": branches on invertibility of a mod m. Only the failure case depends on the value,
+                   # and a non-invertible input is negligible for random secret operands; callers never leak more

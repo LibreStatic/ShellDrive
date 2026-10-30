@@ -13,6 +13,7 @@ set(SD_WEBDAV_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/wd_lock.c
   ${CMAKE_CURRENT_SOURCE_DIR}/wd_methods.c
   ${CMAKE_CURRENT_SOURCE_DIR}/wd_server.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/wd_tokenonly.c
   ${CMAKE_CURRENT_SOURCE_DIR}/wd_util.c
   ${CMAKE_CURRENT_SOURCE_DIR}/wd_xml.c
   CACHE INTERNAL "sd_webdav sources")
@@ -26,6 +27,7 @@ sd_add_module(sd_webdav
     sd_vfs
     sd_base
     sd_platform
+    sd_policy
   SYSTEM_LIBS
     ${SD_WEBDAV_SYSTEM_LIBS}
   HEADERS

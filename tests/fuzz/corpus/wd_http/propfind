@@ -1,0 +1,6 @@
+PROPFIND /dav/file.txt HTTP/1.1
+Host: localhost:8080
+Depth: 1
+Content-Type: text/xml
+Content-Length: 0
+

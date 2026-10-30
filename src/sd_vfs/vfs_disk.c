@@ -336,6 +336,40 @@ void vfs_disk_trim(sd_vfs *v)
   sd_free(list);
 }
 
+/* M3 cache.clear: deletes every entry that no vfs entry holds open (a file held open cannot be deleted,
+   its data file is opened without FILE_SHARE_DELETE). */
+void vfs_disk_clear(sd_vfs *v)
+{
+  struct vfs_disk *d = v->disk;
+  WIN32_FIND_DATAW fd;
+  HANDLE fh;
+  WCHAR *pat;
+  if (!d)
+    return;
+  pat = path_of(d, L"*", L".hdr");
+  if (!pat)
+    return;
+  fh = FindFirstFileExW(pat, FindExInfoStandard, &fd, FindExSearchNameMatch, NULL, 0);
+  sd_free(pat);
+  if (fh == INVALID_HANDLE_VALUE)
+    return;
+  do {
+    WCHAR name[VDC_NAME + 1];
+    WCHAR *hp, *dp;
+    if (wcslen(fd.cFileName) != VDC_NAME + 4 || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+      continue;
+    memcpy(name, fd.cFileName, VDC_NAME * sizeof(WCHAR));
+    name[VDC_NAME] = 0;
+    dp = path_of(d, name, L".dat");
+    hp = path_of(d, name, L".hdr");
+    if (dp) (void)DeleteFileW(dp);
+    if (hp) (void)DeleteFileW(hp);
+    sd_free(dp);
+    sd_free(hp);
+  } while (FindNextFileW(fh, &fd));
+  FindClose(fh);
+}
+
 /* ---- entries ---- */
 
 static void hex_name(const struct vfs_disk *d, const char *rpath, WCHAR out[VDC_NAME + 1])

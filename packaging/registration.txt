@@ -1,0 +1,66 @@
+# ShellDrive registration data: the single source for the per-user setup (apps/shelldrive-setup) and
+# for the MSI registry tables that tools/sd-regtable will generate (04 §6.6, D45).
+#
+# One row per registry value:   subkey|value name|type|data|feature
+#   subkey      relative to the hive chosen by the install mode (HKCU per-user; HKLM per-machine, MSI).
+#               Empty subkey is not allowed. Backslashes are literal.
+#   value name  empty = the key's default value.
+#   type        SZ | DWORD (DWORD data is a decimal number or a placeholder that expands to one).
+#   data        literal text, with placeholders expanded by the installer:
+#                 [INSTALLDIR]  install folder, with a trailing backslash
+#                 [VERSION]     product version (VERSION file)
+#                 [FLAVOUR]     flavour name of the installed payload (x86-ia32, x64-modern, ...)
+#                 [SIZEKB]      installed size in KB (rounded up)
+#   feature     core (always written) | autostart (written only when sign-in start is chosen)
+#               | shellext (the shell extension's rows: the MSI puts them in the ShellExt feature, the per-user setup
+#                 writes them with the other rows; they match apps/shelldrive-shellext/shellext_register.c, 03 §8.5)
+#               | shellext32 (the 32-bit view of the shell extension, 04 §8.3, 03 §8.5: the same CLSIDs and handlers
+#                 with the x86 DLL in Program Files (x86), written by the MSI of the x64 flavours only as Win64="no"
+#                 components. The per-user setup writes them only when its x86 copy is in x86\ and the 32-bit and 64-bit
+#                 views of HKCU\Software\Classes are separate (XP x64, setup_reg.c sd_setup_shell32_wanted). Approved
+#                 stays shared: it is not under Software\Classes, so it is not redirected and its one row (shellext)
+#                 serves both views.)
+#   [INSTALLDIR32]  the 32-bit install folder of the x86 copy of the shell extension: Program Files (x86)\LibreStatic\
+#                 ShellDrive\ in the x64 MSI, <install folder>\x86\ in the per-user setup (each with a trailing
+#                 backslash); shellext32 rows only
+# Rows are written and removed in file order. Keys are removed by the uninstaller when empty.
+# Lines starting with # are comments. A "|" never appears inside data.
+
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive||SZ|ShellDrive|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayName|SZ|ShellDrive|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayVersion|SZ|[VERSION]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|Publisher|SZ|LibreStatic|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|DisplayIcon|SZ|[INSTALLDIR]shelldrive-ui.exe,0|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|InstallLocation|SZ|[INSTALLDIR]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|UninstallString|SZ|"[INSTALLDIR]uninstall.exe" /uninstall|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|QuietUninstallString|SZ|"[INSTALLDIR]uninstall.exe" /uninstall /quiet|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|EstimatedSize|DWORD|[SIZEKB]|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|NoModify|DWORD|1|core
+Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive|NoRepair|DWORD|1|core
+Software\LibreStatic\ShellDrive|InstallDir|SZ|[INSTALLDIR]|core
+Software\LibreStatic\ShellDrive|Version|SZ|[VERSION]|core
+Software\LibreStatic\ShellDrive|Flavour|SZ|[FLAVOUR]|core
+Software\Microsoft\Windows\CurrentVersion\App Paths\shelldrive-ui.exe||SZ|[INSTALLDIR]shelldrive-ui.exe|core
+Software\Microsoft\Windows\CurrentVersion\Run|ShellDrive|SZ|"[INSTALLDIR]shelldrive-host.exe" agent --logon --if-needed|autostart
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}||SZ|ShellDrive context menu|shellext
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32||SZ|[INSTALLDIR]shelldrive-shellext.dll|shellext
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32|ThreadingModel|SZ|Apartment|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}||SZ|ShellDrive This PC context menu|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32||SZ|[INSTALLDIR]shelldrive-shellext.dll|shellext
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32|ThreadingModel|SZ|Apartment|shellext
+Software\Classes\Drive\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\Directory\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\*\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext
+Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shellex\ContextMenuHandlers\ShellDrive||SZ|{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}|shellext
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}||SZ|ShellDrive context menu|shellext32
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32||SZ|[INSTALLDIR32]shelldrive-shellext.dll|shellext32
+Software\Classes\CLSID\{C2A44993-862B-42AB-B40B-254EFB1F5C43}\InprocServer32|ThreadingModel|SZ|Apartment|shellext32
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}||SZ|ShellDrive This PC context menu|shellext32
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32||SZ|[INSTALLDIR32]shelldrive-shellext.dll|shellext32
+Software\Classes\CLSID\{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}\InprocServer32|ThreadingModel|SZ|Apartment|shellext32
+Software\Classes\Drive\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext32
+Software\Classes\Directory\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext32
+Software\Classes\*\shellex\ContextMenuHandlers\ShellDrive||SZ|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|shellext32
+Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shellex\ContextMenuHandlers\ShellDrive||SZ|{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}|shellext32
+Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved|{C2A44993-862B-42AB-B40B-254EFB1F5C43}|SZ|ShellDrive context menu|shellext
+Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved|{5E1C7D02-3B8F-4A9E-9C61-7D24A0F3B5E8}|SZ|ShellDrive This PC context menu|shellext

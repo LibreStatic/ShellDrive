@@ -39,6 +39,29 @@ typedef struct wd_tcprow6 {
 } wd_tcprow6;
 #define WD_TCP_TABLE_OWNER_PID_CONNECTIONS 4
 
+/* Request ring for unit tests (no log sink there); off by default, product never records targets. */
+static volatile LONG wd_dbg_on;
+static volatile LONG wd_dbg_idx;
+static char wd_dbg_ring[WD_SERVER_DBG_N][96];
+
+void wd_server_dbg_enable(int on)
+{
+  wd_dbg_on = on;
+  wd_dbg_idx = 0;
+}
+
+int wd_server_dbg_last(char out[][96], int max)
+{
+  LONG total = wd_dbg_idx;
+  int n = (int)(total < WD_SERVER_DBG_N ? total : WD_SERVER_DBG_N), i;
+  if (n > max) n = max;
+  for (i = 0; i < n; i++) {
+    LONG k = (total - i) % WD_SERVER_DBG_N;   /* request k wrote slot k (idx increments first) */
+    memcpy(out[i], wd_dbg_ring[k], 96);
+  }
+  return n;
+}
+
 static DWORD peer_pid(int family, uint16_t peer_port_net, uint16_t our_port_net)
 {
   static pfn_GetExtendedTcpTable fn;
@@ -376,6 +399,20 @@ static void challenge(wd_rq *q, const char *token_hdr)
   wd_sb_free(&extra);
 }
 
+/* A token-only export answered on this connection: it leaves the unauthenticated quota and gets the
+   authenticated idle deadline, without becoming authenticated (see wd_conn.tok). */
+static void mark_token_conn(wd_conn *c)
+{
+  sd_webdav_server *s = c->srv;
+  sd_mutex_lock(&s->mu);
+  c->tok = 1;
+  if (c->unauth_counted) {
+    c->unauth_counted = 0;
+    s->nunauth--;
+  }
+  sd_mutex_unlock(&s->mu);
+}
+
 static void set_authed(wd_conn *c, PSID user)
 {
   sd_webdav_server *s = c->srv;
@@ -489,10 +526,20 @@ static void handle(wd_rq *q)
     wd_options(q);
     return;
   }
-  if (!authenticate(q))
-    return;
-  q->caller.sid = c->user;
+  if (q->ex && q->ex->token_only) {
+    /* TM-R19 token-only export: the per-mount token (already matched above) is the sole authenticator. No
+       SSPI challenge, no owner SID check; the caller is the mount owner. The connection is marked, but
+       authed stays 0 so that a later request to any other export still goes through SSPI. */
+    mark_token_conn(c);
+    q->caller.sid = c->srv->owner;
+  } else {
+    if (!authenticate(q))
+      return;
+    q->caller.sid = c->user;
+  }
   q->caller.can_write = q->ex ? !q->ex->read_only : FALSE;
+  q->caller.groups = NULL;              /* M5: no token groups on the per-user SSPI path (matched by SID) */
+  q->caller.n_groups = 0;
   q->vpath = wd_path_to_vfs(&q->path, 1);
   if (q->vpath == NULL) {
     respond_simple(q, 400, 0);
@@ -528,7 +575,7 @@ static unsigned __stdcall conn_main(void *arg)
     uint64_t deadline;
     memset(&q, 0, sizeof(q));
     q.c = c;
-    deadline = c->authed ? c->last_at + s->idle_ms
+    deadline = (c->authed || c->tok) ? c->last_at + s->idle_ms
                          : SD_MIN(c->last_at + s->header_ms, c->accepted_at + s->auth_ms);
     for (;;) {
       if (c->ilen > c->ipos) {
@@ -563,11 +610,16 @@ static unsigned __stdcall conn_main(void *arg)
     }
     /* the path is never logged: it carries the per-mount token (02 §7.3) */
     SD_LOGD(WD_LOG, "request %s -> %d%s", q.r.method, q.status, c->authed ? "" : " (unauthenticated)");
+    if (wd_dbg_on) {
+      char *r = wd_dbg_ring[InterlockedIncrement(&wd_dbg_idx) % WD_SERVER_DBG_N];
+      _snprintf_s(r, 96, _TRUNCATE, "-> %d authed=%d tok=%d %s [%.20s]", q.status, c->authed, c->tok,
+                  q.r.method, q.r.target);
+    }
     /* whatever the handler left of the body is drained (or the connection closes) */
     if (!q.close_after && wd_has_body(&q) && !q.body_done) {
       if (q.r.expect_continue && !q.continue_sent)
         q.close_after = 1;               /* the client may or may not send it: framing is lost */
-      else if (drain(&q, c->authed ? (1u << 20) : WD_UNAUTH_DRAIN_MAX, 0) != 0)
+      else if (drain(&q, (c->authed || (q.ex && q.ex->token_only)) ? (1u << 20) : WD_UNAUTH_DRAIN_MAX, 0) != 0)
         q.close_after = 1;
     }
     export_release(q.ex);
@@ -794,8 +846,8 @@ sd_err sd_webdav_server_start(const sd_webdav_server_cfg *cfg, sd_webdav_server 
   sd_once_run(&g_wsa_once, wsa_init, NULL);
   if (!g_wsa_ok)
     return SD_E_UNSUPPORTED;
-  if (!wd_auth_available())
-    return SD_E_UNSUPPORTED;               /* SD_WD_E_AUTH_UNAVAILABLE: no SSPI Negotiate */
+  if (!wd_auth_available() && !cfg->token_only)
+    return SD_WD_E_AUTH_UNAVAILABLE;       /* no SSPI Negotiate (02 §7.4); token-only exports do not need it */
   s = (sd_webdav_server *)sd_calloc(1, sizeof(*s));
   if (s == NULL)
     return SD_E_NO_MEMORY;
@@ -928,6 +980,7 @@ sd_err sd_webdav_export_add(sd_webdav_server *s, sd_vfs *vfs, const sd_webdav_ex
   e->srv = s;
   e->vfs = vfs;
   e->read_only = cfg->read_only;
+  e->token_only = cfg->token_only;
   if (cfg->label && cfg->label[0]) {
     size_t n = wcslen(cfg->label);
     e->label = (WCHAR *)sd_alloc((n + 1) * sizeof(WCHAR));

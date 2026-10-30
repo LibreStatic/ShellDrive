@@ -11,13 +11,14 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_base/sd_mem.h"
 #include "sd_base/sd_utf.h"
+#include "sd_policy/sd_policy.h"
 
 static const sd_l10n_catalog *g_cat;
 static sd_lang g_lang = SD_LANG_EN;
 /* g_cache[id * SD_PLURAL_CAT_COUNT + cat]: lazily converted UTF-16 of the resolved string. */
 static wchar_t *volatile *g_cache;
 
-static const char *const k_codes[SD_LANG_COUNT] = { "en", "es", "fr", "pt-BR", "it", "de" };
+static const char *const k_codes[SD_LANG_COUNT] = { "en", "es", "fr", "pt-BR", "it", "de", "qps-ploc" };
 
 const char *sd_l10n_lang_code(sd_lang lang)
 {
@@ -52,7 +53,7 @@ int sd_l10n_parse_lang(const wchar_t *code, sd_lang *out)
     *out = SD_LANG_PT_BR;
     return 1;
   }
-  for (l = SD_LANG_EN; l < SD_LANG_COUNT; l = (sd_lang)(l + 1)) {
+  for (l = SD_LANG_EN; l < SD_LANG_PSEUDO; l = (sd_lang)(l + 1)) {
     if (wide_ieq_ascii(code, n, k_codes[l])) {
       *out = l;
       return 1;
@@ -63,7 +64,7 @@ int sd_l10n_parse_lang(const wchar_t *code, sd_lang *out)
     ;
   if (prim < n) {
     if (wide_ieq_ascii(code, prim, "pt")) { *out = SD_LANG_PT_BR; return 1; }
-    for (l = SD_LANG_EN; l < SD_LANG_COUNT; l = (sd_lang)(l + 1)) {
+    for (l = SD_LANG_EN; l < SD_LANG_PSEUDO; l = (sd_lang)(l + 1)) {
       if (l != SD_LANG_PT_BR && wide_ieq_ascii(code, prim, k_codes[l])) {
         *out = l;
         return 1;
@@ -86,21 +87,12 @@ static int lang_from_langid(LANGID id, sd_lang *out)
   }
 }
 
-static int lang_from_policy(HKEY root, sd_lang *out)
+static int lang_from_policy(sd_lang *out)
 {
-  HKEY k;
   wchar_t buf[32];
-  DWORD type = 0, cb = sizeof(buf) - sizeof(wchar_t);
-  int ok = 0;
-  if (RegOpenKeyExW(root, L"Software\\Policies\\LibreStatic\\ShellDrive", 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS)
+  if (!sd_policy_get_sz(SD_POLICY_UILANGUAGE, buf, SD_COUNTOF(buf)))
     return 0;
-  memset(buf, 0, sizeof(buf));
-  if (RegQueryValueExW(k, L"UILanguage", NULL, &type, (LPBYTE)buf, &cb) == ERROR_SUCCESS && type == REG_SZ) {
-    buf[SD_COUNTOF(buf) - 1] = 0;
-    ok = sd_l10n_parse_lang(buf, out);
-  }
-  RegCloseKey(k);
-  return ok;
+  return sd_l10n_parse_lang(buf, out);
 }
 
 sd_lang sd_l10n_init(const sd_l10n_catalog *catalog, const wchar_t *override_code)
@@ -120,10 +112,13 @@ sd_lang sd_l10n_init(const sd_l10n_catalog *catalog, const wchar_t *override_cod
     if (n)
       g_cache = (wchar_t *volatile *)sd_calloc(n, sizeof(wchar_t *));
   }
-  if (override_code && override_code[0] && sd_l10n_parse_lang(override_code, &l)) {
+  if (override_code && override_code[0] && catalog != NULL && catalog->abi == SD_L10N_CATALOG_ABI &&
+      catalog->strings[SD_LANG_PSEUDO] != NULL && wide_ieq_ascii(override_code, wcslen(override_code), "qps-ploc")) {
+    l = SD_LANG_PSEUDO;            /* Debug builds only: the catalog carries the table */
+  } else if (override_code && override_code[0] && sd_l10n_parse_lang(override_code, &l)) {
     /* explicit choice */
-  } else if (lang_from_policy(HKEY_LOCAL_MACHINE, &l) || lang_from_policy(HKEY_CURRENT_USER, &l)) {
-    /* policy UILanguage (HKLM wins) */
+  } else if (lang_from_policy(&l)) {
+    /* policy UILanguage (HKLM wins, sd_policy) */
   } else if (!lang_from_langid(GetUserDefaultUILanguage(), &l)) {
     l = SD_LANG_EN;
   }

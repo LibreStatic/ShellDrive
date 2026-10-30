@@ -420,3 +420,1278 @@ msgid_plural "On {target}, {count} files could not be saved on the server (last:
 msgstr[0] "En {target}, {count} archivo no se pudo guardar en el servidor (último: {path})."
 msgstr[1] "En {target}, {count} de archivos no se pudieron guardar en el servidor (último: {path})."
 msgstr[2] "En {target}, {count} archivos no se pudieron guardar en el servidor (último: {path})."
+
+#. ---- M2: status, profile import, hostkey commands, mount options and the new prompts ----
+
+#. Summary of the status command.
+msgctxt "cli.help.status"
+msgid "Show the detailed state of the mounted drives."
+msgstr "Muestra el estado detallado de las unidades montadas."
+
+#. Summary of "profile import".
+msgctxt "cli.help.profile_import"
+msgid "Import profiles from PuTTY sessions or an OpenSSH ssh_config file."
+msgstr "Importa perfiles desde sesiones de PuTTY o un archivo ssh_config de OpenSSH."
+
+#. Summary of the hostkey command.
+msgctxt "cli.help.hostkey"
+msgid "Show, import or remove stored host keys, and apply announced key updates."
+msgstr "Muestra, importa o quita las claves de host guardadas, y aplica las actualizaciones de claves anunciadas."
+
+#. Help for --jump HOST. The value syntax is literal.
+msgctxt "cli.help.opt_jump"
+msgid "A server to connect through before the target, as [user@]host[:port]. Repeat the option for several hops."
+msgstr "Un servidor por el que conectarse antes del destino, con la forma [usuario@]host[:puerto]. Repetí la opción para varios saltos."
+
+#. Help for --proxy SPEC. The value syntax and the scheme names are literal.
+msgctxt "cli.help.opt_proxy"
+msgid "Proxy for the first leg: http://[user@]host[:port] or socks5://[user@]host[:port]."
+msgstr "Proxy para el primer tramo: http://[usuario@]host[:puerto] o socks5://[usuario@]host[:puerto]."
+
+#. Help for --connections N. States the pool rule (D18): extra connections only with non-interactive auth.
+msgctxt "cli.help.opt_connections"
+msgid "How many connections to the server to use at once, from 1 to 4. More than one is only reached when signing in needs no typed answer."
+msgstr "Cuántas conexiones con el servidor usar a la vez, de 1 a 4. Más de una solo se usa cuando el inicio de sesión no necesita una respuesta escrita."
+
+#. Help for hostkey remove --type T.
+msgctxt "cli.help.opt_type"
+msgid "Remove only the stored key of this type, for example ssh-ed25519."
+msgstr "Quita solo la clave guardada de este tipo, por ejemplo ssh-ed25519."
+
+#. Help for hostkey import --from. putty and openssh are literal values.
+msgctxt "cli.help.opt_from"
+msgid "Where to copy host keys from: putty (the registry) or openssh (a known_hosts file)."
+msgstr "De dónde copiar las claves de host: putty (el Registro) u openssh (un archivo known_hosts)."
+
+#. Help for hostkey accept-announced --add-only.
+msgctxt "cli.help.opt_add_only"
+msgid "Add the new keys, but keep the keys the server no longer offers."
+msgstr "Agrega las claves nuevas, pero conserva las claves que el servidor ya no ofrece."
+
+#. Help for hostkey list --announced.
+msgctxt "cli.help.opt_announced"
+msgid "Show the host key updates that servers announced and that wait for review."
+msgstr "Muestra las actualizaciones de claves de host que los servidores anunciaron y que esperan revisión."
+
+#. Help for --dry-run.
+msgctxt "cli.help.opt_dry_run"
+msgid "Show what would be imported without writing anything."
+msgstr "Muestra qué se importaría sin escribir nada."
+
+#. Detail line of shelldrive status; {state} is a connection state word such as ready.
+msgctxt "cli.status.conn"
+msgid "Connection: {state}"
+msgstr "Conexión: {state}"
+
+#. Detail line of shelldrive status.
+msgctxt "cli.status.pool"
+msgid "Connections in use: {count} of {wanted}."
+msgstr "Conexiones en uso: {count} de {wanted}."
+
+#. Detail line of shelldrive status: automatic reconnects after losses.
+msgctxt "cli.status.reconnects"
+msgid "Reconnected {count} times."
+msgstr "Reconexiones: {count}."
+
+#. Detail line of shelldrive status; {reason} is an English error identifier.
+msgctxt "cli.status.reason"
+msgid "The connection was lost ({reason})."
+msgstr "Se perdió la conexión ({reason})."
+
+#. profile import summary with --dry-run.
+#, plural-arg=count
+msgctxt "cli.pi.found"
+msgid "{count} profile found. Nothing was written (--dry-run)."
+msgid_plural "{count} profiles found. Nothing was written (--dry-run)."
+msgstr[0] "Se encontró {count} perfil. No se escribió nada (--dry-run)."
+msgstr[1] "Se encontraron {count} de perfiles. No se escribió nada (--dry-run)."
+msgstr[2] "Se encontraron {count} perfiles. No se escribió nada (--dry-run)."
+
+#. profile import summary.
+#, plural-arg=count
+msgctxt "cli.pi.imported"
+msgid "{count} profile imported."
+msgid_plural "{count} profiles imported."
+msgstr[0] "Se importó {count} perfil."
+msgstr[1] "Se importaron {count} de perfiles."
+msgstr[2] "Se importaron {count} perfiles."
+
+#. profile import of a source with no usable entries.
+msgctxt "cli.pi.empty"
+msgid "Nothing to import."
+msgstr "Nada que importar."
+
+#. Note column of the profile import table.
+msgctxt "cli.pi.note_duplicate"
+msgid "a profile for this server already exists"
+msgstr "ya existe un perfil para este servidor"
+
+#. Note column of the profile import table (D37).
+msgctxt "cli.pi.note_only_this_key"
+msgid "the imported key would be the only one offered"
+msgstr "la clave importada sería la única ofrecida"
+
+#. Note column of the profile import table.
+msgctxt "cli.pi.note_proxy_skipped"
+msgid "its proxy type is not supported"
+msgstr "su tipo de proxy no es compatible"
+
+#. Note column of the profile import table.
+msgctxt "cli.pi.note_name_changed"
+msgid "renamed because the name was taken"
+msgstr "renombrado porque el nombre ya estaba en uso"
+
+#. profile import: an ssh_config keyword that has no ShellDrive equivalent (3.7). {item} is the keyword.
+msgctxt "cli.pi.skip_keyword"
+msgid "{source}: the {item} lines are not imported."
+msgstr "{source}: las líneas {item} no se importan."
+
+#. profile import: same, for global lines (no Host section).
+msgctxt "cli.pi.skip_keyword_global"
+msgid "The {item} lines are not imported."
+msgstr "Las líneas {item} no se importan."
+
+#. profile import: a PuTTY session of another protocol. {item} is the protocol.
+msgctxt "cli.pi.skip_not_ssh"
+msgid "{source}: the session is not SSH ({item})."
+msgstr "{source}: la sesión no es SSH ({item})."
+
+#. profile import: a PuTTY proxy type without an equivalent (D20). {item} is the method.
+msgctxt "cli.pi.skip_proxy"
+msgid "{source}: the proxy type ({item}) is not supported."
+msgstr "{source}: el tipo de proxy ({item}) no es compatible."
+
+#. profile import: an unusable entry.
+msgctxt "cli.pi.skip_invalid"
+msgid "{source}: unusable entry ({item})."
+msgstr "{source}: entrada no utilizable ({item})."
+
+#. Column heading of hostkey list (keep it short).
+msgctxt "cli.hk.col_store"
+msgid "Store"
+msgstr "Almacén"
+
+#. Column heading of hostkey list (keep it short).
+msgctxt "cli.hk.col_type"
+msgid "Type"
+msgstr "Tipo"
+
+#. Column heading of hostkey list (keep it short).
+msgctxt "cli.hk.col_fp"
+msgid "Fingerprint"
+msgstr "Huella"
+
+#. hostkey list of a host with no stored key.
+msgctxt "cli.hk.list_empty"
+msgid "No host key is stored for {host}."
+msgstr "No hay ninguna clave de host guardada para {host}."
+
+#. hostkey list stopped early because there are very many keys.
+msgctxt "cli.hk.list_truncated"
+msgid "The list was cut short; refine the host name to see the rest."
+msgstr "La lista se cortó; acotá el nombre del host para ver el resto."
+
+#. hostkey remove.
+msgctxt "cli.hk.removed"
+msgid "Removed the stored keys of {host}."
+msgstr "Se quitaron las claves guardadas de {host}."
+
+#. hostkey import summary.
+#, plural-arg=count
+msgctxt "cli.hk.imported"
+msgid "{count} host key imported."
+msgid_plural "{count} host keys imported."
+msgstr[0] "Se importó {count} clave de host."
+msgstr[1] "Se importaron {count} de claves de host."
+msgstr[2] "Se importaron {count} claves de host."
+
+#. hostkey import summary.
+#, plural-arg=count
+msgctxt "cli.hk.import_kept"
+msgid "{count} key was already stored."
+msgid_plural "{count} keys were already stored."
+msgstr[0] "{count} clave ya estaba guardada."
+msgstr[1] "{count} de claves ya estaban guardadas."
+msgstr[2] "{count} claves ya estaban guardadas."
+
+#. hostkey import summary.
+#, plural-arg=count
+msgctxt "cli.hk.import_conflicts"
+msgid "{count} key conflicts with a stored key and was not imported."
+msgid_plural "{count} keys conflict with stored keys and were not imported."
+msgstr[0] "{count} clave entra en conflicto con una clave guardada y no se importó."
+msgstr[1] "{count} de claves entran en conflicto con claves guardadas y no se importaron."
+msgstr[2] "{count} claves entran en conflicto con claves guardadas y no se importaron."
+
+#. hostkey import summary.
+#, plural-arg=count
+msgctxt "cli.hk.import_invalid"
+msgid "{count} line could not be read."
+msgid_plural "{count} lines could not be read."
+msgstr[0] "No se pudo leer {count} línea."
+msgstr[1] "No se pudieron leer {count} de líneas."
+msgstr[2] "No se pudieron leer {count} líneas."
+
+#. hostkey import of a source without keys.
+msgctxt "cli.hk.import_empty"
+msgid "The source has no host keys."
+msgstr "La fuente no tiene claves de host."
+
+#. hostkey list --announced with nothing pending.
+msgctxt "cli.hk.announced_none"
+msgid "There are no host key updates to review."
+msgstr "No hay actualizaciones de claves de host para revisar."
+
+#. hostkey list --announced, one pending update. {id} is the id for accept-announced.
+msgctxt "cli.hk.announced_item"
+msgid "{id}: {host} offered new host keys."
+msgstr "{id}: {host} ofreció claves de host nuevas."
+
+#. One key a server added to its announcement (5.6).
+msgctxt "cli.hk.announced_add"
+msgid "New key: {type} {fingerprint}"
+msgstr "Clave nueva: {type} {fingerprint}"
+
+#. One key a server no longer offers (5.6).
+msgctxt "cli.hk.announced_remove"
+msgid "No longer offered: {type} {fingerprint}"
+msgstr "Ya no se ofrece: {type} {fingerprint}"
+
+#. hostkey accept-announced.
+msgctxt "cli.hk.announced_applied"
+msgid "Updated the host keys of {host}: {added} added, {removed} removed."
+msgstr "Se actualizaron las claves de host de {host} (agregadas: {added}; quitadas: {removed})."
+
+#. Introduction of the password-change questions (2.5, PASSWD_CHANGEREQ).
+msgctxt "cli.prompt.password_change"
+msgid "The server {host} asks to change the password."
+msgstr "El servidor {host} pide cambiar la contraseña."
+
+#. Proxy password prompt; input is hidden.
+msgctxt "cli.prompt.proxy_password"
+msgid "Password for the proxy {user}@{proxy_host}:{proxy_port}: "
+msgstr "Contraseña del proxy {user}@{proxy_host}:{proxy_port}: "
+
+#. The legacy-algorithms question (2.5, C21); {algorithms} is a comma list of algorithm names.
+msgctxt "cli.prompt.legacy_ack"
+msgid "The server {host} uses outdated encryption ({algorithms})."
+msgstr "El servidor {host} usa cifrado obsoleto ({algorithms})."
+
+#. The legacy-algorithms question; the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.prompt.legacy_ack_question"
+msgid "Continue anyway? [y]es, [N]o: "
+msgstr "¿Continuar de todos modos? [s]í, [N]o: "
+
+#. Shown for hop i >= 1 of a jump chain (TM-R03). {host} is the previous hop.
+msgctxt "cli.prompt.via"
+msgid "Reached through jump host {host}."
+msgstr "Se llegó a través del host de salto {host}."
+
+#. Shown for every prompt of a jump chain. {host} is the hop's server.
+msgctxt "cli.prompt.hop"
+msgid "Jump host {hop} of {hops}: {host}"
+msgstr "Host de salto {hop} de {hops}: {host}"
+
+#. Save question after a password, passphrase or proxy password (4.2); the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.prompt.save"
+msgid "Save the answer for the next connection? [y]es, [N]o: "
+msgstr "¿Guardar la respuesta para la próxima conexión? [s]í, [N]o: "
+
+#. Credential Manager comment for a saved secret (4.2). {name} is the profile name.
+msgctxt "cli.save.comment"
+msgid "Saved by ShellDrive for {name}"
+msgstr "Guardado por ShellDrive para {name}"
+
+msgctxt "cli.error.host_key_not_found"
+msgid "No host key of {host} is stored in your ShellDrive store."
+msgstr "No hay ninguna clave de {host} guardada en tu almacén de ShellDrive."
+
+msgctxt "cli.error.announcement_not_found"
+msgid "There is no pending host key update with this id."
+msgstr "No hay ninguna actualización de claves de host pendiente con este id."
+
+msgctxt "cli.error.session_not_found"
+msgid "There is no PuTTY session named {name}."
+msgstr "No hay ninguna sesión de PuTTY llamada {name}."
+
+msgctxt "cli.error.putty_not_found"
+msgid "PuTTY is not installed, or it has no saved sessions."
+msgstr "PuTTY no está instalado, o no tiene sesiones guardadas."
+
+msgctxt "cli.error.file_not_found"
+msgid "The file {name} could not be read."
+msgstr "No se pudo leer el archivo {name}."
+
+#. M3: refresh, cache clear, profile test, status --stats and the new mount option.
+#. Exit code 3: the drive has no file system to refresh.
+msgctxt "cli.error.not_mounted"
+msgid "The drive is not mounted, so there is nothing to refresh."
+msgstr "La unidad no está montada, así que no hay nada que actualizar."
+
+#. Exit code 8: write-behind data is queued and the cache clear was refused.
+msgctxt "cli.error.write_behind_pending"
+msgid "Changes are still waiting to be written to the server, so the cache was not cleared. Run the command again with --force to clear the rest; the waiting changes are kept."
+msgstr "Todavía hay cambios esperando para escribirse en el servidor, así que no se limpió la caché. Volvé a ejecutar el comando con --force para limpiar el resto; los cambios pendientes se conservan."
+
+#. Printed by shelldrive refresh. {path} is the drive and the folder, such as W: or W:\docs.
+msgctxt "cli.refresh.done"
+msgid "Refreshed the cache of {path}."
+msgstr "Se actualizó la caché de {path}."
+
+#. Printed by shelldrive cache clear. {count} is the number of drives whose cache was cleared.
+#, plural-arg=count
+msgctxt "cli.cache.cleared"
+msgid "Cleared the cache of {count} drive."
+msgid_plural "Cleared the cache of {count} drives."
+msgstr[0] "Se limpió la caché de {count} unidad."
+msgstr[1] "Se limpió la caché de {count} de unidades."
+msgstr[2] "Se limpió la caché de {count} unidades."
+
+#. Printed by status --stats for a drive without a connection.
+msgctxt "cli.stats.none"
+msgid "No statistics: the drive has no connection."
+msgstr "Sin estadísticas: la unidad no tiene conexión."
+
+#. Heading of one drive in status --stats. {target} is the drive, {name} the profile.
+msgctxt "cli.stats.header"
+msgid "{target} {name}"
+msgstr "{target} {name}"
+
+#. status --stats: the session line. Round trip in milliseconds; generation counts the reconnects.
+msgctxt "cli.stats.session"
+msgid "Connection: round trip {srtt} ms, {inflight} requests in flight, {queued} queued, session generation {generation}."
+msgstr "Conexión: ida y vuelta de {srtt} ms, {inflight} solicitudes en curso, {queued} en cola, generación de sesión {generation}."
+
+#. status --stats: bytes received and sent by the current connection.
+msgctxt "cli.stats.transfer"
+msgid "Transferred {rx} bytes in and {tx} bytes out."
+msgstr "Transferidos {rx} bytes de entrada y {tx} de salida."
+
+#. status --stats: the cache counters of the drive (memory and disk tiers).
+msgctxt "cli.stats.cache"
+msgid "Cache: {hits} hits, {misses} misses, {failed} failed writes, {queued} bytes waiting for write-behind."
+msgstr "Caché: {hits} aciertos, {misses} fallos, {failed} escrituras fallidas, {queued} bytes esperando escritura diferida."
+
+#. profile test: the result line. {path} is the resolved remote folder.
+msgctxt "cli.test.ok"
+msgid "{name} works: connected to {host} as {user}, and the remote path is {path}."
+msgstr "{name} funciona: se conectó a {host} como {user}, y la ruta remota es {path}."
+
+#. profile test: the host key that was verified.
+msgctxt "cli.test.hostkey"
+msgid "Host key: {fingerprint}."
+msgstr "Clave del host: {fingerprint}."
+
+#. profile test: the negotiated algorithms (key exchange, host key, cipher and MAC of the client-to-server direction).
+msgctxt "cli.test.algorithms"
+msgid "Algorithms: key exchange {kex}, host key {hostkey}, cipher {cipher}, MAC {mac}."
+msgstr "Algoritmos: intercambio de claves {kex}, clave del host {hostkey}, cifrado {cipher}, MAC {mac}."
+
+#. profile test: an outdated algorithm was negotiated on some hop.
+msgctxt "cli.test.legacy"
+msgid "The server negotiated an outdated algorithm. security.legacy_algorithms decides what happens next."
+msgstr "El servidor negoció un algoritmo desactualizado. security.legacy_algorithms decide qué pasa después."
+
+#. Help of the mount option --open.
+msgctxt "cli.help.opt_open"
+msgid "Open the drive in Explorer once it is mounted."
+msgstr "Abre la unidad en el Explorador cuando esté montada."
+
+#. Help of the status option --stats.
+msgctxt "cli.help.opt_stats"
+msgid "Also show the connection and cache counters of each drive."
+msgstr "Muestra además los contadores de conexión y caché de cada unidad."
+
+#. Help of the cache clear option --force.
+msgctxt "cli.help.opt_force"
+msgid "Clear the cache even while changes are waiting to be written. The waiting changes are kept."
+msgstr "Limpia la caché aunque haya cambios esperando para escribirse. Los cambios pendientes se conservan."
+
+#. Summary of the refresh command.
+msgctxt "cli.help.refresh"
+msgid "Drop the cached attributes and listings of a folder, or of the whole drive."
+msgstr "Descarta los atributos y listados en caché de una carpeta o de toda la unidad."
+
+#. Summary of the cache command.
+msgctxt "cli.help.cache"
+msgid "Clear the cache of a profile, a drive or every mounted drive."
+msgstr "Limpia la caché de un perfil, de una unidad o de todas las unidades montadas."
+
+#. Summary of profile test.
+msgctxt "cli.help.profile_test"
+msgid "Connect and sign in, then resolve the remote path, without mounting anything."
+msgstr "Conecta e inicia sesión, y después resuelve la ruta remota, sin montar nada."
+
+msgctxt "cli.help.service"
+msgid "Global drives (shared by every session) and the ShellDrive service: list, mount, unmount, status, install, uninstall, start, stop and repair-data. Changing them needs an elevated console."
+msgstr "Unidades globales (compartidas por todas las sesiones) y el servicio de ShellDrive: list, mount, unmount, status, install, uninstall, start, stop y repair-data. Cambiarlas requiere una consola elevada."
+
+msgctxt "cli.service.need_admin"
+msgid "Changing global drives needs an elevated console. Run it as administrator."
+msgstr "Cambiar unidades globales requiere una consola elevada. Ejecutá el programa como administrador."
+
+msgctxt "cli.service.unavailable"
+msgid "The ShellDrive service is not running or not installed."
+msgstr "El servicio de ShellDrive no está en ejecución o no está instalado."
+
+msgctxt "cli.service.none"
+msgid "No global drives are mounted."
+msgstr "No hay unidades globales montadas."
+
+msgctxt "cli.service.list_item"
+msgid "{target}  {label}  {state}"
+msgstr "{target}  {label}  {state}"
+
+msgctxt "cli.service.connecting"
+msgid "Connecting {target}..."
+msgstr "Conectando {target}..."
+
+msgctxt "cli.service.mounted"
+msgid "{target} is mounted."
+msgstr "{target} está montada."
+
+msgctxt "cli.service.unmounting"
+msgid "Unmounting {name}..."
+msgstr "Desmontando {name}..."
+
+msgctxt "cli.service.state.connecting"
+msgid "connecting"
+msgstr "conectando"
+
+msgctxt "cli.service.state.mounted"
+msgid "mounted"
+msgstr "montada"
+
+msgctxt "cli.service.state.failed"
+msgid "failed"
+msgstr "falló"
+
+msgctxt "cli.service.state.offline"
+msgid "offline"
+msgstr "sin conexión"
+
+msgctxt "cli.service.state.unmounting"
+msgid "unmounting"
+msgstr "desmontando"
+
+#. Printed by "shelldrive service install" after the service is registered (exit 0).
+msgctxt "cli.service.installed"
+msgid "ShellDrive service installed."
+msgstr "Se instaló el servicio de ShellDrive."
+
+#. Printed by "shelldrive service uninstall" after the service and its Event Log source are removed (exit 0).
+msgctxt "cli.service.uninstalled"
+msgid "ShellDrive service removed."
+msgstr "Se quitó el servicio de ShellDrive."
+
+#. Printed by "shelldrive service start" when the service is running (exit 0).
+msgctxt "cli.service.started"
+msgid "ShellDrive service started."
+msgstr "Se inició el servicio de ShellDrive."
+
+#. Printed by "shelldrive service stop" when the service has stopped (exit 0).
+msgctxt "cli.service.stopped"
+msgid "ShellDrive service stopped."
+msgstr "Se detuvo el servicio de ShellDrive."
+
+#. Printed by "shelldrive service install" when the service already exists (exit 1).
+msgctxt "cli.service.already_installed"
+msgid "The ShellDrive service is already installed."
+msgstr "El servicio de ShellDrive ya está instalado."
+
+#. Printed by "shelldrive service uninstall, start or stop" when the service does not exist (exit 1).
+msgctxt "cli.service.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "El servicio de ShellDrive no está instalado."
+
+#. Printed by "shelldrive service start" when the service is already running (exit 1).
+msgctxt "cli.service.already_running"
+msgid "The ShellDrive service is already running."
+msgstr "El servicio de ShellDrive ya está en ejecución."
+
+#. Printed by "shelldrive service stop" when the service is not running (exit 1).
+msgctxt "cli.service.not_running"
+msgid "The ShellDrive service is not running."
+msgstr "El servicio de ShellDrive no está en ejecución."
+
+#. Printed when the Windows Service Control Manager refuses a service verb (exit 1). {code} is the Win32 error number.
+msgctxt "cli.service.scm_failed"
+msgid "The Windows service manager refused the request (error {code})."
+msgstr "El administrador de servicios de Windows rechazó la solicitud (error {code})."
+
+#. Description of ShellDriveSvc shown in the Services console; set at install time in the language of the installing console.
+msgctxt "cli.service.description"
+msgid "Mounts ShellDrive drives shared by every user of this computer. Stays idle while no global drive is configured."
+msgstr "Monta las unidades de ShellDrive compartidas por todos los usuarios de este equipo. Queda inactivo mientras no haya ninguna unidad global configurada."
+
+msgctxt "cli.service.status.not_installed"
+msgid "The ShellDrive service is not installed."
+msgstr "El servicio de ShellDrive no está instalado."
+
+msgctxt "cli.service.status.state_line"
+msgid "Service state: {state}."
+msgstr "Estado del servicio: {state}."
+
+msgctxt "cli.service.status.start_line"
+msgid "Start type: {type}."
+msgstr "Tipo de inicio: {type}."
+
+msgctxt "cli.service.status.program_line"
+msgid "Program: {path}"
+msgstr "Programa: {path}"
+
+msgctxt "cli.service.status.program_ok"
+msgid "The program path is quoted and points at this install."
+msgstr "La ruta del programa está entre comillas y apunta a esta instalación."
+
+msgctxt "cli.service.status.program_unquoted"
+msgid "The program path is not quoted. Remove the service and install it again."
+msgstr "La ruta del programa no tiene comillas. Quitá el servicio y volvé a instalarlo."
+
+msgctxt "cli.service.status.program_other"
+msgid "The program path points at another install. Remove the service and install it again from this one."
+msgstr "La ruta del programa apunta a otra instalación. Quitá el servicio y volvé a instalarlo desde esta."
+
+msgctxt "cli.service.status.program_unknown"
+msgid "The program path cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "No se puede comprobar la ruta del programa: shelldrive-host.exe no está junto a este programa."
+
+msgctxt "cli.service.status.source_ok"
+msgid "The Event Log source is registered for this install."
+msgstr "El origen del Registro de eventos está registrado para esta instalación."
+
+msgctxt "cli.service.status.source_missing"
+msgid "The Event Log source is not registered."
+msgstr "El origen del Registro de eventos no está registrado."
+
+msgctxt "cli.service.status.source_other"
+msgid "The Event Log source is registered for another program."
+msgstr "El origen del Registro de eventos está registrado para otro programa."
+
+msgctxt "cli.service.status.source_unknown"
+msgid "The Event Log source cannot be checked: shelldrive-host.exe is not next to this program."
+msgstr "No se puede comprobar el origen del Registro de eventos: shelldrive-host.exe no está junto a este programa."
+
+msgctxt "cli.service.status.pipe_down"
+msgid "The service is running but does not answer on its pipe."
+msgstr "El servicio está en ejecución, pero no responde por su canal."
+
+msgctxt "cli.service.status.healthy"
+msgid "The machine data folder is in order."
+msgstr "La carpeta de datos de la máquina está en orden."
+
+msgctxt "cli.service.status.idle"
+msgid "The machine data folder is refused, so the service stays idle. Run \"shelldrive service repair-data\" as administrator."
+msgstr "La carpeta de datos de la máquina fue rechazada, así que el servicio queda inactivo. Ejecutá \"shelldrive service repair-data\" como administrador."
+
+msgctxt "cli.service.status.prompts"
+msgid "{count} administrator prompt waiting."
+msgid_plural "{count} administrator prompts waiting."
+msgstr[0] "{count} solicitud de administrador pendiente."
+msgstr[1] "{count} de solicitudes de administrador pendientes."
+msgstr[2] "{count} solicitudes de administrador pendientes."
+
+msgctxt "cli.service.svc_state.running"
+msgid "running"
+msgstr "en ejecución"
+
+msgctxt "cli.service.svc_state.stopped"
+msgid "stopped"
+msgstr "detenido"
+
+msgctxt "cli.service.svc_state.starting"
+msgid "starting"
+msgstr "iniciando"
+
+msgctxt "cli.service.svc_state.stopping"
+msgid "stopping"
+msgstr "deteniéndose"
+
+msgctxt "cli.service.svc_state.paused"
+msgid "paused"
+msgstr "en pausa"
+
+msgctxt "cli.service.svc_state.unknown"
+msgid "unknown"
+msgstr "desconocido"
+
+msgctxt "cli.service.start_type.automatic"
+msgid "automatic"
+msgstr "automático"
+
+msgctxt "cli.service.start_type.manual"
+msgid "manual"
+msgstr "manual"
+
+msgctxt "cli.service.start_type.disabled"
+msgid "disabled"
+msgstr "deshabilitado"
+
+msgctxt "cli.service.start_type.unknown"
+msgid "unknown"
+msgstr "desconocido"
+
+msgctxt "cli.service.repair.ok"
+msgid "The machine data folder is in order. Its permissions were set again."
+msgstr "La carpeta de datos de la máquina está en orden. Se volvieron a aplicar sus permisos."
+
+msgctxt "cli.service.repair.moved"
+msgid "An untrusted machine data folder was moved to {path}. A new one was created. Nothing from the old folder is imported, so stored secrets and keys must be entered again."
+msgstr "La carpeta de datos de la máquina no era de confianza y se movió a {path}. Se creó una nueva. No se importa nada de la carpeta anterior, así que los secretos y las claves guardados hay que volver a ingresarlos."
+
+msgctxt "cli.service.repair.refused"
+msgid "{path} is a link or a junction, so nothing was changed. Remove it yourself, then run this command again."
+msgstr "{path} es un vínculo o una unión de directorios, así que no se cambió nada. Quitalo vos mismo y ejecutá este comando de nuevo."
+
+msgctxt "cli.service.repair.failed"
+msgid "The machine data folder could not be repaired (error {code})."
+msgstr "No se pudo reparar la carpeta de datos de la máquina (error {code})."
+
+#. TM-R19 (03 7.5): asked before token-only WebDAV is used for one enable. Shown in the console.
+msgctxt "cli.prompt.webdav_token_only"
+msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgstr "Windows no pudo iniciar sesión en el servidor local de archivos de ShellDrive. ¿Continuar con una conexión menos protegida? Otros programas que conozcan la dirección de la unidad pueden leer tus archivos."
+
+#. Question for the token-only consent; the letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.prompt.webdav_token_only_question"
+msgid "Continue with a less protected connection? [y]es, [N]o: "
+msgstr "¿Continuar con una conexión menos protegida? [s]í, [N]o: "
+
+#. Help for hostkey add --from-server. The value is host[:port].
+msgctxt "cli.help.opt_from_server"
+msgid "The server to take host keys from, as host[:port]. Its keys are checked against the stored ones first."
+msgstr "El servidor del que tomar las claves de host, como host[:port]. Primero se comparan sus claves con las guardadas."
+
+#. Help for hostkey add --expect. SHA256: is literal.
+msgctxt "cli.help.opt_expect"
+msgid "Accept the key only when its SHA-256 fingerprint is this value, for example SHA256:abc... Meant for scripts: a mismatch fails."
+msgstr "Acepta la clave solo si su huella SHA-256 es este valor, por ejemplo SHA256:abc... Pensado para scripts: si no coincide, falla."
+
+#. Help for --machine on hostkey add and accept-announced.
+msgctxt "cli.help.opt_machine"
+msgid "Work on the machine host keys (the service's store). Needs an elevated console."
+msgstr "Trabaja con las claves de host de la máquina (el almacén del servicio). Requiere una consola elevada."
+
+#. Printed when --machine is used from a console that is not elevated (exit 9).
+msgctxt "cli.hk.need_admin"
+msgid "Changing the machine host keys needs an elevated console. Run it as administrator."
+msgstr "Cambiar las claves de host de la máquina requiere una consola elevada. Ejecutá el programa como administrador."
+
+#. Summary of the diag bench command (and of the bench alias), in --help. Literal syntax stays as it is.
+msgctxt "cli.help.bench"
+msgid "Measure a mounted drive: sequential transfers, small files and the latency of opening a file. The run uses a new folder on the drive and removes it afterwards."
+msgstr "Mide una unidad montada: transferencias secuenciales, archivos chicos y latencia al abrir un archivo. La prueba usa una carpeta nueva de la unidad y la borra al terminar."
+
+#. Help for diag bench --scenario. The names are literal.
+msgctxt "cli.help.opt_scenario"
+msgid "Run one scenario: all (the default), seq-write, seq-write-64k, seq-read, small-files or open."
+msgstr "Ejecuta un escenario: all (predeterminado), seq-write, seq-write-64k, seq-read, small-files u open."
+
+#. Help for diag bench --size. MiB is a unit name.
+msgctxt "cli.help.opt_size"
+msgid "Size of each sequential transfer in MiB, from 1 to 4096. The default is 256; the targets of 02 section 11 use 1024."
+msgstr "Tamaño de cada transferencia secuencial en MiB, de 1 a 4096. El predeterminado es 256; los objetivos de 02 sección 11 usan 1024."
+
+#. Help for diag bench --write-mode. through and behind are literal values.
+msgctxt "cli.help.opt_write_mode"
+msgid "The write mode to state in the report: through (the default) or behind. It is declared, not set: the mount keeps the setting of its profile."
+msgstr "Modo de escritura que se informa: through (predeterminado) o behind. Se declara, no se cambia: la unidad conserva la configuración de su perfil."
+
+#. Printed by diag bench when the drive is read-only (exit 1). {target} is the drive letter, such as X:.
+msgctxt "cli.bench.read_only"
+msgid "{target} is read-only, so the benchmark did not run."
+msgstr "{target} es de solo lectura, así que la prueba no se ejecutó."
+
+#. First line of the benchmark report. {size} is in MiB.
+msgctxt "cli.bench.header"
+msgid "Benchmark of {target}: {size} MiB per sequential transfer."
+msgstr "Prueba de {target}: {size} MiB por transferencia secuencial."
+
+#. Pool size line of the benchmark report, shown when an agent reports the mount.
+#, plural-arg=count
+msgctxt "cli.bench.pool"
+msgid "{count} connection in the pool."
+msgid_plural "{count} connections in the pool."
+msgstr[0] "{count} conexión en el pool."
+msgstr[1] "{count} de conexiones en el pool."
+msgstr[2] "{count} conexiones en el pool."
+
+#. Write mode line of the benchmark report. {mode} is through or behind, as given with --write-mode.
+msgctxt "cli.bench.write_mode"
+msgid "Write mode {mode}, as given with --write-mode. The agent does not report the mount's own setting."
+msgstr "Modo de escritura {mode}, indicado con --write-mode. El agente no informa la configuración propia de la unidad."
+
+#. Sequential write result. {block} is the block size (1 MiB or 64 KiB); {mbps} and {seconds} are numbers.
+msgctxt "cli.bench.seq_write"
+msgid "Sequential write, {block} blocks: {mbps} MB/s in {seconds} s."
+msgstr "Escritura secuencial, bloques de {block}: {mbps} MB/s en {seconds} s."
+
+#. Sequential read result. {block} is the block size; {mbps} and {seconds} are numbers.
+msgctxt "cli.bench.seq_read"
+msgid "Sequential read, {block} blocks: {mbps} MB/s in {seconds} s."
+msgstr "Lectura secuencial, bloques de {block}: {mbps} MB/s en {seconds} s."
+
+#. Small-file result. {count} is the number of 4 KiB files; {seconds} is the total time and {ms} the time per file.
+#, plural-arg=count
+msgctxt "cli.bench.small_files"
+msgid "{count} file of 4 KiB: {seconds} s in total, {ms} ms per file."
+msgid_plural "{count} files of 4 KiB: {seconds} s in total, {ms} ms per file."
+msgstr[0] "{count} archivo de 4 KiB: {seconds} s en total, {ms} ms por archivo."
+msgstr[1] "{count} de archivos de 4 KiB: {seconds} s en total, {ms} ms por archivo."
+msgstr[2] "{count} archivos de 4 KiB: {seconds} s en total, {ms} ms por archivo."
+
+#. Open-latency result. The four timings are medians and 95th percentiles in milliseconds; {samples} is the sample count.
+msgctxt "cli.bench.open"
+msgid "Open of an existing file: attributes median {attr_median} ms, p95 {attr_p95} ms. Open and read of 4 KiB: median {read_median} ms, p95 {read_p95} ms ({samples} samples)."
+msgstr "Apertura de un archivo existente: mediana de atributos {attr_median} ms, p95 {attr_p95} ms. Apertura y lectura de 4 KiB: mediana {read_median} ms, p95 {read_p95} ms ({samples} muestras)."
+
+#. Printed after the benchmark results: reads may come from the memory cache, which the run does not clear.
+msgctxt "cli.bench.cache_note"
+msgid "Reads can come from the memory cache, which the run does not clear. Compare runs made in the same cache state."
+msgstr "Las lecturas pueden salir de la caché de memoria, que la prueba no vacía. Compará las pruebas con el mismo estado de caché."
+
+#. Printed after a benchmark run whose temporary folder was removed.
+msgctxt "cli.bench.cleaned"
+msgid "Temporary folder removed."
+msgstr "Carpeta temporal borrada."
+
+#. Printed (exit 1) when the temporary folder could not be removed. {path} is the folder; {code} the Win32 error number.
+msgctxt "cli.bench.cleanup_failed"
+msgid "The temporary folder {path} could not be removed (error {code}). Delete it by hand."
+msgstr "No se pudo borrar la carpeta temporal {path} (error {code}). Borrala a mano."
+
+#. Printed (exit 1) when a benchmark step failed. {code} is the Win32 error number.
+msgctxt "cli.bench.failed"
+msgid "The benchmark stopped (error {code})."
+msgstr "La prueba se detuvo (error {code})."
+
+#. Printed by hostkey add when the server offers no host key that is not stored yet. {host} is the host as typed.
+msgctxt "cli.hk.add_none"
+msgid "{host} has no other host keys to add."
+msgstr "{host} no tiene otras claves de host para agregar."
+
+#. Printed by hostkey add before the question about the keys the server offers besides the stored ones.
+#, plural-arg=count
+msgctxt "cli.hk.add_offer"
+msgid "{host} also has {count} other host key. Add it?"
+msgid_plural "{host} also has {count} other host keys. Add them?"
+msgstr[0] "{host} también tiene {count} otra clave de host. ¿La agregás?"
+msgstr[1] "{host} también tiene {count} de otras claves de host. ¿Las agregás?"
+msgstr[2] "{host} también tiene {count} otras claves de host. ¿Las agregás?"
+
+#. Question for the key of a first contact (no stored key; 5.2). The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_first_question"
+msgid "Add this key? [y]es, [N]o: "
+msgstr "¿Agregás esta clave? [s]í, [N]o: "
+
+#. Choices after cli.hk.add_offer. The letters in brackets must match cli.hk.letter_yes; the default (capital) is no.
+msgctxt "cli.hk.add_choices"
+msgid "[y]es, [N]o: "
+msgstr "[s]í, [N]o: "
+
+#. Printed by hostkey add --machine and hostkey list --announced --machine before the question, to say where the keys go.
+msgctxt "cli.hk.machine_scope"
+msgid "These keys go to the machine host keys, which the global drives use."
+msgstr "Estas claves van a las claves de host de la máquina, que usan las unidades globales."
+
+#. Printed (exit 3) by hostkey add --machine when no machine profile of the service uses the host and port. {host} is the host as typed.
+msgctxt "cli.error.hk_no_profile"
+msgid "No machine profile of this service uses {host} and its port. Create the profile first, then add its host keys."
+msgstr "Ningún perfil de máquina de este servicio usa {host} ni su puerto. Creá primero el perfil y después agregá sus claves de host."
+
+#. Heading of "shelldrive diag" output. {version} is the product version.
+msgctxt "cli.diag.header"
+msgid "ShellDrive diagnostics, version {version}"
+msgstr "Diagnóstico de ShellDrive, versión {version}"
+
+#. One check row: {status} is the status word, {label} the check name, {value} what was found.
+msgctxt "cli.diag.row"
+msgid "{status} {label}: {value}"
+msgstr "{status} {label}: {value}"
+
+#. Status word of a check that is fine.
+msgctxt "cli.diag.status_ok"
+msgid "[OK]"
+msgstr "[OK]"
+
+#. Status word of a check that needs attention but is not a failure.
+msgctxt "cli.diag.status_warn"
+msgid "[Warning]"
+msgstr "[Advertencia]"
+
+#. Status word of a check that failed.
+msgctxt "cli.diag.status_problem"
+msgid "[Problem]"
+msgstr "[Problema]"
+
+msgctxt "cli.diag.label_os"
+msgid "Windows"
+msgstr "Windows"
+
+msgctxt "cli.diag.label_agent"
+msgid "Agent"
+msgstr "Agente"
+
+msgctxt "cli.diag.label_service"
+msgid "Service"
+msgstr "Servicio"
+
+msgctxt "cli.diag.label_webclient"
+msgid "WebClient"
+msgstr "WebClient"
+
+msgctxt "cli.diag.label_webdav"
+msgid "WebDAV limits"
+msgstr "Límites de WebDAV"
+
+msgctxt "cli.diag.label_dokany"
+msgid "Dokany"
+msgstr "Dokany"
+
+msgctxt "cli.diag.label_linked"
+msgid "Linked connections"
+msgstr "Conexiones vinculadas"
+
+msgctxt "cli.diag.label_elevation"
+msgid "Elevation"
+msgstr "Elevación"
+
+msgctxt "cli.diag.label_domain"
+msgid "Domain"
+msgstr "Dominio"
+
+msgctxt "cli.diag.label_drives"
+msgid "Drive letters"
+msgstr "Letras de unidad"
+
+msgctxt "cli.diag.label_settings"
+msgid "Settings"
+msgstr "Configuración"
+
+msgctxt "cli.diag.label_privacy"
+msgid "Log privacy"
+msgstr "Privacidad del registro"
+
+msgctxt "cli.diag.label_clock"
+msgid "Clock"
+msgstr "Reloj"
+
+#. Value of the Windows check. {version} is the build version, {flavour} the build flavour.
+msgctxt "cli.diag.v_os"
+msgid "{version}, {flavour} build"
+msgstr "{version}, compilación {flavour}"
+
+msgctxt "cli.diag.v_agent_running"
+msgid "running"
+msgstr "en ejecución"
+
+msgctxt "cli.diag.v_agent_stopped"
+msgid "not running (it starts when you mount a drive)"
+msgstr "no está en ejecución (arranca al montar una unidad)"
+
+msgctxt "cli.diag.v_service_missing"
+msgid "not installed"
+msgstr "no instalado"
+
+msgctxt "cli.diag.v_service_running"
+msgid "installed, running"
+msgstr "instalado, en ejecución"
+
+msgctxt "cli.diag.v_service_stopped"
+msgid "installed, not running"
+msgstr "instalado, no está en ejecución"
+
+#. WebClient running on a domain-joined computer: a warning (03 §10.5).
+msgctxt "cli.diag.v_webclient_domain"
+msgid "running on a domain-joined computer. If every connection uses Dokany, consider disabling it."
+msgstr "en ejecución en un equipo unido a un dominio. Si todas las conexiones usan Dokany, conviene desactivarlo."
+
+msgctxt "cli.diag.v_webclient_running"
+msgid "running"
+msgstr "en ejecución"
+
+msgctxt "cli.diag.v_webclient_stopped"
+msgid "stopped"
+msgstr "detenido"
+
+msgctxt "cli.diag.v_webclient_disabled"
+msgid "disabled"
+msgstr "deshabilitado"
+
+msgctxt "cli.diag.v_webclient_missing"
+msgid "not installed"
+msgstr "no instalado"
+
+msgctxt "cli.diag.v_unknown"
+msgid "unknown"
+msgstr "desconocido"
+
+#. WebDAV limits as set: {size} and {attributes} are byte counts or "not set".
+msgctxt "cli.diag.v_webdav"
+msgid "file size limit {size}, file attribute limit {attributes}"
+msgstr "límite de tamaño de archivo {size}, límite de atributos {attributes}"
+
+#. WebDAV limits at the Windows defaults (warning): large files cannot be opened until the installer hook webdav-tune runs.
+msgctxt "cli.diag.v_webdav_default"
+msgid "file size limit {size}, file attribute limit {attributes}. Large files cannot be opened with these limits."
+msgstr "límite de tamaño de archivo {size}, límite de atributos {attributes}. Con estos límites no se pueden abrir archivos grandes."
+
+msgctxt "cli.diag.v_not_set"
+msgid "not set"
+msgstr "sin definir"
+
+msgctxt "cli.diag.v_present"
+msgid "installed"
+msgstr "instalado"
+
+msgctxt "cli.diag.v_absent"
+msgid "not installed"
+msgstr "no instalado"
+
+msgctxt "cli.diag.v_linked_on"
+msgid "enabled"
+msgstr "habilitado"
+
+msgctxt "cli.diag.v_linked_off"
+msgid "not set"
+msgstr "sin definir"
+
+#. Warning when EnableLinkedConnections is not set for an administrator account.
+msgctxt "cli.diag.v_linked_off_admin"
+msgid "not set, so programs run as administrator cannot see the drives"
+msgstr "sin definir, así que los programas ejecutados como administrador no ven las unidades"
+
+msgctxt "cli.diag.v_elev_yes"
+msgid "elevated"
+msgstr "con elevación"
+
+msgctxt "cli.diag.v_elev_split"
+msgid "not elevated (administrator account with a filtered token)"
+msgstr "sin elevación (cuenta de administrador con token filtrado)"
+
+msgctxt "cli.diag.v_elev_no"
+msgid "not elevated"
+msgstr "sin elevación"
+
+msgctxt "cli.diag.v_domain_yes"
+msgid "joined to a domain"
+msgstr "unido a un dominio"
+
+msgctxt "cli.diag.v_domain_no"
+msgid "not joined to a domain"
+msgstr "no unido a un dominio"
+
+#. Free drive letters from D: on. {count} is the number of free letters.
+#, plural-arg=count
+msgctxt "cli.diag.v_drives"
+msgid "{count} free drive letter"
+msgid_plural "{count} free drive letters"
+msgstr[0] "{count} letra de unidad libre"
+msgstr[1] "{count} de letras de unidad libres"
+msgstr[2] "{count} letras de unidad libres"
+
+msgctxt "cli.diag.v_settings_ok"
+msgid "readable"
+msgstr "legible"
+
+msgctxt "cli.diag.v_settings_bad"
+msgid "cannot be read"
+msgstr "no se puede leer"
+
+msgctxt "cli.diag.v_privacy_strict"
+msgid "strict: host and user names and remote paths are hashed"
+msgstr "estricta: los nombres de equipo, de usuario y las rutas remotas quedan con hash"
+
+msgctxt "cli.diag.v_privacy_standard"
+msgid "standard: host and user names are logged"
+msgstr "estándar: los nombres de equipo y de usuario se registran"
+
+#. Clock row. {time} is the local time, {offset} the UTC offset, {state} the state of Windows Time.
+msgctxt "cli.diag.v_clock"
+msgid "{time} (UTC{offset}), Windows Time {state}"
+msgstr "{time} (UTC{offset}), Hora de Windows {state}"
+
+msgctxt "cli.diag.v_w32_running"
+msgid "running"
+msgstr "en ejecución"
+
+msgctxt "cli.diag.v_w32_stopped"
+msgid "not running"
+msgstr "no está en ejecución"
+
+msgctxt "cli.diag.summary_ok"
+msgid "No problems found."
+msgstr "No se encontraron problemas."
+
+#, plural-arg=count
+msgctxt "cli.diag.summary_problem"
+msgid "{count} problem found."
+msgid_plural "{count} problems found."
+msgstr[0] "{count} problema encontrado."
+msgstr[1] "{count} de problemas encontrados."
+msgstr[2] "{count} problemas encontrados."
+
+#. A fix failed. {code} is the Windows error number.
+msgctxt "cli.diag.fix_failed"
+msgid "The change failed (error {code})."
+msgstr "El cambio falló (error {code})."
+
+#. The fix is refused by the AllowedBackends policy (exit 15).
+msgctxt "cli.diag.fix_policy"
+msgid "The AllowedBackends policy excludes WebDAV, so WebClient is not changed."
+msgstr "La directiva AllowedBackends excluye WebDAV, así que WebClient no se cambia."
+
+#. A fix needs an administrator (exit 9).
+msgctxt "cli.diag.elevation_required"
+msgid "This needs an administrator. Open a console as administrator and run the command again."
+msgstr "Hace falta ser administrador. Abrí una consola como administrador y ejecutá el comando de nuevo."
+
+#. The letter and the word that answer yes. The letter in brackets of the questions below must match.
+msgctxt "cli.diag.letter_yes"
+msgid "y"
+msgstr "s"
+
+msgctxt "cli.diag.word_yes"
+msgid "yes"
+msgstr "sí"
+
+#. Question before the WebClient fix. The letters in brackets must match cli.diag.letter_yes; the default (capital) is no.
+msgctxt "cli.diag.fix_confirm_webclient"
+msgid "Set WebClient to start on demand and start it now? [y]es, [N]o: "
+msgstr "¿Configurar WebClient para que inicie a demanda y arrancarlo ahora? [s]í, [N]o:"
+
+#. Question before the linked-connections fix. The letters in brackets must match cli.diag.letter_yes; the default (capital) is no.
+msgctxt "cli.diag.fix_confirm_linked"
+msgid "Let programs run as administrator see the drives (EnableLinkedConnections)? [y]es, [N]o: "
+msgstr "¿Permitir que los programas ejecutados como administrador vean las unidades (EnableLinkedConnections)? [s]í, [N]o:"
+
+msgctxt "cli.diag.fix_webclient_done"
+msgid "WebClient starts on demand and is running."
+msgstr "WebClient inicia a demanda y está en ejecución."
+
+msgctxt "cli.diag.fix_webclient_unchanged"
+msgid "WebClient already runs on demand. Nothing was changed."
+msgstr "WebClient ya inicia a demanda. No se cambió nada."
+
+#. Note before the WebClient fix on a domain-joined computer.
+msgctxt "cli.diag.fix_domain_note"
+msgid "This computer is joined to a domain. If every connection uses Dokany, WebClient is not needed."
+msgstr "Este equipo está unido a un dominio. Si todas las conexiones usan Dokany, WebClient no hace falta."
+
+msgctxt "cli.diag.fix_linked_done"
+msgid "EnableLinkedConnections is set. Restart Windows for it to take effect."
+msgstr "EnableLinkedConnections quedó configurado. Reiniciá Windows para que tenga efecto."
+
+msgctxt "cli.diag.fix_linked_unchanged"
+msgid "EnableLinkedConnections is already set. Nothing was changed."
+msgstr "EnableLinkedConnections ya está configurado. No se cambió nada."
+
+#. Printed before a bundle that keeps host names, user names and remote paths.
+msgctxt "cli.diag.bundle_no_anon"
+msgid "Host names, user names and remote paths are NOT anonymized (--no-anonymize)."
+msgstr "Los nombres de equipo, de usuario y las rutas remotas NO se anonimizan (--no-anonymize)."
+
+msgctxt "cli.diag.bundle_dumps_note"
+msgid "Crash dumps are included. They can contain file names and file content."
+msgstr "Se incluyen los volcados de fallo. Pueden contener nombres y contenido de archivos."
+
+#. {path} is the file name that already exists. The file is not replaced.
+msgctxt "cli.diag.bundle_exists"
+msgid "{path} already exists. Choose another name; the existing file was not replaced."
+msgstr "{path} ya existe. Elegí otro nombre; el archivo existente no se reemplazó."
+
+#. {code} is the Windows error number.
+msgctxt "cli.diag.bundle_failed"
+msgid "The bundle could not be written (error {code})."
+msgstr "No se pudo escribir el paquete (error {code})."
+
+#. Printed after a bundle is written. {path} is the file, {count} the number of files in it.
+#, plural-arg=count
+msgctxt "cli.diag.bundle_written"
+msgid "Diagnostic bundle written: {path} ({count} file). Nothing was sent; attach the file yourself when you report a problem."
+msgid_plural "Diagnostic bundle written: {path} ({count} files). Nothing was sent; attach the file yourself when you report a problem."
+msgstr[0] "Paquete de diagnóstico escrito: {path} ({count} archivo). No se envió nada; adjuntá el archivo vos mismo al reportar un problema."
+msgstr[1] "Paquete de diagnóstico escrito: {path} ({count} de archivos). No se envió nada; adjuntá el archivo vos mismo al reportar un problema."
+msgstr[2] "Paquete de diagnóstico escrito: {path} ({count} archivos). No se envió nada; adjuntá el archivo vos mismo al reportar un problema."
+
+#. Help: the diag command in the general list.
+msgctxt "cli.help.diag"
+msgid "Check this computer, write a support bundle or apply one of the two fixes."
+msgstr "Revisá este equipo, escribí un paquete de soporte o aplicá una de las dos correcciones."
+
+msgctxt "cli.help.diag_check"
+msgid "Run the checks of this computer (the default)."
+msgstr "Ejecuta las comprobaciones de este equipo (la predeterminada)."
+
+msgctxt "cli.help.diag_bundle"
+msgid "Write a ZIP file with the checks, logs and settings. Anonymized by default."
+msgstr "Escribe un ZIP con las comprobaciones, los registros y la configuración. Anonimizado por defecto."
+
+msgctxt "cli.help.diag_fix"
+msgid "Apply one fix after a question. Needs an administrator."
+msgstr "Aplica una corrección después de una pregunta. Requiere ser administrador."
+
+msgctxt "cli.help.admin_webclient"
+msgid "The same as diag --fix webclient: WebClient starts on demand and runs now."
+msgstr "Igual que diag --fix webclient: WebClient inicia a demanda y se ejecuta ahora."
+
+msgctxt "cli.help.opt_bundle"
+msgid "The new ZIP file. Without FILE the name is shelldrive-diag-<date>-<time>.zip in the current folder."
+msgstr "El archivo ZIP nuevo. Sin FILE, el nombre es shelldrive-diag-<fecha>-<hora>.zip en la carpeta actual."
+
+msgctxt "cli.help.opt_no_anonymize"
+msgid "Keep host names, user names and remote paths in the bundle."
+msgstr "Mantiene los nombres de equipo, de usuario y las rutas remotas en el paquete."
+
+msgctxt "cli.help.opt_include_dumps"
+msgid "Include the crash dumps. They can contain file content."
+msgstr "Incluye los volcados de fallo. Pueden contener contenido de archivos."
+
+msgctxt "cli.help.opt_fix"
+msgid "webclient: start on demand and run now. linked-connections: administrator programs see the drives after a restart."
+msgstr "webclient: inicia a demanda y se ejecuta ahora. linked-connections: los programas de administrador ven las unidades tras reiniciar."
+
+msgctxt "cli.help.opt_yes"
+msgid "Do not ask before a fix."
+msgstr "No pregunta antes de una corrección."
+
+msgctxt "cli.help.secret"
+msgid "Store or remove the password of a proxy used by the service's machine profiles. Needs an elevated console."
+msgstr "Guarda o quita la contraseña de un proxy que usan los perfiles de máquina del servicio. Requiere una consola elevada."
+
+msgctxt "cli.secret.need_admin"
+msgid "Storing or removing a proxy password needs an elevated console. Run it as administrator."
+msgstr "Guardar o quitar una contraseña de proxy requiere una consola elevada. Ejecutá el programa como administrador."
+
+msgctxt "cli.secret.bad_proxy"
+msgid "--proxy needs http:// or socks5:// with a user and no password, for example socks5://user@proxy:1080."
+msgstr "--proxy necesita http:// o socks5:// con un usuario y sin contraseña, por ejemplo socks5://usuario@proxy:1080."
+
+msgctxt "cli.secret.prompt"
+msgid "Proxy password (typed text is not shown):"
+msgstr "Contraseña del proxy (lo que escribas no se muestra):"
+
+msgctxt "cli.secret.empty"
+msgid "The password is empty. Nothing was stored."
+msgstr "La contraseña está vacía. No se guardó nada."
+
+msgctxt "cli.secret.stored"
+msgid "The proxy password is stored for the service."
+msgstr "La contraseña del proxy quedó guardada para el servicio."
+
+msgctxt "cli.secret.deleted"
+msgid "The proxy password is removed from the service."
+msgstr "La contraseña del proxy se quitó del servicio."
+
+
+msgctxt "cli.diag.label_menu"
+msgid "Windows 11 menu"
+msgstr "Menú de Windows 11"
+
+msgctxt "cli.diag.label_netloc"
+msgid "Network locations"
+msgstr "Ubicaciones de red"
+
+msgctxt "cli.diag.label_logs"
+msgid "Logs"
+msgstr "Registros"
+
+msgctxt "cli.diag.v_dokany_version"
+msgid "installed, version {version}"
+msgstr "instalado, versión {version}"
+
+msgctxt "cli.diag.v_dokany_denied"
+msgid "installed, version {version} is on the deny list ({reason}); the Dokany backend is disabled"
+msgstr "instalado, la versión {version} está en la lista de bloqueo ({reason}); el backend de Dokany está desactivado"
+
+msgctxt "cli.diag.v_menu_na"
+msgid "not available on this Windows version"
+msgstr "no disponible en esta versión de Windows"
+
+msgctxt "cli.diag.v_menu_on"
+msgid "registered for this user"
+msgstr "registrado para este usuario"
+
+msgctxt "cli.diag.v_menu_off"
+msgid "not registered for this user"
+msgstr "no registrado para este usuario"
+
+msgctxt "cli.diag.v_netloc_na"
+msgid "not available"
+msgstr "no disponible"
+
+msgctxt "cli.diag.v_netloc_none"
+msgid "no profile uses a network location"
+msgstr "ningún perfil usa una ubicación de red"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_netloc_sync"
+msgid "{count} network location in sync."
+msgid_plural "{count} network locations in sync."
+msgstr[0] "{count} ubicación de red sincronizada."
+msgstr[1] "{count} ubicaciones de red sincronizadas."
+msgstr[2] "{count} ubicaciones de red sincronizadas."
+
+msgctxt "cli.diag.v_netloc_out"
+msgid "out of sync: {missing} missing, {stale} stale"
+msgstr "desincronizado: faltan {missing}, sobran {stale}"
+
+msgctxt "cli.diag.v_logs_found"
+msgid "found"
+msgstr "encontrado"
+
+msgctxt "cli.diag.v_logs_not_found"
+msgid "not found"
+msgstr "no encontrado"
+
+#, plural-arg=count
+msgctxt "cli.diag.v_logs"
+msgid "setup log {setup}; {count} service log file."
+msgid_plural "setup log {setup}; {count} service log files."
+msgstr[0] "registro de instalación {setup}; {count} archivo de registro del servicio."
+msgstr[1] "registro de instalación {setup}; {count} archivos de registro del servicio."
+msgstr[2] "registro de instalación {setup}; {count} archivos de registro del servicio."
+
+#. Help line of the location verb in the command list and of its topic.
+msgctxt "cli.help.location"
+msgid "Add, remove or repair the Network location entries of the profiles."
+msgstr "Agregá, quitá o reparás las ubicaciones de red de los perfiles."
+
+#. Confirmation of location add when the entry was made. {name} is the profile name.
+msgctxt "cli.location.added"
+msgid "Network location added for {name}."
+msgstr "Se agregó la ubicación de red de {name}."
+
+#. location add when the entry was already in place. {name} is the profile name.
+msgctxt "cli.location.present"
+msgid "The Network location of {name} is already in place."
+msgstr "La ubicación de red de {name} ya estaba en su lugar."
+
+#. Confirmation of location remove. {name} is the profile name.
+msgctxt "cli.location.removed"
+msgid "Network location removed for {name}."
+msgstr "Se quitó la ubicación de red de {name}."
+
+#. Confirmation of location repair. {count} is the number of entries made or removed.
+#, plural-arg=count
+msgctxt "cli.location.repaired"
+msgid "{count} network location repaired."
+msgid_plural "{count} network locations repaired."
+msgstr[0] "{count} ubicación de red reparada."
+msgstr[1] "{count} ubicaciones de red reparadas."
+msgstr[2] "{count} ubicaciones de red reparadas."
+
+#. Error of the location verbs when policy DisableNetworkLocations is set. Nothing is changed.
+msgctxt "cli.location.policy"
+msgid "Network locations are turned off by policy (DisableNetworkLocations)."
+msgstr "Las ubicaciones de red están desactivadas por la directiva (DisableNetworkLocations)."
+
+#. Error of location add or remove for a service profile, which has no Network location. {name} is the profile name.
+msgctxt "cli.location.service"
+msgid "{name} is a service profile and has no Network location."
+msgstr "{name} es un perfil de servicio y no tiene ubicación de red."
+
+#. Error of the location verbs when an entry or placeholder cannot be written.
+msgctxt "cli.location.failed"
+msgid "The Network location could not be written."
+msgstr "No se pudo escribir la ubicación de red."

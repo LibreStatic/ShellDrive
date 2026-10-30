@@ -38,7 +38,26 @@ typedef struct sd_ssh_identity {
   const char *agent_fingerprint;        /* SD_ID_AGENT_KEY, "SHA256:..." */
   const uint8_t *blob; size_t blob_len; /* SD_ID_BLOB: key file bytes, deep-copied into a secret buffer */
   const char *label;                    /* SD_ID_BLOB: shown in passphrase prompts instead of a path */
+  /* M2 user certificates (01 §6.3, profile auth.certificate): an explicit certificate file, or its
+     bytes (e.g. next to a DPAPI-kept key). Without either, SD_ID_FILE also tries "<path>-cert.pub".
+     A certificate is offered before its plain key; expired, host or non-matching ones are skipped. */
+  const wchar_t *cert_path;
+  const uint8_t *cert_blob; size_t cert_blob_len;   /* a *-cert.pub file's bytes */
 } sd_ssh_identity;
+/* Agents and identities (M2, 01 §6.2, §6.5):
+ * - SD_ID_AGENT_KEY selects an agent key by the SHA-256 fingerprint of its plain public key (a
+ *   certificate the agent holds for that key is offered first). It needs `agents`.
+ * - A file or blob identity whose public key an enabled agent holds is signed by the agent (no
+ *   passphrase prompt).
+ * - Without identities_only, every other agent key follows (Pageant first, then the OpenSSH agent,
+ *   deduplicated by blob). At most 6 keys are offered per connection (OpenSSH MaxAuthTries).
+ * - `agents` must be 0 in a LocalSystem process (D17): sd_ssh_conn_create fails with SD_E_UNSUPPORTED.
+ * - RSA keys sign with rsa-sha2-512 / rsa-sha2-256 as the server's server-sig-algs allow, ssh-rsa
+ *   only as a fallback (legacy bit SD_LEGACY_USERAUTH_SHA1); keys < 1024 bits are refused.
+ * - Password: SSH_MSG_USERAUTH_PASSWD_CHANGEREQ raises SD_PROMPT_NEW_PASSWORD with three items
+ *   (current, new, confirm; instruction = the server's text); a mismatch of new and confirm asks
+ *   again. Keyboard-interactive: every INFO_REQUEST is one SD_PROMPT_KBDINT; `round` counts them
+ *   within the connection (OTP rounds follow the password round). */
 
 typedef struct sd_ssh_auth_cfg {
   const char *user;                     /* UTF-8 */
@@ -51,18 +70,58 @@ typedef struct sd_ssh_auth_cfg {
                                            connects of the same sd_ssh_conn; see "reconnect" below */
 } sd_ssh_auth_cfg;
 
+/* Network proxies (M2, D20, 01 §5.2). A proxy says how ONE hop is reached: for hop 0 the TCP
+ * connection goes to the proxy, which is asked to connect to the hop; for hop i >= 1 the
+ * direct-tcpip channel on hop i-1 goes to the proxy (resolved by hop i-1's server) and the proxy
+ * handshake runs over that channel. The SSH host key of the hop is verified as usual on top.
+ * - SD_PROXY_HTTP: HTTP/1.1 CONNECT. port 0 = 8080. auth: SD_PROXY_AUTH_BASIC (needs user; the
+ *   password comes from an SD_PROMPT_PROXY_PASSWORD prompt), SD_PROXY_AUTH_SSPI (Negotiate with NTLM
+ *   fallback, bare NTLM; current logon credentials), SD_PROXY_AUTH_SSPI_KERBEROS (Negotiate restricted
+ *   to Kerberos, profile proxy_auth = auto). Basic travels in clear text to the proxy. A 407 is
+ *   answered at most 3 times; a proxy that closes between rounds is reconnected.
+ * - SD_PROXY_SOCKS5: RFC 1928 CONNECT, port 0 = 1080; no-auth always offered, RFC 1929
+ *   username/password too when user is set (SD_PROXY_AUTH_USERPASS or auth = 0). remote_dns = 1
+ *   (the profile default; the host passes it) sends the name (ATYP 3); remote_dns = 0 resolves it
+ *   locally first (ATYP 1/4). Literal addresses always go as ATYP 1/4.
+ * - SD_PROXY_SYSTEM (hop 0 only; host/port ignored): resolved on every connect from WinHTTP
+ *   (IE settings of the user; the WinHTTP default configuration when running as LocalSystem),
+ *   including WPAD / PAC (WinHttpGetProxyForUrl) and the bypass list. socks= gives SOCKS5, https= or
+ *   a generic entry gives HTTP CONNECT. A proxy found by WPAD/PAC has origin DISCOVERED: SSPI is never
+ *   used towards it unless allow_discovered_sspi (machine policy AllowSystemProxySspi, TM-R10).
+ *   Discovery failure falls back to a direct connection only with fallback_direct. The source itself
+ *   is used only when the profile opts in (kind = SD_PROXY_SYSTEM) and allow_system (machine policy
+ *   AllowSystemProxy) permits it; otherwise the connect is refused with SD_E_PROXY (03 §3.8, TM-R10).
+ * Errors: SD_E_PROXY (refused, unreachable target, protocol error; reply code in the log),
+ * SD_E_PROXY_AUTH (no acceptable method, rejected credentials, rounds exhausted), with failed_hop =
+ * the hop the proxy leads to. Proxy passwords: prompt SD_PROMPT_PROXY_PASSWORD with proxy_host,
+ * proxy_port, user, hop_index (answer from Credential Manager with SD_ANSWER_FROM_STORE where
+ * possible; pool members must never show UI). With cache_secrets_for_reconnect of the hop, a proxy
+ * password that worked is kept for reconnects like the SSH password (01 §7.4). */
 typedef enum sd_proxy_kind { SD_PROXY_NONE, SD_PROXY_HTTP, SD_PROXY_SOCKS5, SD_PROXY_SYSTEM } sd_proxy_kind;
 enum { SD_PROXY_AUTH_BASIC = 1u << 0, SD_PROXY_AUTH_SSPI = 1u << 1, SD_PROXY_AUTH_USERPASS = 1u << 2,
        SD_PROXY_AUTH_SSPI_KERBEROS = 1u << 3 };
-typedef struct sd_proxy_cfg {           /* M2 (D20); kind must be SD_PROXY_NONE in M0 */
+typedef enum sd_proxy_origin {
+  SD_PROXY_ORIGIN_CONFIGURED,           /* profile, policy ProxyServer, static system entry */
+  SD_PROXY_ORIGIN_DISCOVERED            /* WPAD / PAC result (set by sd_ssh) */
+} sd_proxy_origin;
+typedef struct sd_proxy_cfg {           /* M2 (D20) */
   sd_proxy_kind kind;
-  const wchar_t *host; uint16_t port;
-  uint32_t auth;
-  int allow_discovered_sspi;
-  const char *user;
-  int remote_dns;
-  int fallback_direct;
+  const wchar_t *host; uint16_t port;   /* HTTP / SOCKS5: the proxy (name or literal, "[v6]" allowed) */
+  uint32_t auth;                        /* SD_PROXY_AUTH_* allowed; 0 = none (SOCKS5: userpass if user) */
+  int allow_discovered_sspi;            /* TM-R10 policy AllowSystemProxySspi = 1; default 0 */
+  int allow_system;                     /* TM-R10 policy AllowSystemProxy = 1 lets proxy = system resolve;
+                                           0 (default) refuses the opt-in with SD_E_PROXY */
+  const char *user;                     /* UTF-8, <= 255 bytes; NULL/"" = none */
+  int remote_dns;                       /* SOCKS5: 1 = the proxy resolves the name */
+  int fallback_direct;                  /* SD_PROXY_SYSTEM: connect directly if discovery fails */
 } sd_proxy_cfg;
+
+/* M5 (03 3.8, service): the WinHTTP machine configuration (WinHttpGetDefaultProxyConfiguration) for host:port, the
+   static answer only (the default configuration has no WPAD and no PAC). *kind is SD_PROXY_NONE (no proxy configured,
+   or the bypass list matches), SD_PROXY_HTTP or SD_PROXY_SOCKS5, with the proxy in host_out and *port_out. Returns
+   SD_E_PROXY when the configuration cannot be read. Blocking: worker or control thread only. */
+sd_err sd_ssh_proxy_machine(const wchar_t *host, uint16_t port, sd_proxy_kind *kind, wchar_t host_out[256],
+                            uint16_t *port_out);
 
 typedef enum sd_legacy_policy { SD_LEGACY_ALLOW, SD_LEGACY_WARN, SD_LEGACY_ASK, SD_LEGACY_REFUSE } sd_legacy_policy;
 typedef enum sd_hku_mode { SD_HKU_YES, SD_HKU_ASK, SD_HKU_NO } sd_hku_mode;
@@ -82,11 +141,23 @@ typedef struct sd_ssh_algo_cfg {
   int crypto_backend;                   /* 0 auto, 1 own */
 } sd_ssh_algo_cfg;
 
-enum { SD_SSH_CFG_POOL_MEMBER = 1u << 0 };
+/* SD_SSH_CFG_COMPRESS: offer zlib@openssh.com (delayed, active after USERAUTH_SUCCESS, 01 section 4.7) before none;
+ * off by default. */
+enum { SD_SSH_CFG_POOL_MEMBER = 1u << 0, SD_SSH_CFG_COMPRESS = 1u << 1 };
 
+/* ProxyJump (M2, 01 §5.1): hops[0] is reached over TCP (optionally through its proxy), hops[i]
+ * (i >= 1) through a direct-tcpip channel on hops[i-1] to (host, port) as configured for hop i,
+ * resolved by hop i-1's server. Each hop has its own user, auth, proxy and host-key verification
+ * against its own lookup name ([host]:port, or host_key_alias); its host-key prompt carries
+ * hop_index and via_host = hop i-1's host (TM-R03), its auth prompts carry hop_index and host.
+ * All hops run on the chain's single I/O thread. on_negotiated / on_banner / on_hostkey_event carry
+ * the hop index. A failure at hop k reports failed_hop = k; hops before k stay connected while the
+ * connect is retried (a later sd_ssh_conn_connect() rebuilds from the first hop that is not
+ * connected); sd_ssh_conn_disconnect() closes every hop, innermost first. noninteractive in
+ * sd_ssh_auth_info covers every hop. SD_SSH_CFG_POOL_MEMBER applies to every hop. */
 typedef struct sd_ssh_config {
   uint32_t struct_size;                 /* sizeof(sd_ssh_config) */
-  const sd_ssh_hop *hops; uint32_t hop_count;   /* 1..8, last = target; M0: exactly 1 */
+  const sd_ssh_hop *hops; uint32_t hop_count;   /* 1..8, last = target */
   sd_ssh_algo_cfg algos;
   sd_known_hosts *known_hosts;          /* borrowed; must outlive the connection */
   uint32_t connect_timeout_ms;          /* 15000 if 0 */
@@ -98,6 +169,23 @@ typedef struct sd_ssh_config {
   uint32_t flags;                       /* SD_SSH_CFG_* */
 } sd_ssh_config;
 
+/* legacy_mask bits (01 §4.3). The UI warns for every bit except SD_LEGACY_MAC_NON_ETM (D33). Public so that
+   sd_mount can tell the Terrapin state of a negotiated connection (03 §7.6) from the other bits. */
+enum {
+  SD_LEGACY_KEX_SHA1         = 1u << 0,   /* group1 / group14-sha1 / gex-sha1 */
+  SD_LEGACY_DH_1024          = 1u << 1,   /* group1 */
+  SD_LEGACY_DH_SMALL         = 1u << 2,   /* GEX group < 2048 bits */
+  SD_LEGACY_CIPHER_CBC       = 1u << 3,
+  SD_LEGACY_CIPHER_3DES      = 1u << 4,
+  SD_LEGACY_MAC_SHA1         = 1u << 5,
+  SD_LEGACY_MAC_NON_ETM      = 1u << 6,   /* informational only */
+  SD_LEGACY_HOSTKEY_SHA1     = 1u << 7,   /* ssh-rsa host key signature */
+  SD_LEGACY_USERAUTH_SHA1    = 1u << 8,   /* we signed with ssh-rsa (auth) */
+  SD_LEGACY_RSA_SHORT        = 1u << 9,   /* RSA key < 2048 bits (host or user) */
+  SD_LEGACY_NO_STRICT_KEX    = 1u << 10,
+  SD_LEGACY_TERRAPIN_EXPOSED = 1u << 11
+};
+
 typedef struct sd_ssh_negotiated {
   uint32_t hop_index;
   const char *kex, *hostkey, *cipher_c2s, *cipher_s2c, *mac_c2s, *mac_s2c, *comp_c2s, *comp_s2c;
@@ -107,13 +195,19 @@ typedef struct sd_ssh_negotiated {
   uint32_t legacy_mask;
 } sd_ssh_negotiated;
 
-typedef enum sd_hkev_kind { SD_HKEV_MISMATCH, SD_HKEV_REVOKED, SD_HKEV_ANNOUNCED } sd_hkev_kind;
+/* SD_HKEV_TYPE_UNAVAILABLE (5.2, TM-R04): the connection failed because no host key algorithm of the server
+   matches the stored key types of lookup_name. stored_types: comma list of the stored types ("" when none);
+   offered_types: comma list of the server's host key algorithms ("" when unknown); new_key: the key the
+   server presented, or NULL when the failure came during negotiation. store, path and line are unused. */
+typedef enum sd_hkev_kind { SD_HKEV_MISMATCH, SD_HKEV_REVOKED, SD_HKEV_ANNOUNCED, SD_HKEV_TYPE_UNAVAILABLE } sd_hkev_kind;
 typedef struct sd_hostkey_event {
   sd_hkev_kind kind; uint32_t hop_index; const char *lookup_name;
-  sd_kh_store_kind store; const wchar_t *path; uint32_t line;
-  const sd_hk_key *old_key, *new_key;                 /* MISMATCH */
+  sd_kh_store_kind store; const wchar_t *path; uint32_t line;   /* path "" and line 0 for the PuTTY registry */
+  const sd_hk_key *old_key, *new_key;                 /* MISMATCH; TYPE_UNAVAILABLE: new_key only */
   const sd_hk_key *add; uint32_t add_count;           /* ANNOUNCED: proven keys */
   const sd_hk_key *remove; uint32_t remove_count;     /* ANNOUNCED: removal candidates */
+  const char *stored_types;                           /* TYPE_UNAVAILABLE */
+  const char *offered_types;                          /* TYPE_UNAVAILABLE */
 } sd_hostkey_event;
 
 typedef struct sd_ssh_callbacks {

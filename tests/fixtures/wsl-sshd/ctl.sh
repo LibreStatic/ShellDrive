@@ -14,15 +14,32 @@
 #   ctl.sh thaw      SIGCONT the stopped session processes
 #   ctl.sh status    print the listener and session pids
 #
-# Windows: wsl.exe -e sh <wsl path>/ctl.sh <command>   (or ctl.ps1 <command>)
+# An optional second argument names an M2 fixture instance (tests/fixtures/matrix/README.md), e.g.
+# "ctl.sh drop ossh10" or "ctl.sh freeze socks5"; without it (or with "modern") this M1 fixture is meant.
+# For a proxy instance the "listener" is the proxy process itself (it has no session processes).
+#
+# Windows: wsl.exe -e sh <wsl path>/ctl.sh <command> [instance]   (or ctl.ps1 <command> [-Instance <name>])
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUN="${XDG_STATE_HOME:-$HOME/.local/state}/shelldrive-wsl-sshd"
+FIX="${XDG_STATE_HOME:-$HOME/.local/state}/shelldrive-fixtures"
+INSTANCE="${2:-modern}"
+case "$INSTANCE" in
+  modern) PIDFILE="$RUN/sshd.pid" ;;
+  http|http-auth|socks5|socks5-auth|squid|dante) PIDFILE="$FIX/proxy-$INSTANCE/pid" ;;
+  *[!a-z0-9-]*) echo "bad instance name: $INSTANCE" >&2; exit 2 ;;
+  *) PIDFILE="$FIX/$INSTANCE/sshd.pid" ;;
+esac
+
+start_instance() {
+  if [ "$INSTANCE" = modern ]; then sh "$HERE/start.sh"
+  else sh "$HERE/../matrix/fixture.sh" start "$INSTANCE"; fi
+}
 
 listener() {
-  if [ -f "$RUN/sshd.pid" ]; then
-    p="$(cat "$RUN/sshd.pid")"
+  if [ -f "$PIDFILE" ]; then
+    p="$(cat "$PIDFILE")"
     if kill -0 "$p" 2>/dev/null; then echo "$p"; fi
   fi
 }
@@ -63,15 +80,15 @@ case "$cmd" in
     [ -n "$l" ] && kill -STOP "$l" 2>/dev/null || true
     signal_all KILL $s
     [ -n "$l" ] && kill -KILL "$l" 2>/dev/null || true
-    rm -f "$RUN/sshd.pid"
-    echo "killed fixture sshd (listener ${l:-none}, sessions: $(echo $s))"
+    rm -f "$PIDFILE"
+    echo "killed fixture $INSTANCE (listener ${l:-none}, sessions: $(echo $s))"
     ;;
   start)
-    sh "$HERE/start.sh"
+    start_instance
     ;;
   restart)
-    sh "$0" kill
-    sh "$HERE/start.sh"
+    sh "$0" kill "$INSTANCE"
+    start_instance
     ;;
   drop)
     s="$(sessions)"
@@ -98,7 +115,7 @@ case "$cmd" in
     echo "sessions: $(echo $(sessions))"
     ;;
   *)
-    echo "usage: ctl.sh kill|start|restart|drop|freeze|reap|thaw|status" >&2
+    echo "usage: ctl.sh kill|start|restart|drop|freeze|reap|thaw|status [instance]" >&2
     exit 2
     ;;
 esac

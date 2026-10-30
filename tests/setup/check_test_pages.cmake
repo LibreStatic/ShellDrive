@@ -1,0 +1,22 @@
+# ctest helper for setup.stub.test_pages (apps/shelldrive-setup/CMakeLists.txt).
+# Expects -DLOG=<log written by shelldrive-setup-stub /test-pages> and -DNOT_CREATED=<install folder that must not
+# exist afterwards>. Checks that the wizard built the expected pages in order and that nothing was installed.
+if(NOT EXISTS "${LOG}")
+  message(FATAL_ERROR "no log written by /test-pages: ${LOG}")
+endif()
+file(READ "${LOG}" _text)
+set(_order "welcome;license;mode;progress;finish")
+set(_pos -1)
+foreach(_page IN LISTS _order)
+  string(FIND "${_text}" " test.page ${_page}" _found)
+  if(_found LESS 0)
+    message(FATAL_ERROR "page '${_page}' missing from the test-pages log:\n${_text}")
+  endif()
+  if(_found LESS _pos)
+    message(FATAL_ERROR "page '${_page}' out of order in the test-pages log")
+  endif()
+  set(_pos ${_found})
+endforeach()
+if(EXISTS "${NOT_CREATED}")
+  message(FATAL_ERROR "/test-pages created ${NOT_CREATED}: it must install nothing")
+endif()

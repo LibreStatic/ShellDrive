@@ -20,6 +20,8 @@
 #include "sd_base/sd_err.h"
 #include "sd_crypto/sd_crypto.h"
 #include "sd_ssh/sd_known_hosts.h"
+#include "sd_ssh/sd_ssh.h"
+#include "ssh_zlib.h"
 
 /* ---- message numbers (RFC 4250 §4.1, RFC 8308, OpenSSH PROTOCOL) ---- */
 enum {
@@ -44,14 +46,8 @@ enum {
 };
 
 #define SSH_MAX_PACKET_LEN   (256u * 1024u)    /* inbound packet_length limit (01 §4.1) */
+#define SSH_HOSTKEY_BUF      8192u             /* K_S / host certificate kept per connection */
 #define SSH_MAX_PAYLOAD_OUT  (SSH_MAX_PACKET_LEN - 1024u)
-
-/* legacy_mask bits (01 §4.3); only the ones M0 can produce are used. */
-enum {
-  SD_LEGACY_MAC_NON_ETM      = 1u << 6,
-  SD_LEGACY_NO_STRICT_KEX    = 1u << 10,
-  SD_LEGACY_TERRAPIN_EXPOSED = 1u << 11
-};
 
 /* ---- crypto availability (crypto_init.c) ---- */
 
@@ -107,14 +103,21 @@ typedef struct ssh_list_input {
   const char *disabled;          /* comma list or NULL */
   int refuse_terrapin_exposed;
   int initial;                   /* first KEX: add ext-info-c and kex-strict-c-v00@openssh.com */
-  /* cipher availability; NULL = sd_pktcipher_find(). Used by tests. */
+  int compress;                  /* offer zlib@openssh.com first, then none (SD_SSH_CFG_COMPRESS) */
+  int allow_legacy;              /* legacy_policy != REFUSE: legacy algorithms ranked last (D33) */
+  const char *hostkey_only;      /* non-NULL: exact host-key list (fetch_hostkeys re-key, 01 §4.3) */
+  /* availability; NULL = sd_pktcipher_find() / ssh_kex_supported() / ssh_hostkey_alg_supported().
+     Used by tests. */
   int (*cipher_available)(const char *name);
+  int (*kex_available)(const char *name);
+  int (*hostkey_available)(const char *name);
 } ssh_list_input;
 
 typedef struct ssh_list_result {
   int strict;                    /* server KEXINIT has kex-strict-s-v00@openssh.com */
   int terrapin_exposed;          /* rule 3 of 01 §4.3: no unaffected pair, connecting anyway */
   int chacha_removed;            /* rule 2 applied in at least one direction */
+  int etm_removed;               /* rule 2: CBC will be chosen, -etm MACs removed for that direction */
 } ssh_list_result;
 
 /* Builds the lists we send. Errors: SD_E_HOSTKEY_TYPE_UNAVAILABLE (stored types not supported),
@@ -134,9 +137,44 @@ sd_err ssh_negotiate(const ssh_lists *ours, const ssh_kexinit *server, ssh_algs 
 /* Encodes our KEXINIT payload (message byte included). */
 void ssh_kexinit_encode(sd_wr *w, const uint8_t cookie[16], const ssh_lists *l);
 int  ssh_cipher_is_aead(const char *name);
+int  ssh_cipher_is_cbc(const char *name);
+int  ssh_mac_is_etm(const char *name);
 int  ssh_csv_contains(const char *csv, const char *name);
+/* 1 for algorithms of the [legacy] tier of 01 §4.3. */
+int  ssh_alg_is_legacy(const char *name);
+/* Host key algorithm -> key blob type ("rsa-sha2-512" -> "ssh-rsa"; certs -> plain type); NULL if unknown. */
+const char *ssh_hostkey_alg_key_type(const char *alg);
+int  ssh_hostkey_alg_is_cert(const char *alg);
+/* Plain (non-certificate) host key algorithms for a key type in static order, e.g. "ssh-rsa" ->
+   "rsa-sha2-512,rsa-sha2-256[,ssh-rsa]". SD_E_HOSTKEY_TYPE_UNAVAILABLE when none is usable. */
+sd_err ssh_hostkey_algs_for_type(const char *key_type, int allow_legacy, int (*avail)(const char *),
+                                 char *out, size_t cap);
+/* legacy_mask bits that follow from the negotiated names alone (01 §4.3); the KEX adds
+   SD_LEGACY_DH_SMALL / SD_LEGACY_RSA_SHORT from the actual group and key. */
+uint32_t ssh_legacy_mask_for(const ssh_algs *a, int strict);
+/* Comma list of the negotiated legacy algorithm names (+ pseudo names for the other bits), for
+   SD_PROMPT_LEGACY_ACK.legacy_names. */
+void ssh_legacy_names(const ssh_algs *a, uint32_t mask, char *out, size_t cap);
+
+/* ---- KEX methods and host keys (kex_methods.c, hostkey_verify.c) ---- */
+
+/* 1 if the KEX method / host key algorithm is implemented with the crypto available now. */
+int ssh_kex_supported(const char *name);
+int ssh_hostkey_alg_supported(const char *name);
 
 /* ---- binary packet protocol (packet.c) ---- */
+
+/* Delayed compression of one direction (zlib@openssh.com, 01 section 4.7). The codec state survives re-keys;
+   ssh_dir_clear frees it. */
+typedef struct ssh_comp {
+  int tx;                        /* 1: this is the sending direction */
+  int on;                        /* compression active: after USERAUTH_SUCCESS, zlib@openssh.com negotiated */
+  char name[24];                 /* negotiated algorithm for this direction at the last NEWKEYS */
+  ssh_zdef *zdef;                /* tx codec */
+  ssh_zinf *zinf;                /* rx codec */
+  sd_wr zw;                      /* tx: compressed payload of the packet being sealed */
+  uint8_t *zout;                 /* rx: decompressed payload, valid until the next ssh_pkt_open */
+} ssh_comp;
 
 typedef struct ssh_dir {
   const sd_pktcipher_info *ci;   /* NULL: no encryption (before the first NEWKEYS) */
@@ -152,10 +190,17 @@ typedef struct ssh_dir {
   /* receive-side partial state */
   int rx_have_len;
   uint32_t rx_len;
+  size_t rx_discard;             /* CBC + non-ETM MAC failure: fail once this many bytes are buffered */
+  ssh_comp comp;                 /* survives ssh_dir_set_keys (re-keys); freed by ssh_dir_clear */
 } ssh_dir;
 
 void   ssh_dir_init(ssh_dir *d);
-void   ssh_dir_clear(ssh_dir *d);        /* frees the cipher, wipes keys; keeps seq */
+void   ssh_dir_clear(ssh_dir *d);        /* frees the cipher and compression state, wipes keys; keeps seq */
+/* Records the algorithm negotiated for this direction (NEWKEYS). Any other name than zlib@openssh.com
+   ends compression in this direction. */
+void   ssh_dir_set_comp_name(ssh_dir *d, const char *name);
+/* Activates the recorded zlib@openssh.com for this direction (after USERAUTH_SUCCESS). No-op for none. */
+sd_err ssh_dir_comp_start(ssh_dir *d);
 /* Installs new keys. cipher/mac are negotiated names; mac ignored for AEAD. */
 sd_err ssh_dir_set_keys(ssh_dir *d, int encrypt, const char *cipher, const char *mac,
                         const uint8_t *key, const uint8_t *iv, const uint8_t *mac_key);

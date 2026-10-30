@@ -1,6 +1,6 @@
 /* OpenSSH v1 key files (01 §6.6). Fixtures were generated with OpenSSH 9.6 ssh-keygen:
  *   ed25519_plain (no passphrase), ed25519_enc (passphrase "correct horse", aes256-ctr + bcrypt),
- *   rsa_plain (RSA, unsupported in M0). */
+ *   rsa_plain (RSA; loads since M2). M2 formats: test_keyfile_formats.c. */
 #include <string.h>
 
 #include "sd_base/sd_mem.h"
@@ -98,7 +98,11 @@ SD_TEST(ssh_key_unsupported_and_malformed)
   static const char ppk[] = "PuTTY-User-Key-File-3: ssh-ed25519\n";
   static const char junk[] = "hello world";
   SD_REQUIRE(tu_read_fixture("rsa_plain", &f, &n));
-  SD_CHECK_EQ_INT(sd_ssh_key_load(f, n, NULL, 0, &k), SD_E_KEY_UNSUPPORTED);
+  if (ssh_crypto_ready()) {
+    SD_CHECK_EQ_INT(sd_ssh_key_load(f, n, NULL, 0, &k), SD_OK);   /* RSA: M2 */
+    sd_ssh_key_free(k);
+    k = NULL;
+  }
   /* every truncation of a valid file fails cleanly */
   {
     uint8_t *g;
@@ -111,8 +115,8 @@ SD_TEST(ssh_key_unsupported_and_malformed)
     sd_free(g);
   }
   sd_free(f);
-  SD_CHECK_EQ_INT(sd_ssh_key_probe((const uint8_t *)pem, strlen(pem), &info), SD_E_KEY_UNSUPPORTED);
-  SD_CHECK_EQ_INT(sd_ssh_key_probe((const uint8_t *)ppk, strlen(ppk), &info), SD_E_KEY_UNSUPPORTED);
+  SD_CHECK_EQ_INT(sd_ssh_key_probe((const uint8_t *)pem, strlen(pem), &info), SD_E_KEY_FORMAT);   /* truncated */
+  SD_CHECK_EQ_INT(sd_ssh_key_probe((const uint8_t *)ppk, strlen(ppk), &info), SD_E_KEY_FORMAT);   /* truncated */
   SD_CHECK_EQ_INT(sd_ssh_key_probe((const uint8_t *)junk, strlen(junk), &info), SD_E_KEY_FORMAT);
 }
 

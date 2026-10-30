@@ -4,8 +4,10 @@
 #include <string.h>
 
 #include "crypto_internal.h"
+#include "pk_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_crypto/sd_ct.h"
+#include "sd_ct64.h"
 
 #include "sha2_consts.inc"
 
@@ -41,12 +43,19 @@ SD_STATIC_ASSERT(sizeof(sha512_state) <= sizeof(((sd_hash_ctx *)0)->opaque), "sh
   d += t1;                                                  \
   h = t1 + S256_0(a) + MAJ(a, b, c)
 
-static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
+/* The portable block function is the reference; the SHA extensions (sha256_ni.c) take over when the CPU has
+   them and the portable hook is off. The choice depends on the CPU only, never on the message. It is the
+   constant-time core of the SHA-256 block path (sd-isacheck, _ct name); SD_NOINLINE keeps it a separate
+   function for the gate. */
+SD_NOINLINE static void sha256_blocks_portable_ct(uint32_t st[8], const uint8_t *p, size_t nblocks)
 {
   uint32_t w[64];
   uint32_t a, b, c, d, e, f, g, h, t1;
   int i;
   while (nblocks--) {
+    /* Scalar loads only: at /arch:SSE2 the vectorizer would turn this into SSSE3 PSHUFB (not on the x86-sse2
+       floor) with overlap and length-split branches around it. */
+    SD_CT_NO_VECTOR
     for (i = 0; i < 16; i++)
       w[i] = sd_load_be32(p + 4 * i);
     for (i = 16; i < 64; i++) {
@@ -69,6 +78,17 @@ static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
     p += 64;
   }
   sd_secure_zero(w, sizeof(w));
+}
+
+static void sha256_blocks(uint32_t st[8], const uint8_t *p, size_t nblocks)
+{
+#if SD_CRYPTO_X86_HW
+  if (nblocks != 0 && sd_crypto_use_hw_sha256()) {
+    sd_sha256_ni_blocks_ct(st, p, nblocks, k_sha256_k);
+    return;
+  }
+#endif
+  sha256_blocks_portable_ct(st, p, nblocks);
 }
 
 static void sha256_update(sha256_state *s, const uint8_t *p, size_t n)
@@ -109,6 +129,9 @@ static void sha256_final(sha256_state *s, uint8_t *out, size_t outlen)
   memset(s->buf + s->n, 0, 56 - s->n);
   sd_store_be64(s->buf + 56, bits);
   sha256_blocks(s->h, s->buf, 1);
+  /* Scalar stores only: the state is secret for keyed hashes (HMAC), and at /arch:SSE2 the vectorizer would emit
+     SSSE3 PSHUFB for the big-endian store (not on the x86-sse2 floor). The loop bound is the public output length. */
+  SD_CT_NO_VECTOR
   for (i = 0; i < outlen / 4; i++)
     sd_store_be32(out + 4 * i, s->h[i]);
 }
@@ -199,7 +222,9 @@ static void sha512_final(sha512_state *s, uint8_t *out, size_t outlen)
 
 size_t sd_hash_len(sd_hash_alg alg)
 {
-  switch (alg) {
+  switch ((int)alg) {
+  case SD_HASH_MD5: return 16;
+  case SD_HASH_SHA1: return 20;
   case SD_HASH_SHA256: return 32;
   case SD_HASH_SHA384: return 48;
   case SD_HASH_SHA512: return 64;
@@ -209,7 +234,9 @@ size_t sd_hash_len(sd_hash_alg alg)
 
 size_t sd_hash_block_len(sd_hash_alg alg)
 {
-  switch (alg) {
+  switch ((int)alg) {
+  case SD_HASH_MD5:
+  case SD_HASH_SHA1:
   case SD_HASH_SHA256: return 64;
   case SD_HASH_SHA384:
   case SD_HASH_SHA512: return 128;
@@ -221,7 +248,11 @@ void sd_hash_init(sd_hash_ctx *c, sd_hash_alg alg)
 {
   memset(c, 0, sizeof(*c));
   c->alg = alg;
-  if (alg == SD_HASH_SHA256) {
+  if (alg == SD_HASH_MD5) {
+    sd_md5_state_init(c->opaque);
+  } else if (alg == SD_HASH_SHA1) {
+    sd_sha1_state_init(c->opaque);
+  } else if (alg == SD_HASH_SHA256) {
     sha256_state *s = (sha256_state *)c->opaque;
     memcpy(s->h, k_sha256_iv, sizeof(s->h));
   } else if (alg == SD_HASH_SHA384 || alg == SD_HASH_SHA512) {
@@ -234,7 +265,11 @@ void sd_hash_update(sd_hash_ctx *c, const void *p, size_t n)
 {
   if (n == 0)
     return;
-  if (c->alg == SD_HASH_SHA256)
+  if (c->alg == SD_HASH_MD5)
+    sd_md5_state_update(c->opaque, (const uint8_t *)p, n);
+  else if (c->alg == SD_HASH_SHA1)
+    sd_sha1_state_update(c->opaque, (const uint8_t *)p, n);
+  else if (c->alg == SD_HASH_SHA256)
     sha256_update((sha256_state *)c->opaque, (const uint8_t *)p, n);
   else if (c->alg == SD_HASH_SHA384 || c->alg == SD_HASH_SHA512)
     sha512_update((sha512_state *)c->opaque, (const uint8_t *)p, n);
@@ -242,7 +277,11 @@ void sd_hash_update(sd_hash_ctx *c, const void *p, size_t n)
 
 void sd_hash_final(sd_hash_ctx *c, uint8_t *out)
 {
-  if (c->alg == SD_HASH_SHA256)
+  if (c->alg == SD_HASH_MD5)
+    sd_md5_state_final(c->opaque, out);
+  else if (c->alg == SD_HASH_SHA1)
+    sd_sha1_state_final(c->opaque, out);
+  else if (c->alg == SD_HASH_SHA256)
     sha256_final((sha256_state *)c->opaque, out, 32);
   else if (c->alg == SD_HASH_SHA384 || c->alg == SD_HASH_SHA512)
     sha512_final((sha512_state *)c->opaque, out, sd_hash_len(c->alg));

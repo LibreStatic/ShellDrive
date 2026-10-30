@@ -1,9 +1,11 @@
-/* Minimal 32-bit x86 instruction length decoder and ISA-extension classifier for sd-isacheck.
+/* Minimal x86 instruction length decoder and ISA-extension classifier for sd-isacheck, in 32-bit (IA-32)
+ * and 64-bit (x86-64) mode.
  *
- * It decodes the legacy prefixes, the one-byte, 0F, 0F 38 and 0F 3A opcode maps, ModRM/SIB/displacement
- * and immediates, and the VEX (C4/C5) and EVEX (62) forms that 32-bit mode distinguishes from LES/LDS/
- * BOUND by ModRM.mod == 11. It does not produce mnemonics: it only needs to stay in sync with a linear
- * sweep and to say which instruction-set extension an instruction needs. Build-time tool, never shipped. */
+ * It decodes the legacy prefixes, the REX prefixes (64-bit mode), the one-byte, 0F, 0F 38 and 0F 3A opcode
+ * maps, ModRM/SIB/displacement and immediates, and the VEX (C4/C5) and EVEX (62) forms. In 32-bit mode C4/C5/62
+ * are LES/LDS/BOUND unless ModRM.mod == 11; in 64-bit mode they are always VEX/EVEX. It does not produce
+ * mnemonics: it only needs to stay in sync with a linear sweep and to say which instruction-set extension an
+ * instruction needs. Build-time tool, never shipped. */
 #ifndef SD_X86_DECODE_H
 #define SD_X86_DECODE_H
 
@@ -30,10 +32,15 @@ typedef struct x86_insn {
   int is_call_rel32;   /* E8 rel32: target = address + len + rel */
   int is_jmp_rel32;    /* E9 rel32 */
   int rel32;
+  int is_jcc;          /* conditional branch: 70-7F, E0-E3 (LOOP*, JECXZ), 0F 80-8F (rel8 or rel32) */
+  int is_div;          /* DIV or IDIV (F6/F7 with ModRM.reg 6 or 7), any operand size */
+  int is_branch_rel;   /* a relative branch: rel8 (EB, 70-7F, E0-E3) or rel32 (E9, 0F 80-8F); rel is in rel32 */
 } x86_insn;
 
 const char *x86_isa_name(x86_isa isa);
-/* Decodes one instruction at p (n bytes available). */
+/* Decodes one instruction at p (n bytes available) in 32-bit mode. */
 void x86_decode(const unsigned char *p, size_t n, x86_insn *out);
+/* Decodes one instruction at p in 32-bit (bits == 32) or 64-bit (bits == 64) mode. */
+void x86_decode_bits(const unsigned char *p, size_t n, int bits, x86_insn *out);
 
 #endif /* SD_X86_DECODE_H */

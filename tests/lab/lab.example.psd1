@@ -15,11 +15,16 @@
   #   BaseVhdx   an installed, shut-down system disk; the lab never writes to it (a differencing disk
   #              is created on top). Leave empty to install from InstallIso into a new 20 GB disk.
   #   InstallIso Windows setup ISO, used only when BaseVhdx is empty.
+  #   Generation 1 (default, BIOS: XP and 7 x86) or 2 (UEFI: Windows 11 needs it, Server 2022
+  #              wants Secure Boot). Generation 2 always enables Secure Boot (MicrosoftWindows
+  #              template); Tpm = $true adds a virtual TPM (Windows 11).
+  #   CompatOlderOs  $true limits the CPUID set (Hyper-V "compatibility for older operating systems",
+  #              generation 1 only). Off by default; set it for XP only.
   #   Flavours   build flavours copied to the payload ISO for this VM.
   #   ExpectSse2 $true if the (virtual) CPU has SSE2: then x86-sse2 must start; if $false it must refuse.
   VMs = @(
     @{
-      Name = 'sd-xp-sp3-x86'; MemoryMB = 512; Cpus = 1
+      Name = 'sd-xp-sp3-x86'; MemoryMB = 512; Cpus = 1; CompatOlderOs = $true
       BaseVhdx = 'D:\images\xp-pro-sp3-x86.vhdx'; InstallIso = ''
       Flavours = @('x86-ia32', 'x86-sse2'); ExpectSse2 = $true
     },

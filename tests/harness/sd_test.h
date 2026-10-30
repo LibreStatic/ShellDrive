@@ -55,6 +55,12 @@ int sd_test_strcmp(const char *a, const char *b);
 /* Hex helper for vectors: decodes up to cap bytes, returns the byte count (or SIZE_MAX if invalid). */
 size_t sd_test_unhex(const char *hex, uint8_t *out, size_t cap);
 
+/* Resolves rel against the directory of the running test executable (the build's bin/<Config>
+   directory): fixtures and build artifacts are referenced by name only, never by a compile-time
+   absolute path, so the binary does not depend on the build directory (04 §12.2). Returns 1 and
+   fills out (NUL-terminated) on success. */
+int sd_test_exe_dir_path(const char *rel, char *out, size_t cap);
+
 /* Allocation failure injection: the n-th allocation from now (0-based) and every later one fail
    until sd_test_alloc_fail_off(). Uses sd_mem_set_fail_hook (sd_base/sd_mem.h). */
 void sd_test_alloc_fail_after(unsigned n);

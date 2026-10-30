@@ -74,6 +74,9 @@ SD_TEST(ipc_exit_codes_cover_every_err)
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("proto_unsupported"), 14);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("policy_denied"), 15);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("selftest_failed"), 17);
+  SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("prompt_unavailable"), 4);
+  SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("token_only_refused"), 4);
+  SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("secret_not_found"), 3);
   SD_CHECK_EQ_INT(sd_ipc_exit_code_for_code("no_such_code"), 1);
   {
     sd_ipc_error err;
@@ -153,7 +156,28 @@ typedef struct srv_ctx {
   volatile LONG calls;
   volatile LONG disconnects;
   uint64_t last_client;
+  sd_ipc_server *srv;                   /* M3 deferred replies: the worker answers through it */
 } srv_ctx;
+
+/* M3: a deferred request is answered by a worker thread after the handler returned. */
+typedef struct defer_arg {
+  sd_ipc_server *srv;
+  uint64_t cid;
+  int64_t rid;
+  int fail;
+} defer_arg;
+
+static DWORD WINAPI defer_worker(void *p)
+{
+  defer_arg *a = (defer_arg *)p;
+  Sleep(150);
+  if (a->fail)
+    (void)sd_ipc_reply_deferred(a->srv, a->cid, a->rid, SD_E_EXISTS, "target_in_use", "deferred failure", NULL, 0);
+  else
+    (void)sd_ipc_reply_deferred(a->srv, a->cid, a->rid, SD_OK, NULL, NULL, "{\"done\":true,\"n\":7}", 19);
+  sd_free(a);
+  return 0;
+}
 
 static sd_err handler(void *ctx, sd_ipc_client *client, const char *method, const sd_json *params,
                       sd_json_writer *res, sd_ipc_error *err)
@@ -161,6 +185,25 @@ static sd_err handler(void *ctx, sd_ipc_client *client, const char *method, cons
   srv_ctx *s = (srv_ctx *)ctx;
   InterlockedIncrement(&s->calls);
   s->last_client = sd_ipc_client_id(client);
+  if (strcmp(method, "defer") == 0 || strcmp(method, "defer_err") == 0) {
+    defer_arg *a = (defer_arg *)sd_calloc(1, sizeof(*a));
+    HANDLE t;
+    if (a == NULL) return SD_E_NO_MEMORY;
+    if (!sd_ipc_defer(client, &a->rid)) {
+      sd_free(a);
+      return SD_E_INTERNAL;
+    }
+    a->srv = s->srv;
+    a->cid = sd_ipc_client_id(client);
+    a->fail = strcmp(method, "defer_err") == 0;
+    t = CreateThread(NULL, 0, defer_worker, a, 0, NULL);
+    if (t == NULL) {
+      sd_free(a);
+      return SD_E_NO_MEMORY;
+    }
+    CloseHandle(t);
+    return SD_OK;                         /* not sent: the worker replies */
+  }
   if (strcmp(method, "echo") == 0) {
     sd_jw_key(res, "params");
     sd_jw_value(res, params);
@@ -279,6 +322,56 @@ SD_TEST(ipc_roundtrip_call_error_event)
     while (ctx.disconnects == 0 && sd_tick_ms() < end) Sleep(10);
   }
   SD_CHECK_EQ_INT(ctx.disconnects, 1);
+  sd_ipc_server_stop(s);
+}
+
+/* M3: deferred replies. The handler defers; a worker thread answers later through sd_ipc_reply_deferred. */
+SD_TEST(ipc_deferred_reply_roundtrip)
+{
+  srv_ctx ctx;
+  sd_ipc_server *s = NULL;
+  sd_ipc_conn *c = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  int64_t n = 0;
+  unique_suffix();
+  SD_REQUIRE(start_server(&ctx, 0, 0, 0, &s) == SD_OK);
+  ctx.srv = s;
+  SD_REQUIRE(connect_client(0, 2000, &c) == SD_OK);
+  SD_REQUIRE(sd_ipc_call_raw(c, "defer", NULL, 0, 5000, &res, &err) == SD_OK);
+  SD_CHECK(sd_json_get_int64(res, "n", &n) && n == 7);
+  SD_CHECK(sd_json_get(res, "done") != NULL);
+  sd_json_free(res);
+  res = NULL;
+  /* an error reply carries the code and the exit code like any handler error */
+  SD_CHECK(sd_ipc_call_raw(c, "defer_err", NULL, 0, 5000, &res, &err) == SD_E_EXISTS);
+  SD_CHECK_STR(err.code, "target_in_use");
+  SD_CHECK_EQ_INT(err.exit_code, 10);
+  SD_CHECK(res == NULL);
+  /* the connection keeps serving requests after a deferred one */
+  SD_REQUIRE(sd_ipc_call_raw(c, "echo", NULL, 0, 5000, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  /* a reply to a client that is gone is not_found; sd_ipc_defer outside a handler is refused */
+  SD_CHECK(sd_ipc_reply_deferred(s, 987654, 1, SD_OK, NULL, NULL, "{}", 2) == SD_E_NOT_FOUND);
+  {
+    int64_t rid = 0;
+    SD_CHECK(sd_ipc_defer(NULL, &rid) == 0);
+  }
+  /* sd_ipc_broadcast_all reaches every client that completed hello, subscribed or not */
+  {
+    sd_wr w;
+    sd_json *ev = NULL;
+    sd_wr_init(&w, 1024);
+    SD_REQUIRE(sd_ipc_build_event("agent.stopping", "{\"reason\":\"test\"}", 17, &w) == SD_OK);
+    SD_CHECK(sd_ipc_broadcast_all(s, (const char *)w.p, w.len) == SD_OK);
+    sd_wr_free(&w);
+    SD_REQUIRE(sd_ipc_next_event(c, 3000, &ev) == SD_OK);
+    SD_CHECK_STR(sd_json_get_str(ev, "event"), "agent.stopping");
+    SD_CHECK_STR(sd_json_get_str(sd_json_get(ev, "data"), "reason"), "test");
+    sd_json_free(ev);
+  }
+  sd_ipc_close(c);
   sd_ipc_server_stop(s);
 }
 

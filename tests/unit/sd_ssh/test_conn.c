@@ -36,17 +36,31 @@ SD_TEST(ssh_conn_config_validation)
   hops[1] = hops[0];
   cfg.hops = hops;
   cfg.hop_count = 2;
-  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_UNSUPPORTED);   /* ProxyJump: M2 */
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_OK);              /* jump chains (jump_chain.c) */
+  sd_ssh_conn_destroy(c);
+  c = NULL;
   cfg.hop_count = 1;
   hops[0].proxy.kind = SD_PROXY_SOCKS5;
-  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_UNSUPPORTED);
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_INVALID_PARAM); /* proxy without a host */
+  hops[0].proxy.host = L"127.0.0.1";
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_OK);
+  sd_ssh_conn_destroy(c);
+  c = NULL;
   hops[0].proxy.kind = SD_PROXY_NONE;
+  hops[0].proxy.host = NULL;
   memset(&id, 0, sizeof(id));
   id.kind = SD_ID_AGENT_KEY;
   hops[0].auth.identities = &id;
   hops[0].auth.identity_count = 1;
-  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_UNSUPPORTED);
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_INVALID_PARAM); /* fingerprint required */
+  id.agent_fingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_INVALID_PARAM); /* agent source required */
+  hops[0].auth.agents = SD_AGENT_OPENSSH;
+  SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_OK);
+  sd_ssh_conn_destroy(c);
+  c = NULL;
   hops[0].auth.identity_count = 0;
+  hops[0].auth.agents = 0;
   cfg.struct_size = 4;
   SD_CHECK_EQ_INT(sd_ssh_conn_create(&cfg, NULL, &c), SD_E_INVALID_PARAM);
   cfg.struct_size = sizeof(cfg);
@@ -151,7 +165,7 @@ SD_TEST(ssh_secret_cache_roundtrip)
   static const char pw[] = "correct horse battery staple";
   ssh_secret sec;
   sd_secbuf *out = NULL;
-  sd_ssh_conn fake;
+  static sd_ssh_conn fake;             /* ~50 KB: keep the test off the stack */
   memset(&sec, 0, sizeof(sec));
   if (!ssh_secret_cache_available()) { printf("  [skip] no CryptProtectMemory / RtlEncryptMemory\n"); return; }
   SD_REQUIRE(ssh_secret_store(&sec, (const uint8_t *)pw, sizeof(pw) - 1) == SD_OK);

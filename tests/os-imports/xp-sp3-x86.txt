@@ -51,6 +51,7 @@ kernel32.dll!FileTimeToSystemTime
 kernel32.dll!FindClose
 kernel32.dll!FindFirstFileExA
 kernel32.dll!FindFirstFileExW
+kernel32.dll!FindFirstFileW
 kernel32.dll!FindNextFileA
 kernel32.dll!FindNextFileW
 kernel32.dll!FlushFileBuffers
@@ -85,6 +86,7 @@ kernel32.dll!GetExitCodeThread
 kernel32.dll!GetFileAttributesExW
 kernel32.dll!GetFileAttributesW
 kernel32.dll!GetFileInformationByHandle
+kernel32.dll!GetFileSize
 kernel32.dll!GetFileSizeEx
 kernel32.dll!GetFileTime
 kernel32.dll!GetFileType
@@ -104,6 +106,7 @@ kernel32.dll!GetNativeSystemInfo
 kernel32.dll!GetNumberFormatW
 kernel32.dll!GetOEMCP
 kernel32.dll!GetOverlappedResult
+kernel32.dll!GetPrivateProfileStringW
 kernel32.dll!GetProcAddress
 kernel32.dll!GetProcessHeap
 kernel32.dll!GetProcessTimes
@@ -127,6 +130,7 @@ kernel32.dll!GetUserDefaultLCID
 kernel32.dll!GetUserDefaultUILanguage
 kernel32.dll!GetVersionExW
 kernel32.dll!GetVolumeInformationW
+kernel32.dll!GetVolumePathNameW
 kernel32.dll!GetWindowsDirectoryW
 kernel32.dll!GlobalFree
 kernel32.dll!GlobalMemoryStatusEx
@@ -139,6 +143,7 @@ kernel32.dll!HeapReAlloc
 kernel32.dll!HeapSetInformation
 kernel32.dll!HeapSize
 kernel32.dll!HeapValidate
+kernel32.dll!InitializeCriticalSection
 kernel32.dll!InitializeCriticalSectionAndSpinCount
 kernel32.dll!InitializeSListHead
 kernel32.dll!InterlockedCompareExchange
@@ -180,6 +185,7 @@ kernel32.dll!QueueUserAPC
 kernel32.dll!QueueUserWorkItem
 kernel32.dll!RaiseException
 kernel32.dll!ReadConsoleW
+kernel32.dll!ReadDirectoryChangesW
 kernel32.dll!ReadFile
 kernel32.dll!ReadFileEx
 kernel32.dll!ReleaseMutex
@@ -241,6 +247,7 @@ kernel32.dll!WideCharToMultiByte
 kernel32.dll!WriteConsoleW
 kernel32.dll!WriteFile
 kernel32.dll!WriteFileEx
+kernel32.dll!WritePrivateProfileStringW
 kernel32.dll!lstrcmpiW
 kernel32.dll!lstrlenW
 
@@ -267,6 +274,7 @@ advapi32.dll!CredWriteW
 advapi32.dll!CryptAcquireContextW
 advapi32.dll!CryptGenRandom
 advapi32.dll!CryptReleaseContext
+advapi32.dll!DeleteService
 advapi32.dll!DeregisterEventSource
 advapi32.dll!DuplicateTokenEx
 advapi32.dll!EqualSid
@@ -276,6 +284,8 @@ advapi32.dll!GetAclInformation
 advapi32.dll!GetLengthSid
 advapi32.dll!GetNamedSecurityInfoW
 advapi32.dll!GetSecurityDescriptorDacl
+advapi32.dll!GetSecurityDescriptorControl   # Windows 2000+ (machine DACL compare, svc_folder.c)
+advapi32.dll!GetSecurityDescriptorOwner
 advapi32.dll!GetSecurityInfo
 advapi32.dll!GetTokenInformation
 advapi32.dll!GetUserNameW
@@ -289,6 +299,7 @@ advapi32.dll!OpenProcessToken
 advapi32.dll!OpenSCManagerW
 advapi32.dll!OpenServiceW
 advapi32.dll!OpenThreadToken
+advapi32.dll!QueryServiceStatus
 advapi32.dll!QueryServiceStatusEx
 advapi32.dll!RegCloseKey
 advapi32.dll!RegCreateKeyExW
@@ -299,6 +310,7 @@ advapi32.dll!RegEnumValueW
 advapi32.dll!RegGetKeySecurity
 advapi32.dll!RegNotifyChangeKeyValue
 advapi32.dll!RegOpenKeyExW
+advapi32.dll!RegQueryInfoKeyW
 advapi32.dll!RegQueryValueExW
 advapi32.dll!RegSetValueExW
 advapi32.dll!RegisterEventSourceW
@@ -365,6 +377,7 @@ user32.dll!DefWindowProcW
 user32.dll!DestroyWindow
 user32.dll!DispatchMessageW
 user32.dll!FindWindowW
+user32.dll!GetDlgItemTextW   # NT 3.1+ (host key manager dialogs)
 user32.dll!GetMessageW
 user32.dll!GetProcessWindowStation
 user32.dll!GetUserObjectInformationW
@@ -375,6 +388,7 @@ user32.dll!PeekMessageW
 user32.dll!PostMessageW
 user32.dll!PostThreadMessageW
 user32.dll!RegisterClassExW
+user32.dll!SendDlgItemMessageW   # NT 3.1+ (host key manager dialogs)
 user32.dll!SendMessageTimeoutW
 user32.dll!SendMessageW
 user32.dll!TranslateMessage
@@ -382,6 +396,7 @@ user32.dll!TranslateMessage
 shell32.dll!CommandLineToArgvW
 shell32.dll!SHChangeNotify
 shell32.dll!SHGetFolderPathW
+shell32.dll!ShellExecuteW
 shell32.dll!ShellExecuteExW
 
 ole32.dll!CoCreateInstance
@@ -398,3 +413,164 @@ wintrust.dll!WinVerifyTrust
 mpr.dll!WNetAddConnection2W
 mpr.dll!WNetCancelConnection2W
 mpr.dll!WNetGetConnectionW
+
+# shelldrive-ui (M3 UI package, apps/shelldrive-ui). The entries below are from the Microsoft documentation of
+# each function (minimum client: Windows 2000 or Windows XP, as the documentation states). They are not captured
+# on the clean XP lab VM yet; each group is pending that capture (04 section 11.4). Per-monitor DPI, Vista+ and
+# 10+ APIs are never listed here: they are resolved with sd_platform_resolve (GetDpiForWindow, GetDpiForMonitor).
+
+# advapi32: token and SID helpers for the WM_COPYDATA sender check (documentation: Windows 2000). Pending capture.
+advapi32.dll!GetSidSubAuthority
+advapi32.dll!GetSidSubAuthorityCount
+advapi32.dll!GetSidIdentifierAuthority   # Windows 2000+ (well-known SID test, svc_folder.c)
+
+# comctl32: common controls initialisation (documentation: Windows XP). Pending capture.
+comctl32.dll!InitCommonControlsEx
+comctl32.dll!PropertySheetW
+
+# comdlg32: the key file picker of the profile editor (documentation: Windows 2000). Pending capture.
+comdlg32.dll!GetOpenFileNameW
+
+# gdi32: fonts, the DIB icon bitmaps and the device caps of the system DPI (documentation: Windows 2000). Pending capture.
+gdi32.dll!CreateBitmap
+gdi32.dll!CreateDIBSection
+gdi32.dll!CreateFontIndirectW
+gdi32.dll!DeleteObject
+gdi32.dll!GetDeviceCaps
+gdi32.dll!GetObjectW
+gdi32.dll!GetStockObject
+
+# shell32: the notification area icon, balloons included (documentation: Windows 2000). Pending capture.
+shell32.dll!Shell_NotifyIconW
+
+# user32: windows, menus, icons and the message-only forwarding window (documentation: Windows 2000 or XP). Pending capture.
+user32.dll!AppendMenuW
+user32.dll!CallNextHookEx
+user32.dll!CreateIconIndirect
+user32.dll!CreatePopupMenu
+user32.dll!DestroyIcon
+user32.dll!DestroyMenu
+user32.dll!EnableWindow
+user32.dll!EnumThreadWindows
+user32.dll!FindWindowExW
+user32.dll!GetClassInfoExW
+user32.dll!GetClientRect
+user32.dll!GetCursorPos
+user32.dll!GetDC
+user32.dll!GetSystemMetrics
+user32.dll!GetWindowRect
+user32.dll!GetWindowThreadProcessId
+user32.dll!InvalidateRect
+user32.dll!IsIconic
+user32.dll!IsWindow
+# All Windows versions (the Settings window disables policy-locked controls)
+user32.dll!IsWindowEnabled
+user32.dll!IsWindowVisible
+# Service page (ui_service.c): IsWindowEnabled and MessageBeep exist since Windows 2000 / NT 3.1.
+user32.dll!IsWindowEnabled
+user32.dll!MessageBeep
+user32.dll!LoadCursorW
+user32.dll!MonitorFromWindow
+user32.dll!MoveWindow
+user32.dll!PostQuitMessage
+user32.dll!RegisterWindowMessageW
+user32.dll!ReleaseDC
+user32.dll!SetDlgItemTextW
+user32.dll!SetForegroundWindow
+user32.dll!SetMenuDefaultItem
+user32.dll!SetWindowsHookExW
+user32.dll!UnhookWindowsHookEx
+user32.dll!SetWindowPos
+user32.dll!ShowWindow
+user32.dll!SystemParametersInfoW
+user32.dll!TrackPopupMenu
+
+# shelldrive-shellext (M3, apps/shelldrive-shellext): the Explorer context menu DLL. Each entry is from the Microsoft documentation
+# of the function (minimum client: Windows 2000 or later, as the documentation states). Not captured on the clean XP lab
+# VM yet; pending that capture (04 section 11.4).
+kernel32.dll!DisableThreadLibraryCalls
+ole32.dll!ReleaseStgMedium
+shell32.dll!DragQueryFileW
+user32.dll!InsertMenuItemW
+
+# UI prompt dialogs and the message-box font (apps/shelldrive-ui/ui_prompt.c, ui_dlg.c): all documented
+# as available since Windows 2000 or earlier, so present on XP. Review item of the floor-list rule above.
+gdi32.dll!CreateCompatibleDC
+gdi32.dll!DeleteDC
+gdi32.dll!GetTextExtentPoint32W
+gdi32.dll!GetTextMetricsW
+gdi32.dll!SelectObject
+kernel32.dll!MulDiv
+user32.dll!CreateDialogIndirectParamW
+user32.dll!DrawTextW
+user32.dll!FlashWindowEx
+user32.dll!GetDlgItem
+user32.dll!GetForegroundWindow
+user32.dll!GetWindowLongPtrW
+user32.dll!GetWindowLongW
+user32.dll!GetWindowTextLengthW
+user32.dll!GetWindowTextW
+user32.dll!IsDialogMessageW
+user32.dll!IsDlgButtonChecked
+user32.dll!KillTimer
+user32.dll!OffsetRect
+user32.dll!SetFocus
+user32.dll!SetRect
+user32.dll!SetTimer
+user32.dll!SetWindowLongPtrW
+user32.dll!SetWindowLongW
+user32.dll!SetWindowTextW
+
+# user32 (profile editor and confirmation dialog, property sheet pages, drop-down lists; documentation: Windows 2000 or earlier). Pending capture.
+user32.dll!DialogBoxIndirectParamW
+user32.dll!EndDialog
+user32.dll!GetParent
+user32.dll!GetPropW
+user32.dll!ScreenToClient
+user32.dll!SetPropW
+user32.dll!wsprintfW
+user32.dll!MapWindowPoints
+# M3 UI (shelldrive-ui: host key manager, Logs viewer, Settings, About): Windows 2000 and XP APIs, reviewed
+# per function against the documented minimum OS version (Windows 2000 unless noted).
+kernel32.dll!GlobalAlloc
+kernel32.dll!GlobalLock
+kernel32.dll!GlobalUnlock
+user32.dll!CloseClipboard
+user32.dll!CreateMenu
+user32.dll!EmptyClipboard
+user32.dll!EnumChildWindows
+user32.dll!LoadIconW
+user32.dll!OpenClipboard
+user32.dll!SetClipboardData
+user32.dll!SetMenu
+gdi32.dll!CreateFontW
+# M4 setup stub additions (docs/design/04 §2.4): Win32 1.0 APIs present on XP SP3, not in the clean-VM
+# capture yet. The XP lab capture (04 §11.4) must confirm these names.
+kernel32.dll!FindResourceW
+kernel32.dll!LoadResource
+kernel32.dll!LockResource
+kernel32.dll!SizeofResource
+user32.dll!AdjustWindowRectEx
+user32.dll!BeginPaint
+user32.dll!EndPaint
+user32.dll!FillRect
+user32.dll!UpdateWindow
+gdi32.dll!CreateSolidBrush
+
+# M5 part 3 (service status, repair-data): documented from Windows 2000, so present on XP SP2 and SP3.
+advapi32.dll!IsWellKnownSid
+advapi32.dll!QueryServiceConfigW
+kernel32.dll!lstrcmpW
+
+# Round 16 (main window toolbar, groups, Security column; documented from Windows 2000 / XP, comctl32 v6 for the groups).
+comctl32.dll!ImageList_Create
+comctl32.dll!ImageList_Destroy
+comctl32.dll!ImageList_ReplaceIcon   # ImageList_AddIcon is this call with index -1
+user32.dll!GetMenu
+user32.dll!GetMenuState
+user32.dll!EnableMenuItem
+
+# Round 19 (diag --check: Dokany file version; the version resource is documented from Windows 2000, so present on XP SP3).
+version.dll!GetFileVersionInfoSizeW
+version.dll!GetFileVersionInfoW
+version.dll!VerQueryValueW

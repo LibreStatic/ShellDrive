@@ -32,6 +32,14 @@ static BOOL disp_truncates(uint32_t d)
   return d == SD_VFS_FILE_OVERWRITE || d == SD_VFS_FILE_OVERWRITE_IF || d == SD_VFS_FILE_SUPERSEDE;
 }
 
+/* M5: an open is a write request when it asks for a write-class right or a disposition that may create or
+   truncate. MAXIMUM_ALLOWED is not a write request (a read-only caller gets the read rights, as before). */
+static BOOL request_writes(uint32_t access, uint32_t d)
+{
+  return (map_generic(access, TRUE) & ACC_WRITE_CLASS) != 0 || d == SD_VFS_FILE_CREATE ||
+         d == SD_VFS_FILE_OPEN_IF || disp_truncates(d);
+}
+
 /* ---- share modes (02 §2.3: IoCheckShareAccess among local opens) ---- */
 
 static sd_vfs_status share_check(vfs_node *n, uint32_t access, uint32_t share, BOOL update)
@@ -301,11 +309,13 @@ out:
   return st;
 }
 
-sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *caller, UINT32 access,
-                            UINT32 share, UINT32 disposition, UINT32 create_options, UINT32 win_attrs,
-                            sd_vfs_handle **h, BOOL *existed, BOOL *is_dir)
+/* audit: raise the M5 audit event for a successful write-class open (not for the internal DELETE or rename opens of
+   sd_vfs_delete_path and sd_vfs_rename_path, which audit their own operation). */
+static sd_vfs_status create_request(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *caller, UINT32 access,
+                                    UINT32 share, UINT32 disposition, UINT32 create_options, UINT32 win_attrs,
+                                    sd_vfs_handle **h, BOOL *existed, BOOL *is_dir, BOOL audit)
 {
-  BOOL ro, ex = FALSE, dir = FALSE;
+  BOOL ro, ex = FALSE, dir = FALSE, wr;
   vfs_node *n = NULL, *parent = NULL;
   WCHAR *leaf = NULL;
   sd_vfs_status st;
@@ -320,6 +330,11 @@ sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *c
     return SD_VFS_E_UNSUPPORTED;
   if (InterlockedCompareExchange(&v->quiescing, 0, 0))
     return SD_VFS_E_DISCONNECTED;
+  /* M5 per-request access (02 6.7, 7.7). Rename and delete need DELETE here, so they are write requests too. */
+  wr = request_writes(access, disposition);
+  st = vfs_access_check(v, caller, wr);
+  if (st != SD_VFS_OK)
+    return st;
   enter(v);
   ro = v->read_only || (caller && !caller->can_write);
   access = map_generic(access, ro);
@@ -338,9 +353,23 @@ sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *c
   if (st == SD_VFS_OK) {
     if (existed) *existed = ex;
     if (is_dir) *is_dir = dir;
+    if (v->global && caller && wr) {
+      /* M5 (02 6.7): the requestor that opened for write is the one a later change is attributed to */
+      (*h)->audit_sid = vfs_audit_copy_sid(caller->sid);
+      if (audit)
+        vfs_audit(v, caller->sid, ex ? "write_open" : "create", path);
+    }
   }
   leave(v);
   return st;
+}
+
+sd_vfs_status sd_vfs_create(sd_vfs *v, const WCHAR *path, const sd_vfs_caller *caller, UINT32 access,
+                            UINT32 share, UINT32 disposition, UINT32 create_options, UINT32 win_attrs,
+                            sd_vfs_handle **h, BOOL *existed, BOOL *is_dir)
+{
+  return create_request(v, path, caller, access, share, disposition, create_options, win_attrs, h, existed, is_dir,
+                        TRUE);
 }
 
 /* ---- cleanup / close ---- */
@@ -380,6 +409,7 @@ sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending)
   int64_t at, mt;
   sd_vfs_status st = SD_VFS_OK;
   uint64_t dl;
+  WCHAR *dkey = NULL;                   /* M5: the path a delete on a global mount is attributed to */
   if (!h)
     return SD_VFS_OK;
   v = h->v;
@@ -406,6 +436,8 @@ sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending)
   h->times_pending = FALSE;
   is_link = (n->eflags & VFS_EF_LINK) != 0;
   dir = vfs_node_is_dir(n);
+  if (do_delete && h->audit_sid)
+    dkey = vfs_wcsdup(n->key ? n->key : L"");
   sd_mutex_unlock(&v->lock);
 
   /* Write-behind: synchronous drain; a failure raises write_failed (02 §4.4). */
@@ -447,6 +479,11 @@ sd_vfs_status sd_vfs_cleanup(sd_vfs_handle *h, BOOL delete_pending)
       sd_free(nm);
     }
   }
+  if (dkey) {
+    if (st == SD_VFS_OK)
+      vfs_audit(v, h->audit_sid, "delete", dkey);
+    sd_free(dkey);
+  }
   leave(v);
   return st;
 }
@@ -480,6 +517,7 @@ void sd_vfs_close(sd_vfs_handle *h)
     sd_sftp_file_release(f);                /* CLOSE in the background */
   if (dc)
     vfs_dc_close(v, dc);
+  sd_free(h->audit_sid);
   sd_free(h);
 }
 
@@ -536,12 +574,15 @@ sd_vfs_status sd_vfs_getattr(sd_vfs_handle *h, sd_vfs_info *out)
   return SD_VFS_OK;
 }
 
-sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const WCHAR *path, sd_vfs_info *out)
+sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const sd_vfs_caller *caller, const WCHAR *path, sd_vfs_info *out)
 {
   vfs_node *n = NULL;
   sd_vfs_status st;
   if (!v || !path || !out)
     return SD_VFS_E_INVALID_NAME;
+  st = vfs_access_check(v, caller, FALSE);   /* M5: a lookup reveals names and sizes, so it is a read (02 7.7) */
+  if (st != SD_VFS_OK)
+    return st;
   enter(v);
   st = vfs_resolve(v, path, vfs_deadline(v), (int64_t)v->attr_ttl, &n, NULL, NULL);
   if (st == SD_VFS_OK) {
@@ -554,7 +595,7 @@ sd_vfs_status sd_vfs_stat_path(sd_vfs *v, const WCHAR *path, sd_vfs_info *out)
   return st;
 }
 
-sd_vfs_status sd_vfs_set_winattrs(sd_vfs_handle *h, UINT32 attrs)
+static sd_vfs_status set_winattrs_impl(sd_vfs_handle *h, UINT32 attrs)
 {
   sd_vfs *v;
   vfs_node *n;
@@ -619,7 +660,7 @@ static BOOL ft_to_unix(const FILETIME *f, int64_t *out)
   return TRUE;
 }
 
-sd_vfs_status sd_vfs_set_times(sd_vfs_handle *h, const FILETIME *c, const FILETIME *a, const FILETIME *w)
+static sd_vfs_status set_times_impl(sd_vfs_handle *h, const FILETIME *c, const FILETIME *a, const FILETIME *w)
 {
   sd_vfs *v;
   vfs_node *n;
@@ -781,8 +822,9 @@ sd_vfs_status sd_vfs_delete_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR 
   sd_vfs_handle *h = NULL;
   BOOL existed, is_dir;
   sd_vfs_status st;
-  st = sd_vfs_create(v, path, c, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     SD_VFS_FILE_OPEN, 0, 0, &h, &existed, &is_dir);
+  /* the delete itself is audited by sd_vfs_cleanup (the handle carries the requestor), not by this open */
+  st = create_request(v, path, c, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      SD_VFS_FILE_OPEN, 0, 0, &h, &existed, &is_dir, FALSE);
   if (st != SD_VFS_OK)
     return st;
   if (is_dir && recursive && !(h->node->eflags & VFS_EF_LINK)) {
@@ -941,7 +983,7 @@ static sd_vfs_status split_parent(const WCHAR *path, WCHAR **parent, WCHAR **lea
   return SD_VFS_OK;
 }
 
-sd_vfs_status sd_vfs_rename(sd_vfs_handle *h, const WCHAR *new_path, BOOL replace)
+static sd_vfs_status rename_impl(sd_vfs_handle *h, const WCHAR *new_path, BOOL replace)
 {
   sd_vfs *v;
   vfs_node *src, *tparent = NULL, *tnode = NULL, *dummy_parent = NULL;
@@ -1095,9 +1137,9 @@ sd_vfs_status sd_vfs_rename_path(sd_vfs *v, const sd_vfs_caller *c, const WCHAR 
 {
   sd_vfs_handle *h = NULL;
   BOOL existed, is_dir;
-  sd_vfs_status st = sd_vfs_create(v, from, c, DELETE | FILE_READ_ATTRIBUTES,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, SD_VFS_FILE_OPEN, 0, 0,
-                                   &h, &existed, &is_dir);
+  sd_vfs_status st = create_request(v, from, c, DELETE | FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, SD_VFS_FILE_OPEN, 0, 0,
+                                    &h, &existed, &is_dir, FALSE);
   if (st != SD_VFS_OK)
     return st;
   st = sd_vfs_rename(h, to, replace);
@@ -1171,7 +1213,7 @@ sd_vfs_status sd_vfs_get_sd(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY
   return vfs_build_sd(h->v, &a, dir, si, sd, len, needed);
 }
 
-sd_vfs_status sd_vfs_set_sd(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
+static sd_vfs_status set_sd_impl(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
 {
   SD_UNUSED(si); SD_UNUSED(sd);
   if (!h)
@@ -1198,6 +1240,26 @@ void sd_vfs_get_stats(sd_vfs *v, sd_vfs_stats *out)
   out->write_failed = (UINT64)sd_atomic_load64(&v->write_failed);
   out->reconnects = (UINT64)sd_atomic_load64(&v->reconnects);
   out->nconn = 1;
+}
+
+UINT64 sd_vfs_write_behind_bytes(sd_vfs *v)
+{
+  UINT64 n = 0;
+  if (!v)
+    return 0;
+  sd_mutex_lock(&v->lock);
+  n = v->wb_bytes;
+  sd_mutex_unlock(&v->lock);
+  return n;
+}
+
+void sd_vfs_cache_clear(sd_vfs *v, BOOL disk_too)
+{
+  if (!v)
+    return;
+  vc_drop_mount(v->mount_id);
+  if (disk_too)
+    vfs_disk_clear(v);
 }
 
 void sd_vfs_refresh(sd_vfs *v, const WCHAR *subtree)
@@ -1258,4 +1320,53 @@ void sd_vfs_get_volume(sd_vfs *v, sd_vfs_volume *out)
   out->owner_sid = v->owner_sid;
   out->serial = v->serial;
   out->online = vfs_online(v);
+}
+
+/* ---- M5 audit of attribute, security and rename changes (03 10.3, Event 1200) ----
+ * The handle carries the requestor that opened it for write (create_request). Only a successful change is raised,
+   and the path is the handle's current mount-relative key (after the rename, for a rename). */
+static void audit_handle(sd_vfs_handle *h, const char *op)
+{
+  WCHAR *k = NULL;
+  if (h == NULL || h->audit_sid == NULL)
+    return;
+  sd_mutex_lock(&h->v->lock);
+  k = vfs_wcsdup(h->node->key ? h->node->key : L"");
+  sd_mutex_unlock(&h->v->lock);
+  if (k != NULL) {
+    vfs_audit(h->v, h->audit_sid, op, k);
+    sd_free(k);
+  }
+}
+
+sd_vfs_status sd_vfs_set_winattrs(sd_vfs_handle *h, UINT32 attrs)
+{
+  sd_vfs_status st = set_winattrs_impl(h, attrs);
+  if (st == SD_VFS_OK)
+    audit_handle(h, "setattr");
+  return st;
+}
+
+sd_vfs_status sd_vfs_set_times(sd_vfs_handle *h, const FILETIME *c, const FILETIME *a, const FILETIME *w)
+{
+  sd_vfs_status st = set_times_impl(h, c, a, w);
+  if (st == SD_VFS_OK)
+    audit_handle(h, "setattr");
+  return st;
+}
+
+sd_vfs_status sd_vfs_rename(sd_vfs_handle *h, const WCHAR *new_path, BOOL replace)
+{
+  sd_vfs_status st = rename_impl(h, new_path, replace);
+  if (st == SD_VFS_OK)
+    audit_handle(h, "rename");
+  return st;
+}
+
+sd_vfs_status sd_vfs_set_sd(sd_vfs_handle *h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
+{
+  sd_vfs_status st = set_sd_impl(h, si, sd);
+  if (st == SD_VFS_OK)
+    audit_handle(h, "set_security");
+  return st;
 }

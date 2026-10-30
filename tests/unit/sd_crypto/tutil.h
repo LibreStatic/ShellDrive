@@ -11,7 +11,7 @@
 _Ret_notnull_ _Post_writable_byte_size_(n) void *tu_alloc(size_t n);
 
 /* Decodes hex ("-" or "" is empty) into a malloc'd buffer (never NULL); returns the length. */
-size_t tu_hex(const char *hex, uint8_t **out);
+_Check_return_ size_t tu_hex(const char *hex, _Outptr_result_buffer_(return) uint8_t **out);
 /* Decodes into a fixed buffer; returns the length or SIZE_MAX. */
 size_t tu_hexbuf(const char *hex, uint8_t *out, size_t cap);
 /* Standard base64 (ignores whitespace); returns the length or SIZE_MAX. */

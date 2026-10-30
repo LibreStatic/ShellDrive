@@ -58,6 +58,8 @@
 #define VFS_DEF_WB_MOUNT      (64u << 20)
 #define VFS_DEF_GRACE         60000u
 #define VFS_DEF_OFFLINE_WAIT  3000u
+#define VFS_DEF_STRIPE_FILE   (8u << 20)  /* stripe_min_file default (02 §5.6) */
+#define VFS_STRIPE_MIN_WRITE  (1u << 20)  /* sequential write that opts a handle in (02 §5.6) */
 #define VFS_WB_COALESCE_MS    500u
 #define VFS_WB_COALESCE_MAX   (1u << 20)
 #define VFS_HOT_WINDOW_S      2
@@ -159,6 +161,8 @@ typedef struct vfs_node {
   uint32_t  open_count;                 /* handles not yet closed */
   uint32_t  uncleaned;                  /* handles not yet cleaned up */
   sd_sftp_file *fh; int fh_write;       /* lazily opened remote handle (02 §2.1) */
+  int       stripe_wish;                /* a sequential write reached VFS_STRIPE_MIN_WRITE or the
+                                           file grew past stripe_min_file (02 §5.6) */
   BOOL      reopening;                  /* a reopen after reconnect is running (02 §5.3) */
   vfs_extent *wext; uint32_t nwext, capwext;   /* write-through writes in flight (no two overlap) */
   vfs_waiter *waiters;                  /* woken on wext release, fetch processed, reopen done */
@@ -192,11 +196,24 @@ struct sd_vfs_handle {
   uint64_t  ra_next, ra_end;            /* next sequential offset; end of what was issued */
   uint32_t  ra_window;                  /* 0: read-ahead off (RANDOM_ACCESS) */
   BOOL      write_through;              /* FILE_FLAG_WRITE_THROUGH on a write-behind mount */
+  PSID      audit_sid;                  /* M5: owned copy of the requestor that opened for write on a global mount */
 };
 
 typedef struct vfs_hash { vfs_node **b; uint32_t nb, count; } vfs_hash;
 
 struct vfs_disk;
+
+/* M5 audit coalescing (03 10.3, Event 1200): one slot per (requestor SID, operation, path) raised in the last
+   VFS_AUDIT_WINDOW_MS; a bounded table, so a flood of distinct paths cannot grow it. */
+#define VFS_AUDIT_SLOTS      32u
+#define VFS_AUDIT_WINDOW_MS  60000u
+typedef struct vfs_audit_slot {
+  BOOL      used;
+  PSID      sid;                        /* owned copy */
+  WCHAR    *path;                       /* owned copy */
+  const char *op;                       /* static string */
+  uint64_t  last;                       /* clock value of the last raised event */
+} vfs_audit_slot;
 
 struct sd_vfs {
   sd_sftp_session *s;
@@ -208,17 +225,29 @@ struct sd_vfs {
   uint64_t next_file_id;
   volatile LONG busy;                   /* requests in progress */
   volatile LONG quiescing;
+  sd_mutex wait_lock;                   /* the offline waiters (vfs_data.c), never held across a wait */
+  struct vfs_online_wait *waits;        /* offline waiters in flight, under wait_lock */
   /* options (resolved defaults) */
   BOOL read_only, hide_dotfiles, map_readonly, case_view_sensitive, show_special, allow_system;
   BOOL block_shell_active, remote_insensitive, fsync_on_flush;
   BOOL write_behind;
   int  symlinks;
   uint32_t max_readahead, wb_window, wb_window_mount, grace, offline_wait;
+  uint32_t stripe_min_file;             /* striping size threshold (02 §5.6) */
   uint32_t umask, attr_ttl, dir_ttl, neg_ttl, req_timeout, list_entries, list_bytes, list_deadline,
            link_stats;
   int  revalidate;
   WCHAR *label, *fs_name, *offline_suffix;
   PSID owner_sid;
+  /* M5 per-request access (02 §6.7, 7.7): copied lists and the well-known SIDs the check needs */
+  BOOL global;
+  PSID *acc_sids, *wrt_sids; uint32_t n_acc, n_wrt;
+  PSID sid_system, sid_admins;
+  /* M5 audit (02 6.7, 03 10.3): the clock is sd_tick_ms unless a test replaces it; audit_lock guards the 60 s
+     coalescing table (initialized and destroyed with v->lock, so it exists on every failure path too) */
+  uint64_t (*audit_now)(void);
+  sd_mutex audit_lock;
+  vfs_audit_slot audit[VFS_AUDIT_SLOTS];
   uint32_t serial;
   /* remote */
   char *root_path;  size_t root_len;    /* realpath of the mount root, no trailing '/' unless "/" */
@@ -331,6 +360,19 @@ void     vfs_event(sd_vfs *v, const sd_vfs_event *ev);
 void     vfs_notice(sd_vfs *v, const char *code, const WCHAR *path);
 void     vfs_attr_from_sftp(vfs_attr *a, const sd_sftp_attrs *s);
 sd_vfs_status vfs_map_err(sd_err e);
+/* Per-request access (M5, 02 §6.7, 7.7): vfs_access.c. init and free run at mount and unmount; check runs before
+   every open or lookup (write: the request needs the write right). */
+sd_vfs_status vfs_access_init(sd_vfs *v, const sd_vfs_options *o);
+void          vfs_access_free(sd_vfs *v);
+sd_vfs_status vfs_access_check(const sd_vfs *v, const sd_vfs_caller *c, BOOL write);
+/* M5 audit (03 10.3, Event 1200): called after a mutating operation succeeded on a global mount. Raises
+   SD_VFS_EV_AUDIT with the requestor SID, the operation and the path, unless the same (SID, operation, path) was
+   raised within VFS_AUDIT_WINDOW_MS. who == NULL (per-user mounts, host-internal calls) raises nothing. */
+void vfs_audit(sd_vfs *v, PSID who, const char *op, const WCHAR *path);
+/* Copies the requestor SID for a handle that opened for write on a global mount (NULL when not needed). */
+PSID vfs_audit_copy_sid(PSID sid);
+void vfs_audit_init(sd_vfs *v);                 /* after v->lock: the clock and the table */
+void vfs_audit_destroy(sd_vfs *v);
 /* Remote path builder with the wire invariant (TM-R11). Allocates *out. */
 sd_vfs_status vfs_join(sd_vfs *v, const char *parent, const char *raw, uint32_t raw_len, char **out);
 
@@ -373,8 +415,11 @@ void      vfs_node_set_attr(sd_vfs *v, vfs_node *n, const vfs_attr *a);
 void      vfs_node_invalidate(sd_vfs *v, vfs_node *n);
 /* Re-reads server_info after a reconnect (limits, identity; 02 §5.1). Any vfs thread, no lock. */
 void      vfs_sync_generation(sd_vfs *v);
-/* Waits up to offline_wait for the session to come back (02 §5.2). */
+/* Waits up to offline_wait for the session to come back (02 §5.2): one WAIT_READY request, completed by
+   the session when it is READY again. FALSE on timeout, failure, or quiescing (vfs_cancel_waits). */
 BOOL      vfs_wait_online(sd_vfs *v);
+/* Cancels every offline waiter in flight so it returns FALSE now (quiesce and unmount). Any thread. */
+void      vfs_cancel_waits(sd_vfs *v);
 
 /* v->lock held: waits on n->waiters until woken or dl (FALSE on timeout), releasing the lock
    meanwhile. */
@@ -393,7 +438,8 @@ void      vfs_timer_start(sd_vfs *v);
 void      vfs_timer_stop(sd_vfs *v);
 void      vfs_handle_init_ra(sd_vfs_handle *h);
 /* Referenced remote handle, reopened after a reconnect with the identity check (02 §5.3). */
-sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out);
+sd_vfs_status vfs_get_fh(sd_vfs *v, vfs_node *n, BOOL need_write, uint64_t dl, sd_sftp_file **out,
+                         BOOL seq);    /* seq: the caller's access looks sequential (02 §5.6) */
 
 /* ---- vfs_cache.c: process-wide memory tier (02 §4.2) ---- */
 typedef struct vc_key { uint64_t mount_id, file_id, blk; uint32_t vgen; } vc_key;
@@ -417,6 +463,7 @@ uint64_t vc_new_mount_id(void);
 void     vfs_disk_open(sd_vfs *v, const sd_vfs_options *o, const char *host_fp);
 void     vfs_disk_close(sd_vfs *v);
 void     vfs_disk_trim(sd_vfs *v);
+void     vfs_disk_clear(sd_vfs *v);          /* M3 cache.clear: every entry no vfs entry holds open */
 BOOL     vfs_disk_enabled(sd_vfs *v);
 /* Per-node entry: opened on the first data access, closed at the last handle close. NULL when the
    tier is off or the entry cannot be opened. */

@@ -36,6 +36,7 @@ struct sd_webdav_export {
   char token[WD_TOKEN_CHARS + 1];
   char prefix[WD_TOKEN_CHARS + 4];   /* "/s-<token>" */
   BOOL read_only;
+  BOOL token_only;                /* TM-R19: the path token authenticates, no SSPI (02 §7.4) */
   WCHAR *label;
   volatile LONG busy;
   int removing;
@@ -78,6 +79,8 @@ typedef struct wd_conn {
   int exempt;                     /* WebClient service process */
   uint64_t accepted_at, last_at;
   int authed, unauth_counted;
+  int tok;                        /* a token-only export answered here: pre-auth limits end, but authed stays 0,
+                                     so every other export still requires SSPI (02 §7.4) */
   volatile LONG evict;
   wd_auth auth;
   PSID user;
@@ -113,6 +116,21 @@ int  wd_has_body(const wd_rq *q);
 /* Reads the whole body up to max bytes into b. 0 ok, 413 too large, 400 framing error. */
 int  wd_body_read_all(wd_rq *q, wd_sb *b, size_t max);
 
+/* wd_tokenonly.c: 1 when the self-test pair passes (token PROPFIND 2xx, token-less PROPFIND 4xx). */
+int  wd_selftest_verdict(int token_status, int plain_status);
+/* wd_tokenonly.c: the failing step of the last self-test probe (1 WinHttpOpen, 2 connect, 3 open
+   request, 4 autologon policy, 5 send, 6 receive, 7 status query) and its Win32 error. Unit tests
+   have no log sink, so the failure detail goes out through here instead of the product log. */
+void wd_selftest_last_diag(uint32_t *step, uint32_t *err);
+/* wd_tokenonly.c: the HTTP statuses the last self-test pair saw (token request, token-less request). */
+void wd_selftest_last_statuses(int *token_status, int *plain_status);
+/* wd_server.c: request ring for unit tests (they have no log sink). Off by default: the product
+   never records request targets (they carry the per-mount token, 02 7.3). When enabled, the last
+   WD_SERVER_DBG_N requests are kept as "METHOD target -> status" lines. */
+#define WD_SERVER_DBG_N 8
+void wd_server_dbg_enable(int on);
+int  wd_server_dbg_last(char out[][96], int max);
+
 /* wd_methods.c */
 void wd_dispatch(wd_rq *q);
 int  wd_status_from_vfs(sd_vfs_status st);
@@ -132,6 +150,10 @@ int  wd_lock_refresh(sd_webdav_export *ex, const WCHAR *path, char toks[][80], u
 int  wd_lock_remove(sd_webdav_export *ex, const WCHAR *path, const char *token);   /* 0 / 409 */
 void wd_lock_move(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to);
 void wd_lock_drop_tree(sd_webdav_export *ex, const WCHAR *path);
+/* Replacing MOVE: the lock on to survives, locks below to go, locks on from move to to (02 §7.5). */
+void wd_lock_replace(sd_webdav_export *ex, const WCHAR *from, const WCHAR *to);
+/* Locks strictly below path (a replacing COPY deleted that tree). */
+void wd_lock_drop_below(sd_webdav_export *ex, const WCHAR *path);
 /* Appends <D:lockdiscovery>...</D:lockdiscovery> for locks covering path. */
 void wd_lock_discovery(sd_webdav_export *ex, const WCHAR *path, wd_sb *b, const char *only_token);
 

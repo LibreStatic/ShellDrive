@@ -44,9 +44,54 @@ static char **g_floor;
 static size_t g_nfloor, g_capfloor;
 static int g_violations;
 
+/* --knowndlls <list>: the only DLL names a checked image may import statically (04 §2.4, TM-R33). */
+static char **g_known;
+static size_t g_nknown, g_capknown;
+
 static void lower(char *s)
 {
   for (; *s; s++) *s = (char)tolower((unsigned char)*s);
+}
+
+static int known_load(const char *path)
+{
+  FILE *f = fopen(path, "rb");
+  char line[512] = { 0 };
+  if (!f) {
+    fprintf(stderr, "sd-importcheck: cannot open KnownDLLs list %s\n", path);
+    return 0;
+  }
+  while (fgets(line, sizeof(line), f)) {
+    size_t b = 0, e = strcspn(line, "#\r\n");
+    char *p;
+    while (b < e && (line[b] == ' ' || line[b] == '\t')) b++;
+    while (e > b && (line[e - 1] == ' ' || line[e - 1] == '\t')) e--;
+    line[e] = 0;
+    p = line + b;
+    if (!*p) continue;
+    if (g_nknown == g_capknown) {
+      char **nk;
+      g_capknown = g_capknown ? g_capknown * 2 : 32;
+      nk = (char **)realloc(g_known, g_capknown * sizeof(char *));
+      if (!nk) exit(2);
+      g_known = nk;
+    }
+    g_known[g_nknown] = _strdup(p);
+    if (!g_known[g_nknown]) exit(2);
+    lower(g_known[g_nknown]);
+    g_nknown++;
+  }
+  fclose(f);
+  return 1;
+}
+
+static int known_allows(const char *dll_lower)
+{
+  size_t i;
+  for (i = 0; i < g_nknown; i++) {
+    if (strcmp(g_known[i], dll_lower) == 0) return 1;
+  }
+  return 0;
 }
 
 static int floor_load(const char *path)
@@ -235,6 +280,12 @@ static void walk_thunks(const image *im, const char *dll, DWORD thunk_rva, int l
   size_t step = im->pe64 ? 8 : 4;
   snprintf(dll_lower, sizeof(dll_lower), "%s", dll);
   lower(dll_lower);
+  if (!list && g_nknown > 0 && !known_allows(dll_lower)) {
+    g_violations++;
+    fprintf(stderr, "sd-importcheck: %s: imports %s, which is not on the KnownDLLs list (TM-R33)\n", im->path,
+            dll_lower);
+    return;
+  }
   for (;; thunk_rva += (DWORD)step) {
     const unsigned char *t = (const unsigned char *)rva_ptr(im, thunk_rva, step);
     ULONGLONG v;
@@ -349,6 +400,7 @@ int main(int argc, char **argv)
     else if (strcmp(a, "--require-safeseh") == 0) require_safeseh = 1;
     else if (strcmp(a, "--no-delayload") == 0) no_delay = 1;
     else if (strcmp(a, "--no-tls") == 0) no_tls = 1;
+    else if (strcmp(a, "--knowndlls") == 0 && i + 1 < argc) { if (!known_load(argv[++i])) return 2; }
     else if (strcmp(a, "--list") == 0) list = 1;
     else if (a[0] == '-') { fprintf(stderr, "sd-importcheck: unknown option %s\n", a); return 2; }
     else {

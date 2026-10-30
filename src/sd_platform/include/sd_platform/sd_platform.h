@@ -39,7 +39,10 @@ sd_err sd_platform_init(void);
   X(BCryptGenerateSymmetricKey,  L"bcrypt.dll",   "BCryptGenerateSymmetricKey") \
   X(BCryptDestroyKey,            L"bcrypt.dll",   "BCryptDestroyKey")    \
   X(BCryptEncrypt,               L"bcrypt.dll",   "BCryptEncrypt")       \
-  X(BCryptDecrypt,               L"bcrypt.dll",   "BCryptDecrypt")
+  X(BCryptDecrypt,               L"bcrypt.dll",   "BCryptDecrypt")       \
+  X(GetDpiForWindow,             L"user32.dll",   "GetDpiForWindow")     \
+  X(GetDpiForSystem,             L"user32.dll",   "GetDpiForSystem")     \
+  X(GetDpiForMonitor,            L"shcore.dll",   "GetDpiForMonitor")
 
 #define SD_API_ENUM_(name, dll, fn) SD_API_##name,
 typedef enum sd_api_id { SD_API_LIST(SD_API_ENUM_) SD_API_COUNT } sd_api_id;

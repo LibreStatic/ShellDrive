@@ -43,19 +43,36 @@ int          sd_log_enabled(sd_log_level level);
 sd_err sd_log_open_file(const wchar_t *path);
 void   sd_log_close(void);                                 /* flushes and closes all sinks */
 
+/* Privacy of names and paths (03 §10.1, TM-R31). Typed fields for the formatter:
+     %Hs  host name      %Us  user name      %Rs  remote path
+   standard (default): host and user are printed; a remote path only in error, debug and trace records.
+   strict: all three are replaced by a keyed hash ("h:3f9a1c", "u:...", "p:...") in every record. hash computes
+   the 32-byte MAC of a UTF-8 string (HMAC-SHA-256 with state\log.key, the caller's job); with no hash function the
+   field prints "[redacted]". Call at start-up and after a settings reload (a record in flight may use either mode). */
+typedef enum sd_log_privacy { SD_LOG_PRIVACY_STANDARD = 0, SD_LOG_PRIVACY_STRICT = 1 } sd_log_privacy;
+typedef void (*sd_log_hash_fn)(void *ctx, const char *utf8, size_t len, uint8_t out[32]);
+void           sd_log_set_privacy(sd_log_privacy mode, sd_log_hash_fn hash, void *ctx);
+sd_log_privacy sd_log_get_privacy(void);
+
 typedef void (*sd_log_sink_fn)(void *ctx, sd_log_level level, const char *line, size_t len);
 sd_err sd_log_add_sink(sd_log_sink_fn fn, void *ctx);     /* line excludes the CRLF */
 void   sd_log_remove_sink(sd_log_sink_fn fn, void *ctx);
 
-/* component: short English tag ("ssh", "sftp", "vfs", "ipc", ...); mount_id may be NULL. */
+/* component: short English tag ("ssh", "sftp", "vfs", "ipc", ...); mount_id may be NULL.
+   fmt is NOT annotated _Printf_format_string_: it is the restricted language above, and /analyze reads %Hs, %Us and
+   %Rs as printf conversions with no argument (C6271 "extra argument" on every typed call). The argument count and
+   the specifier set are checked by tests/logpriv/check-log-privacy.ps1 instead (03 §10.1). */
 void sd_log(sd_log_level level, const char *component, const char *mount_id,
-            _Printf_format_string_ const char *fmt, ...);
+            const char *fmt, ...);
 void sd_logv(sd_log_level level, const char *component, const char *mount_id,
              const char *fmt, va_list ap);
 
 /* Formats with the same restricted language into buf (always NUL-terminated if cap > 0).
-   Returns the number of bytes written, excluding the NUL. */
+   Returns the number of bytes written, excluding the NUL. No level: a remote path (%Rs) is printed. */
 size_t sd_log_format(char *buf, size_t cap, const char *fmt, va_list ap);
+/* As sd_log_format for a record of the given level: %Rs follows the same rule as sd_log (standard privacy prints a
+   remote path only at error, debug and trace). Used by the wrappers that format before they call sd_log (ssh_log). */
+size_t sd_log_format_level(char *buf, size_t cap, sd_log_level level, const char *fmt, va_list ap);
 
 #define SD_LOGE(comp, ...) sd_log(SD_LOG_ERROR, comp, NULL, __VA_ARGS__)
 #define SD_LOGW(comp, ...) sd_log(SD_LOG_WARN,  comp, NULL, __VA_ARGS__)

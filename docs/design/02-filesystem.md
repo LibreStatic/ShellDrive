@@ -764,7 +764,7 @@ events and shrinks the pool (5.6); the session state is the primary's.
 
 | Operation | Behavior |
 |---|---|
-| stat / lookup / listing | Served from cache ignoring TTL (positive and negative). Unknown → submitted with `SD_SFTP_REQ_WAIT_READY` and `timeout_ms = offline_wait` (default 3 s), then `SD_VFS_E_DISCONNECTED`. Not `NOT_FOUND`: apps must not conclude a file was deleted. |
+| stat / lookup / listing | Positive entries served from cache ignoring TTL. Negative entries and names absent from a cached listing → `SD_VFS_E_DISCONNECTED` (never `NOT_FOUND`: apps must not conclude a file was deleted; WebDAV 503, 7.6). A name the vfs has no entry for (not cached, not in a cached listing) → `SD_VFS_E_DISCONNECTED` at once, without waiting `offline_wait` (rule below). |
 | read | Served from cache if blocks are present and the validator was valid at disconnect. Otherwise `WAIT_READY` up to `offline_wait`, then `SD_VFS_E_DISCONNECTED`. |
 | write / create / delete / rename / setattr / mkdir | Fail immediately with `SD_VFS_E_DISCONNECTED`; writes are never submitted with `WAIT_READY` (01 §10.5). Mutations other than writes wait at most `offline_wait` if a reconnect attempt is already in progress. No offline queue. |
 | `GetDiskFreeSpace` | last known values |
@@ -774,6 +774,14 @@ Error mapping for `SD_VFS_E_DISCONNECTED`:
 - Dokany: `STATUS_CONNECTION_DISCONNECTED` (Win32 `ERROR_NETNAME_DELETED`, "The specified network name
   is no longer available"). Users and apps know this from SMB.
 - WebDAV: HTTP `503 Service Unavailable` with `Retry-After: 5`.
+
+**Lookups of unknown names while offline (decided, r21).** A lookup of a name the vfs has no entry for fails at once
+with `SD_VFS_E_DISCONNECTED`; it does not wait `offline_wait`. The reason: Explorer, Office and the WebDAV
+redirector probe many names that do not exist (`desktop.ini`, thumbnails, Office lock and temp files), and a
+multi-second wait per probe would stall the shell for the whole outage. Requests on names the vfs already knows
+(positive, negative or in a cached listing) keep the behaviour of the table above. Reads and mutations still wait
+up to `offline_wait` as the table says. This is pinned by the unit test `vfs_offline_unknown_lookup_fails_at_once`
+(`tests/unit/sd_vfs`, with a 5 s `offline_wait` and a 1 s bound).
 
 The tray shows "Offline (reconnecting)". Dokany volume label suffix while offline: a localized string the
 host passes in `sd_vfs_options.offline_label_suffix` (C45; the service uses the machine default language),
@@ -897,6 +905,25 @@ Explorer/`copy` patterns, or the read-ahead state of 4.3). Small files, random I
 directories never stripe. Everything else is 01's: sub-handles opened lazily on the members with
 `oflags & ~(CREAT|TRUNC|EXCL)`, `stripe_bytes` units (1 MiB) assigned `k mod live_members`, requests
 split at unit boundaries, ordering per byte range, `max-open-handles` per member (01 §10.9).
+
+Implemented decision (as landed in `sd_vfs`): the pool size is re-read from
+`server_info.connections` at every data-handle open, so a handle qualifies only while the pool is
+actually up. The size threshold compares the node's cached size against `stripe_min_file`
+(`sd_vfs_options.stripe_min_file`, default 8 MiB) at the moment the data handle is opened. The
+write threshold is any single sequential write call of `VFS_STRIPE_MIN_WRITE` (1 MiB) or more — not
+only the first — and it is latched for the node (`stripe_wish`), so once a large sequential write
+has run, every later data-handle open of that node asks for striping; a stream of smaller
+sequential writes qualifies the same way once the file has grown past `stripe_min_file`.
+Sequential means `SEQUENTIAL_ONLY`, a write continuing at the file's end, or a read continuing
+where the handle's read-ahead (4.3) expects the next one; `RANDOM_ACCESS` is never sequential.
+`APPEND`-only handles and `SD_VFS_EOF` writes are excluded on the vfs side (the vfs never opens a
+remote handle with `SD_SFTP_O_APPEND`, so it never asks for what `sd_sftp` refuses); directories
+have no data handle at all. A handle opened before its node qualified is replaced by a striped one
+on the next data access (in-flight requests keep the old handle; a failed replacement open is not
+an error — striping is only an optimization). The vfs leaves `sd_sftp_options.stripe_bytes` at the
+1 MiB default; `sd_sftp` clamps the unit at striped-open time to the smaller of the negotiated
+`max_read`/`max_write` (512-byte floor), so one unit always fits one request even when the server
+advertises less than 1 MiB (01 §10.9).
 - The read-ahead window (4.3) is issued in chunk-sized reads as usual; results land in cache blocks, so
   arrival order does not matter.
 - Write chunks never overlap in flight (4.4). A size-extending chunk sent on member B before a lower
@@ -1434,6 +1461,13 @@ Design:
     interactive session at enable time and at each mount (`WTSEnumerateSessionsW`); otherwise it is refused;
   - policy `AllowWebDavTokenOnly` is not `0` (03 policy schema).
   Global WebDAV mounts refuse token-only always.
+  **Implementation status (r10):** the trigger is only the no-SSPI case: `sd_webdav` returns
+  `SD_WD_E_AUTH_UNAVAILABLE` (03 §6.2 exit 4) when SSPI cannot be initialised, and the host's mount asks the
+  `webdav.token_only_ask` question before any token-only start. The mount-time WinHTTP probe with
+  `WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW` that detects a redirector authentication failure described above is
+  **not implemented**; the existing `sd_webdav_token_selftest` only verifies a token-only export (token request 2xx,
+  token-less request 4xx) and reports `SD_E_AUTH_FAILED` otherwise. A host-requested token-only mount (no
+  confirmation yet) is also asked first.
 - If the redirector ever prompts for credentials, the mount is unmapped, the profile is flagged, and the
   host notifies the user with the cause (autologon disabled by policy) and the token-only option above. It
   is **not** switched to token-only on the next start.
@@ -1481,18 +1515,36 @@ with checked arithmetic.
 | `PUT` | `FILE_OVERWRITE_IF` (`If-None-Match: *` → `FILE_CREATE`). The **body is streamed into vfs writes** as it arrives, with TCP backpressure from a bounded window (16 MiB, in both write modes: the PUT response is the point where the redirector learns the outcome, 4.4). The final drain and fsync happen right after the last byte, so the response follows within at most one window (≤ 16 MiB) of acknowledgements, well inside the 60 s timeout. `201` if created, `204` if replaced. Lock token enforcement (below). Content length > 0xFFFFFFFF is impossible from the redirector. Option `atomic_put` (default off): write to `.<name>.sd-<rand>` and `posix-rename` over the target, with the original mode copied. |
 | `DELETE` | 2.4. Files: remove. Collections: recursive, `207` on partial failure. |
 | `MKCOL` | `mkdir`. Body present → `415`. Parent missing → `409`. Exists → `405`. |
-| `MOVE` | `Destination` (absolute URI; must have the same authority and token prefix, else `502`), `Overwrite: T` (default) → replace semantics, `F` → no-replace (`412` if exists). `201` new / `204` replaced. Directories in one rename. |
-| `COPY` | Depth `0` / `infinity`. Files: `copy-data` SFTP extension when advertised (server-side), else stream read → write through the vfs. Collections: recursive. Same `Overwrite` rules. |
+| `MOVE` | `Destination` (absolute URI; must have the same authority and token prefix, else `502`), `Overwrite: T` (default) → replace semantics, `F` → no-replace (`412` if exists). `201` new / `204` replaced. Directories in one rename. Lock effect of a replacing MOVE: decided in **"Locks across a replacing MOVE"** below. |
+| `COPY` | Depth `0` / `infinity`. Files: `copy-data` SFTP extension when advertised (server-side), else stream read → write through the vfs. Collections: recursive. Same `Overwrite` rules. A replaced destination keeps its own lock on the URL; locks below a replaced collection are dropped. |
 | `LOCK` | Exclusive and shared write locks, `Timeout: Second-n` capped at 3600, `Infinite` → 3600. Lock token `opaquelocktoken:<uuid>`. LOCK on an unmapped URL creates an empty file (RFC 4918 locked empty resource) → `201`. Refresh via `If` header with no body. Depth 0 only for files; depth infinity on collections is accepted and recorded. Read-only mount → `403` (Office then opens read-only). |
 | `UNLOCK` | `Lock-Token` header → `204`; unknown → `409`. |
 | others (`POST`, `PATCH`, `SEARCH`, `REPORT`, ...) | `405` / `501` |
 | any mutating method on a global mount by a caller without the write right (7.7) | `403`; `LOCK` → `403` as on a read-only mount, so Office opens read-only |
 
-**Lock manager**: in memory per server. Locks are keyed by vfs node, so renames carry them. While a
+**Lock manager**: in memory per server. Locks are keyed by the vfs path (case-insensitive), not by vfs node:
+a plain rename re-keys the locks at and below its source, so the lock follows the resource. While a
 resource is locked, mutating requests without a matching token in `If:` → `423 Locked`. Locks are
 **not** propagated to SFTP (there is nothing to propagate to). They do take a vfs share registration
 (deny-write) so that a Dokany mount of the same remote path in this process respects Office's lock.
 Expired locks are swept every 30 s.
+
+**Locks across a replacing MOVE (decision, M1 remainder).** Office and LibreOffice save with: `LOCK doc`,
+write a temp file, `MOVE temp → doc` with `Overwrite: T` and `If: (<token of doc>)`, then `UNLOCK doc`.
+The final `UNLOCK` must succeed (`204`): the client still holds the lock on that URL, and the URL now names
+the moved resource. So a replacing MOVE keeps the lock on the destination URL (the same token, the same
+timeout), and `UNLOCK` of the destination afterwards is `204`. Rules, applied after the vfs rename succeeded
+(`wd_lock_replace`):
+- the lock exactly on the destination URL survives and covers the moved resource;
+- locks strictly below a replaced collection go with the replaced children (their resources no longer exist);
+- a lock on the source URL moves with the resource, unless the destination already has its own lock: two
+  locks on one URL would need two tokens in `If:`, so the destination's lock wins and the moved one is dropped;
+- a MOVE or COPY without the destination token still gets `423` (checked before the rename), and a plain
+  `PUT` after `UNLOCK` is allowed.
+A COPY with `Overwrite: T` keeps the destination lock the same way and drops only the locks below the
+replaced tree. (The earlier implementation dropped every lock under the destination, so the final `UNLOCK`
+got `409`.) Real Office/LibreOffice clients are not yet on the lab list, so whether they accept the `204`
+the same way is `[lab-verify]`.
 
 **Error mapping** (`sd_vfs_status` → HTTP): NOT_FOUND / PATH_NOT_FOUND 404 (409 for a missing parent on
 PUT/MKCOL/MOVE), EXISTS 405/412, ACCESS_DENIED 403, READ_ONLY 403, SHARING / LOCKED 423, NO_SPACE 507,
@@ -1517,6 +1569,23 @@ other 500. This table and the NTSTATUS table in 8 are normative; 01 §10.9's hin
   - the 4 GiB − 1 hard cap (7.1).
 
   These make WebDAV the compatibility backend, not the performance backend.
+- **Negative cache (`FileNotFoundCacheLifeTimeInSec`, 60 s, decision M1 remainder).** After a failed lookup
+  the redirector answers "not found" for that name from its own cache for about 60 s without sending a
+  request (seen in acceptance: a rename that succeeded on the server still looked missing on `P:` for 60 s).
+  The server cannot clear that cache (WebDAV has no push channel), so the mitigations are about what the server
+  answers:
+  - A miss that is really "the link is down" is `503` + `Retry-After` (vfs `DISCONNECTED`), never `404`, so the
+    redirector retries instead of caching a miss. Test `webdav_server_link_down_miss_is_503_not_404`.
+  - A `404` is sent only for a name the vfs reports as absent while it is connected; probes of names the user
+    does not have (Explorer, Office) stay fast `404`s (4.1), as the Office and FrontPage probes do.
+  - Our own flows never depend on a name that was missed just before: the create sequence (`PUT` 0 bytes,
+    `PROPPATCH`, `LOCK`, `PUT`) and the save sequence (temp file, `MOVE`) create the names they then look up.
+  - A negative entry the vfs serves while the link is down reports `DISCONNECTED` (4.1, 5.2), so it is `503` too;
+    the vfs decides it, the HTTP layer needs no link state. Test `webdav_server_cached_miss_is_503_while_link_down`.
+  - A name with no vfs entry while the link is down is `DISCONNECTED` at once (5.2), so the probe gets its `503`
+    without an `offline_wait` delay.
+  - Remaining, not fixable in the server: (b) a `404` the redirector caches for a name that the user creates right after: that stays
+    stale for up to 60 s. The user-facing wait and the CLI/agent avoidance are in `docs/dev/m1-notes.md`.
 - Typical create sequence (Vista+): `PUT` (0 bytes) → `PROPPATCH` (Win32 times/attrs) → `LOCK` → ... →
   `PUT` (content) → `PROPPATCH` → `UNLOCK`. Every step must succeed quickly.
 - **Explorer**: heavy `PROPFIND depth 1` on every folder view, and probes for `desktop.ini`,
@@ -1614,6 +1683,13 @@ B elsewhere) is recorded in a table compiled into `sd_webdav` keyed by OS versio
 choices: `system` = mechanism A, `link` = mechanism B, `attach` = the per-user fallback below; `auto` uses
 the compiled-in table. **No-go** → that OS
 uses the per-user attach below. The spike result is recorded in this section before M5 ends.
+
+**Spike result (2026-10-27, `docs/dev/m5-webdav-global-spike.md`).** Lab run on one Windows 11 machine as a standard
+user. `system`: no-go on every family (G2 fails by reasoning, unverified). `link`: no-go for v1, candidate for the lab
+(the session-local raw target is accepted without elevation and a `Global\` definition is denied to a standard user,
+both verified; G1 to G5 and G7 need LocalSystem and a second session). `attach`: the fallback on every family,
+conditional on the service method and the G2 test. The compiled table in `svc_gw.c` therefore has no GO cell, and
+`auto` resolves to `attach`. The other OS families still need the lab run listed in that report.
 
 **Fallback: per-user attach at logon (no-go OSes, and whenever the system-wide mapping fails at run time).**
 - The per-user agent, started at logon (Run key, C11), asks the service over its pipe for the attach

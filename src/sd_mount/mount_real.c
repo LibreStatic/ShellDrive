@@ -1,6 +1,106 @@
 /* sd_mount_backend bound to the real modules (sd_ssh, sd_sftp, sd_vfs, sd_dokan, sd_webdav). Built as its own
  * library (sd_mount_real) so binaries and tests that use fakes never pull these symbols in. */
 #include "sd_mount/sd_mount.h"
+#include "sd_ssh/sd_keyfile.h"
+#include <string.h>
+
+/* M3 adapters: copy what the host needs into the sd_mount types (no pointer outlives the call). */
+static void copy_str(char *dst, size_t cap, const char *src)
+{
+  size_t i = 0;
+  if (cap == 0) return;
+  if (src) for (; src[i] && i + 1 < cap; i++) dst[i] = src[i];
+  dst[i] = 0;
+}
+
+static sd_err real_session_probe(sd_sftp_session *s, const char *remote, uint32_t timeout_ms, sd_mount_probe *out)
+{
+  sd_sftp_server_info info;
+  char home[1024];
+  sd_err e;
+  e = sd_sftp_session_info(s, &info, home, sizeof(home));
+  if (e != SD_OK)
+    return e;
+  if (info.ssh) {
+    copy_str(out->kex, sizeof(out->kex), info.ssh->kex);
+    copy_str(out->hostkey, sizeof(out->hostkey), info.ssh->hostkey);
+    copy_str(out->cipher_c2s, sizeof(out->cipher_c2s), info.ssh->cipher_c2s);
+    copy_str(out->cipher_s2c, sizeof(out->cipher_s2c), info.ssh->cipher_s2c);
+    copy_str(out->mac_c2s, sizeof(out->mac_c2s), info.ssh->mac_c2s);
+    copy_str(out->mac_s2c, sizeof(out->mac_s2c), info.ssh->mac_s2c);
+    copy_str(out->hostkey_fp, sizeof(out->hostkey_fp), info.ssh->hostkey_fp_sha256);
+    copy_str(out->server_version, sizeof(out->server_version), info.ssh->server_version);
+  }
+  return sd_sftp_realpath_sync(s, (remote && remote[0]) ? remote : ".", out->remote_real, sizeof(out->remote_real),
+                               timeout_ms);
+}
+
+static void real_session_stats(const sd_sftp_session *s, sd_mount_stats *out)
+{
+  sd_sftp_stats st;
+  memset(&st, 0, sizeof(st));
+  if (sd_sftp_session_stats(s, &st) != SD_OK)
+    return;
+  out->srtt_ms = st.total.srtt_ms;
+  out->rttvar_ms = st.total.rttvar_ms;
+  out->rx_bps = st.total.rx_bps;
+  out->tx_bps = st.total.tx_bps;
+  out->rx_total = st.total.rx_total;
+  out->tx_total = st.total.tx_total;
+  out->inflight = st.total.inflight_reqs;
+  out->queued = st.total.queued_reqs;
+  out->channels = st.channels;
+  out->generation = st.generation;
+  out->reconnect_attempts = st.reconnect_attempts;
+  out->members = st.conn_count > 4 ? 4 : st.conn_count;
+  {
+    uint32_t i;
+    for (i = 0; i < out->members; i++) {
+      out->member[i].ready = st.conn[i].ready;
+      out->member[i].srtt_ms = st.conn[i].srtt_ms;
+      out->member[i].inflight = st.conn[i].inflight_reqs;
+      out->member[i].queued = st.conn[i].queued_reqs;
+      out->member[i].rx_total = st.conn[i].rx_total;
+      out->member[i].tx_total = st.conn[i].tx_total;
+    }
+  }
+}
+
+static void real_vfs_stats(sd_vfs *v, sd_mount_stats *out)
+{
+  sd_vfs_stats vs;
+  memset(&vs, 0, sizeof(vs));
+  sd_vfs_get_stats(v, &vs);
+  out->cache_hits = vs.cache_hits;
+  out->cache_misses = vs.cache_misses;
+  out->bytes_rd = vs.bytes_rd;
+  out->bytes_wr = vs.bytes_wr;
+  out->write_failed = vs.write_failed;
+  out->reconnects = vs.reconnects;
+}
+
+/* hostkey add (M5, 03 §6.1): the sd_ssh connection of a hostkey mount. The connect runs the profile's
+   authentication; the fetch (sd_ssh_conn_fetch_hostkeys) runs inside that connection. */
+static sd_err real_hk_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
+{
+  return sd_ssh_conn_create(cfg, cb, out);
+}
+
+static sd_err real_hk_conn_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
+{
+  return sd_ssh_conn_connect(c, done, ctx);
+}
+
+static sd_err real_hk_conn_fetch(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
+                                 sd_ssh_hostkeys_cb done, void *ctx)
+{
+  return sd_ssh_conn_fetch_hostkeys(c, hop_index, types, ntypes, done, ctx);
+}
+
+static void real_hk_conn_destroy(sd_ssh_conn *c)
+{
+  sd_ssh_conn_destroy(c);
+}
 
 static const sd_mount_backend k_real = {
   "real",
@@ -28,6 +128,21 @@ static const sd_mount_backend k_real = {
   sd_vfs_cache_set_budget,
   sd_vfs_get_identity,
   sd_webdav_emergency_unmap,
+  sd_prompt_answer_ex,
+  sd_prompt_answer_ack,
+  sd_known_hosts_apply_hostkeys,
+  sd_ssh_key_dpapi_unprotect,
+  real_session_probe,
+  real_session_stats,
+  real_vfs_stats,
+  sd_vfs_refresh,
+  sd_vfs_cache_clear,
+  sd_vfs_write_behind_bytes,
+  sd_webdav_mount_port,
+  real_hk_conn_create,
+  real_hk_conn_connect,
+  real_hk_conn_fetch,
+  real_hk_conn_destroy,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

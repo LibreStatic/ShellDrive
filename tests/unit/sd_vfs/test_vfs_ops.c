@@ -69,6 +69,16 @@ static void vclose(sd_vfs_handle *h, BOOL del)
   sd_vfs_close(h);
 }
 
+/* sd_vfs_close releases the remote handle and the SFTP CLOSE runs in the background: wait (up to 10 s, a
+   loaded machine) for the fake's count to reach n. */
+static uint32_t wait_open_handles(sd_sftp_session *s, uint32_t n)
+{
+  int i;
+  for (i = 0; i < 1000 && fake_open_handles(s) != n; i++)
+    Sleep(10);
+  return fake_open_handles(s);
+}
+
 #define SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 
 typedef struct list_ctx { WCHAR names[64][64]; sd_vfs_info info[64]; int n; } list_ctx;
@@ -116,8 +126,8 @@ SD_TEST(vfs_mount_rejects_later_milestones)
   o.write_mode = (sd_vfs_write_mode)7;
   SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
   default_opts(&o);
-  o.global_mount = TRUE;
-  SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_UNSUPPORTED);
+  o.global_mount = TRUE;                    /* M5: refused without service_access (02 6.4, D35); see test_vfs_access.c */
+  SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_ACCESS_DENIED);
   default_opts(&o);
   o.remote_root = "/does/not/exist";
   SD_CHECK_EQ_INT(sd_vfs_mount(s, &o, NULL, NULL, &v), SD_VFS_E_NOT_FOUND);
@@ -148,7 +158,7 @@ SD_TEST(vfs_create_write_read_roundtrip)
   SD_CHECK(fake_count(f.s, FOP_FSYNC) == 1);
   vclose(h, FALSE);
   SD_CHECK_EQ_U64(fake_get(f.s, "/home/user/data.bin", NULL, 0), (3u << 20) + 4);
-  SD_CHECK(fake_open_handles(f.s) == 0);
+  SD_CHECK(wait_open_handles(f.s, 0) == 0);
 
   SD_REQUIRE(vopen(&f, L"\\DATA.BIN", GENERIC_READ, FILE_SHARE_READ, SD_VFS_FILE_OPEN, 0, &h) == SD_VFS_OK);
   SD_CHECK_EQ_INT(sd_vfs_read(h, 0, back, 3u << 20, &got), SD_VFS_OK);
@@ -534,23 +544,23 @@ SD_TEST(vfs_metadata_cache_and_negative_entries)
   SD_REQUIRE(fx_mount(&f, NULL, NULL));
   fake_put(f.s, "/home/user/f", "x", 1, 0644);
   fake_reset_counts(f.s);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\F", &info), SD_VFS_OK);   /* folded key hit */
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\F", &info), SD_VFS_OK);   /* folded key hit */
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
   SD_CHECK_EQ_INT(fake_count(f.s, FOP_LSTAT), 1);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
   {
     uint32_t before = fake_count(f.s, FOP_LSTAT) + fake_count(f.s, FOP_OPENDIR);
-    SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
+    SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\missing", &info), SD_VFS_E_NOT_FOUND);
     SD_CHECK_EQ_INT(fake_count(f.s, FOP_LSTAT) + fake_count(f.s, FOP_OPENDIR), before);
   }
   /* Offline: cached entries are served ignoring TTL; unknown names are DISCONNECTED, not NOT_FOUND. */
   fake_mkdir(f.s, "/home/user/d", 0755);
   sd_vfs_refresh(f.v, NULL);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\d", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\d", &info), SD_VFS_OK);
   fake_set_state(f.s, SD_SFTP_ST_DISCONNECTED);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\f", &info), SD_VFS_OK);
-  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, L"\\d\\other", &info), SD_VFS_E_DISCONNECTED);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\f", &info), SD_VFS_OK);
+  SD_CHECK_EQ_INT(sd_vfs_stat_path(f.v, NULL, L"\\d\\other", &info), SD_VFS_E_DISCONNECTED);
   {
     sd_vfs_handle *h = NULL;
     SD_CHECK_EQ_INT(vopen(&f, L"\\new", GENERIC_WRITE, SHARE_ALL, SD_VFS_FILE_CREATE, 0, &h), SD_VFS_E_DISCONNECTED);

@@ -7,6 +7,11 @@
 #include "sd_base/sd_err.h"
 #include "sd_crypto/sd_crypto.h"
 
+/* ---- MD5 state behind sd_hash_ctx (md5.c; hash.c dispatches SD_HASH_MD5 here) ---- */
+void sd_md5_state_init(uint64_t *opaque);
+void sd_md5_state_update(uint64_t *opaque, const uint8_t *p, size_t n);
+void sd_md5_state_final(uint64_t *opaque, uint8_t out[16]);
+
 /* ---- init state ---- */
 
 /* Runs sd_crypto_init(0) if nobody did yet; returns the effective flags. */
@@ -17,6 +22,25 @@ int sd_crypto_use_cng_gcm(void);
 /* Test hook: nonzero forces the own AES backend for objects created afterwards (process-wide). */
 void sd_crypto_test_force_own(int on);
 
+/* x86/x64 hardware fast paths (M6, SHA-NI and AES-NI). SD_CRYPTO_X86_HW is 1 only where the hardware files
+   (aes_ni.c, sha256_ni.c) are built: the x86-sse2 and x64 flavours, never x86-ia32 and never ARM. CMake
+   (src/sd_crypto/sources_hw.cmake) must agree with this test. */
+#if !defined(SD_CRYPTO_X86_HW)
+#  if (defined(_M_X64) || (defined(_M_IX86) && defined(SD_X86_ARCH_SSE2))) && !defined(SD_X86_ARCH_IA32)
+#    define SD_CRYPTO_X86_HW 1
+#  else
+#    define SD_CRYPTO_X86_HW 0
+#  endif
+#endif
+/* Hardware usable on this CPU and build (ignores the portable hook). */
+int sd_crypto_hw_aes_capable(void);
+int sd_crypto_hw_sha256_capable(void);
+/* Hardware in use: capable and not forced to the portable code (SD_CRYPTO_PORTABLE=1 or the test hook). */
+int sd_crypto_use_hw_aes(void);
+int sd_crypto_use_hw_sha256(void);
+/* Test hook: nonzero forces the portable SHA-256 and AES code for everything created or hashed afterwards. */
+void sd_crypto_test_force_portable(int on);
+
 /* ---- AES, constant-time bitsliced (aes_ct.c) ---- */
 
 /* Round keys in bitsliced form: 8 words per round key, each word holds one bit of all 16 key bytes,
@@ -24,7 +48,19 @@ void sd_crypto_test_force_own(int on);
 typedef struct sd_aes_own {
   uint64_t rk[15][8];
   uint32_t rounds;            /* 10, 12, 14 */
+  uint32_t hw;                /* nonzero: encryption runs on AES-NI over ni_rk (chosen at key setup) */
+  uint8_t ni_rk[15][16];      /* the same byte round keys FIPS 197 expands, for AES-NI */
 } sd_aes_own;
+
+#if SD_CRYPTO_X86_HW
+/* AES-NI rounds over byte round keys (16 * (rounds + 1) bytes, FIPS 197 order). Encryption only: CTR and GCM
+   need no decryption, and CBC decryption stays on the bitsliced core (aes_ni.c). */
+void sd_aes_ni_encrypt_blocks_ct(const uint8_t *rk, uint32_t rounds, const uint8_t *in, uint8_t *out,
+                              size_t nblocks);
+/* SHA-256 compression over nblocks 64-byte blocks with the SHA extensions; k is the FIPS 180-4 constant
+   table (sha256_ni.c). */
+void sd_sha256_ni_blocks_ct(uint32_t st[8], const uint8_t *p, size_t nblocks, const uint32_t k[64]);
+#endif
 
 sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len);
 /* Encrypts/decrypts n (1..4) independent 16-byte blocks; time depends only on the call, not n. */

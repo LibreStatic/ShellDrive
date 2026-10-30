@@ -1,0 +1,13 @@
+# KnownDLLs that the setup stub and uninstall.exe may import statically (04 §2.4, TM-R33, TST-30).
+# Read by sd-importcheck --knowndlls. One name per line, compared case-insensitively.
+#
+# Source: HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs, captured on Windows 11 IoT
+# Enterprise LTSC 2024 (10.0.26100). The XP SP3 and XP x64 captures are a lab item (04 §11.4) and are not
+# in the repository yet; until they are, this file lists only the six DLLs the stub imports, all of which
+# are KnownDLLs on those systems too. Nothing outside this list may be imported statically.
+kernel32.dll
+advapi32.dll
+user32.dll
+gdi32.dll
+ole32.dll
+shell32.dll

@@ -1,0 +1,20 @@
+# Register lint fixture: translations that must pass.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "reg.voseo"
+msgid "Choose a drive."
+msgstr ""
+
+msgctxt "reg.optout"
+msgid "Choose a drive again."
+msgstr ""
+
+msgctxt "reg.lower"
+msgid "Pick a drive."
+msgstr ""

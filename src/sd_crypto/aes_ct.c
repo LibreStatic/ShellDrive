@@ -269,6 +269,10 @@ sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len)
   nk = key_len / 4;
   k->rounds = (uint32_t)(nk + 6);
   total = 4 * (k->rounds + 1);
+  /* The key schedule below stays the constant-time bitsliced S-box circuit on every path; AES-NI only takes
+     the resulting byte round keys for the encryption rounds. */
+  memset(k->ni_rk, 0, sizeof(k->ni_rk));
+  k->hw = (uint32_t)(sd_crypto_use_hw_aes() ? 1 : 0);
   memcpy(w, key, key_len);
   for (i = nk; i < total; i++) {
     uint8_t t[4];
@@ -294,6 +298,10 @@ sd_err sd_aes_own_init(sd_aes_own *k, const uint8_t *key, size_t key_len)
       for (blk = 0; blk < 4; blk++)
         b[j * 4 + blk] = w[16 * r + j];
     pack(k->rk[r], b);
+#if SD_CRYPTO_X86_HW
+    if (k->hw)
+      memcpy(k->ni_rk[r], w + 16 * r, 16);
+#endif
   }
   sd_secure_zero(w, sizeof(w));
   sd_secure_zero(b, sizeof(b));
@@ -322,7 +330,10 @@ static void scatter(uint8_t *out, const uint8_t b[64], size_t nblocks)
       out[16 * blk + j] = b[j * 4 + blk];
 }
 
-void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
+/* The bitsliced encryption core: every byte of the blocks and of the round keys goes through here, so it is the
+   part the constant-time gate judges (sd-isacheck, names with _ct). SD_NOINLINE keeps it a separate COMDAT
+   function, so it cannot be folded into the dispatcher below, where the capability branch sits. */
+SD_NOINLINE static void sd_aes_own_encrypt_bs_ct(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
 {
   uint64_t q[8];
   uint8_t b[64];
@@ -343,6 +354,19 @@ void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, si
   scatter(out, b, nblocks);
   sd_secure_zero(q, sizeof(q));
   sd_secure_zero(b, sizeof(b));
+}
+
+/* Dispatch: k->hw is a CPU capability chosen at key setup, never a secret, so this branch is on public data.
+   AES-NI itself has no data-dependent timing; the bitsliced core is the fallback. */
+void sd_aes_own_encrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)
+{
+#if SD_CRYPTO_X86_HW
+  if (k->hw) {
+    sd_aes_ni_encrypt_blocks_ct(k->ni_rk[0], k->rounds, in, out, nblocks);
+    return;
+  }
+#endif
+  sd_aes_own_encrypt_bs_ct(k, in, out, nblocks);
 }
 
 void sd_aes_own_decrypt(const sd_aes_own *k, const uint8_t *in, uint8_t *out, size_t nblocks)

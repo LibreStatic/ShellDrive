@@ -1,0 +1,98 @@
+# ShellDrive shell strings, Brazilian Portuguese (03 §9.1). msgctxt is the stable symbolic id; msgid is the English source.
+msgid ""
+msgstr ""
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=((n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+#. Explorer context menu on a ShellDrive drive: opens the drive in ShellDrive.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.open"
+msgid "Open in ShellDrive"
+msgstr "Abrir no ShellDrive"
+
+#. Explorer context menu on a ShellDrive drive: disconnects the drive.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.unmount"
+msgid "Unmount"
+msgstr "Desmontar"
+
+#. Explorer context menu on a ShellDrive drive: reconnects a drive that went offline or failed.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.reconnect"
+msgid "Reconnect"
+msgstr "Reconectar"
+
+#. Status bar help text for the Open item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.open"
+msgid "Open this ShellDrive drive in ShellDrive."
+msgstr "Abre esta unidade do ShellDrive no ShellDrive."
+
+#. Status bar help text for the Unmount item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.unmount"
+msgid "Disconnect this ShellDrive drive."
+msgstr "Desconecta esta unidade do ShellDrive."
+
+#. Status bar help text for the Reconnect item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.reconnect"
+msgid "Reconnect this ShellDrive drive."
+msgstr "Reconecta esta unidade do ShellDrive."
+
+#. Explorer context menu on a file or folder inside a ShellDrive drive, and on the drive: copies the remote location (sftp:// URL) to the clipboard.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.copy_remote_path"
+msgid "Copy remote path"
+msgstr "Copiar caminho remoto"
+
+#. Status bar help text for the Copy remote path item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.copy_remote_path"
+msgid "Copy the remote location of this item to the clipboard."
+msgstr "Copia o local remoto deste item para a área de transferência."
+
+#. Explorer context menu on This PC: submenu that lists the user's ShellDrive connections to mount.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.mount_submenu"
+msgid "Mount with ShellDrive"
+msgstr "Montar com o ShellDrive"
+
+#. Status bar help text for the Mount with ShellDrive submenu.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.mount_submenu"
+msgid "Connect one of your ShellDrive connections."
+msgstr "Conecta uma das suas conexões do ShellDrive."
+
+#. Status bar help text for one connection in the Mount with ShellDrive submenu.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.mount_profile"
+msgid "Connect this connection with ShellDrive."
+msgstr "Conecta esta conexão com o ShellDrive."
+
+#. Disabled item of the Mount with ShellDrive submenu when the user has no connections yet.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.no_profiles"
+msgid "No connections set up"
+msgstr "Nenhuma conexão configurada"
+
+#. Last item of the Mount with ShellDrive submenu when there are more connections than fit: opens the ShellDrive window.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.more_profiles"
+msgid "More connections..."
+msgstr "Mais conexões..."
+
+#. Explorer context menu on This PC: opens the ShellDrive window.
+#. sdl10n:maxlen=64
+msgctxt "shell.menu.open_shelldrive"
+msgid "Open ShellDrive"
+msgstr "Abrir o ShellDrive"
+
+#. Status bar help text for the Open ShellDrive item.
+#. sdl10n:maxlen=160
+msgctxt "shell.help.open_shelldrive"
+msgid "Open the ShellDrive window."
+msgstr "Abre a janela do ShellDrive."

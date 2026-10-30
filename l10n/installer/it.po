@@ -1,0 +1,435 @@
+# Testi del programma di installazione di ShellDrive, italiano (imperativo informale; 03 §9.1, 04 §8.6).
+msgid ""
+msgstr ""
+"Language: it\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2);\n"
+
+msgctxt "installer.window.title"
+msgid "ShellDrive Setup"
+msgstr "Installazione di ShellDrive"
+
+msgctxt "installer.progress.prepare"
+msgid "Preparing setup..."
+msgstr "Preparazione dell'installazione..."
+
+msgctxt "installer.progress.check"
+msgid "Checking the installed version..."
+msgstr "Controllo della versione installata..."
+
+msgctxt "installer.progress.stop"
+msgid "Closing running ShellDrive programs..."
+msgstr "Chiusura dei programmi ShellDrive in esecuzione..."
+
+msgctxt "installer.progress.extract"
+msgid "Unpacking the files..."
+msgstr "Estrazione dei file..."
+
+msgctxt "installer.progress.copy"
+msgid "Copying files to {folder}..."
+msgstr "Copia dei file in {folder}..."
+
+msgctxt "installer.progress.register"
+msgid "Registering ShellDrive for this account..."
+msgstr "Registrazione di ShellDrive per questo account..."
+
+msgctxt "installer.progress.shortcut"
+msgid "Creating the Start menu shortcut..."
+msgstr "Creazione del collegamento nel menu Start..."
+
+msgctxt "installer.progress.uninstall"
+msgid "Removing ShellDrive from {folder}..."
+msgstr "Rimozione di ShellDrive da {folder}..."
+
+msgctxt "installer.progress.portable"
+msgid "Unpacking the portable copy to {folder}..."
+msgstr "Estrazione della copia portatile in {folder}..."
+
+msgctxt "installer.done.install"
+msgid "ShellDrive {version} is installed in {folder}."
+msgstr "ShellDrive {version} è installato in {folder}."
+
+msgctxt "installer.done.uninstall"
+msgid "ShellDrive has been removed. Your settings and profiles were kept."
+msgstr "ShellDrive è stato rimosso. Le impostazioni e i profili sono stati conservati."
+
+msgctxt "installer.done.portable"
+msgid "The portable copy is ready in {folder}."
+msgstr "La copia portatile è pronta in {folder}."
+
+msgctxt "installer.summary.files"
+msgid "{count} file copied."
+msgid_plural "{count} files copied."
+msgstr[0] "{count} file copiato."
+msgstr[1] "{count} file copiati."
+msgstr[2] "{count} file copiati."
+
+msgctxt "installer.log.saved"
+msgid "Details were written to {path}."
+msgstr "I dettagli sono stati scritti in {path}."
+
+msgctxt "installer.warn.volume"
+msgid "This drive may not keep file permissions, so anyone with it can change the files."
+msgstr "Questo disco potrebbe non conservare i permessi dei file, quindi chiunque lo abbia può modificare i file."
+
+msgctxt "installer.error.args"
+msgid "Unknown or invalid option: {option}. Run setup with /help for the options."
+msgstr "Opzione sconosciuta o non valida: {option}. Avvia l'installazione con /help per vedere le opzioni."
+
+msgctxt "installer.error.machine_unsupported"
+msgid "Installing for all users is not available in this version. Run setup without /permachine."
+msgstr "L'installazione per tutti gli utenti non è disponibile in questa versione. Avvia l'installazione senza /permachine."
+
+msgctxt "installer.error.flavour_sse2"
+msgid "This processor does not support SSE2, so the {flavour} build cannot run here."
+msgstr "Questo processore non supporta SSE2, quindi la versione {flavour} non può essere eseguita qui."
+
+msgctxt "installer.error.flavour_os"
+msgid "The {flavour} build needs a newer version of Windows."
+msgstr "La versione {flavour} richiede una versione più recente di Windows."
+
+msgctxt "installer.error.flavour_cpu"
+msgid "This processor is not supported by this setup program."
+msgstr "Questo processore non è supportato da questo programma di installazione."
+
+msgctxt "installer.error.flavour_arm32"
+msgid "Windows on ARM (32-bit) needs the ARM32 setup program."
+msgstr "Windows su ARM (32 bit) richiede il programma di installazione ARM32."
+
+msgctxt "installer.error.flavour_bitness"
+msgid "The {flavour} build cannot run on this version of Windows or this processor."
+msgstr "La versione {flavour} non può essere eseguita su questa versione di Windows o su questo processore."
+
+msgctxt "installer.error.payload_missing"
+msgid "This setup program does not include the files for {flavour}."
+msgstr "Questo programma di installazione non include i file di {flavour}."
+
+msgctxt "installer.error.payload_damaged"
+msgid "The setup program is damaged. Download it again."
+msgstr "Il programma di installazione è danneggiato. Scaricalo di nuovo."
+
+msgctxt "installer.error.payload_unsafe"
+msgid "The setup package contains an unsafe file name: {name}."
+msgstr "Il pacchetto di installazione contiene un nome di file non sicuro: {name}."
+
+msgctxt "installer.error.payload_too_big"
+msgid "The setup package is larger than the allowed size."
+msgstr "Il pacchetto di installazione è più grande della dimensione consentita."
+
+msgctxt "installer.error.payload_extract"
+msgid "The setup files could not be unpacked (error {code})."
+msgstr "Impossibile estrarre i file di installazione (errore {code})."
+
+msgctxt "installer.error.newer_installed"
+msgid "A newer ShellDrive ({version}) is already installed. Use /update to replace it."
+msgstr "È già installata una versione più recente di ShellDrive ({version}). Usa /update per sostituirla."
+
+msgctxt "installer.error.running"
+msgid "ShellDrive is still running. Close it and try again, or use /force."
+msgstr "ShellDrive è ancora in esecuzione. Chiudilo e riprova, oppure usa /force."
+
+msgctxt "installer.error.file_locked"
+msgid "Could not replace {file}. Close the programs that use it and try again."
+msgstr "Impossibile sostituire {file}. Chiudi i programmi che lo usano e riprova."
+
+msgctxt "installer.error.write"
+msgid "Setup could not write to {path}."
+msgstr "L'installazione non è riuscita a scrivere in {path}."
+
+msgctxt "installer.error.machine_exists"
+msgid "ShellDrive is installed for all users. Remove that copy first."
+msgstr "ShellDrive è installato per tutti gli utenti. Rimuovi prima quella copia."
+
+msgctxt "installer.error.not_installed"
+msgid "ShellDrive is not installed for this account."
+msgstr "ShellDrive non è installato per questo account."
+
+msgctxt "installer.error.portable_not_empty"
+msgid "The folder {folder} is not empty. Choose an empty folder."
+msgstr "La cartella {folder} non è vuota. Scegli una cartella vuota."
+
+msgctxt "installer.error.generic"
+msgid "Setup failed with error {code}."
+msgstr "Installazione non riuscita con errore {code}."
+
+msgctxt "installer.help"
+msgid "Usage: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<folder>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<name>] [/log=<file>] [/lang=<code>]"
+msgstr "Uso: ShellDrive-setup.exe [/quiet | /passive] [/peruser | /portable=<cartella>] [/uninstall] [/update] [/force] [/autostart=0|1] [/flavour=<nome>] [/log=<file>] [/lang=<codice>]"
+
+#. Wizard button: go to the previous page.
+msgctxt "installer.button.back"
+msgid "Back"
+msgstr "Indietro"
+
+#. Wizard button: go to the next page.
+msgctxt "installer.button.next"
+msgid "Next"
+msgstr "Avanti"
+
+#. Wizard button: start the installation.
+msgctxt "installer.button.install"
+msgid "Install"
+msgstr "Installa"
+
+#. Wizard button: start the removal.
+msgctxt "installer.button.uninstall"
+msgid "Uninstall"
+msgstr "Rimuovi"
+
+#. Wizard button: close the setup after it completed.
+msgctxt "installer.button.finish"
+msgid "Finish"
+msgstr "Fine"
+
+#. Wizard button: stop without changing anything.
+msgctxt "installer.button.cancel"
+msgid "Cancel"
+msgstr "Annulla"
+
+#. Wizard button: choose a folder with a dialog. The dots are part of the label.
+msgctxt "installer.button.browse"
+msgid "Browse..."
+msgstr "Sfoglia..."
+
+#. Title of the first page.
+msgctxt "installer.welcome.title"
+msgid "Welcome to ShellDrive Setup"
+msgstr "Benvenuto nell'installazione di ShellDrive"
+
+#. Text of the first page.
+msgctxt "installer.welcome.text"
+msgid "This wizard installs ShellDrive on this computer. Click Next to continue."
+msgstr "Questa procedura installa ShellDrive su questo computer. Fai clic su Avanti per continuare."
+
+#. Title of the license page.
+msgctxt "installer.license.title"
+msgid "License"
+msgstr "Licenza"
+
+#. Line above the license text. The license itself is in English.
+msgctxt "installer.license.intro"
+msgid "ShellDrive is free software released under the MIT License. The license text below is in English, the language of the license."
+msgstr "ShellDrive è un software libero distribuito con la licenza MIT. Il testo della licenza qui sotto è in inglese, la lingua in cui è redatta."
+
+#. The MIT License text. Legal text: it is not translated, in any locale.
+msgctxt "installer.license.text"
+msgid "MIT License\n\nCopyright (c) LibreStatic\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
+msgstr "MIT License\n\nCopyright (c) LibreStatic\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
+
+#. Title of the install mode page.
+msgctxt "installer.mode.title"
+msgid "Install mode"
+msgstr "Modalità di installazione"
+
+#. Text of the install mode page.
+msgctxt "installer.mode.text"
+msgid "Choose where ShellDrive is installed."
+msgstr "Scegli dove installare ShellDrive."
+
+#. Radio button: install for the current account only.
+msgctxt "installer.mode.user"
+msgid "Install for me only (no administrator rights needed)"
+msgstr "Installa solo per me (non servono privilegi di amministratore)"
+
+#. Radio button: install for every user of the computer. Disabled in this version.
+msgctxt "installer.mode.machine"
+msgid "Install for all users (requires administrator)"
+msgstr "Installa per tutti gli utenti (richiede amministratore)"
+
+#. Radio button: copy ShellDrive to a folder of the user's choice, with no registration.
+msgctxt "installer.mode.portable"
+msgid "Portable (copy to a folder you choose)"
+msgstr "Portatile (copia in una cartella a scelta)"
+
+#. Shown under the all-users choice, which this version does not offer yet.
+msgctxt "installer.mode.machine_reason"
+msgid "Not available yet: installing for all users needs the MSI package, which this version does not include."
+msgstr "Non ancora disponibile: l'installazione per tutti gli utenti richiede il pacchetto MSI, non incluso in questa versione."
+
+#. Title of the destination page (portable copies).
+msgctxt "installer.dest.title"
+msgid "Destination folder"
+msgstr "Cartella di destinazione"
+
+#. Text of the destination page. The folder must be new or empty.
+msgctxt "installer.dest.text"
+msgid "ShellDrive is copied to this folder. Choose a new or empty folder."
+msgstr "ShellDrive viene copiato in questa cartella. Scegli una cartella nuova o vuota."
+
+#. Title of the Dokany page. Dokany is a product name and is not translated.
+msgctxt "installer.dokany.title"
+msgid "Dokany driver"
+msgstr "Driver Dokany"
+
+#. Explains the Dokany driver on the per-machine page.
+msgctxt "installer.dokany.text"
+msgid "Dokany is a file system driver from the Dokany project. It is a signed third-party kernel driver. It is installed for the whole computer, stays available to every user, and ShellDrive does not remove it when ShellDrive is uninstalled."
+msgstr "Dokany è un driver del file system del progetto Dokany. È un driver kernel di terze parti con firma digitale. Viene installato per l'intero computer, resta disponibile a tutti gli utenti e non viene rimosso con ShellDrive."
+
+#. Checkbox on the Dokany page. Checked by default when the driver can be installed.
+msgctxt "installer.dokany.option"
+msgid "Install the Dokany file system driver (recommended)"
+msgstr "Installa il driver del file system Dokany (consigliato)"
+
+#. Shown on the Dokany page when this Windows version cannot take the driver.
+msgctxt "installer.dokany.unavailable"
+msgid "This version of Windows cannot use the Dokany driver. ShellDrive uses WebDAV."
+msgstr "Questa versione di Windows non può usare il driver Dokany. ShellDrive usa WebDAV."
+
+#. Shown on the Dokany page under the checkbox, when it is unchecked.
+msgctxt "installer.dokany.skip_note"
+msgid "Without Dokany, ShellDrive uses only the WebDAV backend."
+msgstr "Senza Dokany, ShellDrive usa solo il backend WebDAV."
+
+#. Title of the last page after an installation.
+msgctxt "installer.finish.title"
+msgid "Setup is complete"
+msgstr "Installazione completata"
+
+#. Checkbox on the last page: start ShellDrive when setup closes.
+msgctxt "installer.finish.launch"
+msgid "Launch ShellDrive"
+msgstr "Avvia ShellDrive"
+
+#. Shown when ShellDrive could not be started from the last page.
+msgctxt "installer.launch.failed"
+msgid "ShellDrive could not be started. Open it from the Start menu."
+msgstr "Impossibile avviare ShellDrive. Aprilo dal menu Start."
+
+#. Title of the removal confirmation page.
+msgctxt "installer.uninstall.title"
+msgid "Remove ShellDrive"
+msgstr "Rimuovi ShellDrive"
+
+#. Text of the removal confirmation page. {folder} is the install folder.
+msgctxt "installer.uninstall.text"
+msgid "ShellDrive will be removed from {folder}. Your settings and profiles are kept."
+msgstr "ShellDrive verrà rimosso da {folder}. Le impostazioni e i profili restano."
+
+#. Question on the removal confirmation page.
+msgctxt "installer.uninstall.question"
+msgid "Do you want to remove ShellDrive from this computer?"
+msgstr "Vuoi rimuovere ShellDrive da questo computer?"
+
+# MSI strings (04 §8.6): WiX localization ids, one msi.<Id> entry each (tools/sd-msigen wxl).
+#. WiX string FeatureCoreTitle of the MSI.
+msgctxt "msi.feature.core.title"
+msgid "Program files"
+msgstr "File del programma"
+
+#. WiX string FeatureCoreDesc of the MSI.
+msgctxt "msi.feature.core.desc"
+msgid "The command line, the background agent and the window. Always installed."
+msgstr "Riga di comando, agente in background e finestra. Sempre installato."
+
+#. WiX string FeatureShellExtTitle of the MSI.
+msgctxt "msi.feature.shellext.title"
+msgid "File Explorer menu"
+msgstr "Menu di Esplora file"
+
+#. WiX string FeatureShellExtDesc of the MSI.
+msgctxt "msi.feature.shellext.desc"
+msgid "Adds ShellDrive commands to the right-click menu of drives and folders."
+msgstr "Aggiunge i comandi di ShellDrive al menu contestuale di unità e cartelle."
+
+#. WiX string FeatureServiceTitle of the MSI.
+msgctxt "msi.feature.service.title"
+msgid "Background service"
+msgstr "Servizio in background"
+
+#. WiX string FeatureServiceDesc of the MSI.
+msgctxt "msi.feature.service.desc"
+msgid "Keeps the global drives of the machine running before any user signs in."
+msgstr "Mantiene attive le unità globali del computer prima che un utente acceda."
+
+#. WiX string FeatureStartMenuTitle of the MSI.
+msgctxt "msi.feature.startmenu.title"
+msgid "Start menu shortcut"
+msgstr "Collegamento nel menu Start"
+
+#. WiX string FeatureStartMenuDesc of the MSI.
+msgctxt "msi.feature.startmenu.desc"
+msgid "Adds ShellDrive to the Start menu."
+msgstr "Aggiunge ShellDrive al menu Start."
+
+#. WiX string FeatureAutostartTitle of the MSI.
+msgctxt "msi.feature.autostart.title"
+msgid "Start at sign-in"
+msgstr "Avvio all'accesso a Windows"
+
+#. WiX string FeatureAutostartDesc of the MSI.
+msgctxt "msi.feature.autostart.desc"
+msgid "Starts the ShellDrive agent when each user signs in."
+msgstr "Avvia l'agente di ShellDrive quando ogni utente accede."
+
+#. WiX string DowngradeError of the MSI (MajorUpgrade).
+msgctxt "msi.downgrade.error"
+msgid "A newer version of ShellDrive is already installed."
+msgstr "È già installata una versione più recente di ShellDrive."
+
+#. WiX string OsRequired of the MSI (launch condition).
+msgctxt "msi.os.required"
+msgid "This package of ShellDrive needs Windows 10 or later. Use the package for your version of Windows."
+msgstr "Questo pacchetto di ShellDrive richiede Windows 10 o una versione successiva. Usa il pacchetto corrispondente alla tua versione di Windows."
+
+# WiX string OptionsTitle of the options page of the Change dialog set (04 §6.7).
+msgctxt "msi.options.title"
+msgid "Options of this installation"
+msgstr "Opzioni di questa installazione"
+
+#. WiX string OptionsDescription of the options page.
+msgctxt "msi.options.description"
+msgid "Choose the options that ShellDrive uses on this computer."
+msgstr "Scegli le opzioni che ShellDrive usa su questo computer."
+
+#. WiX string OptionsWindowTitle of the options page (window title).
+msgctxt "msi.options.window.title"
+msgid "[ProductName] Setup"
+msgstr "Installazione di [ProductName]"
+
+#. WiX string OptionsDokanyCheckbox: the DOKANY option (04 §8.4).
+msgctxt "msi.options.dokany.checkbox"
+msgid "Use Dokany for global drives (recommended)"
+msgstr "Usa Dokany per le unità globali (consigliato)"
+
+#. WiX string OptionsDokanyHint: explains the DOKANY option under its checkbox.
+msgctxt "msi.options.dokany.hint"
+msgid "Dokany is a file system driver that this package neither installs nor removes. When unchecked, ShellDrive uses only the WebDAV backend, without Dokany global drives."
+msgstr "Dokany è un driver del file system che questo pacchetto non installa né rimuove. Se lo deselezioni, ShellDrive usa solo il backend WebDAV, senza unità globali Dokany."
+
+#. WiX string OptionsLinkedCheckbox: the ENABLELINKEDCONNECTIONS option (04 §8.4).
+msgctxt "msi.options.linked.checkbox"
+msgid "Let elevated programs see mapped drives"
+msgstr "Consenti ai programmi elevati di vedere le unità mappate"
+
+#. WiX string OptionsLinkedHint: explains the ENABLELINKEDCONNECTIONS option under its checkbox.
+msgctxt "msi.options.linked.hint"
+msgid "Sets the Windows EnableLinkedConnections setting, so that programs run as administrator can see the drives that ShellDrive maps. Unchecked by default."
+msgstr "Attiva l'impostazione Windows EnableLinkedConnections, così i programmi eseguiti come amministratore vedono le unità che ShellDrive mappa. Disattivata per impostazione predefinita."
+
+#. Shown when administrator rights for the all-users install were refused or the stages could not start.
+msgctxt "installer.error.elevation"
+msgid "Administrator rights were not granted for the installation for all users. Nothing was installed."
+msgstr "Non sono stati concessi i diritti di amministratore per l'installazione per tutti gli utenti. Non è stato installato nulla."
+
+#. Shown when the setup folder in ProgramData failed the owner or link check (TM-R34).
+msgctxt "installer.error.stage_untrusted"
+msgid "The setup folder in ProgramData could not be secured, so setup stopped. Nothing was installed."
+msgstr "Non è stato possibile proteggere la cartella di installazione in ProgramData, quindi l'installazione si è interrotta. Non è stato installato nulla."
+
+#. Shown when the setup program carries no MSI for the all-users install.
+msgctxt "installer.error.msi_missing"
+msgid "This setup program does not contain the package for all users. Nothing was installed."
+msgstr "Questo programma di installazione non contiene il pacchetto per tutti gli utenti. Non è stato installato nulla."
+
+#. Shown when msiexec failed for the all-users install. {code} is the Windows Installer exit code.
+msgctxt "installer.error.msi_failed"
+msgid "The installation for all users failed with Windows Installer code {code}."
+msgstr "L'installazione per tutti gli utenti non è riuscita con il codice {code} di Windows Installer."
+
+#. Shown when the release signature of the payload table is missing or does not verify (TM-R38).
+msgctxt "installer.error.payload_signature"
+msgid "The setup program's release signature could not be verified. Download it again."
+msgstr "Impossibile verificare la firma di rilascio del programma di installazione. Scaricalo di nuovo."

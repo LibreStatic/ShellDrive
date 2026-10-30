@@ -4,6 +4,7 @@ SD_TEST_DECL(sha256_kat);
 SD_TEST_DECL(sha512_sha384_kat);
 SD_TEST_DECL(hash_incremental_matches_oneshot);
 SD_TEST_DECL(hmac_rfc4231);
+SD_TEST_DECL(md5_rfc1321);
 SD_TEST_DECL(pbkdf2_rfc7914);
 SD_TEST_DECL(wycheproof_hmac_sha256);
 SD_TEST_DECL(wycheproof_hmac_sha512);
@@ -36,6 +37,12 @@ SD_TEST_DECL(cng_diff_aes_ctr);
 SD_TEST_DECL(cng_diff_aes_gcm);
 SD_TEST_DECL(crypto_init_and_random);
 SD_TEST_DECL(ct_helpers);
+SD_TEST_DECL(hw_sha256_kat_both_paths);
+SD_TEST_DECL(hw_sha256_random_vs_portable);
+SD_TEST_DECL(hw_aes_fips197_both_paths);
+SD_TEST_DECL(hw_aes_random_vs_portable);
+SD_TEST_DECL(hw_aes_ctr_both_paths);
+SD_TEST_DECL(hw_aes_gcm_both_paths);
 SD_TEST_DECL(bench_throughput);
 
 static const sd_test_case k_tests[] = {
@@ -45,6 +52,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(sha512_sha384_kat),
   SD_TEST_ENTRY(hash_incremental_matches_oneshot),
   SD_TEST_ENTRY(hmac_rfc4231),
+  SD_TEST_ENTRY(md5_rfc1321),
   SD_TEST_ENTRY(pbkdf2_rfc7914),
   SD_TEST_ENTRY(wycheproof_hmac_sha256),
   SD_TEST_ENTRY(wycheproof_hmac_sha512),
@@ -75,6 +83,12 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cng_diff_sha2_hmac),
   SD_TEST_ENTRY(cng_diff_aes_ctr),
   SD_TEST_ENTRY(cng_diff_aes_gcm),
+  SD_TEST_ENTRY(hw_sha256_kat_both_paths),
+  SD_TEST_ENTRY(hw_sha256_random_vs_portable),
+  SD_TEST_ENTRY(hw_aes_fips197_both_paths),
+  SD_TEST_ENTRY(hw_aes_random_vs_portable),
+  SD_TEST_ENTRY(hw_aes_ctr_both_paths),
+  SD_TEST_ENTRY(hw_aes_gcm_both_paths),
   SD_TEST_ENTRY(bench_throughput),
 };
 

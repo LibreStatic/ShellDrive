@@ -6,6 +6,18 @@
 
 set(SD_HOST_AGENT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/agent.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/log_ring.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/log_ring.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/state_producer.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/state_producer.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/explorer_data.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/update_ipc.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/update_ipc.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/config_watch.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/agent_events.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/agent_events.h
   ${CMAKE_CURRENT_SOURCE_DIR}/host.h)
 
 if(SD_HOST_REAL_BACKEND)
@@ -16,8 +28,63 @@ else()
   set(_backend_lib "")
 endif()
 
+# Event Log message table (03 §10.3): sdl10n writes svc_events.mc from the l10n/svc PO catalog (every event id in
+# every locale, or the build fails), and mc.exe compiles it with -u (UTF-16 input) into one message table per
+# language (en, es-AR, fr-FR, pt-BR, it-IT, de-DE). mc.exe ships with the Windows SDK next to the rc.exe of the active
+# toolset. The generated header (message ids) is shared with the unit tests; the generated resource script is linked
+# into shelldrive-host.exe, which is also the event message file.
+set(_svc_mc_hints "$ENV{WindowsSdkVerBinPath}x64" "$ENV{WindowsSdkBinPath}")
+if(CMAKE_RC_COMPILER)
+  get_filename_component(_svc_tool_dir "${CMAKE_RC_COMPILER}" DIRECTORY)
+  list(APPEND _svc_mc_hints "${_svc_tool_dir}")
+endif()
+set(_svc_pf86 "$ENV{SystemDrive}/Program Files (x86)")
+list(APPEND _svc_mc_hints
+  "${_svc_pf86}/Windows Kits/10/bin/${CMAKE_SYSTEM_VERSION}/x64"
+  "${_svc_pf86}/Windows Kits/10/bin/${CMAKE_SYSTEM_VERSION}/x86"
+  "${_svc_pf86}/Microsoft SDKs/Windows/v7.1A/Bin")
+find_program(SD_MC_EXE NAMES mc mc.exe HINTS ${_svc_mc_hints})
+if(NOT SD_MC_EXE)
+  message(FATAL_ERROR "mc.exe was not found (Windows SDK): the Event Log message table of shelldrive-host cannot be built")
+endif()
+set(SD_SVC_EVENTS_DIR "${SD_GENERATED_DIR}/svc_events/$<CONFIG>")
+set(SD_SVC_EVENTS_MC "${SD_SVC_EVENTS_DIR}/svc_events.mc")
+# mc.exe writes one MSG<LCID>.bin per LanguageNames entry that sdl10n defines (one per LANGID of the six primary
+# languages, 58 in all). They are not listed as outputs: the .rc file names them, and the set is owned by sdl10n.
+set(SD_SVC_EVENTS_PO "")
+foreach(_lang IN LISTS SD_LANGS)
+  list(APPEND SD_SVC_EVENTS_PO "${CMAKE_SOURCE_DIR}/l10n/svc/${_lang}.po")
+endforeach()
+sd_tool_depends(sdl10n _sdl10n_dep)
+add_custom_command(
+  OUTPUT "${SD_SVC_EVENTS_MC}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${SD_SVC_EVENTS_DIR}"
+  COMMAND "$<TARGET_FILE:sdl10n>" --out-mc "${SD_SVC_EVENTS_MC}" --domain "${CMAKE_SOURCE_DIR}/l10n/svc"
+  DEPENDS ${_sdl10n_dep} ${SD_SVC_EVENTS_PO}
+  COMMENT "sdl10n: Event Log messages of shelldrive-host"
+  VERBATIM)
+add_custom_command(
+  OUTPUT "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc"
+  COMMAND "${SD_MC_EXE}" -u -h "${SD_SVC_EVENTS_DIR}" -r "${SD_SVC_EVENTS_DIR}" "${SD_SVC_EVENTS_MC}"
+  DEPENDS "${SD_SVC_EVENTS_MC}"
+  COMMENT "mc: Event Log message tables of shelldrive-host (six languages)"
+  VERBATIM)
+add_custom_target(sd_svc_events DEPENDS "${SD_SVC_EVENTS_DIR}/svc_events.h" "${SD_SVC_EVENTS_DIR}/svc_events.rc" "${SD_SVC_EVENTS_MC}")
+sd_add_tool_dependency(sd_svc_events sdl10n)
+set_target_properties(sd_svc_events PROPERTIES FOLDER "apps")
+
 sd_add_app(shelldrive-host
   OUTPUT_NAME shelldrive-host
   DESCRIPTION "ShellDrive agent and service host"
-  SOURCES main.c ${SD_HOST_AGENT_SOURCES} ${_backend}
-  DEPS sd_mount ${_backend_lib} sd_ipc sd_config sd_platform sd_base)
+  SOURCES main.c ${SD_HOST_AGENT_SOURCES} ${_backend} ${CMAKE_CURRENT_SOURCE_DIR}/installer_hooks.c
+          ${CMAKE_CURRENT_SOURCE_DIR}/service.c ${CMAKE_CURRENT_SOURCE_DIR}/service.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_access.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_access.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_folder.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_folder.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.h
+          "${SD_SVC_EVENTS_DIR}/svc_events.rc"
+  DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_ssh sd_config sd_update sd_policy sd_platform sd_base
+       sd_l10n sd_l10n_catalog_svc ole32 shell32 user32 advapi32)
+target_include_directories(shelldrive-host PRIVATE "${SD_SVC_EVENTS_DIR}")
+add_dependencies(shelldrive-host sd_svc_events)

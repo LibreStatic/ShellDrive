@@ -1,10 +1,12 @@
 # 01 - SSH, SFTP and crypto core (`sd_crypto`, `sd_ssh`, `sd_sftp`)
 
-Status: design, updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
+Status: design (M7: `zlib@openssh.com` implemented, section 4.7; adaptive channel windows implemented, section 4.8; docs/dev/m7-notes.md), updated to the accepted decisions of 2026-10-24 (`decisions.md`, which wins over this document
 where they differ) and to the resolutions of `00-integration-review.md` that concern this module. Threat-model
 integration 2026-10-24: the recommendations of `05-threat-model.md` §8 that target this module (`TM-Rxx`, as
 accepted by decisions.md D33-D39) are applied in place; each change cites its `TM-R` and threat (`T-xx`) ids, the
-security tests (`TST-xx`, 05 §7) are mapped in section 12.4, and section 17 lists them.
+security tests (`TST-xx`, 05 §7) are mapped in section 12.4, and section 17 lists them. M7 (section 2.8.2): the P-256, P-384 and P-521 field multiplication uses the NIST reductions
+(FIPS 186-4 D.2 for P-256 and P-384, a Mersenne-type fold for P-521) on normal-form elements; the scalar field stays
+Montgomery.
 Scope: the three protocol and crypto modules under the mount backends. The filesystem layer (`sd_vfs`), the
 WebDAV and Dokany backends, the UI, credential storage and the installer are designed elsewhere. They only use the
 public APIs in sections 9 and 10 (`sd_sftp.h`, plus the few `sd_ssh.h` types it re-exports).
@@ -478,9 +480,13 @@ count is a compile-time constant per field or a fixed maximum for the bignum.
 
 #### 2.8.2 NIST P-256 / P-384 / P-521 (ECDH, ECDSA)
 
-- One generic **Montgomery field engine** with a fixed limb count per curve (CIOS word-by-word Montgomery
-  multiplication, final subtraction by mask). Specialized Solinas reductions are a later optimization, gated on the
-  same tests. P-521 uses the same engine in v1.
+- **Field arithmetic** (M7): a fixed limb count per curve. Per curve and limb size, chosen at compile time, the field
+  uses either the NIST reduction (normal form: schoolbook product, then FIPS 186-4 D.2 folds for P-256 and P-384 or
+  the Mersenne-type fold 2^521 = 1 for P-521, run on 32-bit words so both limb sizes share the code) or the
+  Montgomery CIOS path (`sd_mp_montmul`). Measured selection: P-521 NIST, P-256 and P-384 Montgomery (docs/dev/
+  m7-notes.md). Signed 64-bit column sums, constant shifts and masked conditional subtractions only in the NIST
+  reduction: no secret-dependent branch, index or division. Both paths are tested on every curve. The scalar field
+  (group order n) stays on the Montgomery engine.
 - The scalar field (group order n) uses the same engine, for ECDSA nonce inversion (Fermat) and signature
   arithmetic.
 - Points: projective coordinates with the complete addition and doubling formulas of Renes-Costello-Batina for
@@ -735,7 +741,7 @@ cipher:   chacha20-poly1305@openssh.com, aes256-gcm@openssh.com, aes128-gcm@open
           (with hardware AES: the two GCM entries move above chacha20-poly1305)
 mac:      hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256, hmac-sha2-512,
           [legacy] hmac-sha1-etm@openssh.com, hmac-sha1
-comp:     none            (later: none, zlib@openssh.com when the profile enables compression)
+comp:     zlib@openssh.com, none   (zlib@openssh.com only when the profile sets connection.compression = yes; otherwise none)
 ```
 
 The lists above are the static preference order. For each connection the transport derives the lists it actually
@@ -766,6 +772,13 @@ sends from them, after the server's KEXINIT (section 4.2), with the host-key and
   key of any type is stored (`SD_HK_NEW`, plain TOFU). The host never calls it for reconnects, pool members or
   the service; the re-key variant is a lab item for servers that refuse a host-key algorithm change on re-key
   (section 15).
+  **Status (M5 part 8, 2026-10-28).** Built. The host-key mount (`sd_mount`, `hostkey_fetch`, 03 §6.1) connects with
+  the profile's own authentication and prompts, offers the stored types only, and calls `sd_ssh_conn_fetch_hostkeys()`
+  inside that verified connection with the default type list (or `--type`). A first contact (no stored key) is not
+  fetched: the presented key is taken with `ACCEPT_ONCE`, nothing is stored, and the result is that one key with
+  `verified = 0`. Interop: `interop_hostkeys_fetch_none_offered` and `interop_hostkeys_fetch_first_contact_refused`
+  (`test_interop.c`; they skip without a fixture state directory in the worktree, see m5-notes part 8). The re-key
+  variant against a server that offers the type is still a lab item (section 15).
 - Profiles can remove algorithms (for example "disable legacy") but cannot reorder legacy above modern. If the profile
   disables legacy and negotiation fails, the error says which category had no overlap, so the UI can offer to
   re-enable legacy for this profile.
@@ -867,8 +880,7 @@ enum {
 
 ### 4.7 Compression (D6)
 
-v1 offers only `none`. After 1.0 (milestone M7), `zlib@openssh.com` (activated after USERAUTH_SUCCESS) will be offered
-after `none`, and only when the profile enables compression (default off). It needs our own RFC 1950/1951
+v1 offers only `none`. After 1.0 (milestone M7), `zlib@openssh.com` (activated after USERAUTH_SUCCESS) are offered first when the profile sets `connection.compression = yes` (default `no`); otherwise only `none` is offered. The client list order decides (RFC 4253 7.1), so `none` ahead of `zlib@openssh.com` would never select compression: the list puts zlib first, as OpenSSH does with `Compression yes`. (M7 implemented; deviation from the earlier "none, then zlib" wording, recorded in docs/dev/m7-notes.md.) It needs our own RFC 1950/1951
 inflate/deflate, roughly 1500 lines, fuzzed: inflate with a 32 KiB window, deflate with fixed/dynamic Huffman and a
 modest hash-chain LZ77, Z_PARTIAL_FLUSH (sync flush) per packet, and context kept across packets. Decompressed size per
 packet is capped at 256 KiB (zip-bomb guard). Plain `zlib` (pre-auth) is never offered because it adds pre-auth attack
@@ -885,8 +897,11 @@ surface.
   forwarded-tcpip) are refused with `ADMINISTRATIVELY_PROHIBITED`.
 - Receive window: initial **2 MiB**, max packet **32768**. 32768 is the RFC 4254 minimum every server accepts, and
   SFTP messages bigger than that simply span several CHANNEL_DATA messages. WINDOW_ADJUST is sent when the consumer has
-  freed >= half of the window. Adaptive growth (post-1.0, M7): if the window was exhausted (sender stalled) twice
-  within one RTT estimate, double it, up to 16 MiB. RTT is measured as described in section 4.6.
+  freed >= half of the window. Adaptive growth (post-1.0, M7): an RTT epoch in which the peer delivered at least half
+  of the window counts as window-limited (the bandwidth-delay form of "the sender stalled": consumers free data at once,
+  so the allowance itself never reaches zero); two such epochs in a row double the window, up to 16 MiB per channel and
+  32 MiB summed over the channels of one connection. RTT is measured as described in section 4.6; before the first
+  sample it is taken as 500 ms. The window never shrinks.
 - Send side: we respect the peer's window and max packet. Each channel has a send queue. The connection-level scheduler
   round-robins channels with data, sending at most one max-packet per turn, so a bulk write on one SFTP channel cannot
   starve another channel or a nested hop.
@@ -995,8 +1010,14 @@ under the same rules as SSH passwords (section 7.4). In the service context SSPI
 proxies that need interactive credentials are unavailable to service profiles unless the password is stored.
 
 **System proxy (opt-in source).** `sd_ssh` is the only component that resolves the system proxy (03 §3.8 only
-selects `proxy = system` and enforces `AllowSystemProxy`), because the resolution must be repeated on every
-reconnect, which `sd_sftp` drives. `kind = SD_PROXY_SYSTEM` resolves the proxy on a worker thread at each connect:
+selects `proxy = system` and passes the policy verdict down), because the resolution must be repeated on every
+reconnect, which `sd_sftp` drives. The opt-in is enforced in the connect path (01 §5.2, TM-R10): the system proxy
+is used only when the profile opts in (`kind = SD_PROXY_SYSTEM`) **and** policy `AllowSystemProxy` allows it —
+`AllowSystemProxy = 0` refuses the opt-in with `SD_E_PROXY` at connect creation, before any resolution
+(`fallback_direct` does not rescue it: the policy forbids the source, not the destination). The per-resolution
+decision (use the resolved proxy / connect directly / refuse) and the SSPI verdict of the TM-R10 rules above live
+in one pure function that the unit tests drive without WinHTTP. `kind = SD_PROXY_SYSTEM` resolves the proxy on a
+worker thread at each connect:
 WinHTTP (`winhttp.dll` through `sd_platform_resolve`) `WinHttpGetIEProxyConfigForCurrentUser` in user processes,
 `WinHttpGetDefaultProxyConfiguration` (the `netsh winhttp` setting) in the service. A `socks=` entry selects SOCKS5,
 otherwise the `https=` or generic entry selects HTTP CONNECT; the bypass list (including `<local>`) is honored. If the
@@ -1571,6 +1592,8 @@ typedef struct sd_proxy_cfg {                    /* section 5.2 */
   const wchar_t *host; uint16_t port;            /* HTTP / SOCKS5 */
   uint32_t auth;                                 /* allowed schemes; 0 = none */
   int allow_discovered_sspi;                     /* machine policy AllowSystemProxySspi = 1 (TM-R10); default 0 */
+  int allow_system;                              /* machine policy AllowSystemProxy = 1 lets proxy = system
+                                                    resolve; 0 (default) refuses the opt-in (TM-R10) */
   const char *user;                              /* UTF-8; password via SD_PROMPT_PROXY_PASSWORD */
   int remote_dns;                                /* SOCKS5: send the name (default 1) */
   int fallback_direct;                           /* SD_PROXY_SYSTEM: connect directly if discovery fails (0) */
@@ -1663,6 +1686,9 @@ typedef void (*sd_ssh_hostkeys_cb)(void *ctx, sd_err e, const sd_hk_key *keys, u
 sd_err sd_ssh_conn_fetch_hostkeys(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
                                   sd_ssh_hostkeys_cb done, void *ctx);
 
+/* Status (M5 part 8, 2026-10-28): built and used by the per-user `hostkey add --from-server` (sd_mount hostkey
+   mount, docs/dev/m5-notes.md part 7); tested by interop_hostkeys_fetch_* against the WSL fixture. */
+
 /* Channels (used by sd_sftp; consumer callbacks run on the I/O thread). */
 typedef struct sd_ssh_channel_sink {
   void (*on_open)(void *ctx, sd_err err);
@@ -1746,9 +1772,12 @@ typedef enum sd_err {
   SD_E_AUTH_REQUIRED,     /* reconnect needs user input */
   SD_E_LEGACY_REJECTED,   /* legacy acknowledgement refused (section 4.1) */
   SD_E_PROXY,             SD_E_PROXY_AUTH,        /* section 5.2 */
+  SD_E_POOL_ABANDONED,    /* pool member given up for the generation (section 10.9) */
   /* local */
   SD_E_NO_MEMORY,         SD_E_CRYPTO,            SD_E_KEY_FORMAT,       SD_E_KEY_UNSUPPORTED,
-  SD_E_BAD_PASSPHRASE,    SD_E_KEY_PASSPHRASE_REQUIRED, SD_E_INTERNAL
+  SD_E_BAD_PASSPHRASE,    SD_E_KEY_PASSPHRASE_REQUIRED, SD_E_INTERNAL,
+  /* WebDAV (02 §7.4, TM-R19): no SSPI, so the redirector cannot authenticate; the host may ask for token-only */
+  SD_WD_E_AUTH_UNAVAILABLE
 } sd_err;
 const char *sd_err_name(sd_err e);   /* stable English identifier for logs/JSON, e.g. "not_found" */
 ```
@@ -1757,7 +1786,8 @@ const char *sd_err_name(sd_err e);   /* stable English identifier for logs/JSON,
 `host_key_mismatch`, `host_key_revoked`, `host_key_type_unavailable` (new with TM-R04; 03 still has to add it to its
 IPC error and exit-code tables); `SD_E_DNS` -> `dns_failed`; `SD_E_AUTH_REQUIRED` -> `prompt_required`;
 `SD_E_PROXY` -> `proxy_connect_failed`; `SD_E_PROXY_AUTH` -> `proxy_auth_failed`; `SD_E_LEGACY_REJECTED` ->
-`legacy_refused` (03 §6.2 exit codes 16 and 15); all others are the lowercase enum name without the `SD_E_` prefix.
+`legacy_refused` (03 §6.2 exit codes 16 and 15); `SD_WD_E_AUTH_UNAVAILABLE` -> `auth_unavailable` (03 §6.2 exit code 4);
+all others are the lowercase enum name without the `SD_E_` prefix.
 
 SFTP status to `sd_err` (v3 codes, plus higher codes some servers send anyway):
 
@@ -2251,26 +2281,51 @@ failures.
 only (decisions.md D19), since metadata never goes there; its startup is INIT, VERSION, `limits` and the
 `realpath(".")` check above.
 
+**Transport view.** A pool transport reports `SD_SFTP_TP_POOL` and exposes every channel through the
+`sd_sftp_transport` stream vtable: idx 0 is the meta channel, idx 1 the primary's bulk channel, idx 2..4 are pool
+members 1..3. `open_stream`/`write_stream`/`consumed_stream` delegate idx 0..1 to the plain implementation and
+serve idx 2..4 through per-member queues (received bytes are credited back to the member only once the session has
+consumed them; writes queue bounded and are pumped on the member's own thread). `notify_ready` starts the
+admissions of a generation and re-admits every member after a reconnect; `member_stats` writes `out[idx - 1]` for
+every admitted member (member 1 is `out[0]`; the primary's own statistics are the session's `conn[0]`) and reports
+their number in `*count`.
+
 **Striping.** A striped handle is opened on the primary's bulk channel first (with the caller's flags, so `CREAT`,
-`TRUNC` and `EXCL` take effect exactly once). Sub-handles on the secondaries are opened lazily, on first use, with
-`oflags & ~(CREAT|TRUNC|EXCL)`. `APPEND` handles are never striped (the flag is ignored). Routing:
-- the file is divided into `stripe_bytes` units (default 1 MiB); unit `k` always goes to member
-  `k mod live_members`, recomputed only at a quiescent point (no requests in flight on the handle), so **requests that
-  touch the same byte range always travel on the same connection, in submission order**;
-- requests crossing a unit boundary are split at the boundary;
-- `fstat`, `fsetstat` (including truncate), `fsync` and `close` are **barriers**: they wait for every in-flight part
-  on every member, then run on the primary sub-handle (`fsync` and `close` are then sent to every sub-handle that was
-  opened, and complete when all are done);
+`TRUNC` and `EXCL` take effect exactly once). `APPEND` handles, directories and meta handles are never striped (the
+flag is ignored); with no live member the handle is simply served by the primary. Sub-handles on the secondaries
+are opened lazily, on first use of a unit routed to that member, with
+`oflags & ~(CREAT|TRUNC|EXCL|APPEND|STRIPED)`: the primary's OPEN already did the create/truncate, and the last two
+bits are ours (wire pflags are masked to the protocol's 6 bits anyway). A member whose sub-open cannot be sent or
+is refused falls back to the primary; the next barrier drops it from the routing. Striped requests run in their own
+queue class `Q_STRIPE` beside the meta/bulk queues of section 10.5, and barrier wires carry the dedicated phase
+`PH_STRIPED`, so their replies settle the barrier instead of the data path (both are internal, section 11). Routing:
+- the file is divided into `stripe_bytes` units (option `stripe_bytes`, default 1 MiB, normalised at open time to
+  the smaller of the negotiated `max_read`/`max_write` limits with a 512-byte floor, so one unit never exceeds what
+  a single request may carry); unit `k = offset / stripe_bytes` goes to `route_map[k % route_n]`, a per-handle table
+  listing the primary and every member whose sub-handle is open. The table is recomputed only at quiescent points -
+  the FSTAT that completes the open and every completed barrier - so **requests that touch the same byte range
+  always travel on the same connection, in submission order**;
+- requests crossing a unit boundary are split at the boundary; every piece parks behind the member channel's limits
+  (`max_inflight_reqs`, the channel output high water, `max_inflight_bytes`), never the whole request queue;
+- `fstat`, `fsetstat` (including truncate), `fsync`, `fstatvfs` and `close` are **barriers**: they wait until the
+  handle has no data wire in flight and no sub-open pending, then run on the primary handle and on every open
+  sub-handle (`fstat`/`fsetstat`/`fstatvfs` need only the primary; `fsync` and `close` also go to every sub-handle
+  that was opened). The barrier completes when all its wires have settled, first error wins, and its completion is
+  the route-table recompute of the first bullet;
 - `copy-data` is never striped (it uses the primary handle); `same_channel_as` refers to the primary sub-handle;
 - `max-open-handles` is tracked per member, since each member is its own server process.
 
 **Per-connection reconnect.** Each member has its own backoff loop (`reconnect` policy, at most once per 5 s per
 member) that runs only while the session is READY.
-- Losing a **secondary**: the session stays READY. Its in-flight **reads** are reissued on the primary sub-handle
+- Losing a **secondary**: the session stays READY. Its in-flight **reads** are reissued on the primary handle
   transparently (reads are idempotent). Its in-flight **writes** complete with `SD_E_DISCONNECTED`,
   `maybe_executed = 1` and `session_ready = 1`, and are never replayed: the VFS may resubmit them at once on the
-  same handle (it remains valid), in line with its write-mode rules. Until the handle's next quiescent point, the
-  lost member's units go to the primary; then routing is recomputed over the live members.
+  same handle (it remains valid), in line with its write-mode rules; the write's wires on the surviving channels
+  stay in the table, so their late acknowledgements are discarded instead of surfacing as protocol errors. Its
+  sub-handles are released without a CLOSE (they died with the connection), a sub-open still on its wire fails with
+  `SD_E_DISCONNECTED`, and a barrier wire it already carried counts as settled (the handle died with it). Until the
+  handle's next quiescent point, the lost member's units go to the primary; then routing is recomputed over the live
+  members.
 - Losing the **primary**: this is the session-level disconnect of section 10.6. All secondaries are closed with it,
   all handles (including sub-handles) go stale, and after the next READY the members are re-admitted under the rule
   above.
@@ -2387,7 +2442,7 @@ with clang + ASan/UBSan/MSan (decisions.md D21: test infrastructure only, nothin
 | `fuzz_hostkeys` | `hostkeys-00` announcements and `hostkeys-prove-00` replies |
 | `fuzz_mlkem` | ML-KEM ciphertexts and encapsulation keys (decaps never crashes; implicit rejection holds) |
 | `fuzz_field25519`, `fuzz_fieldp`, `fuzz_bn_modexp` | differential against the test-only reference bignum (section 2.7.4) |
-| `fuzz_inflate` (post-1.0) | zlib@openssh decompression |
+| `fuzz_inflate` | zlib@openssh decompression (M7) |
 
 - Seed corpora: captures from interop runs (with keys from fixtures), plus the fixtures directory.
 - CI: each target runs 5 minutes on every PR touching `src/sd_ssh|sd_sftp|sd_crypto`, and 1 hour nightly. The corpus is kept
@@ -2566,7 +2621,7 @@ lab verifications and details for the implementers:
     (1-4), `identities_only`, `cache_secrets_for_reconnect`, `refuse_terrapin_exposed`, `crypto_backend`,
     `legacy_algorithms` (`allow|warn|ask|refuse` -> `SD_LEGACY_ALLOW|WARN|ASK|REFUSE`), `host_key_alias`,
     `update_host_keys` (`ask|yes|no` -> `sd_hku_mode`), `identity_probe` (`owner|exec`; `exec` sets
-    `SD_SFTP_OPT_IDENTITY_EXEC`), `keepalive`, `connect_timeout`. Proxies use 03's per-leg keys (03 §3.8): `proxy` /
+    `SD_SFTP_OPT_IDENTITY_EXEC`), `keepalive`, `connect_timeout`, `connection.compression` (`yes|no`, default `no`; sets `SD_SSH_CFG_COMPRESS`). Proxies use 03's per-leg keys (03 §3.8): `proxy` /
     `proxy.K` (spec `none|system|http://[user@]host[:port]|socks5://[user@]host[:port]`) for leg K, which is
     `hops[K-1].proxy`; `sd_mount` parses the spec into `sd_proxy_cfg` (kind, host, port, user; `remote_dns` always
     1, 03 uses socks5h semantics). `proxy_auth` maps `auto` -> `BASIC|SSPI_KERBEROS` (TM-R10: Negotiate restricted

@@ -1,0 +1,286 @@
+# M2 implementation notes
+
+Working notes for the M2 milestone (`docs/design/00-integration-review.md` §6, M2 row). Each area owner appends
+a section; keep sections self-contained.
+
+## Interop fixtures and the matrix runner (fixtures)
+
+Test infrastructure only (decisions.md D21): OpenSSH, Python proxies and every config below run inside WSL as
+the normal WSL user, never as root, and nothing of it ships. The system sshd, `/etc/ssh`, `~/.ssh` and the
+user's GnuPG keyring are never touched. State lives in `~/.local/state/shelldrive-fixtures/` inside WSL; the
+client material the Windows tests need is copied to `tests/fixtures/matrix/state/` (gitignored).
+
+### Quick start
+
+```powershell
+# once (about 1 minute): fetch, verify (GPG + published SHA-256) and build OpenSSH 10.x into the user prefix
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\openssh10\build.ps1
+# start everything (idempotent), run the interop set per server, print the matrix, stop what it started
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-matrix.ps1 -BuildDir build\<dir>
+# or drive the fixtures by hand
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\matrix\ctl.ps1 start      # stop | status | ...
+```
+
+From WSL: `sh tests/fixtures/matrix/fixture.sh start|stop|status|...`.
+
+### Instances
+
+All listen on `127.0.0.1` (Windows localhost relay) **and** the WSL VM address (`direct_host`, NAT mode), except
+the jump-only hosts, which listen on `127.0.0.2` inside WSL only (not reachable from Windows, so a test can prove
+the jump was used). Prefer `direct_host`: the localhost relay can wedge for a port (m1-notes.md).
+
+| Name | Port | Server | Purpose |
+|------|------|--------|---------|
+| `modern` | 2222 | OpenSSH 9.6p1 (Ubuntu) | existing M1 fixture (`tests/fixtures/wsl-sshd`, unchanged) |
+| `ossh10` | 2230 | OpenSSH 10.x (own build) | `mlkem768x25519-sha256` first, ed25519 + ECDSA P-256 + RSA-3072 host keys |
+| `ossh10pq` | 2239 | OpenSSH 10.x | **only** `mlkem768x25519-sha256` (a client without it fails KEX) |
+| `legacy` | 2231 | OpenSSH 9.6p1 | legacy only: 3des-cbc, aes*-cbc, hmac-sha1(-96), hmac-md5(-96), dh-group1/14-sha1, dh-gex-sha1/-sha256, ssh-rsa (SHA-1) and ssh-dss host keys |
+| `legacy3des` | 2238 | OpenSSH 9.6p1 | exactly one choice each: 3des-cbc, hmac-sha1, diffie-hellman-group14-sha1, ssh-rsa |
+| `bastion1` | 2232 | OpenSSH 9.6p1 | jump host, `PermitOpen 127.0.0.1:* 127.0.0.2:*` |
+| `bastion2` | 2233 on 127.0.0.2 | OpenSSH 10.x | second jump host (3-hop chains) |
+| `target` | 2234 on 127.0.0.2 | OpenSSH 10.x | jump target; accepts the PPK keys |
+| `cert` | 2235 | OpenSSH 9.6p1 | user certificates only (`TrustedUserCAKeys`, `AuthorizedKeysFile none`, `RevokedKeys` KRL) + host certificate from a test host CA |
+| `rotate` | 2236 | OpenSSH 10.x | host-key rotation for UpdateHostKeys / `hostkeys-00@openssh.com` |
+| `otp` | 2237 | OpenSSH 9.6p1 + PAM | publickey + keyboard-interactive TOTP bastion; **needs a one-time sudo step**, see below |
+| HTTP proxy | 2280 / 2281 | Python stdlib | CONNECT, open / Basic auth |
+| SOCKS5 proxy | 2290 / 2291 | Python stdlib | CONNECT, no auth / RFC 1929 user+password |
+
+Details per instance (exact algorithm lists, keys, certificates): `tests/fixtures/matrix/README.md`. OpenSSH 10.6p1
+build and its capabilities: `tests/fixtures/openssh10/README.md`. `ctl.ps1 selftest` checks every instance with the
+stock OpenSSH clients (53 checks, about 10 s; all pass, OTP and PPK-via-puttygen skipped until the sudo steps).
+
+### Environment for tests
+
+`tests/fixtures/matrix/state/endpoints.env` (written on every start/stop, `KEY=value`, Windows paths) holds the
+global variables; `run-matrix.ps1` exports all of them and points `SD_IT_ENV_FILE` at the file, so a test can
+also read it directly when run outside the runner. Only running instances are listed.
+
+| Variable | Meaning |
+|----------|---------|
+| `SD_IT_USER`, `SD_IT_WIN_HOST`, `SD_IT_DIRECT_HOST` | login user; host to use from Windows (direct address, else `127.0.0.1`) |
+| `SD_IT_KNOWN_HOSTS` | OpenSSH `known_hosts` with every instance under the names a client uses (`[host]:port`), `@cert-authority` line for `cert`, `rotate` with key A only |
+| `SD_IT_KEY_{ED25519,ECDSA,RSA,ED25519_ENC}`, `SD_IT_KEY_PASSPHRASE` | OpenSSH private keys (the `_ENC` one with the passphrase) |
+| `SD_IT_KEY_{ED25519,RSA,ECDSA}_PPK3`, `SD_IT_KEY_ED25519_PPK2` | the same keys as unencrypted PPK v3 / v2; `SD_IT_KEY_ED25519_PPK3_ARGON2ID`, `SD_IT_KEY_RSA_PPK2_AES` only with puttygen |
+| `SD_IT_CERT_{ED25519,RSA,ECDSA}` | valid user certificates for the keys above |
+| `SD_IT_CERT_{EXPIRED,WRONGPRINC,REVOKED}` + `_KEY` | negative certificates and their own keys |
+| `SD_IT_USER_CA`, `SD_IT_HOST_CA` | CA public keys (`type base64`) |
+| `SD_IT_<INSTANCE>_{HOST,PORT,HOSTKEYS}` | per instance (`MODERN`, `OSSH10`, `OSSH10PQ`, `LEGACY`, `LEGACY3DES`, `BASTION1`, `BASTION2`, `TARGET`, `CERT`, `ROTATE`, `OTP`); `HOSTKEYS` = `type base64` entries separated by `;`, preferred first |
+| `SD_IT_ROTATE_MODE`, `SD_IT_ROTATE_HOSTKEY_A`, `SD_IT_ROTATE_HOSTKEY_B` | rotation state; change it with `wsl.exe -e sh $env:SD_IT_FIXTURE_SH rotate a\|ab\|ba\|b` (restarts the instance, about 0.5 s) |
+| `SD_IT_OTP_SECRET`, `SD_IT_OTP_METHODS` | base32 TOTP secret (RFC 6238, SHA-1, 30 s, 6 digits) and the instance's `AuthenticationMethods` |
+| `SD_IT_PROXY_{HTTP,HTTP_AUTH,SOCKS5,SOCKS5_AUTH,SQUID,DANTE}` + `_LOG` | `host:port` of each running proxy and its request log |
+| `SD_IT_PROXY_USER`, `SD_IT_PROXY_PASS` | proxy credentials (`sdproxy` / `shelldrive-proxy-pass`) |
+| `SD_IT_FIXTURE_SH` | WSL path of `fixture.sh` (rotation, `otp-code`) |
+
+Per-row variables (`SD_IT_SERVER`, `SD_IT_HOST`, `SD_IT_PORT`, `SD_IT_KEY`, `SD_IT_CERT`, `SD_IT_JUMP`,
+`SD_IT_PROXY`, `SD_IT_EXPECT_KEX`, `SD_IT_EXPECT_LEGACY`, `SD_IT_OTP`, `SD_IT_FEATURES`), the row list and the
+`srv_<row>` / `srv_all` CTest label convention: `tests/interop/README.md`. A test that writes one generic "connect
+with the row's recipe" routine gets every row (servers, jumps, proxies, the demo path) without per-server code.
+
+Fault injection on any instance: `tests/fixtures/wsl-sshd/ctl.sh <cmd> <instance>` (new optional second argument;
+without it the M1 fixture, as before).
+
+### Needs sudo (asked of the user, not done)
+
+| For | Command |
+|-----|---------|
+| `otp` instance (TOTP keyboard-interactive; the "OTP keeps the pool at 1" and demo checks) | `sudo apt install libpam-google-authenticator` plus `/etc/pam.d/shelldrive-otp` exactly as printed by `fixture.sh otp-pam` (sshd itself stays unprivileged) |
+| Squid / Dante rows | `sudo apt install squid dante-server` (both then run unprivileged from `fixture.sh`; the services can stay disabled) |
+| encrypted PPK fixtures (v3 Argon2id, v2 AES) and the PPK cross-check | `sudo apt install putty-tools` |
+
+### Gaps
+
+- OTP login is untested end to end until the sudo step: the PAM service name being the program name (`__progname`,
+  OpenSSH's default) is expected but not observed; the unprivileged sshd does start the PAM kbdint device.
+- No scripted/fake SSH server exists in the repo's tests (sd_ssh unit tests have none), so there is no
+  OTP fallback without PAM.
+- Squid and Dante configs are written but never run here. Dante unprivileged cannot do username auth.
+- Encrypted PPK fixtures need puttygen; the unencrypted PPK v3/v2 files come from our own stdlib writer
+  (`ppk.py`) and are not cross-checked by PuTTY until `putty-tools` is installed.
+- Windows-side matrix run against real ShellDrive interop tests not yet done: none carries `srv_*` labels yet; the
+  runner was validated with a throwaway CTest project (all rows, skip/pass mapping, start/stop bookkeeping).
+
+## Symmetric and post-quantum primitives in sd_crypto (pq)
+
+API: `src/sd_crypto/include/sd_crypto/sd_crypto_pq.h` (included by `sd_crypto.h`); sources in
+`src/sd_crypto/sources_pq.cmake`; tests `tests/unit/sd_crypto_pq` (`unit.crypto_pq`); vectors and provenance in
+`tests/vectors/pq/`.
+
+- SHA3-256/512, SHAKE128/256 (`sha3.c`): 64-bit lanes, constant rotations only (no runtime helper on x86).
+- ML-KEM-768 (`mlkem.c`): keygen/encaps/decaps plus `_derand` variants for KATs and the mock server; ek modulus
+  check in encaps, dk hash check in decaps (`SD_E_CRYPTO`), implicit rejection by constant-time compare and
+  masked select. Compression uses a 32x32->64 multiply by ceil(2^35/q) (exact for inputs < 2^24).
+- `mlkem768x25519-sha256` combiner (`mlkem_hybrid.c`): `sd_mlkem768x25519_client_init/finish` and
+  `sd_mlkem768x25519_server`; K = SHA-256(K_PQ || K_CL), sd_ssh encodes K as an SSH string.
+- BLAKE2b (`blake2b.c`), Argon2d/i/id v0x13 (`argon2.c`, VirtualAlloc, caps 1 GiB / 1000 passes / 255 lanes,
+  optional cancel flag checked per segment).
+- 3DES (`des3.c`): S-boxes as one 64-leaf boolean multiplexer network over nibble-packed selector words (the
+  leaves are public constants generated by `des3_gen_tables.py`); no secret-indexed table or secret shift.
+  Packet names `aes128/192/256-cbc` and `3des-cbc` in `pktcipher.c` (`SD_PC_CBC | SD_PC_LEGACY`, chaining value
+  kept across `sd_pktcipher_crypt` calls); `sd_cipher_oneshot` also takes `3des-cbc` / `DES-EDE3-CBC`.
+  AES-CBC packets use the own bitsliced core only (CNG has no ECB-decrypt hook in `aes_cng.c`).
+- Packet MACs `hmac-sha1(-etm)` need only `SD_HASH_SHA1` in `sd_hmac_*` (sd_crypto_pk.h); nothing pq-specific.
+- Constant-time gate: `sha3 mlkem des3 blake2b argon2` are in `SD_CT_SOURCES` (tools/sd-isacheck). Argon2d and
+  the data-dependent half of Argon2id index memory by data by design.
+- PPK v3 fixtures are written by our Python reference (`tests/vectors/pq/ppk_fixture.py`) because puttygen is not
+  installed; replace them with puttygen output when available.
+- CNG differential: AES-CBC and 3DES-CBC everywhere CNG exists; ML-KEM-768 against `BCRYPT_MLKEM_ALGORITHM`
+  where bcrypt.dll provides it (seed import, ek export compare, cross encaps/decaps, tampered ciphertext).
+## Matrix-driven transport interop (backend, M2 order step 2)
+
+`tests/unit/sd_ssh/test_interop_m2.c` (`sd-test-ssh-interop-m2`) consumes the row recipe of
+`run-matrix.ps1` (every `SD_IT_*` variable; `tests/interop/README.md`); plain `ctest` skips it with
+77. One generic `mx_connect` builds whatever the row describes (server, `SD_IT_JUMP` hops,
+`SD_IT_PROXY` with Basic / RFC 1929 credentials, `SD_IT_CERT`, OTP) so the same tests cover every
+row without per-server code. Entry points and their labels:
+
+| CTest entry | Labels | What it proves |
+|---|---|---|
+| `interop.ssh_matrix_connect` | `srv_all` | connect + exec over the row recipe; negotiated KEX vs `SD_IT_EXPECT_KEX`, legacy mask vs `SD_IT_EXPECT_LEGACY`, strict KEX, zero host-key prompts (the fixture known_hosts decides every hop, host certificates via `@cert-authority` on `cert`), TOTP kbdint on `otp`/`demo` |
+| `interop.ssh_matrix_kex` | `srv_modern;srv_ossh10;srv_ossh10pq;srv_legacy;srv_legacy3des;srv_cert` | walks KEX × host-key combinations with `algos.disabled` lists: mlkem768x25519-sha256, curve25519-sha256, ECDH P-256, rsa-sha2-512 host keys; the legacy DH set (gex-sha256, group14-sha1, gex-sha1, group1-sha1) with ssh-rsa; 3des-cbc on `legacy3des`; the host-certificate host-key algorithm on `cert` |
+| `interop.ssh_matrix_pq` | `srv_ossh10pq` | without ML-KEM in the offer KEX fails (`SD_E_KEX_FAILED`) |
+| `interop.ssh_matrix_update` | `srv_rotate` | `hostkeys-00@openssh.com` announcement with proof, `sd_known_hosts_apply_hostkeys`, server rotated to B only, reconnect authenticates with the learned key; leaves the fixture in mode `ab` (RESOURCE_LOCK `wsl_rotate_fixture`) |
+
+TOTP is computed in-process (RFC 6238 over `SD_IT_OTP_SECRET`; the secret is never printed) with
+`sd_hmac(SD_HASH_SHA1)`; later kbdint rounds use the next 30 s step. State of the full run
+(2026-10-25, `x64-modern` Release, fixtures per the table in this file): every entry passes on every
+row whose fixtures are up, including the demo row (SOCKS5 auth proxy -> OTP bastion -> target, PPK
+v3 key, ML-KEM). Squid/Dante rows stay fixture-down as before.
+
+Fix to the runner: the per-row ctest invocation now runs with `$ErrorActionPreference = 'Continue'`
+(Windows PowerShell 5.1 turns native stderr into error records; with 'Stop' the script aborted at
+the first failing row instead of collecting the table).
+
+| `interop.ssh_matrix_auth_keys` | `srv_ossh10` | every private-key format of the fixtures authenticates: OpenSSH v1 plain/encrypted, PPK v3/v2 unencrypted, puttygen-written encrypted PPK v3 (Argon2id) and PPK v2 (AES) with the fixture passphrase (this is the PPK cross-check; the modern fixture only trusts the M1 keys, so the row is ossh10) |
+| `interop.ssh_matrix_auth_certs` | `srv_cert` | user certificates of every key type authenticate via `TrustedUserCAKeys`; expired, wrong-principal and revoked (KRL) certificates fail with `auth_failed` |
+Dev helper `build/run-row.sh` (untracked, build dir) runs one sub-test for one row by hand with the
+same variables the runner sets.
+
+## Connection pool, increment 1: members and admission (backend, M2 order step 4)
+
+`sd_sftp_options.connections` (1..4) is no longer clamped to 1 (01 §10.9, 02 §5.6). The pool lives
+in `src/sd_sftp/sftp_ssh.c` around the primary transport: secondary members are their own
+`sd_ssh_conn` with `SD_SSH_CFG_POOL_MEMBER`, created with prompt-cancelling callbacks (a member
+never shows UI; a cancelled prompt fails its connect and drops it), connected one at a time after
+the primary reached READY and `sd_ssh_conn_auth_info().noninteractive` says no prompt was shown
+(the 2FA rule). Each member opens one bulk SFTP channel, runs its own INIT/VERSION +
+REALPATH(".") exchange (length-framed, `sftp_proto.h`), and the admit/drop decision is posted to
+the primary I/O thread, which compares the member's host-key fingerprint and realpath against the
+primary's: a mismatch drops the member and stops admissions for the generation. EV_POOL events
+(`member`, `connections`, `reason`), `server_info.connections` and the `conn[1..3]` part of
+`sd_sftp_session_stats()` report the pool. Not yet implemented (next increments): striped handles
+(SD_SFTP_O_STRIPED routing, sub-handles, barriers), per-member loss/reconnect semantics, the 500 ms
+admission stagger, member retry with backoff. The sd_sftp.h header states this scope.
+
+Tests: `m2_pool_admits_members` (3 members admitted, stats/events checked) and
+`m2_pool_interactive_stays_at_one` (a key passphrase answered by the "user" keeps the pool at 1)
+in `tests/unit/sd_sftp/test_ssh_interop.c` against the modern fixture.
+
+## Pool striping, increment 2: striped handles (backend, M2 order step 4)
+
+Implements the striping contract of 01 §10.9 (as documented there; this section records what
+landed and how to exercise it). Session side (`src/sd_sftp/sftp_session.c`, the "pool striping"
+block): a handle opened with `SD_SFTP_O_STRIPED` (never directories, meta handles or `APPEND`)
+is served by the primary bulk channel plus one lazily opened sub-handle per member (`oflags`
+masked of `CREAT|TRUNC|EXCL|APPEND|STRIPED`; a refused sub-open falls back to the primary).
+Unit `k = offset / stripe_bytes` routes to `route_map[k % route_n]`; `stripe_bytes` is clamped to the
+smaller of the negotiated `max_read`/`max_write` (512-byte floor), so one unit always fits one
+request. The table is recomputed only at quiescent points - the open FSTAT and every completed
+barrier - so a byte range always travels on the same connection in submission order.
+`FSTAT`/`FSETSTAT`/`FSYNC`/`FSTATVFS`/`CLOSE` are barriers: drain the handle's data wires and
+pending sub-opens, then run on the primary handle (and on every open sub-handle for
+`FSYNC`/`CLOSE`), first error wins, completion recomputes the routing. Member loss: in-flight
+reads are re-issued on the primary, in-flight writes complete `SD_E_DISCONNECTED` with
+`maybe_executed = 1` and `session_ready = 1` (the write's wires on the surviving channels stay
+matched so their late acks are discarded, not "unknown id" protocol errors), sub-handles are
+released without a CLOSE, and the session stays READY. Transport side (`src/sd_sftp/sftp_ssh.c`):
+streams 2..4 are the members behind `open_stream`/`write_stream`/`consumed_stream` (`SD_SFTP_TP_POOL`),
+`notify_ready` admits per generation, `member_stats` writes `out[idx - 1]`. Events are guarded by
+a per-member generation on both sides, so a stale posted close or a double-reported drop acts once.
+
+Tests (all names are `SD_TEST` entries):
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `tests/unit/sd_sftp/test_striping.c` (`unit.sftp`, fake transport) | `striping_units_route_by_member_in_order`, `striping_write_units_route_and_place_bytes`, `striping_sub_handles_open_lazily`, `striping_refused_sub_open_falls_back_to_primary`, `striping_barrier_waits_for_data_wires`, `striping_fsync_settles_on_every_sub_handle`, `striping_close_settles_on_every_sub_handle`, `striping_write_failure_refines_to_no_space`, `striping_write_parks_at_max_inflight_reqs`, `striping_write_parks_at_obuf_high_water`, `striping_write_parks_at_max_inflight_bytes`, `striping_member_loss_reissues_reads_on_primary`, `striping_member_loss_fails_writes_with_session_ready`, `striping_route_recomputed_after_member_loss`, `striping_member_write_error_in_drop_window_keeps_ready`, `striping_member_drop_during_barrier_counts_it_done`, `striping_plain_and_append_handles_stay_off_members`, `striping_meta_and_directory_handles_stay_off_members`, `striping_transport_without_members_never_stripes`, `striping_member_drop_reported_twice_acts_once`, `striping_stale_member_event_after_generation_reset_is_ignored`, `striping_stripe_unit_clamped_to_negotiated_limits` | routing and placement, lazy sub-opens, barriers, member loss, the generation guards, the clamp, and the regressions (plain/`APPEND`/meta/directory handles and member-less transports never touch a member stream) |
+| `tests/unit/sd_sftp/test_ssh_interop.c` (`interop.sftp_ssh`, wsl-sshd fixture) | `m2_striping_end_to_end`, `m2_striping_member_lost_mid_transfer` | a 32 MiB striped write + read-back over 3 connections with SHA-256 verify and payload in `stats.conn[1..3]`; exactly one member killed mid-transfer through the fixture (`ctl.ps1` freeze/drop/thaw): burst reads recover byte-exact on the primary, at least one burst write fails with `SD_E_DISCONNECTED`/`maybe_executed`/`session_ready`, the pool reports 2 connections, the session stays READY and a follow-up striped transfer succeeds on the survivor |
+
+Commands (`x64-modern` Debug; `cmake`/`ctest` are not on `PATH`, see the hand-off for the full
+path):
+
+```text
+cmake --build --preset x64-modern-debug                # from the worktree root
+cd build\x64-modern
+ctest -C Debug -R "^unit\.sftp$" --output-on-failure   # whole unit suite, striping included
+bin\Debug\sd-test-sftp.exe --filter striping_          # only the 22 striping unit tests
+ctest -C Debug -R "^interop\.sftp_ssh$" --output-on-failure   # needs the wsl-sshd fixture up:
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\wsl-sshd\start.ps1
+bin\Debug\sd-test-sftp-ssh-interop.exe --filter m2_striping   # only the 2 striping interop tests
+```
+
+`interop.sftp_ssh` exits 77 (skipped) when the fixture is not running. Contract: 01 §10.9
+("Transport view", "Striping", "Per-connection reconnect"); the vfs-side policy that decides which
+handles get `SD_SFTP_O_STRIPED` is 02 §5.6 and still open.
+
+## Vfs striping policy and the 1 GiB pool measurement (02 §5.6)
+
+Implements the vfs-side decision of 02 §5.6 ("Striping policy (vfs side)", updated in the same
+commit): `sd_vfs` opens a data handle with `SD_SFTP_O_STRIPED` only while the pool reports more
+than one member (`server_info.connections`, re-read at every data-handle open), the access is
+sequential (`SEQUENTIAL_ONLY`, a write continuing at the file's end, or a read continuing the
+handle's read-ahead sequence; `RANDOM_ACCESS` never), and the file is at least `stripe_min_file`
+(`sd_vfs_options.stripe_min_file`, default 8 MiB) or a sequential write call of 1 MiB or more has
+run on the node (latched as `stripe_wish`, so later data-handle opens of the node reopen striped).
+`APPEND`-only handles and `SD_VFS_EOF` writes never qualify — the vfs never opens a remote handle
+with `SD_SFTP_O_APPEND`, so it never asks for what `sd_sftp` refuses — and directories have no
+data handle at all. A handle opened before its node qualified is replaced by a striped one at the
+next data access (in-flight requests keep the old handle; a failed replacement open is not an
+error). `stripe_bytes` stays at the `sd_sftp` default of 1 MiB, which `sd_sftp` clamps at
+striped-open time to the smaller of the negotiated `max_read`/`max_write` (512-byte floor).
+Files: `src/sd_vfs/vfs_data.c` (`stripe_oflags`, the `vfs_get_fh` policy, the read/write `seq`
+classification, the write-behind kick), `vfs_core.c` (the option), `vfs_internal.h`
+(`stripe_wish`, the 1 MiB constant); the fake gained `fake_config.connections` and
+`fake_striped_opens()`.
+
+Tests: five `SD_TEST` entries in `tests/unit/sd_vfs/test_vfs_stripe.c` (`unit.vfs`): the size
+threshold (9 MiB sequential read stripes, 7 MiB does not), the sequential-write threshold (one
+1 MiB write qualifies at once; 256 KiB writes qualify only once the file passes 8 MiB; random
+256 KiB writes never), the write-behind kick (the deferred send stripes the qualified stream),
+the pool gate (`connections = 1` never stripes) and the `APPEND`/directory exclusions.
+
+**1 GiB measurement** (`bench.vfs_pool`, `tests/unit/sd_vfs/bench_pool.c`, label `bench`): plain
+`ctest` skips it (exit 77); with `SD_IT_BENCH=1` and the wsl-sshd fixture up it writes and reads
+1 GiB through `sd_vfs` (`SEQUENTIAL_ONLY`, 1 MiB calls, write-through, pattern-verified) with
+`connections = 1` and then `connections = 3` striped, deleting the file afterwards. Measured run
+(x64-modern Debug, fixture over 127.0.0.1:2222, 2026-10-26):
+
+| Pattern | Write | Read |
+|---|---|---|
+| `connections = 1` | 52.2 MB/s | 49.9 MB/s |
+| `connections = 3` striped | 53.4 MB/s | 92.2 MB/s |
+
+Read throughput scales with the pool (1.85x); the write path does not on this fixture (1.02x) —
+with `max_write` at 256 KiB the per-call chunk fan-out already saturates the primary's bulk
+channel, and the write-through mode acks every call, so the pool helps only the read-ahead side
+here. Write-behind plus larger server limits is the follow-up lever, not more connections.
+
+```text
+cmake --build --preset x64-modern-debug                # from the tree root
+cd build\x64-modern
+ctest -C Debug -R "^unit\.vfs$" --output-on-failure
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\fixtures\wsl-sshd\start.ps1  # if down
+$env:SD_IT_BENCH = "1"; bin\Debug\sd-test-vfs-bench.exe
+ctest -C Debug -R bench          # without SD_IT_BENCH: skipped (exit 77)
+```
+
+## x64-analysis brought back to green (backend, M2 order step 6 prep)
+
+The analysis preset had not run since the M2 area work landed. Library fixes: bn.c montmul zeroes
+its accumulator with memset (the analyzer loses the zeroing loop through the mac/adc out-params),
+profile_m2.c seeds the host pointer at declaration plus one _Analysis_assume_ where its colon
+aliasing is spurious, secret.c list_add uses a typed allocation with a per-element copy so the size
+model stays per entry. Test-side: tu_hex is annotated _Outptr_result_buffer_(return) (definition
+matches); the auth-flow harness pkt buffer shrank 70000 -> 8192 (auth messages are a few KB; the
+embedded 70 KB buffer put every test over the analysis stack budget) and the wycheproof GCM test
+uses a fixed 16-byte tag buffer; big harness structs (sd_profile locals, h2, the fake conns) are
+static. ci-local.ps1 excludes the new `matrix` CTest label: the srv_* tests need the per-row
+fixtures and run under tests/interop/run-matrix.ps1, whose matrix stayed green.

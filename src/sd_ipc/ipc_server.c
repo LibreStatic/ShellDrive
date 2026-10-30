@@ -30,6 +30,8 @@
 typedef struct ipc_msg {
   struct ipc_msg *next;
   uint64_t client_id;                 /* 0 = broadcast */
+  uint32_t caps;                      /* broadcast: every bit must be in the client's caps */
+  uint64_t exclude;                   /* broadcast: client id that never receives it (0 = none) */
   char topic[IPC_TOPIC_LEN];
   size_t len;
   char data[1];
@@ -43,6 +45,8 @@ struct sd_ipc_client {
   HANDLE pipe;
   uint64_t id;
   int hello_done, closing, close_after_write;
+  int cur_req_active, deferred;      /* M3: inside a handler call; the handler deferred its reply */
+  int64_t cur_req_id;
   int pending;                        /* outstanding ReadFileEx/WriteFileEx */
   uint8_t *rbuf;
   size_t rcap, rlen;
@@ -53,8 +57,11 @@ struct sd_ipc_client {
   uint32_t ntopics;
   uint32_t caps;
   char lang[8];
+  char kind[16];                      /* hello "client" */
   PSID sid;
   int elevated, admin;
+  int conn_admin;                     /* 2.2: admin class decided at connect, from the token (before hello) */
+  uint64_t connect_ms;                /* when the instance connected: the hello deadline counts from here */
   DWORD pid;
   uint64_t last_activity;
   uint64_t rate_window;
@@ -84,6 +91,34 @@ struct sd_ipc_server {
 static void client_close(sd_ipc_client *c);
 static void client_start_read(sd_ipc_client *c);
 static void client_pump_write(sd_ipc_client *c);
+static void classify_at_connect(sd_ipc_client *c);
+static void reply_error_code(sd_ipc_client *c, int64_t id, sd_err e, const char *code, const char *detail);
+
+/* Admin state for the service rules (caps, reserved instances, rate limit): the server's callback when it has one. */
+static int client_is_admin(sd_ipc_client *c)
+{
+  sd_ipc_server *s = c->srv;
+  if (s->cfg.is_admin)
+    return s->cfg.is_admin(s->cfg.ctx, c) ? 1 : 0;
+  return c->admin;
+}
+
+/* Request cap of a client (TM-R25): the admin cap after hello for an admin, the non-admin cap otherwise. */
+static size_t client_msg_cap(sd_ipc_client *c)
+{
+  sd_ipc_server *s = c->srv;
+  if (s->cfg.max_message_nonadmin == 0)
+    return s->cfg.max_message;
+  if (c->hello_done && client_is_admin(c))
+    return s->cfg.max_message;
+  return s->cfg.max_message_nonadmin;
+}
+
+static void refused(sd_ipc_client *c, const char *reason)
+{
+  if (c->srv->cfg.on_refused)
+    c->srv->cfg.on_refused(c->srv->cfg.ctx, c, reason);
+}
 
 /* ---- instances ---- */
 
@@ -190,9 +225,33 @@ static void on_connected(sd_ipc_server *s)
   s->clients = c;
   sd_mutex_unlock(&s->lock);
   SD_LOGD("ipc", "client %llu connected", (unsigned long long)c->id);
+  /* 2.2 (TM-R25): the class of the instance is decided here, from the token, not at hello. The reserved instances and
+     the hello deadline of the service depend on it, so a connection that never says hello is counted correctly. */
+  c->connect_ms = sd_tick_ms();
+  if (s->cfg.reserved_admin_instances || s->cfg.hello_timeout_ms)
+    classify_at_connect(c);
+  if (s->cfg.admin_at_connect && s->cfg.admin_at_connect(s->cfg.ctx))
+    c->conn_admin = 1;
   /* Listen again BEFORE the read: if this client is already gone, closing its instance must not
      leave the pipe name without any instance (clients would see ERROR_FILE_NOT_FOUND). */
   listen_next(s);
+  if (s->cfg.reserved_admin_instances && s->cfg.max_instances > s->cfg.reserved_admin_instances && !c->conn_admin) {
+    sd_ipc_client *o;
+    uint32_t others = 0;
+    sd_mutex_lock(&s->lock);
+    for (o = s->clients; o; o = o->next)
+      if (o != c && !o->closing)
+        others++;
+    sd_mutex_unlock(&s->lock);
+    if (others >= s->cfg.max_instances - s->cfg.reserved_admin_instances) {
+      /* the instances left are held for administrators: the client gets the refusal and the instance is closed
+         after it is written; nothing is read from it (the hello deadline does not apply to a closing instance) */
+      refused(c, "reserved");
+      c->close_after_write = 1;
+      reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "instances reserved for administrators");
+      return;
+    }
+  }
   client_start_read(c);
 }
 
@@ -341,12 +400,32 @@ static void reply_error_code(sd_ipc_client *c, int64_t id, sd_err e, const char 
 
 /* ---- hello ---- */
 
+/* Admin class of a token (2.2, TM-R25): a member of BUILTIN\Administrators that is elevated (Vista+; on XP any member).
+   *elevated is set from TokenElevation when the query works. Fail closed: a token that cannot be checked is not admin. */
+static int token_admin_class(HANDLE tok, int *elevated)
+{
+  SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+  PSID admins = NULL;
+  BOOL member = FALSE;
+  DWORD elev = 0, len = 0;
+  int admin = 0;
+  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elev, sizeof(elev), &len))
+    *elevated = elev ? 1 : 0;
+  if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)) {
+    if (CheckTokenMembership(tok, admins, &member) && member)
+      admin = (*elevated || !sd_os_at_least(6, 0, 0)) ? 1 : 0;
+    FreeSid(admins);
+  }
+  return admin;
+}
+
 static int token_checks(sd_ipc_client *c, HANDLE tok, const char **code)
 {
   sd_ipc_server *s = c->srv;
-  DWORD rid = 0, len = 0, appc = 0, elevated = 0;
+  DWORD rid = 0, len = 0, appc = 0;
+  int elevated_flag = 0;
   *code = "access_denied";
-  if (ipc_token_user_sid(tok, &c->sid) != SD_OK)
+  if (c->sid == NULL && ipc_token_user_sid(tok, &c->sid) != SD_OK)      /* the connect check may have read it */
     return 0;
   if (s->ep == SD_IPC_AGENT && !EqualSid(c->sid, s->own_sid))
     return 0;
@@ -355,20 +434,32 @@ static int token_checks(sd_ipc_client *c, HANDLE tok, const char **code)
   if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)29 /* TokenIsAppContainer */, &appc, sizeof(appc), &len) &&
       appc)
     return 0;
-  if (GetTokenInformation(tok, (TOKEN_INFORMATION_CLASS)20 /* TokenElevation */, &elevated, sizeof(elevated), &len))
-    c->elevated = elevated ? 1 : 0;
-  {
-    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
-    PSID admins = NULL;
-    BOOL member = FALSE;
-    if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
-                                 &admins)) {
-      if (CheckTokenMembership(tok, admins, &member) && member)
-        c->admin = (c->elevated || !sd_os_at_least(6, 0, 0)) ? 1 : 0;
-      FreeSid(admins);
-    }
-  }
+  c->admin = token_admin_class(tok, &elevated_flag) ? 1 : 0;
+  c->elevated = elevated_flag;
   return 1;
+}
+
+/* The class of a connecting instance, read from its token before hello (2.2, TM-R25): the user SID (for the per-SID
+   quota and Event 3101) and whether the client is an elevated admin. Only the service configures the rules that use it
+   (reserved instances, hello deadline), so the agent never impersonates here. Fail closed: no token = not admin. */
+static void classify_at_connect(sd_ipc_client *c)
+{
+  HANDLE tok = NULL;
+  int elevated = 0;
+  if (!ImpersonateNamedPipeClient(c->pipe))
+    return;
+  if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &tok))
+    tok = NULL;
+  if (!RevertToSelf()) {
+    /* Continuing under the client's identity is never acceptable. */
+    ExitProcess(1);
+  }
+  if (tok == NULL)
+    return;
+  if (c->sid == NULL && ipc_token_user_sid(tok, &c->sid) != SD_OK)
+    c->sid = NULL;
+  c->conn_admin = token_admin_class(tok, &elevated);
+  CloseHandle(tok);
 }
 
 static int check_client_token(sd_ipc_client *c, const char **code)
@@ -412,6 +503,7 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
   }
   if (!check_client_token(c, &code)) {
     SD_LOGW("ipc", "client %llu refused at hello", (unsigned long long)c->id);
+    refused(c, "token");
     c->close_after_write = 1;
     reply_error_code(c, 0, SD_E_ACCESS_DENIED, code, "client token refused");
     return;
@@ -425,6 +517,7 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
         same++;
     sd_mutex_unlock(&s->lock);
     if (same >= s->cfg.max_per_sid) {
+      refused(c, "per_sid");
       c->close_after_write = 1;
       reply_error_code(c, 0, SD_E_BUSY, "too_many_connections", "per-user instance quota reached");
       return;
@@ -448,6 +541,11 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     memcpy(c->lang, lang, strlen(lang) + 1);
   }
   {
+    const char *kind = sd_json_get_str(msg, "client");
+    if (kind && strlen(kind) < sizeof(c->kind))
+      memcpy(c->kind, kind, strlen(kind) + 1);
+  }
+  {
     sd_wr w;
     sd_json_writer jw;
     sd_wr_init(&w, 4096);
@@ -460,6 +558,14 @@ static void handle_hello(sd_ipc_client *c, const sd_json *msg)
     sd_jw_key(&jw, "proto"); sd_jw_int(&jw, chosen);
     sd_jw_key(&jw, "server_pid"); sd_jw_int(&jw, (int64_t)GetCurrentProcessId());
     sd_jw_key(&jw, "server_version"); sd_jw_cstr(&jw, SD_VERSION_STRING);
+    if (s->cfg.features) {
+      const char *const *f;
+      sd_jw_key(&jw, "features");
+      sd_jw_arr_begin(&jw);
+      for (f = s->cfg.features; *f; f++)
+        sd_jw_cstr(&jw, *f);
+      sd_jw_arr_end(&jw);
+    }
     sd_jw_obj_end(&jw);
     sd_jw_obj_end(&jw);
     if (sd_jw_finish(&jw) == SD_OK) {
@@ -487,18 +593,42 @@ static void handle_subscribe(sd_ipc_client *c, int64_t id, const sd_json *params
     reply_error_code(c, id, SD_E_INVALID_PARAM, "usage", "subscribe needs topics[]");
     return;
   }
+  /* M5: the service refuses topics a client may not hold (prompt, log, hostkeys for non-admins). The whole
+     request is refused and nothing is subscribed. */
+  if (c->srv->cfg.topic_allowed) {
+    for (i = 0; i < sd_json_count(topics); i++) {
+      size_t tn = 0;
+      const char *tt = sd_json_str(sd_json_at(topics, i), &tn);
+      if (tt == NULL || tn == 0 || tn >= IPC_TOPIC_LEN || !sd_ipc_topic_valid(tt))
+        continue;
+      if (!c->srv->cfg.topic_allowed(c->srv->cfg.ctx, c, tt)) {
+        reply_error_code(c, id, SD_E_ACCESS_DENIED, "access_denied", "topic needs an elevated administrator");
+        return;
+      }
+    }
+  }
   for (i = 0; i < sd_json_count(topics); i++) {
     size_t n;
     const char *t = sd_json_str(sd_json_at(topics, i), &n);
     uint32_t k, dup = 0;
-    if (t == NULL || n == 0 || n >= IPC_TOPIC_LEN)
+    int added = 0;
+    /* M3: syntactic validation; an invalid name is dropped from the accepted set, not an error */
+    if (t == NULL || n == 0 || n >= IPC_TOPIC_LEN || !sd_ipc_topic_valid(t))
       continue;
+    /* the topic list is read by the broadcast counts of other threads: change it under s->lock */
+    sd_mutex_lock(&c->srv->lock);
     for (k = 0; k < c->ntopics; k++)
       if (strcmp(c->topics[k], t) == 0) dup = 1;
     if (!dup && c->ntopics < IPC_MAX_TOPICS) {
       memcpy(c->topics[c->ntopics], t, n + 1);
       c->ntopics++;
+      added = 1;
     }
+    sd_mutex_unlock(&c->srv->lock);
+    /* the hook runs without s->lock: it may take the agent's lock, which other threads hold while they
+       call into the server */
+    if (added && c->srv->cfg.on_subscribe)
+      c->srv->cfg.on_subscribe(c->srv->cfg.ctx, c, c->topics[c->ntopics - 1]);
   }
   sd_wr_init(&w, 4096);
   sd_jw_init(&jw, &w);
@@ -530,13 +660,14 @@ static void handle_request(sd_ipc_client *c, const sd_json *msg)
     reply_error_code(c, id, SD_E_PROTOCOL, "usage", "malformed request");
     return;
   }
-  if (s->cfg.max_requests_per_sec && !c->admin) {
+  if (s->cfg.max_requests_per_sec && !client_is_admin(c)) {
     uint64_t now = sd_tick_ms();
     if (now - c->rate_window >= 1000) {
       c->rate_window = now;
       c->rate_count = 0;
     }
     if (++c->rate_count > s->cfg.max_requests_per_sec) {
+      refused(c, "rate");
       reply_error_code(c, id, SD_E_BUSY, "rate_limited", "too many requests");
       return;
     }
@@ -562,7 +693,16 @@ static void handle_request(sd_ipc_client *c, const sd_json *msg)
     sd_jw_key(&jw, "id"); sd_jw_int(&jw, id);
     sd_jw_key(&jw, "result");
     sd_jw_obj_begin(&jw);
+    c->cur_req_active = 1;
+    c->cur_req_id = id;
+    c->deferred = 0;
     r = s->cfg.handler ? s->cfg.handler(s->cfg.ctx, c, method, params, &jw, &err) : SD_E_UNSUPPORTED;
+    c->cur_req_active = 0;
+    if (c->deferred) {                /* the reply comes later through sd_ipc_reply_deferred */
+      c->deferred = 0;
+      sd_wr_free(&w);
+      return;
+    }
     if (r == SD_OK && err.err != SD_OK)
       r = err.err;
     if (r == SD_OK) {
@@ -614,7 +754,6 @@ static void process_message(sd_ipc_client *c, const uint8_t *data, size_t len)
 static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
 {
   sd_ipc_client *c = CONTAINING_RECORD(ov, sd_ipc_client, read_ov);
-  sd_ipc_server *s = c->srv;
   DWORD left = 0;
   c->pending--;
   /* A message larger than the buffer completes with STATUS_BUFFER_OVERFLOW (a warning): the
@@ -634,7 +773,7 @@ static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
     if (!PeekNamedPipe(c->pipe, NULL, 0, NULL, NULL, &left) || left == 0)
       left = IPC_READ_CHUNK;
     want = c->rlen + left;
-    if (want > s->cfg.max_message) {
+    if (want > client_msg_cap(c)) {
       SD_LOGW("ipc", "client %llu message over the size cap; closing", (unsigned long long)c->id);
       client_close(c);
       return;
@@ -651,7 +790,7 @@ static void CALLBACK read_done(DWORD err, DWORD n, LPOVERLAPPED ov)
     client_start_read(c);
     return;
   }
-  if (c->rlen > s->cfg.max_message) {
+  if (c->rlen > client_msg_cap(c)) {
     client_close(c);
     return;
   }
@@ -698,6 +837,18 @@ static int client_subscribed(const sd_ipc_client *c, const char *topic)
   return 0;
 }
 
+/* Recipient rule of a broadcast, shared by the count (enqueue time) and the drain (pipe thread). */
+static int client_is_recipient(const sd_ipc_client *c, const char *topic, uint32_t caps, uint64_t exclude)
+{
+  if (!c->hello_done || c->closing || c->id == exclude)
+    return 0;
+  if ((c->caps & caps) != caps)
+    return 0;
+  return client_subscribed(c, topic);
+}
+
+#define IPC_TOPIC_ALL "*"
+
 static void drain_queue(sd_ipc_server *s)
 {
   ipc_msg *m;
@@ -716,14 +867,16 @@ static void drain_queue(sd_ipc_server *s)
       next = c->next;   /* client_queue may free c */
       if (!c->hello_done || c->closing)
         continue;
-      if (m->client_id ? c->id == m->client_id : client_subscribed(c, m->topic))
+      if (m->client_id ? c->id == m->client_id
+                       : (strcmp(m->topic, IPC_TOPIC_ALL) == 0 || client_is_recipient(c, m->topic, m->caps, m->exclude)))
         client_queue(c, m->data, m->len);
     }
     sd_free(m);
   }
 }
 
-static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, const char *json, size_t len)
+static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, const char *json, size_t len,
+                      uint32_t caps, uint64_t exclude)
 {
   ipc_msg *m;
   if (s == NULL || json == NULL || len == 0 || len > s->cfg.max_message)
@@ -733,6 +886,8 @@ static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, c
     return SD_E_NO_MEMORY;
   memset(m, 0, sizeof(*m));
   m->client_id = client_id;
+  m->caps = caps;
+  m->exclude = exclude;
   if (topic) {
     size_t n = strlen(topic);
     if (n >= IPC_TOPIC_LEN) { sd_free(m); return SD_E_INVALID_PARAM; }
@@ -759,17 +914,141 @@ static sd_err enqueue(sd_ipc_server *s, uint64_t client_id, const char *topic, c
   return SD_OK;
 }
 
+int sd_ipc_topic_valid(const char *topic)
+{
+  size_t i, n;
+  if (topic == NULL)
+    return 0;
+  n = strlen(topic);
+  if (n == 0 || n > SD_IPC_TOPIC_MAX)
+    return 0;
+  for (i = 0; i < n; i++) {
+    char ch = topic[i];
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
+      return 0;
+  }
+  return 1;
+}
+
+sd_err sd_ipc_broadcast_count(sd_ipc_server *s, const char *topic, const char *event_json, size_t len,
+                              uint32_t required_caps, uint64_t exclude_client, uint32_t *count)
+{
+  sd_ipc_client *c;
+  uint32_t n = 0;
+  sd_err e;
+  if (count)
+    *count = 0;
+  if (s == NULL || !sd_ipc_topic_valid(topic))
+    return SD_E_INVALID_PARAM;
+  sd_mutex_lock(&s->lock);
+  for (c = s->clients; c; c = c->next)
+    if (client_is_recipient(c, topic, required_caps, exclude_client))
+      n++;
+  sd_mutex_unlock(&s->lock);
+  if (n == 0)
+    return SD_OK;               /* nobody to deliver to: nothing is queued */
+  e = enqueue(s, 0, topic, event_json, len, required_caps, exclude_client);
+  if (e == SD_OK && count)
+    *count = n;
+  return e;
+}
+
 void sd_ipc_broadcast(sd_ipc_server *s, const char *topic, const char *event_json, size_t len)
 {
-  if (topic)
-    (void)enqueue(s, 0, topic, event_json, len);
+  (void)sd_ipc_broadcast_count(s, topic, event_json, len, 0, 0, NULL);
+}
+
+/* M3: an event for every client that completed hello (events without a topic, config.changed and
+   agent.stopping). IPC_TOPIC_ALL is not a valid topic name, so no subscription can match it. */
+sd_err sd_ipc_broadcast_all(sd_ipc_server *s, const char *event_json, size_t len)
+{
+  return enqueue(s, 0, IPC_TOPIC_ALL, event_json, len, 0, 0);
+}
+
+uint32_t sd_ipc_topic_subscribers(sd_ipc_server *s, const char *topic, uint32_t required_caps)
+{
+  sd_ipc_client *c;
+  uint32_t n = 0;
+  if (s == NULL || !sd_ipc_topic_valid(topic))
+    return 0;
+  sd_mutex_lock(&s->lock);
+  for (c = s->clients; c; c = c->next)
+    if (client_is_recipient(c, topic, required_caps, 0))
+      n++;
+  sd_mutex_unlock(&s->lock);
+  return n;
 }
 
 sd_err sd_ipc_send_to(sd_ipc_server *s, uint64_t client_id, const char *event_json, size_t len)
 {
   if (client_id == 0)
     return SD_E_INVALID_PARAM;
-  return enqueue(s, client_id, NULL, event_json, len);
+  return enqueue(s, client_id, NULL, event_json, len, 0, 0);
+}
+
+/* M3: deferred replies (profile.test). Called inside the handler, on the pipe thread. */
+int sd_ipc_defer(sd_ipc_client *client, int64_t *req_id)
+{
+  if (client == NULL || !client->cur_req_active)
+    return 0;
+  client->deferred = 1;
+  if (req_id)
+    *req_id = client->cur_req_id;
+  return 1;
+}
+
+/* Any thread. Builds the complete "res" message of the request (result object, or the error of e/code/detail
+   with the table's exit code) and queues it for the client. SD_E_NOT_FOUND once the client is gone. */
+sd_err sd_ipc_reply_deferred(sd_ipc_server *s, uint64_t client_id, int64_t req_id, sd_err e, const char *code,
+                             const char *detail, const char *result_json, size_t result_len)
+{
+  sd_wr w;
+  sd_err r;
+  char idbuf[24];
+  if (s == NULL || client_id == 0)
+    return SD_E_INVALID_PARAM;
+  {
+    /* decimal id without the CRT: at most 20 digits and a sign */
+    uint64_t v = req_id < 0 ? (uint64_t)0 - (uint64_t)req_id : (uint64_t)req_id;
+    char tmp[24];
+    size_t n = 0, o = 0;
+    do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+    if (req_id < 0) idbuf[o++] = '-';
+    while (n) idbuf[o++] = tmp[--n];
+    idbuf[o] = 0;
+  }
+  sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+  if (e == SD_OK && result_json != NULL) {
+    sd_wr_bytes(&w, "{\"type\":\"res\",\"id\":", strlen("{\"type\":\"res\",\"id\":"));
+    sd_wr_bytes(&w, idbuf, strlen(idbuf));
+    sd_wr_bytes(&w, ",\"result\":", strlen(",\"result\":"));
+    sd_wr_bytes(&w, result_json, result_len);
+    sd_wr_bytes(&w, "}", 1);
+  } else {
+    sd_ipc_error err;
+    sd_json_writer jw;
+    memset(&err, 0, sizeof(err));
+    sd_ipc_error_set(&err, e == SD_OK ? SD_E_INTERNAL : e, code, detail);
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, "res");
+    sd_jw_key(&jw, "id"); sd_jw_int(&jw, req_id);
+    sd_jw_key(&jw, "error");
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "code"); sd_jw_cstr(&jw, err.code[0] ? err.code : sd_err_name(err.err));
+    sd_jw_key(&jw, "detail"); sd_jw_cstr(&jw, err.detail);
+    sd_jw_key(&jw, "exit_code"); sd_jw_int(&jw, err.exit_code);
+    sd_jw_key(&jw, "err"); sd_jw_cstr(&jw, sd_err_name(err.err));
+    sd_jw_obj_end(&jw);
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) != SD_OK) {
+      sd_wr_free(&w);
+      return SD_E_INTERNAL;
+    }
+  }
+  r = sd_ipc_send_to(s, client_id, (const char *)w.p, w.len);
+  sd_wr_free(&w);
+  return r;
 }
 
 /* ---- thread ---- */
@@ -781,6 +1060,11 @@ static void idle_sweep(sd_ipc_server *s)
   for (c = s->clients; c; c = next) {
     next = c->next;
     if (!c->closing && c->ntopics == 0 && now - c->last_activity > s->cfg.idle_timeout_ms)
+      client_close(c);
+    /* 2.2 (TM-R25): a client that is not an admin must say hello within hello_timeout_ms of connecting, so an instance
+       that never sends hello is not held for the whole idle timeout */
+    else if (!c->closing && !c->hello_done && !c->conn_admin && s->cfg.hello_timeout_ms &&
+             now - c->connect_ms > s->cfg.hello_timeout_ms)
       client_close(c);
   }
 }
@@ -833,7 +1117,15 @@ static sd_err build_sd(sd_ipc_server *s)
   sd_err e;
   sddl[0] = 0;
   if (s->ep == SD_IPC_SERVICE) {
-    ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    const wchar_t *owner = ipc_service_owner_override();
+    if (owner) {
+      /* TEST HOOK: same DACL, owner replaced (tests/unit/sd_svc). */
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:");
+      ipc_wcat(sddl, SD_COUNTOF(sddl), owner);
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    } else {
+      ipc_wcat(sddl, SD_COUNTOF(sddl), L"O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+    }
   } else {
     e = ipc_sid_to_string(s->own_sid, &sid);
     if (e != SD_OK)
@@ -883,6 +1175,7 @@ sd_err sd_ipc_server_start_ex(sd_ipc_endpoint ep, const sd_ipc_server_cfg *cfg, 
   s->cfg = *cfg;
   if (s->cfg.max_instances == 0 || s->cfg.max_instances > PIPE_UNLIMITED_INSTANCES - 1) s->cfg.max_instances = 32;
   if (s->cfg.max_message == 0 || s->cfg.max_message > SD_IPC_MAX_MESSAGE) s->cfg.max_message = SD_IPC_MAX_MESSAGE;
+  if (s->cfg.max_message_nonadmin > s->cfg.max_message) s->cfg.max_message_nonadmin = s->cfg.max_message;
   if (s->cfg.idle_timeout_ms == 0) s->cfg.idle_timeout_ms = 10u * 60u * 1000u;
   e = ipc_process_user_sid(&s->own_sid);
   if (e == SD_OK) e = sd_ipc_current_identity(sidstr, SD_COUNTOF(sidstr), &session);
@@ -950,8 +1243,41 @@ void sd_ipc_server_stop(sd_ipc_server *s)
 
 int sd_ipc_client_is_elevated(sd_ipc_client *client) { return client ? client->elevated : 0; }
 int sd_ipc_client_is_admin(sd_ipc_client *client) { return client ? client->admin : 0; }
+PSID sd_ipc_client_sid(sd_ipc_client *client) { return client ? client->sid : NULL; }
+
+/* M5: is the client's token a member of `sid` (enabled group membership, or the client's own user SID). Call on the
+   pipe thread from a handler only: the client is impersonated for the duration of the check. A token that cannot be
+   opened at impersonation level counts as not a member (fail closed). */
+sd_err sd_ipc_client_member_of(sd_ipc_client *client, PSID sid, int *member)
+{
+  HANDLE tok = NULL;
+  BOOL m = FALSE;
+  if (member == NULL)
+    return SD_E_INVALID_PARAM;
+  *member = 0;
+  if (client == NULL || sid == NULL || client->pipe == NULL || client->pipe == INVALID_HANDLE_VALUE)
+    return SD_E_INVALID_PARAM;
+  if (client->sid != NULL && EqualSid(client->sid, sid)) {
+    *member = 1;
+    return SD_OK;
+  }
+  if (!ImpersonateNamedPipeClient(client->pipe))
+    return SD_E_ACCESS_DENIED;
+  if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &tok))
+    tok = NULL;
+  if (!RevertToSelf())
+    ExitProcess(1);                         /* continuing under the client's identity is never acceptable */
+  if (tok != NULL) {
+    if (!CheckTokenMembership(tok, sid, &m))
+      m = FALSE;
+    CloseHandle(tok);
+  }
+  *member = m ? 1 : 0;
+  return SD_OK;
+}
 DWORD sd_ipc_client_pid(sd_ipc_client *client) { return client ? client->pid : 0; }
 uint64_t sd_ipc_client_id(sd_ipc_client *client) { return client ? client->id : 0; }
+const char *sd_ipc_client_kind(sd_ipc_client *client) { return client ? client->kind : ""; }
 uint32_t sd_ipc_client_caps(sd_ipc_client *client) { return client ? client->caps : 0; }
 const char *sd_ipc_client_lang(sd_ipc_client *client) { return client ? client->lang : "en"; }
 

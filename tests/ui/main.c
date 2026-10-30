@@ -1,0 +1,344 @@
+/* UI unit tests (tests/ui): harness entry point. The cases are in test_wire.c, test_dpi.c, test_dlg.c,
+   test_prompt.c and test_profile.c. The prompt dialogs themselves are checked by the smoke test (shelldrive-ui --test-prompts). */
+#include "sd_test.h"
+
+SD_TEST_DECL(dlg_empty_template_parses);
+SD_TEST_DECL(dlg_items_aligned_and_counted);
+SD_TEST_DECL(dlg_controls_have_expected_classes_and_ids);
+SD_TEST_DECL(dlg_title_and_font_are_encoded);
+SD_TEST_DECL(dlg_layout_stays_inside_the_dialog);
+SD_TEST_DECL(dlg_button_row_is_right_aligned);
+SD_TEST_DECL(dlg_buttons_wrap_when_they_do_not_fit);
+SD_TEST_DECL(dlg_multiline_height_is_capped);
+SD_TEST_DECL(dlg_rejects_too_many_items_and_bad_input);
+SD_TEST_DECL(dlg_parse_rejects_truncated_blob);
+SD_TEST_DECL(prompt_kind_names);
+SD_TEST_DECL(prompt_parse_hostkey_new_identity);
+SD_TEST_DECL(prompt_parse_hostkey_changed_variant);
+SD_TEST_DECL(prompt_parse_password_and_passphrase);
+SD_TEST_DECL(prompt_parse_kbdint_items_and_echo);
+SD_TEST_DECL(prompt_parse_password_change_three_fields);
+SD_TEST_DECL(prompt_parse_legacy_and_proxy);
+SD_TEST_DECL(prompt_parse_rejects_bad_requests);
+SD_TEST_DECL(prompt_server_text_is_sanitized);
+SD_TEST_DECL(prompt_server_text_is_capped);
+SD_TEST_DECL(prompt_parse_sanitizes_names_and_text);
+SD_TEST_DECL(prompt_fixtures_have_their_fields);
+SD_TEST_DECL(answer_accept_has_no_responses);
+SD_TEST_DECL(answer_responses_are_escaped_and_utf8);
+SD_TEST_DECL(answer_wipes_the_secrets_it_was_given);
+SD_TEST_DECL(answer_wipes_inputs_even_on_error);
+SD_TEST_DECL(answer_rejects_bad_arguments);
+
+SD_TEST_DECL(hkissue_mismatch_event_is_read);
+SD_TEST_DECL(hk_reject_params_json);
+SD_TEST_DECL(hk_row_details_follow_the_row);
+SD_TEST_DECL(events_ring_keeps_the_newest_entries);
+SD_TEST_DECL(events_text_is_cut_and_flattened);
+SD_TEST_DECL(events_time_format);
+SD_TEST_DECL(events_filters_by_kind_and_text);
+SD_TEST_DECL(events_copy_text_lists_the_matching_rows);
+SD_TEST_DECL(hkissue_other_errors_and_missing_fields);
+SD_TEST_DECL(hkissue_type_unavailable_has_no_types_yet);
+SD_TEST_DECL(hkissue_text_is_reduced_to_printable_ascii);
+SD_TEST_DECL(hkissue_store_is_told_from_the_path);
+SD_TEST_DECL(hkissue_what_each_store_offers);
+SD_TEST_DECL(hkissue_explorer_arguments_are_safe);
+SD_TEST_DECL(mainview_security_flags_come_from_the_warning_codes);
+SD_TEST_DECL(mainview_both_warnings_of_one_mount_are_kept);
+SD_TEST_DECL(mainview_algorithm_names_are_filtered_and_joined);
+SD_TEST_DECL(mainview_dont_warn_again_hash_ignores_order);
+SD_TEST_DECL(mainview_status_kinds_and_icons);
+SD_TEST_DECL(mainview_groups_follow_the_scope);
+SD_TEST_DECL(mainview_algorithm_categories_and_reasons);
+SD_TEST_DECL(hkissue_type_unavailable_lists_stored_and_offered_types);
+SD_TEST_DECL(hkissue_type_unavailable_without_offered_key_or_arrays);
+SD_TEST_DECL(hkissue_names_are_reduced_to_printable_ascii_and_capped);
+SD_TEST_DECL(hkissue_store_kind_decides_the_source);
+SD_TEST_DECL(mainview_list_security_fields_are_read_from_the_mount);
+SD_TEST_DECL(mainview_legacy_flag_without_a_list_keeps_the_names_unknown);
+SD_TEST_DECL(mainview_scope_tokens_give_the_groups);
+SD_TEST_DECL(notice_mount_state_changes);
+SD_TEST_DECL(notice_warning_codes);
+SD_TEST_DECL(notice_every_kind_has_its_switch);
+SD_TEST_DECL(notice_attention_only_when_the_count_grows);
+SD_TEST_DECL(notice_proxy_password_once_per_profile_and_proxy);
+SD_TEST_DECL(notice_hostkey_source_warning_has_its_notice_and_switch);
+SD_TEST_DECL(notice_source_names);
+SD_TEST_DECL(notice_reconnect_reason_makes_the_reconnected_notice);
+SD_TEST_DECL(notice_reason_codes_known_and_unknown);
+SD_TEST_DECL(evhist_parse_reads_the_three_events);
+SD_TEST_DECL(evhist_parse_refuses_what_it_cannot_show);
+SD_TEST_DECL(evhist_first_import_takes_everything_it_has_not_seen_live);
+SD_TEST_DECL(evhist_live_match_is_by_kind_mount_state_and_time);
+SD_TEST_DECL(evhist_second_import_takes_only_newer_records);
+SD_TEST_DECL(evhist_live_notes_are_a_ring);
+SD_TEST_DECL(evhist_track_replays_the_state_of_each_mount);
+SD_TEST_DECL(hk_row_details_show_comment_added_origin_and_md5);
+SD_TEST_DECL(hk_store_extras_reach_the_row);
+
+SD_TEST_DECL(wire_roundtrip_and_empty);
+SD_TEST_DECL(wire_rejects_bad_header);
+SD_TEST_DECL(wire_rejects_truncated_and_trailing);
+SD_TEST_DECL(wire_rejects_bad_units);
+SD_TEST_DECL(wire_rejects_too_many_or_too_long);
+SD_TEST_DECL(verbs_show_tray_prompt);
+SD_TEST_DECL(verbs_unmount_drive);
+SD_TEST_DECL(verbs_mount_profile_id);
+SD_TEST_DECL(verbs_reconnect_and_mount_file);
+SD_TEST_DECL(verbs_open_drive);
+SD_TEST_DECL(verbs_unknown_are_rejected);
+
+SD_TEST_DECL(sdmount_accepts_one_profile_line);
+SD_TEST_DECL(sdmount_rejects_anything_else);
+SD_TEST_DECL(sdmount_size_limit);
+SD_TEST_DECL(profile_form_round_trip);
+SD_TEST_DECL(profile_form_set_rejects_bad_text);
+SD_TEST_DECL(profile_form_validation_fields);
+SD_TEST_DECL(free_drive_letters);
+SD_TEST_DECL(json_escape_and_mount_params);
+SD_TEST_DECL(dpi_scale_rounding_and_clamp);
+SD_TEST_DECL(dpi_font_height);
+SD_TEST_DECL(updater_check_then_install_flow);
+SD_TEST_DECL(updater_up_to_date_and_disabled_replies);
+SD_TEST_DECL(updater_check_failure_and_retry);
+SD_TEST_DECL(updater_install_failure_keeps_the_offer);
+SD_TEST_DECL(updater_offer_balloon_once_per_version);
+SD_TEST_DECL(updater_stale_flag);
+SD_TEST_DECL(updater_agent_going_away);
+SD_TEST_DECL(updater_policy_display);
+SD_TEST_DECL(updater_view_enabled_rules);
+SD_TEST_DECL(updater_progress_and_status_text_kinds);
+
+/* test_logs.c, test_hostkeys.c and test_settings.c: the M3 models and their file paths. */
+SD_TEST_DECL(logs_cursor_appends_records_in_order);
+SD_TEST_DECL(logs_reset_clears_or_keeps_by_dropped_count);
+SD_TEST_DECL(logs_malformed_reply_changes_nothing);
+SD_TEST_DECL(logs_keeps_the_newest_records_only);
+SD_TEST_DECL(logs_filters_by_level_and_search);
+SD_TEST_DECL(logs_level_names);
+SD_TEST_DECL(hk_row_plain_and_bracketed_hosts);
+SD_TEST_DECL(hk_row_lists_wildcards_and_hashed_entries);
+SD_TEST_DECL(hk_row_cells_and_source_labels);
+SD_TEST_DECL(hk_announcement_cells);
+SD_TEST_DECL(hk_store_enumeration_and_remove);
+SD_TEST_DECL(hk_target_parse_forms);
+SD_TEST_DECL(hk_target_parse_refusals);
+SD_TEST_DECL(hk_add_params_json);
+SD_TEST_DECL(hk_offer_parse_first_contact_and_verified);
+SD_TEST_DECL(hk_offer_parse_degenerate_replies);
+SD_TEST_DECL(hk_add_fail_classes);
+SD_TEST_DECL(settings_model_defaults_and_mapping);
+SD_TEST_DECL(settings_model_round_trip_keeps_other_fields);
+SD_TEST_DECL(settings_save_load_round_trip_in_a_temp_root);
+SD_TEST_DECL(settings_cache_budget_parsing);
+SD_TEST_DECL(settings_language_index_and_run_command);
+SD_TEST_DECL(settings_model_security_fields_map_and_diff);
+SD_TEST_DECL(settings_policy_locks_force_values_and_are_never_written);
+SD_TEST_DECL(settings_source_note_and_webclient_wording);
+SD_TEST_DECL(settings_security_fields_survive_a_save_load_round_trip);
+SD_TEST_DECL(settings_r17_mapping_and_defaults);
+SD_TEST_DECL(settings_r17_policy_locks_are_never_written);
+SD_TEST_DECL(settings_r17_diff_writes_only_changed_keys);
+SD_TEST_DECL(settings_r17_values_survive_a_save_load_round_trip);
+SD_TEST_DECL(profile_editor_write_mode_shows_the_effective_default);
+
+/* test_notify.c, test_dark.c and test_wizard.c: the balloon rate limit, the dark mode decision and the wizard's
+   should-show logic. */
+SD_TEST_DECL(notify_limit_one_per_subject_and_kind);
+SD_TEST_DECL(notify_limit_is_per_subject_and_kind);
+SD_TEST_DECL(notify_clock_going_back_is_not_a_burst);
+SD_TEST_DECL(notify_table_is_bounded_and_keeps_recent_pairs);
+SD_TEST_DECL(notify_interval_is_one_minute);
+SD_TEST_DECL(dark_needs_build_22000_and_the_api);
+SD_TEST_DECL(dark_follows_the_app_theme_value);
+SD_TEST_DECL(dark_stays_light_on_older_systems);
+SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
+SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
+
+/* test_admin.c: the service prompts of the administrator (attention count, answer route, relaunch verb). */
+SD_TEST_DECL(service_view_reads_the_status_reply);
+SD_TEST_DECL(service_view_maps_every_refusal_reason);
+SD_TEST_DECL(service_view_rejects_a_bad_reply);
+SD_TEST_DECL(service_view_from_the_scm_alone);
+SD_TEST_DECL(service_lines_follow_the_state);
+SD_TEST_DECL(service_repair_is_for_administrators_only);
+SD_TEST_DECL(service_repair_shield_only_on_vista_and_later);
+SD_TEST_DECL(service_repair_route_follows_the_pipe);
+SD_TEST_DECL(service_repair_results_are_classified);
+SD_TEST_DECL(service_elevated_verb_is_exact);
+SD_TEST_DECL(admin_attention_count_parses_from_the_event);
+SD_TEST_DECL(admin_pending_count_drives_the_attention_state);
+SD_TEST_DECL(admin_answers_go_to_the_service_only_from_the_admin_mode);
+SD_TEST_DECL(admin_relaunch_verb_is_runas_on_vista_and_open_on_xp);
+SD_TEST_DECL(admin_elevated_verb_is_exact);
+SD_TEST_DECL(admin_prompt_list_entry_becomes_a_prompt);
+
+static const sd_test_case k_tests[] = {
+  SD_TEST_ENTRY(notice_hostkey_source_warning_has_its_notice_and_switch),
+  SD_TEST_ENTRY(notice_source_names),
+  SD_TEST_ENTRY(notice_reconnect_reason_makes_the_reconnected_notice),
+  SD_TEST_ENTRY(notice_reason_codes_known_and_unknown),
+  SD_TEST_ENTRY(evhist_parse_reads_the_three_events),
+  SD_TEST_ENTRY(evhist_parse_refuses_what_it_cannot_show),
+  SD_TEST_ENTRY(evhist_first_import_takes_everything_it_has_not_seen_live),
+  SD_TEST_ENTRY(evhist_live_match_is_by_kind_mount_state_and_time),
+  SD_TEST_ENTRY(evhist_second_import_takes_only_newer_records),
+  SD_TEST_ENTRY(evhist_live_notes_are_a_ring),
+  SD_TEST_ENTRY(evhist_track_replays_the_state_of_each_mount),
+  SD_TEST_ENTRY(hk_row_details_show_comment_added_origin_and_md5),
+  SD_TEST_ENTRY(hk_store_extras_reach_the_row),
+  SD_TEST_ENTRY(dlg_empty_template_parses),
+  SD_TEST_ENTRY(dlg_items_aligned_and_counted),
+  SD_TEST_ENTRY(dlg_controls_have_expected_classes_and_ids),
+  SD_TEST_ENTRY(dlg_title_and_font_are_encoded),
+  SD_TEST_ENTRY(dlg_layout_stays_inside_the_dialog),
+  SD_TEST_ENTRY(dlg_button_row_is_right_aligned),
+  SD_TEST_ENTRY(dlg_buttons_wrap_when_they_do_not_fit),
+  SD_TEST_ENTRY(dlg_multiline_height_is_capped),
+  SD_TEST_ENTRY(dlg_rejects_too_many_items_and_bad_input),
+  SD_TEST_ENTRY(dlg_parse_rejects_truncated_blob),
+  SD_TEST_ENTRY(prompt_kind_names),
+  SD_TEST_ENTRY(prompt_parse_hostkey_new_identity),
+  SD_TEST_ENTRY(prompt_parse_hostkey_changed_variant),
+  SD_TEST_ENTRY(prompt_parse_password_and_passphrase),
+  SD_TEST_ENTRY(prompt_parse_kbdint_items_and_echo),
+  SD_TEST_ENTRY(prompt_parse_password_change_three_fields),
+  SD_TEST_ENTRY(prompt_parse_legacy_and_proxy),
+  SD_TEST_ENTRY(prompt_parse_rejects_bad_requests),
+  SD_TEST_ENTRY(prompt_server_text_is_sanitized),
+  SD_TEST_ENTRY(prompt_server_text_is_capped),
+  SD_TEST_ENTRY(prompt_parse_sanitizes_names_and_text),
+  SD_TEST_ENTRY(prompt_fixtures_have_their_fields),
+  SD_TEST_ENTRY(answer_accept_has_no_responses),
+  SD_TEST_ENTRY(answer_responses_are_escaped_and_utf8),
+  SD_TEST_ENTRY(answer_wipes_the_secrets_it_was_given),
+  SD_TEST_ENTRY(answer_wipes_inputs_even_on_error),
+  SD_TEST_ENTRY(answer_rejects_bad_arguments),
+  SD_TEST_ENTRY(wire_roundtrip_and_empty),
+  SD_TEST_ENTRY(wire_rejects_bad_header),
+  SD_TEST_ENTRY(wire_rejects_truncated_and_trailing),
+  SD_TEST_ENTRY(wire_rejects_bad_units),
+  SD_TEST_ENTRY(wire_rejects_too_many_or_too_long),
+  SD_TEST_ENTRY(verbs_show_tray_prompt),
+  SD_TEST_ENTRY(verbs_unmount_drive),
+  SD_TEST_ENTRY(verbs_mount_profile_id),
+  SD_TEST_ENTRY(verbs_reconnect_and_mount_file),
+  SD_TEST_ENTRY(verbs_open_drive),
+  SD_TEST_ENTRY(verbs_unknown_are_rejected),
+  SD_TEST_ENTRY(sdmount_accepts_one_profile_line),
+  SD_TEST_ENTRY(sdmount_rejects_anything_else),
+  SD_TEST_ENTRY(sdmount_size_limit),
+  SD_TEST_ENTRY(profile_form_round_trip),
+  SD_TEST_ENTRY(profile_form_set_rejects_bad_text),
+  SD_TEST_ENTRY(profile_form_validation_fields),
+  SD_TEST_ENTRY(free_drive_letters),
+  SD_TEST_ENTRY(json_escape_and_mount_params),
+  SD_TEST_ENTRY(dpi_scale_rounding_and_clamp),
+  SD_TEST_ENTRY(dpi_font_height),
+  SD_TEST_ENTRY(updater_check_then_install_flow),
+  SD_TEST_ENTRY(updater_up_to_date_and_disabled_replies),
+  SD_TEST_ENTRY(updater_check_failure_and_retry),
+  SD_TEST_ENTRY(updater_install_failure_keeps_the_offer),
+  SD_TEST_ENTRY(updater_offer_balloon_once_per_version),
+  SD_TEST_ENTRY(updater_stale_flag),
+  SD_TEST_ENTRY(updater_agent_going_away),
+  SD_TEST_ENTRY(updater_policy_display),
+  SD_TEST_ENTRY(updater_view_enabled_rules),
+  SD_TEST_ENTRY(updater_progress_and_status_text_kinds),
+  SD_TEST_ENTRY(logs_cursor_appends_records_in_order),
+  SD_TEST_ENTRY(logs_reset_clears_or_keeps_by_dropped_count),
+  SD_TEST_ENTRY(logs_malformed_reply_changes_nothing),
+  SD_TEST_ENTRY(logs_keeps_the_newest_records_only),
+  SD_TEST_ENTRY(logs_filters_by_level_and_search),
+  SD_TEST_ENTRY(logs_level_names),
+  SD_TEST_ENTRY(hk_row_plain_and_bracketed_hosts),
+  SD_TEST_ENTRY(hk_row_lists_wildcards_and_hashed_entries),
+  SD_TEST_ENTRY(hk_row_cells_and_source_labels),
+  SD_TEST_ENTRY(hk_announcement_cells),
+  SD_TEST_ENTRY(hk_store_enumeration_and_remove),
+  SD_TEST_ENTRY(hk_target_parse_forms),
+  SD_TEST_ENTRY(hk_target_parse_refusals),
+  SD_TEST_ENTRY(hk_add_params_json),
+  SD_TEST_ENTRY(hk_offer_parse_first_contact_and_verified),
+  SD_TEST_ENTRY(hk_offer_parse_degenerate_replies),
+  SD_TEST_ENTRY(hk_add_fail_classes),
+  SD_TEST_ENTRY(hk_reject_params_json),
+  SD_TEST_ENTRY(hk_row_details_follow_the_row),
+  SD_TEST_ENTRY(events_ring_keeps_the_newest_entries),
+  SD_TEST_ENTRY(events_text_is_cut_and_flattened),
+  SD_TEST_ENTRY(events_time_format),
+  SD_TEST_ENTRY(events_filters_by_kind_and_text),
+  SD_TEST_ENTRY(events_copy_text_lists_the_matching_rows),
+  SD_TEST_ENTRY(settings_model_defaults_and_mapping),
+  SD_TEST_ENTRY(settings_model_round_trip_keeps_other_fields),
+  SD_TEST_ENTRY(settings_save_load_round_trip_in_a_temp_root),
+  SD_TEST_ENTRY(settings_cache_budget_parsing),
+  SD_TEST_ENTRY(settings_language_index_and_run_command),
+  SD_TEST_ENTRY(settings_model_security_fields_map_and_diff),
+  SD_TEST_ENTRY(settings_policy_locks_force_values_and_are_never_written),
+  SD_TEST_ENTRY(settings_source_note_and_webclient_wording),
+  SD_TEST_ENTRY(settings_security_fields_survive_a_save_load_round_trip),
+  SD_TEST_ENTRY(settings_r17_mapping_and_defaults),
+  SD_TEST_ENTRY(settings_r17_policy_locks_are_never_written),
+  SD_TEST_ENTRY(settings_r17_diff_writes_only_changed_keys),
+  SD_TEST_ENTRY(settings_r17_values_survive_a_save_load_round_trip),
+  SD_TEST_ENTRY(profile_editor_write_mode_shows_the_effective_default),
+  SD_TEST_ENTRY(notify_limit_one_per_subject_and_kind),
+  SD_TEST_ENTRY(notify_limit_is_per_subject_and_kind),
+  SD_TEST_ENTRY(notify_clock_going_back_is_not_a_burst),
+  SD_TEST_ENTRY(notify_table_is_bounded_and_keeps_recent_pairs),
+  SD_TEST_ENTRY(notify_interval_is_one_minute),
+  SD_TEST_ENTRY(dark_needs_build_22000_and_the_api),
+  SD_TEST_ENTRY(dark_follows_the_app_theme_value),
+  SD_TEST_ENTRY(dark_stays_light_on_older_systems),
+  SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
+  SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),
+  SD_TEST_ENTRY(service_view_reads_the_status_reply),
+  SD_TEST_ENTRY(service_view_maps_every_refusal_reason),
+  SD_TEST_ENTRY(service_view_rejects_a_bad_reply),
+  SD_TEST_ENTRY(service_view_from_the_scm_alone),
+  SD_TEST_ENTRY(service_lines_follow_the_state),
+  SD_TEST_ENTRY(service_repair_is_for_administrators_only),
+  SD_TEST_ENTRY(service_repair_shield_only_on_vista_and_later),
+  SD_TEST_ENTRY(service_repair_route_follows_the_pipe),
+  SD_TEST_ENTRY(service_repair_results_are_classified),
+  SD_TEST_ENTRY(service_elevated_verb_is_exact),
+  SD_TEST_ENTRY(admin_attention_count_parses_from_the_event),
+  SD_TEST_ENTRY(admin_pending_count_drives_the_attention_state),
+  SD_TEST_ENTRY(admin_answers_go_to_the_service_only_from_the_admin_mode),
+  SD_TEST_ENTRY(admin_relaunch_verb_is_runas_on_vista_and_open_on_xp),
+  SD_TEST_ENTRY(admin_elevated_verb_is_exact),
+  SD_TEST_ENTRY(admin_prompt_list_entry_becomes_a_prompt),
+  SD_TEST_ENTRY(hkissue_mismatch_event_is_read),
+  SD_TEST_ENTRY(hkissue_other_errors_and_missing_fields),
+  SD_TEST_ENTRY(hkissue_type_unavailable_has_no_types_yet),
+  SD_TEST_ENTRY(hkissue_text_is_reduced_to_printable_ascii),
+  SD_TEST_ENTRY(hkissue_store_is_told_from_the_path),
+  SD_TEST_ENTRY(hkissue_what_each_store_offers),
+  SD_TEST_ENTRY(hkissue_explorer_arguments_are_safe),
+  SD_TEST_ENTRY(mainview_security_flags_come_from_the_warning_codes),
+  SD_TEST_ENTRY(mainview_both_warnings_of_one_mount_are_kept),
+  SD_TEST_ENTRY(mainview_algorithm_names_are_filtered_and_joined),
+  SD_TEST_ENTRY(mainview_dont_warn_again_hash_ignores_order),
+  SD_TEST_ENTRY(mainview_status_kinds_and_icons),
+  SD_TEST_ENTRY(mainview_groups_follow_the_scope),
+  SD_TEST_ENTRY(mainview_algorithm_categories_and_reasons),
+  SD_TEST_ENTRY(hkissue_type_unavailable_lists_stored_and_offered_types),
+  SD_TEST_ENTRY(hkissue_type_unavailable_without_offered_key_or_arrays),
+  SD_TEST_ENTRY(hkissue_names_are_reduced_to_printable_ascii_and_capped),
+  SD_TEST_ENTRY(hkissue_store_kind_decides_the_source),
+  SD_TEST_ENTRY(mainview_list_security_fields_are_read_from_the_mount),
+  SD_TEST_ENTRY(mainview_legacy_flag_without_a_list_keeps_the_names_unknown),
+  SD_TEST_ENTRY(mainview_scope_tokens_give_the_groups),
+  SD_TEST_ENTRY(notice_mount_state_changes),
+  SD_TEST_ENTRY(notice_warning_codes),
+  SD_TEST_ENTRY(notice_every_kind_has_its_switch),
+  SD_TEST_ENTRY(notice_attention_only_when_the_count_grows),
+  SD_TEST_ENTRY(notice_proxy_password_once_per_profile_and_proxy),
+};
+
+int main(int argc, char **argv)
+{
+  return sd_test_main(k_tests, SD_COUNTOF(k_tests), argc, argv);
+}

@@ -20,6 +20,9 @@
 #define CONN_MAX_EVENTS 256
 #define CONN_READ_CHUNK (64u * 1024u)
 
+#define SD_IPC_MAX_FEATURES 32
+#define SD_IPC_FEATURE_MAX  32
+
 typedef struct conn_evt { struct conn_evt *next; sd_json *msg; } conn_evt;
 
 struct sd_ipc_conn {
@@ -37,6 +40,8 @@ struct sd_ipc_conn {
   uint32_t eq_count;
   int64_t next_id;
   DWORD server_pid;
+  char features[SD_IPC_MAX_FEATURES][SD_IPC_FEATURE_MAX];   /* hello reply "features" (M3) */
+  uint32_t nfeatures;
 };
 
 /* ---- reader ---- */
@@ -372,6 +377,17 @@ HANDLE sd_ipc_event_handle(sd_ipc_conn *c)
   return c ? c->evt_ev : NULL;
 }
 
+int sd_ipc_conn_has_feature(const sd_ipc_conn *c, const char *name)
+{
+  uint32_t i;
+  if (c == NULL || name == NULL)
+    return 0;
+  for (i = 0; i < c->nfeatures; i++)
+    if (strcmp(c->features[i], name) == 0)
+      return 1;
+  return 0;
+}
+
 void sd_ipc_close(sd_ipc_conn *c)
 {
   conn_evt *e;
@@ -623,6 +639,19 @@ static sd_err connect_once(sd_ipc_endpoint ep, const sd_ipc_hello *hello, int st
         int64_t pid = 0;
         if (sd_json_get_int64(result, "server_pid", &pid) && c->server_pid == 0)
           c->server_pid = (DWORD)pid;
+        {
+          const sd_json *fs = sd_json_get(result, "features");
+          size_t k, nf = sd_json_count(fs);
+          for (k = 0; k < nf && c->nfeatures < SD_IPC_MAX_FEATURES; k++) {
+            size_t fn = 0;
+            const char *f = sd_json_str(sd_json_at(fs, k), &fn);
+            if (f && fn > 0 && fn < SD_IPC_FEATURE_MAX) {
+              memcpy(c->features[c->nfeatures], f, fn);
+              c->features[c->nfeatures][fn] = 0;
+              c->nfeatures++;
+            }
+          }
+        }
       } else if (strcmp(err.code, "proto_unsupported") == 0) {
         e = SD_E_PROTOCOL;
       }
@@ -664,4 +693,9 @@ sd_err sd_ipc_connect(sd_ipc_endpoint ep, const sd_ipc_hello *hello, int start_i
     SD_LOGD("ipc", "connect: instance broke before hello, retrying");
     Sleep(10);
   }
+}
+
+sd_err sd_ipc_connect_agent_or_start(const sd_ipc_hello *hello, sd_ipc_conn **out)
+{
+  return sd_ipc_connect(SD_IPC_AGENT, hello, 1, SD_IPC_AGENT_START_TIMEOUT_MS, out);
 }

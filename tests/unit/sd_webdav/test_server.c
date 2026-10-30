@@ -539,3 +539,189 @@ SD_TEST(webdav_server_ipv6_loopback)
   sd_free(c);
   fx_down(&f);
 }
+
+static const char k_lock_body[] =
+    "<?xml version=\"1.0\"?><D:lockinfo xmlns:D=\"DAV:\"><D:lockscope><D:exclusive/></D:lockscope>"
+    "<D:locktype><D:write/></D:locktype><D:owner><D:href>office</D:href></D:owner></D:lockinfo>";
+
+/* Office / LibreOffice save (02 §7.5, §7.6): LOCK the document, write a temp file, MOVE the temp over the
+   locked document with Overwrite: T and If: (<token>), read the lock back, UNLOCK the document. The
+   replacing MOVE keeps the destination lock on the URL, so the final UNLOCK is 204, not 409. Two save cycles
+   prove the lock is still usable after a save, and a stray token is refused. */
+SD_TEST(webdav_server_office_save_sequence)
+{
+  fixture f;
+  tc_conn *c;
+  tc_resp r;
+  char tok[128], bare[128], extra[512], buf[64];
+  int cycle;
+  SD_REQUIRE(fx_up(&f, NULL, FALSE) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_REQUIRE(tc_authenticate(c, f.port, f.prefix) == 207);
+  SD_REQUIRE(request_auth(c, &f, "PUT", "/doc.docx", NULL, "version one", 11, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);
+  tc_resp_free(&r);
+  for (cycle = 0; cycle < 2; cycle++) {
+    static const char *const bodies[2] = {"version two", "version three"};
+    static const char *const temps[2] = {"/~WRL0001.tmp", "/~WRL0002.tmp"};
+    size_t bl = strlen(bodies[cycle]);
+    SD_REQUIRE(request_auth(c, &f, "LOCK", "/doc.docx", NULL, k_lock_body, sizeof(k_lock_body) - 1, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 200);
+    SD_REQUIRE(tc_header(&r, "Lock-Token", tok, sizeof(tok)));
+    tc_resp_free(&r);
+    strcpy_s(bare, sizeof(bare), tok + 1);
+    bare[strlen(bare) - 1] = '\0';                      /* opaquelocktoken:<uuid> without <> */
+    SD_REQUIRE(request_auth(c, &f, "PUT", temps[cycle], NULL, bodies[cycle], bl, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 201);
+    tc_resp_free(&r);
+    _snprintf_s(extra, sizeof(extra), _TRUNCATE, "Destination: http://localhost:%u%s/doc.docx\r\nOverwrite: T\r\n",
+                (unsigned)f.port, f.prefix);
+    SD_REQUIRE(request_auth(c, &f, "MOVE", temps[cycle], extra, NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 423);                     /* no token for the locked destination */
+    tc_resp_free(&r);
+    SD_CHECK(fake_exists(f.s, cycle ? "/home/user/~WRL0002.tmp" : "/home/user/~WRL0001.tmp"));  /* refused: kept */
+    _snprintf_s(extra, sizeof(extra), _TRUNCATE,
+                "Destination: http://localhost:%u%s/doc.docx\r\nOverwrite: T\r\n"
+                "If: (<opaquelocktoken:00000000-0000-0000-0000-000000000000>)\r\n",
+                (unsigned)f.port, f.prefix);
+    SD_REQUIRE(request_auth(c, &f, "MOVE", temps[cycle], extra, NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 423);                    /* a token that is not the lock */
+    tc_resp_free(&r);
+    _snprintf_s(extra, sizeof(extra), _TRUNCATE,
+                "Destination: http://localhost:%u%s/doc.docx\r\nOverwrite: T\r\nIf: (%s)\r\n",
+                (unsigned)f.port, f.prefix, tok);
+    SD_REQUIRE(request_auth(c, &f, "MOVE", temps[cycle], extra, NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 204);                    /* replaced under the lock */
+    tc_resp_free(&r);
+    SD_CHECK(!fake_exists(f.s, "/home/user/~WRL0001.tmp") && !fake_exists(f.s, "/home/user/~WRL0002.tmp"));
+    SD_CHECK(fake_get(f.s, "/home/user/doc.docx", buf, sizeof(buf)) == (long long)bl);
+    SD_CHECK(memcmp(buf, bodies[cycle], bl) == 0);
+    /* the lock is still listed on the document after the replacing MOVE */
+    SD_REQUIRE(request_auth(c, &f, "PROPFIND", "/doc.docx", "Depth: 0\r\n", NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 207);
+    SD_CHECK(strstr(r.body, bare) != NULL);
+    tc_resp_free(&r);
+    _snprintf_s(extra, sizeof(extra), _TRUNCATE, "Lock-Token: %s\r\n", tok);
+    SD_REQUIRE(request_auth(c, &f, "UNLOCK", "/doc.docx", extra, NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 204);                    /* the final UNLOCK of Office's save */
+    tc_resp_free(&r);
+    SD_REQUIRE(request_auth(c, &f, "UNLOCK", "/doc.docx", extra, NULL, 0, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 409);                    /* already released */
+    tc_resp_free(&r);
+    SD_REQUIRE(request_auth(c, &f, "PUT", "/doc.docx", NULL, "unlocked", 8, &r) == 0);
+    SD_CHECK_EQ_INT(r.status, 204);                    /* no lock left: a plain write is allowed */
+    tc_resp_free(&r);
+  }
+  conn_free(c);
+  fx_down(&f);
+}
+
+/* A replacing MOVE of a collection onto a destination collection with a locked child: the child's lock goes
+   with the replaced child (02 §7.5), so a child created later under the same name is not locked. */
+SD_TEST(webdav_server_replacing_move_drops_replaced_children_locks)
+{
+  fixture f;
+  tc_conn *c;
+  tc_resp r;
+  char tok[128], extra[512];
+  SD_REQUIRE(fx_up(&f, NULL, FALSE) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_REQUIRE(tc_authenticate(c, f.port, f.prefix) == 207);
+  SD_REQUIRE(request_auth(c, &f, "MKCOL", "/tree-a", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);
+  tc_resp_free(&r);
+  SD_REQUIRE(request_auth(c, &f, "PUT", "/tree-a/x.txt", NULL, "xx", 2, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);
+  tc_resp_free(&r);
+  SD_REQUIRE(request_auth(c, &f, "MKCOL", "/tree-b", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);
+  tc_resp_free(&r);
+  SD_REQUIRE(request_auth(c, &f, "PUT", "/tree-b/inner.txt", NULL, "in", 2, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);
+  tc_resp_free(&r);
+  SD_REQUIRE(request_auth(c, &f, "LOCK", "/tree-b/inner.txt", NULL, k_lock_body, sizeof(k_lock_body) - 1, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 200);
+  SD_REQUIRE(tc_header(&r, "Lock-Token", tok, sizeof(tok)));
+  tc_resp_free(&r);
+  _snprintf_s(extra, sizeof(extra), _TRUNCATE, "Destination: http://localhost:%u%s/tree-b\r\nOverwrite: T\r\n",
+              (unsigned)f.port, f.prefix);
+  SD_REQUIRE(request_auth(c, &f, "MOVE", "/tree-a", extra, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 423);                       /* the locked child is under the destination */
+  tc_resp_free(&r);
+  _snprintf_s(extra, sizeof(extra), _TRUNCATE,
+              "Destination: http://localhost:%u%s/tree-b\r\nOverwrite: T\r\nIf: (%s)\r\n",
+              (unsigned)f.port, f.prefix, tok);
+  SD_REQUIRE(request_auth(c, &f, "MOVE", "/tree-a", extra, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 204);
+  tc_resp_free(&r);
+  SD_CHECK(!fake_exists(f.s, "/home/user/tree-b/inner.txt"));
+  SD_CHECK(fake_exists(f.s, "/home/user/tree-b/x.txt"));
+  SD_REQUIRE(request_auth(c, &f, "PUT", "/tree-b/inner.txt", NULL, "new", 3, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 201);                      /* not 423: the replaced child's lock is gone */
+  tc_resp_free(&r);
+  _snprintf_s(extra, sizeof(extra), _TRUNCATE, "Lock-Token: %s\r\n", tok);
+  SD_REQUIRE(request_auth(c, &f, "UNLOCK", "/tree-b/inner.txt", extra, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 409);
+  tc_resp_free(&r);
+  conn_free(c);
+  fx_down(&f);
+}
+
+/* WebClient caches a failed lookup for 60 s (FileNotFoundCacheLifeTimeInSec, 02 §7.1). While the link to the
+   source is down, a miss is not "does not exist", so it must not be answered 404: 503 + Retry-After makes the
+   redirector retry. Once the link is READY again the same miss is a real 404. */
+SD_TEST(webdav_server_link_down_miss_is_503_not_404)
+{
+  fixture f;
+  tc_conn *c;
+  tc_resp r;
+  char v[64];
+  SD_REQUIRE(fx_up(&f, NULL, FALSE) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_REQUIRE(tc_authenticate(c, f.port, f.prefix) == 207);
+  fake_disconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/never-listed.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 503);
+  SD_CHECK(tc_header(&r, "Retry-After", v, sizeof(v)));
+  tc_resp_free(&r);
+  SD_REQUIRE(request_auth(c, &f, "PROPFIND", "/never-listed.txt", "Depth: 0\r\n", NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 503);
+  tc_resp_free(&r);
+  fake_reconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/never-listed.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 404);
+  tc_resp_free(&r);
+  conn_free(c);
+  fx_down(&f);
+}
+
+/* The vfs keeps a negative entry for a name it verified missing (02 §4.1). While the link is down that entry
+   must still report DISCONNECTED: a 404 here would reach the redirector, which caches it for ~60 s (02 §7.6). */
+SD_TEST(webdav_server_cached_miss_is_503_while_link_down)
+{
+  fixture f;
+  tc_conn *c;
+  tc_resp r;
+  char v[64];
+  SD_REQUIRE(fx_up(&f, NULL, FALSE) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_REQUIRE(tc_authenticate(c, f.port, f.prefix) == 207);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 404);            /* online: a verified miss, now in the vfs cache */
+  tc_resp_free(&r);
+  fake_disconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 503);
+  SD_CHECK(tc_header(&r, "Retry-After", v, sizeof(v)));
+  tc_resp_free(&r);
+  fake_reconnect(f.s);
+  SD_REQUIRE(request_auth(c, &f, "GET", "/cached-miss.txt", NULL, NULL, 0, &r) == 0);
+  SD_CHECK_EQ_INT(r.status, 404);
+  tc_resp_free(&r);
+  conn_free(c);
+  fx_down(&f);
+}

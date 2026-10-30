@@ -396,7 +396,7 @@ static void m_propfind(wd_rq *q)
     pf_entry(&c, "/", 1, &info, "", L"\\", 1);
   } else {
     c.root = q->path.nseg <= 1;
-    st = sd_vfs_stat_path(q->ex->vfs, q->vpath, &info);
+    st = sd_vfs_stat_path(q->ex->vfs, &q->caller, q->vpath, &info);
     if (st != SD_VFS_OK) {
       fail_vfs(q, st, 0);
       goto out;
@@ -603,7 +603,7 @@ static void m_get(wd_rq *q, BOOL head)
     wd_respond(q, 200, NULL, "text/html; charset=utf-8", head ? NULL : page, head ? 0 : sizeof(page) - 1);
     return;
   }
-  st = sd_vfs_stat_path(q->ex->vfs, q->vpath, &info);
+  st = sd_vfs_stat_path(q->ex->vfs, &q->caller, q->vpath, &info);
   if (st == SD_VFS_OK && (info.win_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
     static const char page[] = "<html><body>ShellDrive folder</body></html>";
     wd_respond(q, 200, NULL, "text/html; charset=utf-8", head ? NULL : page, head ? 0 : sizeof(page) - 1);
@@ -924,7 +924,7 @@ static sd_vfs_status copy_file(wd_rq *q, const WCHAR *from, const WCHAR *to)
 static sd_vfs_status copy_tree(wd_rq *q, const WCHAR *from, const WCHAR *to, BOOL recursive, uint32_t level)
 {
   sd_vfs_info info;
-  sd_vfs_status st = sd_vfs_stat_path(q->ex->vfs, from, &info);
+  sd_vfs_status st = sd_vfs_stat_path(q->ex->vfs, &q->caller, from, &info);
   sd_vfs_handle *h = NULL;
   name_list l;
   BOOL ex_, isd;
@@ -1048,7 +1048,7 @@ static void m_move_copy(wd_rq *q, BOOL move)
     wd_respond(q, 423, NULL, NULL, NULL, 0);
     return;
   }
-  existed = sd_vfs_stat_path(q->ex->vfs, dv, &di) == SD_VFS_OK;
+  existed = sd_vfs_stat_path(q->ex->vfs, &q->caller, dv, &di) == SD_VFS_OK;
   if (existed && !overwrite) {
     sd_free(dv);
     wd_respond(q, 412, NULL, NULL, NULL, 0);
@@ -1061,16 +1061,16 @@ static void m_move_copy(wd_rq *q, BOOL move)
       if (sd_vfs_delete_path(q->ex->vfs, &q->caller, dv, TRUE) == SD_VFS_OK)
         st = sd_vfs_rename_path(q->ex->vfs, &q->caller, q->vpath, dv, FALSE);
     }
-    if (st == SD_VFS_OK) {
-      wd_lock_drop_tree(q->ex, dv);
-      wd_lock_move(q->ex, q->vpath, dv);   /* locks are keyed by node: renames carry them (02 §7.5) */
-    }
+    if (st == SD_VFS_OK)   /* the destination URL keeps its lock (Office save, 02 §7.5) */
+      wd_lock_replace(q->ex, q->vpath, dv);
   } else {
     st = SD_VFS_OK;
     if (existed)
       st = sd_vfs_delete_path(q->ex->vfs, &q->caller, dv, TRUE);
     if (st == SD_VFS_OK)
       st = copy_tree(q, q->vpath, dv, recursive, 0);
+    if (st == SD_VFS_OK && existed)   /* the replaced tree's children are gone; the destination URL keeps its lock */
+      wd_lock_drop_below(q->ex, dv);
   }
   sd_free(dv);
   if (st == SD_VFS_E_EXISTS) {
@@ -1148,7 +1148,7 @@ static void m_lock(wd_rq *q)
       if (tl < sizeof(owner)) memcpy(owner, t, tl + 1);
     }
     wd_xml_free(&d);
-    st = sd_vfs_stat_path(q->ex->vfs, q->vpath, &info);
+    st = sd_vfs_stat_path(q->ex->vfs, &q->caller, q->vpath, &info);
     if (st == SD_VFS_E_NOT_FOUND) {
       /* LOCK on an unmapped URL creates a locked empty resource (RFC 4918 §7.3) */
       sd_vfs_handle *h = NULL;

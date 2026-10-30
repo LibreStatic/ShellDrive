@@ -3,13 +3,51 @@
 
 set(SD_CLI_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cli.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_int.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_args.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_common.c
   ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds2.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_cmds3.c
+  # location add|remove|repair (03 §6.1, §8.7): the Network location entries, made by the same code the agent runs.
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_location.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/explorer_data.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/explorer_data.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_bench.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_service.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_out.c
+  # diag (M6, 03 §10.5): checks and fixes over the diag_env seam, the support bundle, its stored ZIP writer and the
+  # anonymizer. cli_diag_fake.c is empty unless SD_CLI_TEST_HOOKS is defined.
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_fake.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_rules.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_diag_rules.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_bundle.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_zip.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_anon.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cli_anon.c
+  # service install/uninstall/start/stop/status (M5): the SCM seam lives with the service it registers (03 §1.3).
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_scm.h
+  # service repair-data (M5, 3.2, TM-R34): the machine data folder repair; the tests call it on a temp folder.
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_repair.h
+  # the status report members (service status --json and the service.status method).
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_status.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_status.h
+  # the machine folder checks (3.2, TM-R34), shared by the service start and the repair.
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.c
+  ${CMAKE_SOURCE_DIR}/apps/shelldrive-host/svc_folder.h)
 set(SD_CLI_SOURCES ${SD_CLI_SOURCES} PARENT_SCOPE)
 
+# sd_ssh: the host key commands run sd_known_hosts in the CLI process (03 §5: the CLI and UI link
+# the same sd_known_hosts translation units; it has no transport dependency).
 sd_add_app(shelldrive
   OUTPUT_NAME shelldrive
   DESCRIPTION "ShellDrive command-line interface"
   SOURCES main.c ${SD_CLI_SOURCES}
-  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base)
+  DEPS sd_ipc sd_config sd_l10n sd_l10n_catalog_cli sd_platform sd_base sd_ssh sd_crypto sd_policy advapi32 version
+       ole32 shell32)
+target_include_directories(shelldrive PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")

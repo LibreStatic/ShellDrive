@@ -53,6 +53,7 @@
   X(SD_E_LEGACY_REJECTED,          "legacy_refused")                         \
   X(SD_E_PROXY,                    "proxy_connect_failed")                   \
   X(SD_E_PROXY_AUTH,               "proxy_auth_failed")                      \
+  X(SD_E_POOL_ABANDONED,           "pool_abandoned")                         \
   /* local */                                                                \
   X(SD_E_NO_MEMORY,                "no_memory")                              \
   X(SD_E_CRYPTO,                   "crypto")                                 \
@@ -60,7 +61,9 @@
   X(SD_E_KEY_UNSUPPORTED,          "key_unsupported")                        \
   X(SD_E_BAD_PASSPHRASE,           "bad_passphrase")                         \
   X(SD_E_KEY_PASSPHRASE_REQUIRED,  "key_passphrase_required")                \
-  X(SD_E_INTERNAL,                 "internal")
+  X(SD_E_INTERNAL,                 "internal")                               \
+  /* WebDAV (02 §7.4, TM-R19): SSPI is unavailable, so the redirector cannot authenticate the user */ \
+  X(SD_WD_E_AUTH_UNAVAILABLE,      "auth_unavailable")
 
 #define SD_ERR_ENUM_(sym, name) sym,
 typedef enum sd_err { SD_ERR_LIST(SD_ERR_ENUM_) SD_ERR_COUNT } sd_err;

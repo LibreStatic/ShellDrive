@@ -26,11 +26,12 @@ not supported for the XP preset (it ignores the toolset).
 | `x86-ia32` | v141_xp, SDK 7.1A, Win32 | XP SP3 x86, `/arch:IA32` (no SSE/SSE2), `/SAFESEH /LARGEADDRESSAWARE`, `,5.01` |
 | `x86-sse2` | v141_xp, SDK 7.1A, Win32 | XP SP3 x86, `/arch:SSE2`, same linker flags, SSE2 entry thunk on every EXE |
 | `x64-analysis` | v143 | `/analyze` (warnings are errors); add `-DSD_ENABLE_ASAN=ON` for AddressSanitizer |
+| `arm64` | v143, SDK 10.0.26100, ARM64 | Cross-compiled from x64 (build only, no tests; see `docs/dev/m6-notes.md`) |
 
 Build presets: `x64-modern`, `x64-modern-debug`, `x64-xp`, `x64-xp-debug`, `x86-ia32`, `x86-ia32-debug`,
-`x86-sse2`, `x86-sse2-debug`, `x64-analysis` (Debug).
-Test presets have the same names. Build trees go to `build/<configure preset>/`; executables to
-`build/<preset>/bin/<Debug|Release>/`.
+`x86-sse2`, `x86-sse2-debug`, `x64-analysis` (Debug), `arm64`, `arm64-debug`.
+Test presets have the same names. `arm64` has a test preset that selects no tests (`ctest --preset arm64` exits 0). Build trees go to `build/<configure preset>/`;
+executables to `build/<preset>/bin/<Debug|Release>/`.
 
 ## Commands
 
@@ -118,6 +119,17 @@ Run one unit-test executable directly with `--list` or `--filter <substring>`, e
 Debug) and the `x64-analysis` preset on `windows-2022`. The v141_xp jobs install the toolset first with
 `.github/actions/setup-xp-toolset`. `tools/ci-local.ps1` runs the same presets locally (default: all five); on
 the x86 presets the `dokany.*` tests always skip under WOW64 and are reported, not failed.
+
+### Test-owned global names
+
+Several checkouts (git worktrees) can run their tests at the same time on one machine. `RESOURCE_LOCK` only
+serializes tests inside one `ctest` run, so it does not protect against another checkout. The rule: every
+machine-global name a test creates or looks up (window class or title, named pipe, mutex, event, file mapping,
+`Global\`/`Local\` object, temporary folder or file, HKCU key, credential target) must be unique per process
+(PID plus a `QueryPerformanceCounter` stamp), and a fixed temporary root must be removed at teardown. When a
+protocol fixes the name (for example the Pageant window class), give the product code a unit-test seam instead
+of changing the constant, and keep the `RESOURCE_LOCK` for that name. The shared WSL sshd fixture on port 2222
+is the one deliberate exception and keeps its lock.
 
 ## Lab (XP / 7 / no-SSE2 runtime checks)
 

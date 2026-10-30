@@ -11,6 +11,8 @@
 /* Bounded wide-string builder: appends and always NUL-terminates; returns 0 on truncation. */
 int ipc_wcat(wchar_t *dst, size_t cch, const wchar_t *src);
 int ipc_wcat_u32(wchar_t *dst, size_t cch, uint32_t v);
+/* TEST HOOK (sd_ipc_test_set_service_owner): service pipe owner override; NULL = SYSTEM. */
+const wchar_t *ipc_service_owner_override(void);
 
 /* User SID of a token / of this process, copied into sd_alloc memory (free with sd_free). */
 sd_err ipc_token_user_sid(HANDLE token, PSID *out);
@@ -21,6 +23,7 @@ sd_err ipc_sid_to_string(PSID sid, wchar_t **out);
 /* Owner SID of a kernel object handle equals `expected`; also enforces "no label or label >=
    medium" when check_label is set (Vista+). SD_OK or SD_E_ACCESS_DENIED. */
 sd_err ipc_verify_object_owner(HANDLE h, PSID expected, int check_label);
+sd_err ipc_owner_decision(int owner_ok, int want_label, int label_read, int label_present, DWORD label_rid);
 
 /* Builds a self-relative security descriptor from SDDL (LocalFree the result). */
 sd_err ipc_sd_from_sddl(const wchar_t *sddl, PSECURITY_DESCRIPTOR *out);

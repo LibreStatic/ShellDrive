@@ -42,6 +42,34 @@ uint32_t  fake_gen(fake_srv *f);                                 /* current conn
 uint32_t  fake_cur_stream(fake_srv *f);                          /* stream of the packet being handled */
 int       fake_stream_open(fake_srv *f, uint32_t idx);
 void      fake_reply_on(fake_srv *f, uint32_t idx, const void *bytes, size_t n);
+/* M2 pool (01 §10.9): streams 2..4 model members 1..3 and the caps gain
+ * SD_SFTP_TP_STREAMS | SD_SFTP_TP_POOL. `connections` is the pool size including the primary; the
+ * transport's notify_ready admits members 1..connections-1 through sftp_session_pool_change() once
+ * fake_set_session() supplied the session (this is what the SSH pool does on admission). Call before
+ * fake_transport(). member_stats reports the admitted members in out[member-1], like the SSH pool. */
+void      fake_set_pool(fake_srv *f, uint32_t connections);
+void      fake_set_session(fake_srv *f, sd_sftp_session *s);
+/* Plays the pool's decision path (sftp_ssh.c pool_decided) on the session's I/O thread with an
+   explicit member generation, so tests can post a duplicate or stale member drop. */
+void      fake_pool_change(fake_srv *f, uint32_t member, int admitted, sd_err reason, uint32_t gen);
+void      fake_drop_member(fake_srv *f, uint32_t member);       /* the member channel dies alone */
+/* Member stream failure injection (write path only): fail_member_writes fails every write with e
+ * while the stream stays open (the drop report is still in flight); limit_member_writes accepts at
+ * most `budget` more bytes and then accepts 0, like a full member TX queue. member 0 / budget < 0
+ * clears. Set from the test thread, read on the fake's I/O thread. */
+void      fake_fail_member_writes(fake_srv *f, uint32_t member, sd_err e);
+void      fake_limit_member_writes(fake_srv *f, uint32_t member, LONG budget);
+uint32_t  fake_stream_packets(fake_srv *f, uint32_t idx);       /* client packets seen on a stream */
+/* Pool admission pacing (01 §10.9), modelled like sftp_ssh.c: attempts start 500 ms apart, a
+ * transiently refused member retries after 500 ms then 2 s and is abandoned for the generation
+ * after three refusals (an EV_POOL refusal per refusal, then SD_E_POOL_ABANDONED); a
+ * SD_E_HOSTKEY_MISMATCH / SD_E_NOT_FOUND refusal stops the generation's admissions at once.
+ * fake_refuse_member fails the member's next n admission attempts with e (n = 0 clears; set before
+ * the generation's admissions start). fake_member_attempt_at reports the tick of the member's
+ * attempt (1..3) of the current generation, attempts their number. */
+void      fake_refuse_member(fake_srv *f, uint32_t member, LONG n, sd_err e);
+uint64_t  fake_member_attempt_at(fake_srv *f, uint32_t member, uint32_t attempt);   /* attempt 1..3 */
+uint32_t  fake_member_attempts(fake_srv *f, uint32_t member);
 
 /* Packet builder: begins a reply of `type` with id (id_present). Finish with fake_reply_wr. */
 void pk_begin(sd_wr *w, uint8_t type, uint32_t id);

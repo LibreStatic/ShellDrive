@@ -6,7 +6,8 @@
  * MISMATCH hard block, TM-R04 type restriction, Ed25519 key files (plain and encrypted), exec and
  * sftp subsystem channels, volume rekeying with flow control; M1: reconnect on the same
  * sd_ssh_conn (pinned host key, is_reconnect prompts, reconnect secret cache with the TM-R05 rule,
- * host key mismatch on reconnect), run-time keepalive tuning. */
+ * host key mismatch on reconnect), run-time keepalive tuning; M5: sd_ssh_conn_fetch_hostkeys inside a verified
+ * connection (type not offered), first contact never fetched. */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -108,6 +109,7 @@ typedef struct run {
   int reconnect_prompts, just_accepted_prompts;
   sd_hostkey_decision decision;
   char hk_lookup[128], hk_fp[64], neg_cipher[64], neg_mac[64], neg_kex[64];
+  char neg_comp_c2s[32], neg_comp_s2c[32];
   int strict, kex_count;
   /* channel */
   sd_ssh_channel *ch;
@@ -144,6 +146,8 @@ static void on_negotiated(void *ctx, const sd_ssh_negotiated *n)
   run *r = (run *)ctx;
   _snprintf_s(r->neg_cipher, sizeof(r->neg_cipher), _TRUNCATE, "%s", n->cipher_c2s);
   _snprintf_s(r->neg_mac, sizeof(r->neg_mac), _TRUNCATE, "%s", n->mac_c2s);
+  _snprintf_s(r->neg_comp_c2s, sizeof(r->neg_comp_c2s), _TRUNCATE, "%s", n->comp_c2s);
+  _snprintf_s(r->neg_comp_s2c, sizeof(r->neg_comp_s2c), _TRUNCATE, "%s", n->comp_s2c);
   _snprintf_s(r->neg_kex, sizeof(r->neg_kex), _TRUNCATE, "%s", n->kex);
   r->strict = n->strict_kex;
   r->kex_count++;
@@ -189,6 +193,7 @@ typedef struct conn_opts {
   uint32_t keepalive_ms;
   sd_hostkey_decision decision;
   int cache_secrets;
+  int compress;               /* SD_SSH_CFG_COMPRESS */
 } conn_opts;
 
 static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_opts *o, run *r, sd_ssh_conn **out)
@@ -222,6 +227,7 @@ static sd_err connect_once(sd_test_ctx *sd_t_, sd_known_hosts *kh, const conn_op
   cfg.rekey_bytes = o->rekey_bytes;
   cfg.keepalive_interval_ms = o->keepalive_ms;
   cfg.connect_timeout_ms = 10000;
+  cfg.flags = o->compress ? SD_SSH_CFG_COMPRESS : 0;
   cb.ctx = r;
   cb.on_prompt = on_prompt;
   cb.on_negotiated = on_negotiated;
@@ -713,6 +719,20 @@ static int write_kh(const char *text)
   return ok && w == strlen(text);
 }
 
+/* ACCEPT_AND_STORE writes the key from the connection's worker after the connect has completed: wait (up to 10 s, a
+   loaded machine) until the file holds an entry, so a later rewrite is not undone by that late append. */
+static int wait_kh_written(void)
+{
+  int i;
+  for (i = 0; i < 1000; i++) {
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (GetFileAttributesExW(g_kh_path, GetFileExInfoStandard, &a) && (a.nFileSizeLow || a.nFileSizeHigh))
+      return 1;
+    Sleep(10);
+  }
+  return 0;
+}
+
 SD_TEST(interop_reconnect_host_key_mismatch)
 {
   char text[512];
@@ -729,6 +749,7 @@ SD_TEST(interop_reconnect_host_key_mismatch)
   o.decision = SD_HK_ACCEPT_AND_STORE;
   SD_REQUIRE(connect_once(sd_t_, kh, &o, &r, &c) == SD_OK);
   SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_REQUIRE(wait_kh_written());
   /* the stored key changes underneath (what a MITM after a drop would look like to us) */
   SD_REQUIRE(tu_read_fixture("other_host.pub", &f, &n));
   {
@@ -782,6 +803,130 @@ SD_TEST(interop_keepalive_tuning)
   sd_known_hosts_close(kh);
 }
 
+/* ---- sd_ssh_conn_fetch_hostkeys (M5, 01 §4.3, TM-R04) ----
+   The fixture offers one host key (ed25519). A verified connection can ask for other types: the server offers none
+   of them, so the fetch ends with SD_E_HOSTKEY_TYPE_UNAVAILABLE and nothing is returned or stored. A first
+   contact (ACCEPT_ONCE, no stored key) is never fetched: SD_E_HOSTKEY_REJECTED, and nothing is stored. */
+typedef struct fetch_run {
+  sd_event ev;
+  sd_err err;
+  uint32_t count;
+} fetch_run;
+
+static void on_fetch(void *ctx, sd_err e, const sd_hk_key *keys, uint32_t count)
+{
+  fetch_run *f = (fetch_run *)ctx;
+  SD_UNUSED(keys);
+  f->err = e;
+  f->count = count;
+  sd_event_set(&f->ev);
+}
+
+static int kh_file_has(const char *needle)
+{
+  char buf[4096];
+  HANDLE h = CreateFileW(g_kh_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  DWORD n = 0;
+  int found = 0;
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  if (ReadFile(h, buf, sizeof(buf) - 1, &n, NULL)) {
+    buf[n] = 0;
+    found = strstr(buf, needle) != NULL;
+  }
+  CloseHandle(h);
+  return found;
+}
+
+static int fetch_wait(sd_ssh_conn *c, const char *const *types, uint32_t ntypes, fetch_run *f)
+{
+  memset(f, 0, sizeof(*f));
+  if (sd_event_init(&f->ev, 0, 0) != SD_OK) return 0;
+  if (sd_ssh_conn_fetch_hostkeys(c, 0, types, ntypes, on_fetch, f) != SD_OK) return 0;
+  if (sd_event_wait(&f->ev, 60000) != SD_OK) f->err = SD_E_TIMEOUT;
+  return 1;
+}
+
+SD_TEST(interop_hostkeys_fetch_none_offered)
+{
+  sd_known_hosts *kh;
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  fetch_run f;
+  const char *types[2] = { "ecdsa-sha2-nistp256", "ssh-rsa" };
+  /* the first contact stores the ed25519 key; the second connection is then verified (MATCH, no prompt) */
+  kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_AND_STORE;
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);   /* first contact: stored */
+  finish(&r, c);
+  c = NULL;
+  memset(&r, 0, sizeof(r));
+  o.decision = SD_HK_REJECT;
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 0);
+  SD_REQUIRE(c != NULL);
+  SD_CHECK(fetch_wait(c, types, 2, &f));
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_TYPE_UNAVAILABLE);
+  SD_CHECK_EQ_INT(f.count, 0);
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+  sd_event_destroy(&f.ev);
+}
+
+SD_TEST(interop_hostkeys_fetch_first_contact_refused)
+{
+  sd_known_hosts *kh;
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  fetch_run f;
+  const char *types[1] = { "ssh-rsa" };
+  kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.decision = SD_HK_ACCEPT_ONCE;            /* the key is trusted for this connection only */
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_EQ_INT(r.hostkey_prompts, 1);
+  SD_REQUIRE(c != NULL);
+  SD_CHECK(fetch_wait(c, types, 1, &f));
+  SD_CHECK_EQ_INT(f.err, SD_E_HOSTKEY_REJECTED);   /* not verified against a stored key: never fetched */
+  SD_CHECK(!kh_file_has("ssh-"));                  /* ACCEPT_ONCE stores nothing */
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+  sd_event_destroy(&f.ev);
+}
+
+SD_TEST(interop_zlib_delayed)
+{
+  run r;
+  sd_ssh_conn *c = NULL;
+  conn_opts o;
+  sd_known_hosts *kh = open_kh(NULL);
+  SD_REQUIRE(kh != NULL);
+  memset(&o, 0, sizeof(o));
+  memset(&r, 0, sizeof(r));
+  o.key = g_key;
+  o.compress = 1;
+  o.decision = SD_HK_ACCEPT_ONCE;
+  /* the fixture runs OpenSSH with its default "Compression delayed": zlib@openssh.com is negotiated and
+     starts after USERAUTH_SUCCESS; the session then carries a stream of several packets each way */
+  SD_CHECK_EQ_INT(connect_once(sd_t_, kh, &o, &r, &c), SD_OK);
+  SD_CHECK_STR(r.neg_comp_c2s, "zlib@openssh.com");
+  SD_CHECK_STR(r.neg_comp_s2c, "zlib@openssh.com");
+  if (r.done_err == SD_OK) {
+    exec_check(sd_t_, c, &r, "echo zlib-delayed", "zlib-delayed\n", 0);
+    exec_check(sd_t_, c, &r, "yes shelldrive | head -c 300000", NULL, 300000);
+  }
+  finish(&r, c);
+  sd_known_hosts_close(kh);
+}
+
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_reconnect_pinned_host_key),
   SD_TEST_ENTRY(interop_reconnect_secret_cache),
@@ -795,6 +940,9 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(interop_stored_type_restriction),
   SD_TEST_ENTRY(interop_reject_and_auth_failure),
   SD_TEST_ENTRY(interop_rekey_bulk),
+  SD_TEST_ENTRY(interop_hostkeys_fetch_none_offered),
+  SD_TEST_ENTRY(interop_hostkeys_fetch_first_contact_refused),
+  SD_TEST_ENTRY(interop_zlib_delayed),
 };
 
 int main(int argc, char **argv)

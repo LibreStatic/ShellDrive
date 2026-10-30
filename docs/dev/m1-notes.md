@@ -72,9 +72,10 @@ updates. Method:
    that test `__isa_available`, `__sse2_available` or `__use_sse2_mathfcns` before their SIMD path (each was
    checked in `dumpbin /disasm`; re-check on any toolset update). Our own code never goes on that list.
 5. sse2 floor only: a function that reads `__isa_available` (a relocated absolute reference; address from
-   `SymFromName`) counts as dispatching and its hits are allowed. Needed because the v141 auto-vectorizer
-   compiles our plain-C byte-swap loops in `hash.c` (`sha256_blocks`, `sha256_final`) into a PSHUFB (SSSE3)
-   loop behind `cmp __isa_available, 2; jl <scalar>` in the x86-sse2 build. Never applied on the ia32 floor.
+   `SymFromName`) counts as dispatching and its hits are allowed. It was needed because the v141 auto-vectorizer
+   compiled our plain-C byte-swap loops in `hash.c` (`sha256_blocks`, `sha256_final`) into a PSHUFB (SSSE3)
+   loop behind `cmp __isa_available, 2; jl <scalar>` in the x86-sse2 build. Both loops now carry `SD_CT_NO_VECTOR`
+   (M6 round 12), so no hit in our code needs this rule; it stays for the CRT. Never applied on the ia32 floor.
 6. `--entry <symbol>`: the PE entry point must be that symbol and its function must be IA32-clean even on the
    sse2 floor.
 
@@ -569,8 +570,13 @@ Local HTTP/1.1 + WebDAV server over `sd_vfs`, mapped through the built-in Window
 
 ### Gaps (not done in M1 by this module)
 
-- Token-only fallback and the WinHTTP self-test (`SD_WD_E_AUTH_UNAVAILABLE`, TM-R19), and the
-  "redirector prompted for credentials" detection.
+- Token-only fallback (TM-R19), partly done in r10 (branch wip/r10-tokconsent): the question
+  `webdav_token_only` through the prompt broker (CLI y/N, UI dialog), per-enable consent, the no-SSPI trigger
+  (`SD_WD_E_AUTH_UNAVAILABLE`, exit 4), plumbing `token_only` / `token_only_confirmed` into sd_mount and the WebDAV
+  cfg, and tests (sd_mount, agent broker). Still open: the WinHTTP autologon-LOW self-test that detects a
+  redirector authentication failure (02 §7.4), and the "redirector prompted for credentials" detection. No profile
+  key exists for token-only, so the answer is asked per enable. The CLI answer is covered end to end by the apps smoke tests
+  (`smoke_webdav_token_only_cli_yes`, `_cli_refused`, `_prompt_none`; r12), which drive the console y/N over `--stdin`.
 - Watchers (TM-R17 c, e): the API exists (`sd_webdav_cleanup_mappings(0, port)`) but there is no
   long-running CLI/tray to watch the agent. (The crash filter and the cleanup at stop are wired; see
   Integration.)
@@ -580,6 +586,42 @@ Local HTTP/1.1 + WebDAV server over `sd_vfs`, mapped through the built-in Window
   test, Office FrontPage probes are plain 404s (untested with Office).
 - Global (service) WebDAV mounts (7.7), multi-user TST-09/TST-10 lab runs, XP (http form, port, LOCK) and
   Windows 7/8/10 behaviour are unverified here.
+
+### M1 remainder: replacing MOVE locks and the negative cache (r13, `wip/r13-davmove`)
+
+Spec: `docs/design/02-filesystem.md` §7.5 "Locks across a replacing MOVE" and §7.6 "Negative cache".
+
+- **Replacing MOVE drops the destination lock: fixed.** `m_move_copy` called `wd_lock_drop_tree(dv)` after a
+  replacing MOVE, which removed the lock the Office save holds on the document, so the final `UNLOCK` got 409.
+  Decision: the lock on the destination URL survives the replacing MOVE (same token, same timeout), because the
+  client holds it and the URL now names the moved resource. Locks below a replaced collection go with its
+  children; a lock on the source URL moves with the resource unless the destination already has one (the
+  destination lock wins, so one URL never needs two tokens). `wd_lock_replace` implements this; `COPY` with
+  `Overwrite: T` keeps the destination lock and uses `wd_lock_drop_below`. The lock manager keys locks by vfs
+  path, not vfs node: the comments and the 02 text said node.
+- **Tests** (`unit.webdav`, `tests/unit/sd_webdav/test_server.c`): `webdav_server_office_save_sequence` (LOCK,
+  temp PUT, MOVE 423 without a token and with a wrong token, MOVE 204 with `If:`, PROPFIND shows the lock, GET
+  content, UNLOCK 204 and 409, plain PUT 204, two cycles); `webdav_server_replacing_move_drops_replaced_children_locks`
+  (a MOVE of a collection onto a locked child: 423 without the token, 204 with it, the replaced child's lock gone);
+  `webdav_server_link_down_miss_is_503_not_404` (the negative-cache mitigation below).
+- **Negative cache (`FileNotFoundCacheLifeTimeInSec`, 60 s).** WebClient answers "not found" for a name from its
+  own cache after a failed lookup, without a request. A rename or create made on the server after that is not
+  visible on `P:` for up to 60 s (acceptance, `m1-acceptance.md`). The server cannot clear that cache.
+  - Mitigated: a miss while the link is down is `503` + `Retry-After: 10` (vfs `DISCONNECTED`), never `404`.
+    The redirector retries rather than caching a miss.
+  - Not mitigated, open: the vfs answers from its own negative cache while the link is down and reports
+    `NOT_FOUND`, so a `404` still reaches the redirector in that window. Closing it needs the session state in
+    `sd_webdav_export_cfg` (`sd_sftp_session_state`, which `sd_vfs` does not expose per connection). Owner:
+    `sd_mount` wiring; not implemented here.
+  - User-facing: a name the user sees missing right after a change made elsewhere can stay missing for about
+    60 s. Waiting is the only fix on the drive; `shelldrive refresh` drops the vfs TTLs, not WebClient's cache.
+  - CLI and agent: they work through the agent (sd_vfs and IPC), never through the drive letter, so they do not
+    fill the redirector cache. `sd_mount` maps the letter only after the vfs is mounted and the export is listening.
+- **Build/test:** `ci-local -Presets x64-modern -ReleaseOnly -NoFixture -TestRegex webdav`: `unit.webdav` and
+  `webdav.redirector` pass, no compiler warnings in sd_webdav (Release, x64-modern). Debug, the x86 presets and the
+  WebDAV lab runs were not run in this change.
+- **Open:** real Office and LibreOffice saves against the lab mount (the 204 instead of 409 after the final
+  UNLOCK; `[lab-verify]`), and the 60 s wait measured on Windows 7/10 with the link down.
 
 ## Integration (sd_mount, host, CLI wiring of the M1 modules)
 
@@ -650,8 +692,51 @@ Done when the four workstreams above were merged. Acceptance results: `docs/dev/
 - `tools/ci-local.ps1`: under Windows PowerShell 5.1 a native stderr line became a terminating error, so a
   failing CTest run was reported as "Errors while running CTest" without its output; build and test now run
   with `Continue` and are judged by the exit code.
-- Not changed: the vfs offline wait still polls the session state every 50 ms. `SD_SFTP_REQ_WAIT_READY`
+- Not changed (done in r14, see the r14 section below): the vfs offline wait still polled the session state every 50 ms. `SD_SFTP_REQ_WAIT_READY`
   would need a WAIT_READY queue in the unit tests' fake sd_sftp and a cancel path for quiesce; left for
   the vfs owner.
 - XP floor: the import audit is green on every preset with sd_webdav's dynamic resolution of secur32,
   iphlpapi, the WNet enumeration and ETW; unchanged.
+
+### M1 remainder: offline waits and negative entries while offline (r14, `wip/r14-offwait`)
+
+Spec: `docs/design/02-filesystem.md` §5.2 (offline behaviour, `offline_wait`) and §7.6 (negative cache).
+
+- **Offline wait is event-driven (`sd_vfs`, `vfs_data.c`).** `vfs_wait_online` no longer sleeps 50 ms in a loop.
+  It submits one path operation (`realpath "."`) with `SD_SFTP_REQ_WAIT_READY` and `timeout_ms = offline_wait`;
+  sd_sftp holds it until READY (then it runs at once) or its deadline, and the completion callback wakes the
+  waiter. The request's token is kept per waiter. Each waiter has a heap object with two references (the
+  waiter and the callback), so a waiter that gives up cancels its request and returns without waiting for the
+  callback. Waits are bounded: `offline_wait` plus `VFS_WAIT_GRACE_MS`.
+- **Cancel path.** `vfs_cancel_waits()` cancels every offline waiter; `sd_vfs_quiesce` and `sd_vfs_unmount` call
+  it after setting `quiescing`, so a waiting read or write returns `SD_VFS_E_DISCONNECTED` at once instead of at
+  its deadline. A waiter that starts after the quiesce flag is set is cancelled as soon as its token is
+  published (both sides take `wait_lock`). Not wired: a close of one handle does not cancel another request's
+  wait (a handle is closed by the client that is waiting on it, so there is nothing to cancel in practice);
+  the WebDAV and Dokany request layers end a wait through the quiesce path only.
+- **Behaviour change.** A waiter now also returns at once when sd_sftp fails the session (`FAILED`, `CLOSED`,
+  reconnect stopped), because the request is refused without a callback or completes with the error. Before, it
+  slept to the deadline in those states. 02 §5.2 already says the outage ends in `DISCONNECTED`.
+- **Negative entries while offline (`vfs_core.c`, `lookup_child`).** Option chosen: the vfs reports
+  `SD_VFS_E_DISCONNECTED` (not `NOT_FOUND`) for a cached negative entry while the session is not READY, whatever
+  its age, and for a name absent from a cached listing while offline (which is not recorded as a negative
+  entry any more). WebDAV already maps `DISCONNECTED` to `503` + `Retry-After`, so `sd_mount` wiring and
+  `sd_webdav_export_cfg` do not change. The alternative (passing `sd_sftp_session_state` into the export config)
+  would have needed a per-connection state accessor and a second source of truth for the same answer.
+- **Decided (project owner, r21): an unknown name fails at once while offline.** A lookup of a name with no vfs entry
+  (not cached, not in a cached listing) returns `SD_VFS_E_DISCONNECTED` without waiting `offline_wait`, so Explorer,
+  Office and the redirector probes do not stall for 3 s each during an outage. Known entries keep the wait-free
+  behaviour above. 02 §5.2 states the rule and its reason; the unit test `vfs_offline_unknown_lookup_fails_at_once`
+  pins it. The 60 s WebClient cache of a miss that the server answered 404 while the link was up is unchanged
+  (02 §7.6 (b)).
+- **Tests.** `unit.vfs`: `vfs_offline_wait_completes_on_reconnect` (the wait ends right after `fake_reconnect`,
+  not at its 5 s deadline), `vfs_offline_wait_cancel_returns_promptly` (quiesce ends a 10 s wait), and
+  `vfs_offline_negative_lookup_is_disconnected` (online NOT_FOUND, offline DISCONNECTED, online NOT_FOUND again).
+  `unit.webdav`: `webdav_server_cached_miss_is_503_while_link_down` (a 404 the vfs cached is 503 while down, 404
+  again after READY). The fake sd_sftp (`tests/unit/sd_vfs/fake_sftp.c`) now holds WAIT_READY requests while not
+  READY, completes them with `SD_E_TIMEOUT` at the deadline or `SD_E_CANCELLED`, and wakes on cancel. The tests
+  use bounded waits (5 s to 10 s) and check the outcome, not a latency: a 50 ms poll and an event wake both pass
+  "completes within 2 s", so the test does not show the poll is gone; that is shown by reading the code.
+- **Build/test:** `tools/ci-local.ps1 -Presets x64-modern -ReleaseOnly -NoFixture -AllowSkip -TestRegex
+  'vfs|webdav|sftp|mount'` (log in `build/agent-offwait.log`, not committed). Debug, x86 presets and the lab
+  runs were not run here.

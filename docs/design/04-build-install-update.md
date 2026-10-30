@@ -61,8 +61,11 @@ Normative table (from `decisions.md`). A *flavour* is one compiled set of the fo
 | `x86-sse2` | v141_xp, 7.1A | `/arch:SSE2` | XP SP3 | x86 OS with SSE2 (default x86) | SSE2/SHA-NI/AES-NI fast paths, runtime-detected; its shell DLL is the x86 copy installed on x64/ARM64 |
 | `x64-xp` | v141_xp, 7.1A | — | XP x64 SP2 / Vista+ | x64 OS below Windows 10 | No CFG, no CET |
 | `x64-modern` | v143, 10.0.26100 | `/guard:cf`, `/CETCOMPAT`, `/sdl` | Windows 10 | x64 OS, Windows 10 or later | Doubles x64 test runs |
-| `arm32` | v143, 10.0.22621 | `/guard:cf` | Windows 10 on ARM / Windows 11 ≤ 23H2 (ARM32 app support; RT 8.1 and 10 IoT Core not runnable, §5.1) | ARM32 setup EXE / MSI only | Best effort (D5): CLI + host in agent mode + WebDAV only; dropped if the toolchain breaks |
-| `arm64` | v143, 10.0.26100 | `/guard:cf` | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs |
+| `arm32` | v143, 10.0.22621 | `/guard:cf` | Windows 10 on ARM / Windows 11 ≤ 23H2 (ARM32 app support; RT 8.1 and 10 IoT Core not runnable, §5.1) | ARM32 setup EXE / MSI only | Best effort (D5): CLI + host in agent mode + WebDAV only; dropped if the toolchain breaks. **Build only** in CI and ci-local, cross-compiled with the build-time tools from a nested x64 build (§2.5), no test run; no UI, no shell extension (§5.1) |
+| `arm64` | v143, 10.0.26100 | `/guard:cf` (no `/CETCOMPAT`: x64 only) | Windows 10 on ARM (1709) | ARM64 OS | Native host; ARM64 + x86 (+ x64 on Windows 11) shell DLLs. **Build only** on x64 hosts (M6): cross-compiled, build-time tools from a nested x64 build (§2.5), no test run (§11.4) |
+
+The `arm64` flavour (M6) is built with `cmake --preset arm64` (`arm64-debug` for Debug). `/volatile:ms` is set on every flavour
+(§3.2), so volatile flags and sequence counters are acquire/release on ARM64 as they are on x86 and x64.
 
 Flavours of the same architecture share all source code; the flavour only changes the configure preset. Every
 binary carries its flavour name in its version resource (`SD_FLAVOUR`, e.g. `"x64-modern"`; the same resource has
@@ -134,8 +137,9 @@ Rules (enforced by building every module with both v141_xp and v143 `/std:c11 /W
 - **Import audit tool** `tools/sd-importcheck` (C, part of the build) parses each PE import table and fails
   the build if any imported `dll!function` is not in the flavour's floor list:
   `tests/os-imports/xp-sp3-x86.txt` (both x86 flavours), `xp-sp2-x64.txt` (`x64-xp`), `win10-1507-x64.txt`
-  (`x64-modern`), `win10-arm32.txt` (ARM32, from the SysArm32 folder of Windows 10 on ARM), `win10-1709-arm64.txt`
-  (ARM64) — export lists captured from clean lab VMs, names only, no Microsoft binaries in the repo.
+  (`x64-modern`), `win10-arm32.txt` (ARM32, from the SysArm32 folder of Windows 10 on ARM), `win10-arm64.txt`
+  (ARM64, Windows 10 1709+; bootstrap list until the lab capture, M6) — export lists captured from clean lab VMs,
+  names only, no Microsoft binaries in the repo.
   Same tool checks the PE `MajorSubsystemVersion`, the absence of a TLS directory in DLLs, and the
   `IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT` / `GUARD_CF` bits expected for the flavour.
 - **Setup stub and `uninstall.exe` import only KnownDLLs (TM-R33, T-62).** `sd-importcheck --stub` fails if
@@ -183,6 +187,13 @@ Decision: **CMake** (build-time tool, like WiX; nothing of it ships).
 The `arm32` preset builds only the targets D5 allows (`shelldrive.exe`, `shelldrive-host.exe`, the setup stub
 and `uninstall.exe`); `shelldrive-ui.exe` and `shelldrive-shellext.dll` are not built there.
 
+**ARM64 build tools (M6).** An ARM64 tree cannot run its own build-time tools on an x64 host, and Windows 11 on x64
+does not run ARM64 binaries. `cmake/SdHostTools.cmake` therefore builds `sdl10n`, `sd-importcheck`, `sd-admxgen` and
+`sd-payload` in a nested **x64** configure of the same source tree (`SD_HOST_TOOLS_ONLY=ON`, an ExternalProject target
+`sd_host_tools`); the ARM64 targets see them as imported executables. `sd-isacheck` (x86 audit) and `sd-updsign` are
+not part of the ARM64 tree (`sd-isacheck` is skipped, `sd-updsign` is built as an ARM64 target and not run at build
+time). The native flavours build their tools exactly as before.
+
 Configurations: `Debug`, `Release` (shipping = `Release` with PDBs). A repository-root **`.vsconfig`**
 pins the required VS components so developer machines and self-hosted runners are identical:
 `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`, `Microsoft.VisualStudio.Component.VC.v141.x86.x64`,
@@ -216,6 +227,13 @@ pins the required VS components so developer machines and self-hosted runners ar
 Compiler (all): `/W4 /WX /utf-8 /Zi /O2 /Gy /Gw /GS /GF /MT /we4013 /we4047 /we4024` (implicit
 declarations and pointer mismatches are errors) and `/Brepro` (§12). v143 flavours add `/sdl` and
 `/guard:cf`. This section is normative for all modules' flags (C36); 01 §12.1 refers to it.
+
+Memory model (M6, all flavours): `/volatile:ms` makes every `volatile` access an acquire load or release store. It is
+the default on x86 and x64, so those builds do not change; on ARM64 the default is `/volatile:iso`, which does not
+order volatile accesses. The atomics review that goes with it is in `docs/dev/m6-notes.md`.
+
+ARM64 (`arm64`, M6): `/guard:cf` and `/sdl`; no `/CETCOMPAT` (x64 only, `SD_CET` in `cmake/SdOptions.cmake`); the
+import audit requires CFG, not CET; no ISA audit (x86 only). The linker floor is Windows 10 1709.
 
 x86 CPU floor (D4): **two x86 flavours**.
 
@@ -379,6 +397,11 @@ or pre-Windows 10 x64 machines; the MSI launch conditions (§8.2) refuse the wro
 - Contents: `shelldrive.exe` and `shelldrive-host.exe` (agent mode only), WebDAV backend only. No UI, no shell
   extension, no service, no Dokany (no upstream ARM32 build). The CI build stays; ARM32 is dropped from a
   release the moment the toolchain breaks (§15 R2).
+- Implementation status (`wip/r7-arm32`, M6 notes "ARM32 flavour"): the `arm32` preset builds Release and Debug
+  with no warnings; the UI, the shell extension and their tests are not built; the setup stub is native ARM32 and
+  installs the `PAYLOAD_ARM32` CAB (CLI, host, uninstall.exe). CI and `tools/ci-local.ps1` build it without tests.
+  Not implemented yet: the Windows 11 24H2 and RT/IoT refusals below, the ARM32 MSI (D31), and the ARM32
+  constant-time gate and test run (open items in the M6 notes).
 - Targets, with their limits:
   - **Windows 10 on ARM64 and Windows 11 up to 23H2 (ARM64 hardware)** run ARM32 desktop apps and include
     Windows Installer 5.0 and WebClient. This is the only realistic target and the one the lab tests.
@@ -612,7 +635,8 @@ by installers.
 ### 6.7 Uninstall entry (Add/Remove Programs)
 
 - Per-machine: provided by MSI (`Package Manufacturer="LibreStatic"`, which ARP shows as publisher, D45; `ARPPRODUCTICON`, `ARPURLINFOABOUT`, `ARPNOMODIFY=0` so "Change" offers
-  feature selection).
+  the feature tree and the options page of the maintenance dialog set, 8.7: features (Start at sign-in, File Explorer menu, Start menu
+  shortcut), then `DOKANY` and `ENABLELINKEDCONNECTIONS` as checkboxes; Repair and Remove as in 8.7).
 - Per-user: `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShellDrive` with `DisplayName`,
   `DisplayVersion`, `Publisher` = `LibreStatic` (D45), `DisplayIcon`, `InstallLocation`, `UninstallString` = `"<root>\uninstall.exe"
   /uninstall`, `QuietUninstallString`, `EstimatedSize`, `NoModify=1`, `NoRepair=1`. **[lab-verify]** that XP
@@ -723,6 +747,73 @@ Per-machine mode (MSI does the file work):
   excluded by our pre-step; `REBOOT=ReallySuppress` in quiet mode, exit code 3010 propagated.
 - **XP: no Restart Manager.** MSI shows its FilesInUse dialog (interactive) or uses
   `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` replacement (quiet) and returns 3010.
+
+### 6.10 Implementation decisions (M4, setup engine)
+
+Status of this build (`apps/shelldrive-setup`, tests in `tests/setup`, notes in `docs/dev/m4-notes.md`). Each
+decision implements §6.1–§6.9 or narrows it, and says which.
+
+- **Layout (6.1).** `sd_setup_core` is a static library (engine, all presets; the tests link it). The stub
+  `shelldrive-setup-stub.exe` (GUI subsystem, no comctl32 import) is built in the `x86-ia32` preset only. Its
+  payload CAB is `makecab` output of the same tree: `shelldrive.exe`, `shelldrive-host.exe`,
+  `shelldrive-ui.exe`, `shelldrive-shellext.dll`, and the payload-less stub as `uninstall.exe`.
+  `tools/sd-payload` attaches the CAB as `RT_RCDATA` `PAYLOAD_<FLAVOUR>`, plus `PAYLOAD_TABLE` (one line per
+  flavour: name, SHA-256, size), to a copy of the stub: `bin/<config>/shelldrive-setup.exe`.
+- **Signature not yet (6.1, TM-R38).** `PAYLOAD_SIG` is neither written nor checked: the repository has no release
+  keyset. Until it lands, the table is an integrity check only. The stub refuses to run without a table. Open item.
+- **Import rules (2.4, TM-R33).** The stub imports only `kernel32`, `user32`, `gdi32`, `advapi32`, `ole32` and
+  `shell32` (`tests/os-imports/knowndlls.txt`). `cabinet.dll`, the Toolhelp and Win8+ entry points and `ntdll`
+  are resolved at run time by full System32 path (`sd_setup_proc`). `sd-importcheck --knowndlls` runs as the CTest
+  `importcheck.stub.knowndlls`. The XP floor list gained ten Win32 1.0 names that the clean-VM capture lacks; the
+  XP lab capture (04 §11.4) must confirm them. The list is shared by every x86 binary.
+- **Flavour (6.2).** Native architecture from `IsWow64Process2`, falling back to `IsWow64Process` and
+  `GetNativeSystemInfo`; SSE2 from `IsProcessorFeaturePresent`; OS version from `RtlGetVersion`. A `/flavour=`
+  override is refused when the host cannot run it (for example `x86-*` on x64 or ARM64). The inputs and the
+  choice go to the setup log. ARM32 is refused with its own message.
+- **Modes (6.3).** Per-user install, repair and upgrade are implemented. Repair is a same-version reinstall; there
+  is no separate switch. An older version over a newer one is refused with exit 1638 unless `/update` is given.
+  Portable (`/portable=<dir>`) extracts into an empty folder, adds `data\` and `shelldrive.portable`, deletes
+  `uninstall.exe`, writes no registry value and warns on a volume without persistent ACLs. **Per-machine is not in
+  this build:** `/permachine` fails with the machine-unsupported message. It needs the MSI (WiX, outside this
+  milestone) and the two elevation stages. Until then administrators also get the per-user install by default,
+  which differs from the 6.3 default. Open item.
+- **Dokany (7, D32, D36).** `sd_setup_dokany_decide` implements the decision table: per-user never installs it;
+  per-machine installs unless `skip`; below 7 SP1 it is unavailable. No `DOKANY_<ARCH>` payload resource exists
+  yet, so the chaining waits for the per-machine path. The option page is the frontend's.
+- **Registration (6.6).** `packaging/registration.txt` is the single source. `cmake/SdPayload.cmake` generates
+  `sd_setup_regtable.c` at configure time, and the same file feeds the MSI tables later. Rows: the Uninstall entry
+  (HKCU), `Software\LibreStatic\ShellDrive` (`InstallDir`, `Version`, `Flavour`), App Paths, and the Run value
+  only for sign-in start (`/autostart=1`). Shell-extension COM and context-menu rows are not in the table yet;
+  they come with the shell extension's registration. Writes and removals touch only ShellDrive-owned keys, and a
+  shared key is never deleted.
+- **Start menu (6.6).** `Programs\ShellDrive.lnk` through `IShellLinkW`, target `shelldrive-ui.exe`. Uninstall
+  removes it.
+- **Uninstall (6.7).** `uninstall.exe` in the install folder copies itself to `%TEMP%\ShellDrive-uninstall-<hex>`.
+  The folder is created with a DACL for SYSTEM and the user only, in the same call. The copy is started with
+  `/waitpid=<parent>` and the parent returns. The copy waits for the parent to exit, then removes the registration,
+  the shortcut, the caches (`%LOCALAPPDATA%\LibreStatic\ShellDrive\cache`, no walk through reparse points) and the
+  install folder. Settings, profiles and `known_hosts` are kept. `/removedata` (the "also remove settings"
+  checkbox) is not implemented yet.
+- **Hooks (8.3).** `shelldrive-host.exe --installer-hook <name> --apply|--revert` exists. `signal-shutdown` is
+  implemented for the current account and session. `webdav-tune`, `user-cleanup`, `modern-menu` and
+  `programdata-secure` log "not yet implemented (M5)" and succeed. The uninstall runs `user-cleanup`.
+- **Upgrade with running processes (6.9).** The engine finds the account's `shelldrive-host.exe` processes
+  (Toolhelp, resolved at run time), signals `Global\com.librestatic.shelldrive.agent.shutdown.<SID>.<session>`,
+  waits up to 15 s, and refuses with exit 1603 if an agent still runs (unless `/force`). Files in use are renamed to
+  `*.sd-old-<n>` first (NTFS allows renaming a loaded image). The agent does not create its shutdown event yet
+  (03 §1.2, the M3 owner), so the signal currently reaches no agent and the wait ends at once. Open item.
+- **Not in this build.** Two-stage elevation and the `%ProgramData%\LibreStatic` checks (TM-R34); the `/extract=`
+  admin copy; the ARM64 stub; the `PAYLOAD_SIG` signature (above); the MSI; the frontend pages.
+- **Log (13).** English, UTF-8: `%TEMP%\ShellDrive-setup-<timestamp>.log`, or `/log=`. It records every file move,
+  registry step, hook exit code and the final result.
+- **Messages (8.6).** The installer domain (`l10n/installer`, 36 messages) is in all six locales, with CLDR plural
+  forms for `installer.summary.files`. The stub's window and message boxes use it.
+- **Engine details worth keeping.** FDI may open the cabinet a second time while it decodes a folder. Every open
+  needs its own read position. A shared one made the second reader hit the end of the payload, and FDI reported a
+  corrupt cabinet (any payload with more than one member failed; a single member worked). Test-only registry keys
+  are created one level deep under HKCU and non-volatile: a nested key created implicitly can come out volatile,
+  and a child of a volatile key cannot be persistent (error 1021). Test executables must not have "setup" in their
+  name: Windows applies installer detection and asks for elevation unless the manifest says `asInvoker`.
 
 ---
 
@@ -870,7 +961,7 @@ Per-machine mode (MSI does the file work):
 |---|---|---|---|---|---|
 | `Platform` / Template | `Intel;1033` | `x64;1033` | `x64;1033` | `Arm;1033` **[lab-verify]** (§5.1) | `Arm64;1033` |
 | `InstallerVersion` | **301** (XP SP3 ships Windows Installer 3.1) | **301** (XP x64 SP2 has 3.1) | **500** | **500** (Windows Installer 5.0 is the only version on ARM Windows) | **500** (set explicitly — WiX 3.14 had a bug not raising it for ARM64, [FireGiant #184](https://www.firegiant.com/blog/2020/3/4/wix-online-meeting-184-highlights/)) |
-| UpgradeCode | x86 GUID, **shared** by both x86 flavours | x64 GUID, **shared** by both x64 flavours | (same as `x64-xp`) | ARM32 GUID | ARM64 GUID |
+| UpgradeCode | `{8901324D-C7E1-44ED-BA3C-B1EB08B70174}`, **shared** by both x86 flavours | `{37D2227E-A917-46A7-8F8E-0F9A8146CA5F}`, **shared** by both x64 flavours | (same as `x64-xp`) | `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}` | `{1438051B-3E86-459D-8199-E8D786F5A32B}` (fixed in 8.7) |
 | Launch condition | `x86-sse2`: CPU has SSE2 (see below) | none (also runs on 10+, for admins who standardize on one MSI) | OS ≥ 10.0 | ARM32-capable OS, not RT (§5.1) | — |
 | Scope | `ALLUSERS=1` (per-machine only; per-user is the EXE's job) | | | | |
 
@@ -991,8 +1082,10 @@ Policies live in one key, `HKLM|HKCU\Software\Policies\LibreStatic\ShellDrive` (
 owned by 03 §3.5), override these at run time and are documented in an ADMX/ADML pair shipped in the release
 (`policy\ShellDrive.admx` + ADML for the six languages, generated by `sdl10n`, §8.6). The ADMX target namespace
 is `com.librestatic.shelldrive.policies` (prefix `shelldrive`), under a `LibreStatic` > `ShellDrive` category (D45). The ADMX has one policy
-per 03 §3.5 value, machine and user class unless noted; a check in `tools/sdl10n` fails the build when the
-policy list in the catalog and the ADMX differ:
+per 03 §3.5 value, machine and user class unless noted. M4 implementation: the table is `res/policy/policies.txt`,
+`tools/sd-admxgen` generates the ADMX and ADML (texts from `l10n/policy`, checked by `sdl10n --check`), and
+`tests/policy/check-admx.ps1` fails the build's tests when the ADMX and the table differ. The rows below are the
+mapping the table implements:
 
 | Policy value | ADMX element |
 |---|---|
@@ -1061,6 +1154,111 @@ MSI cannot nest MSI installs. Options documented for administrators:
   **[lab-verify]** on XP SP3 and Windows 11.
 
 ---
+
+### 8.7 Implementation decisions (M4, MSI)
+
+Status: built and checked for `x86-ia32`, `x86-sse2`, `x64-xp` and `x64-modern` (CTest label `msi`, `-DSD_BUILD_MSI=ON`;
+ICE clean with the suppressions below). ARM32 is authored but has no preset, so it is not built. Sources: `packaging/msi/` (`ShellDrive.wxs`,
+`build-msi.cmake`, `CMakeLists.txt`), the generator `tools/sd-msigen` (GUIDs, `Registry.wxi` from `packaging/registration.txt`,
+`.wxl` from `l10n/installer`), `tools/sd-msiembed` (transforms through `msi.dll`) and the checks in `tests/msi/sd-test-msi.c`.
+
+- **UpgradeCodes (fixed, 8.2):** x86 family (`x86-ia32`, `x86-sse2`) `{8901324D-C7E1-44ED-BA3C-B1EB08B70174}`; x64 family
+  (`x64-xp`, `x64-modern`) `{37D2227E-A917-46A7-8F8E-0F9A8146CA5F}`; ARM32 `{23F62FB5-0CD9-4087-B04C-D2A1B4A0A8F2}`; ARM64
+  `{1438051B-3E86-459D-8199-E8D786F5A32B}`.
+- **ProductCode and PackageCode** are derived from flavour and version (`sd-msigen guid`), so two builds of one tree give the
+  same GUIDs (12.2). The explicit package code makes candle warn (CNDL1091); the warning is suppressed (`-sw1091`) for that
+  reason. Component GUIDs are derived per UpgradeCode family, so two families never share a component.
+- **Major upgrade:** `MajorUpgrade` with `AllowSameVersionUpgrades="yes"` (a flavour switch at one version). `InstallerVersion`
+  is 301 for the XP flavours and 500 for `x64-modern`, as 8.2 says.
+- **Launch conditions:** `x64-modern` requires `CurrentMajorVersionNumber >= 10` (a `RegistrySearch` inside a `Property`). The
+  SSE2 condition of `x86-sse2` is **not authored**: MSI conditions have no bit operators, so the `FeatureSet` bit cannot be
+  tested. The `/arch:IA32` entry thunk (3.2) remains the only guard.
+- **Transforms (C43):** the `en-US` package is the base. Each other language is built as a localized package with the WiX
+  localization of the same culture (`WixUI_<culture>.wxl` and our `ShellDrive.<lang>.wxl`); `torch -t language` produces the
+  transform; `sd-msiembed` stores it as the substorage `<lcid>` for every LCID of the language (the table is `sd-msigen lcids`)
+  and adds those LCIDs to the Template summary. The SDK sample `wisubstg.vbs` stores substorages but does not update the
+  Template list, so `sd-msiembed` does both. Substorage names are bare LCIDs (`TRANSFORMS=:<lcid>`). The check that each LCID
+  applies with `MSITRANSFORM_VALIDATE_LANGUAGE` runs on the Windows Installer of the build host; the install-time behaviour
+  (direct `msiexec` with automatic language selection) is **[lab-verify]** (8.6).
+- **Localized text:** our strings are the `msi.*` entries of `l10n/installer` (feature titles and descriptions, the downgrade
+  and OS messages), generated to `.wxl` by `sd-msigen wxl` (plural, fuzzy and placeholder entries are errors). The WixUI dialogs use
+  WiX's own `WixUI_*.wxl`, which 8.1 allows. For Spanish that is `WixUI_es-es.wxl` (Spain Spanish), not the voseo of our strings:
+  open item 6.
+- **Dialogs:** the `ShellDriveUI` set of `ShellDrive.wxs` (the `WixUI_Common` dialogs in the `WixUI_FeatureTree` flow, our own
+  `OptionsDlg` after the feature tree). Install: welcome, license, customize (features), options, verify, progress, finish.
+  Maintenance (Add/Remove Programs, `msiexec /i` of the product): maintenance welcome, Change / Repair / Remove. Change goes through
+  customize and options, Repair and Remove go to verify. The options page has two checkboxes on the public properties: "Use Dokany
+  for global drives (recommended)" (`DOKANY`, unchecked writes `[backend] dokany = no` to `settings.ini`) and "Let elevated programs
+  see mapped drives" (`ENABLELINKEDCONNECTIONS`, written as the `EnableLinkedConnections` value of 6.7 and D24). The package does not
+  install or remove the Dokany driver (setup does, 7.3). The license page shows the repository `LICENSE` (MIT), converted to RTF
+  by `build-msi.cmake` at build time (no RTF copy is kept). The install folder is fixed (no `ConfigurableDirectory`, 8.2).
+  `ARPNOMODIFY=0` is explicit, so "Change" is offered. The options page starts with the effective choices (command line, then
+  the remembered choice, then the default; see the next paragraph). The strings are in `packaging/msi/wixui` (overrides) and
+  `l10n/installer` (`msi.options.*`).
+  **Remembered choices.** The package owns `HKLM\SOFTWARE\LibreStatic\ShellDrive\Installer`. The always-installed component
+  `C_Installer` writes `DOKANY`, `ENABLELINKEDCONNECTIONS` and `ELC_OWNED` (`1` or `0`, the effective state of the run). The
+  public `DOKANY` and `ENABLELINKEDCONNECTIONS` have no default: empty means not given. In every run (interactive, `/qn`, repair,
+  maintenance; uninstall reads the same values) the init rows, after `AppSearch`, take the command line value if given, else the
+  `RegistrySearch` value of the key, else the default (DOKANY on, linked connections off). The checkboxes bind to `SD_UI_DOKANY`
+  and `SD_UI_ELC`, which the init sets once (`SD_UI_INIT`), so the execute sequence does not overwrite a UI change.
+  `SD_DOKANY_STATE` drives the `settings.ini` line (`[backend] dokany = no` when 0) and the stored value, so both agree.
+  **EnableLinkedConnections ownership.** `C_LinkedConn` is installed only when `SD_ELC_WRITE = 1`: linked connections are wanted
+  and the value either does not exist (this package creates it, `ELC_OWNED` becomes 1) or the package already owns it. A value
+  that exists and is not ours is never written, changed or removed, also on Change. The component owns the value while it is
+  installed, so uninstall removes the value exactly when this package created it.
+- **Registry (6.6):** `packaging/registration.txt` generates one component per row, in HKLM: `SD_RegCore` (`core` rows) and
+  `SD_RegAutostart` (`autostart` rows). The `Uninstall\ShellDrive` rows are skipped because Windows Installer writes the Add/Remove
+  entry of an MSI itself. `Software\LibreStatic\ShellDrive\Version` is written by the MSI for Intune detection (8.3).
+- **Public properties (8.4) as built:** `AUTOSTART` (feature level 0), `DOKANY=0` (writes `settings.ini [backend] dokany = no`),
+  `UPDATECHECK` (`0` under `/qn`, which is `UILevel 2`, otherwise `1`), `UPDATEURL` and `UPDATECHANNEL` (`settings.ini [update]`,
+  `IniFile`), `ENABLELINKEDCONNECTIONS` (written only when the value does not exist yet, `RegistrySearch`), `WEBDAV_TUNING`,
+  `REMOVESECRETS` and `REMOVEDATA` (uninstall-only removal components). Not implemented yet: `DEFAULTPROFILES`, `SERVICE` and
+  `SERVICESTART` (open items 1 and 4).
+- **Installer hooks (8.3, TM-R35):** `programdata-secure` (`NOT REMOVE~="ALL"`), `webdav-tune` `--apply` and `--revert`,
+  `signal-shutdown` (on upgrade and uninstall, before `RemoveExistingProducts`) and `user-cleanup` (impersonated, uninstall). The
+  NoImpersonate bit is set exactly where the 8.3 table says. The hooks run the installed `shelldrive-host.exe` through `FileKey`, so
+  they are scheduled after `InstallFiles`. **Deviation:** `programdata-secure` therefore does not run before `CreateFolders` and
+  `MoveFiles` as the table requires, because the file does not exist yet at that point (open item 2).
+- **ICE suppressions (justified; every other ICE is on):** ICE61 (same-version upgrade, 8.2); ICE38, ICE43 and ICE90 (the Start
+  menu shortcut is in `ProgramMenuFolder`, which is the all-users menu under `ALLUSERS=1`, while ICE checks the path as a user
+  profile); ICE63 (the signal-shutdown hook must run between `InstallInitialize` and `RemoveExistingProducts`, so that the agents
+  release their files before a major upgrade removes the old product). Intermediate localized packages are built with `-sval`;
+  the shipped base package is validated by light.
+- **Service (D6):** `ServiceInstall` and `ServiceControl` sit in `C_Core_Host`, behind `SD_MSI_WITH_SERVICE=1` (off until M5). The
+  service binary is the key file of that component, so `SERVICE=0` needs the host split into its own component when the service
+  lands (open item 4).
+
+**Tests (label `msi`, `-DSD_BUILD_MSI=ON`; `ctest -L msi` after `cmake --build <tree> --target msi`).** `msi.<flavour>.tables` reads
+the package with `msi.dll`: the properties, the Template, the InstallerVersion, the substorages, the transforms applied to a scratch
+copy with the language check, the components, the features, the registry rows, the launch conditions, the hooks and their
+NoImpersonate bits. `msi.<flavour>.admin` runs `msiexec /a ... /qn` into the build tree (files only: no registry, service or
+custom action). Installed-state tests (`msiexec /i`, repair, upgrade, uninstall) are not run on a development machine; they belong
+to the lab (11.4).
+
+**Open items (M4, MSI):**
+
+1. `DEFAULTPROFILES` (C9): WiX 3.14 has no authoring element for the MSI `MoveFile` table (its `MoveFiles` is an action element,
+   and `CopyFile` cannot copy a wildcard). The property is accepted and ignored. Needs a table-injection step (for example in
+   `sd-msiembed`) or the WiX v4+ migration.
+2. `programdata-secure` ordering (8.3): it runs after `InstallFiles`. A fix is a binary-stream custom action (a copy of the host in
+   the package) or a check in the setup stub before the MSI runs.
+3. Hook rollback counterparts (8.3: "each rollback counterpart carries the same condition") are not authored. The apply hooks are
+   idempotent. Add the revert paths for a failed install when the lab shows the need.
+4. `SERVICE`, `SERVICESTART` and the Service feature wait for M5 (see the Service bullet).
+5. Shell extension registration and the x86 copy: done for the x64 MSI (rows of feature `shellext32`, the x86-sse2 DLL in
+   Program Files (x86), Win64="no" components; m4-notes item 3). The per-user setup and the x64 setup payloads (6.2) do not
+   carry the x86 copy yet.
+6. Spanish WiX dialog strings are Spain Spanish (`WixUI_es-es.wxl`), not Rioplatense. Either provide the dialog buttons from our
+   catalog with voseo, or accept WiX's text for the standard buttons and dialogs only.
+7. Remembered choices (resolved in the M4 follow-up, 8.7): `DOKANY`, `ENABLELINKEDCONNECTIONS` and the ownership of the linked
+   connections value are stored in `HKLM\SOFTWARE\LibreStatic\ShellDrive\Installer` and read back on every run, so a silent
+   repair or maintenance keeps them. Still open: the lab check of the Installer key and of the ownership rules (install, Change,
+   repair, uninstall, and a pre-existing value), and the Dokany driver, which the package does not install or remove.
+8. Reproducibility (12.2): the summary `Created` and `LastSaved` times vary between builds; `SOURCE_DATE_EPOCH` is not applied yet.
+9. ARM32 (D31): no `arm32` preset, so the package is not built. The ARM64 package needs the M6 host-tools path, because an ARM64
+   tree cannot run the MSI tools. `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM64 trees.
+10. Lab checks: the install-time behaviour of the hooks, of `ENABLELINKEDCONNECTIONS` (setup returns 3010, 8.4), of the
+    `DOKANY` and `UPDATE*` settings, and of the uninstall removal (TST-27) is not verified on this machine.
 
 ## 9. Updater
 
@@ -1272,6 +1470,58 @@ do not apply to update traffic.
   reinstalls the previous one (an explicit uninstall+install, since `AllowDowngrades="no"`).
 - Cleanup: keep only the current and last-good versions; delete old `.sd-old-*` files at agent start.
 
+### 9.7 Decisions taken in M4 (`sd_update`)
+
+The engine is `src/sd_update` (pure verification, state, WinHTTP transport, engine); the agent methods are in
+`apps/shelldrive-host/update_ipc.c`; the release-side signing tool is `tools/sd-updsign`. Developer notes:
+`docs/dev/m4-notes.md`. Where §9.1–§9.6 left a choice, the following applies.
+
+- **Signature primitive:** ed25519 (`sd_ed25519_verify`, sd_crypto M0) for keyset and manifest. Message = domain string
+  || the exact bytes before the first `sig` line. The keyset may carry several `sig` lines (one per root); a sig whose key
+  id is not a current root is ignored, a sig by a current root that does not verify is a hard error.
+- **Keyset rules:** each `key` line carries the key id, which must equal the first 8 bytes of SHA-256 of the public key
+  (checked at parse); `revoke` applies to the keys listed in the same keyset; a keyset with `root` lines (rotation) needs
+  valid signatures by **both** current roots, and the `root` lines become the roots in effect. A keyset with a version lower
+  than the stored one is `keyset_rollback`; an equal one is accepted.
+- **Stored keyset:** `state\keyset` (the accepted keyset.txt bytes) and `state\roots` (40-byte records: key id, public key)
+  are written only after verification and are parsed without a second signature check, because a rotation keyset is
+  signed by the roots it replaces. Local state is trusted as far as local files are trusted (a user can already replace
+  the agent); the per-machine copy is written by elevated setup only.
+- **First run:** with no stored keyset the trust anchor is the compiled-in roots at keyset version 0; a manifest that
+  names keyset n ≥ 1 makes the agent fetch `keyset.txt` next to the manifest URL and verify it.
+- **Anti-rollback:** `serial` must be ≥ `last_serial.<channel>`. A serial equal to the last accepted one is accepted only
+  with the same bytes as `state\manifest.<channel>` (a re-signed manifest needs a new serial). Writes happen only after the
+  whole chain passed: serial, manifest bytes, then `last_verified`.
+- **Freshness:** `expires - released` ≤ 30 days (stable), ≤ 14 days (beta); `expires` in the past is `manifest_expired`.
+  `update.stale` is reported when the last successful verification is older than 14 days and the current check fails.
+- **Manifest syntax:** printable ASCII and LF only, one record per line, single spaces, final LF, the sig line last and
+  unique. Unknown keys are ignored. The `shelldrive-manifest` major must be 1, otherwise `format_version_unknown`
+  ("update the application manually"). A `dokany` line is stored as file `dokany-<arch>`; `dokany-deny` lines stay in the
+  stored manifest for the Dokany check (TM-R23).
+- **Transport (§9.4):** WinHTTP is loaded from System32 and every entry point is resolved at run time, so nothing post-XP
+  is imported statically. `WINHTTP_OPTION_SECURE_PROTOCOLS` requests TLS 1.2 where the option exists. Redirects are followed
+  by hand: a `Location` must name a host from the manifest's `base` lines or a GitHub release-asset host, and https to http
+  is refused. The manifest URL has an optional fallback (`manifest_alt`): the HTTP mirror is tried when the HTTPS URL fails
+  with a network error. A response over the manifest size (or over its declared Content-Length) is refused before the body
+  is used.
+- **Artifact selection:** `msi-<flavour>` for MSI installs, `portable-<flavour>` for portable, and for per-user EXE
+  installs `setup-universal` first, then `setup-<arch>` (`x86`, `x64`, `arm32`, `arm64`). `min-os` lines are checked
+  against the running OS. The flavour is detected at every check (§6.2): `x86-sse2` or `x86-ia32` from the CPU; on AMD64
+  `x64-xp` for NT 5.x and `x64-modern` otherwise; `arm32` and `arm64` from the native architecture.
+- **Staging and download:** `<staging>\<version>\<name>`. The bases are tried in manifest order; size and digest are checked
+  after the download and before the file is moved into place; a complete earlier download is reused. A file that fails the
+  check is deleted and never used.
+- **Apply:** setup mode runs the staged `setup.exe /update /passive` and waits (10 minutes) for exit code 0. The file-swap
+  mode (portable layouts and the engine tests) keeps the previous files in `install\.rollback\<old>\`, copies each new file
+  to `<name>.sd-new` and moves it over the old name with MoveFileEx, runs `--selftest` (60 s limit), and restores everything
+  on failure. A file in use cannot be replaced by this mode, so the agent uses the setup mode, which is the one that ships.
+- **Policy and settings:** `DisableUpdateCheck` (HKLM, then HKCU) disables checks with reason `policy`; `UpdateChannel` and
+  `UpdateUrl` override the settings. `[update] enabled = no` gives reason `settings`. A portable install (a
+  `data\settings.ini` next to the executable) may check, but `update.apply` refuses it (`update_disabled`) and the UI offers
+  the manual download. Defaults: enabled, channel `stable`, the GitHub bootstrap manifest.
+- **Trust in this build:** no release root is compiled in yet (the release build adds `installer/keys/`, §9.3). Without
+  roots every verification fails closed with `update_verify_failed`.
+
 ---
 
 ## 10. Authenticode signing of our binaries
@@ -1407,7 +1657,7 @@ else in the installer changes when it is OFF.
 | `unit-x86` matrix `{x86-ia32, x86-sse2}` | windows-2022 | download artifact → run `sd-test-*.exe` under WOW64 (CTest, JUnit XML). The IA32 run covers the scalar crypto paths; the SSE2 run additionally forces each SIMD path off and on (`SD_CPU_MASK`) |
 | `unit-x64` matrix `{x64-xp, x64-modern}` | windows-2022 | same; `x64-modern` also runs with process mitigation policy for CET shadow stacks requested **[verify]** whether the runner CPU/OS enforces it (the lab covers it otherwise) |
 | `crypto-diff` | windows-2022 | D1/D2: `sd-test-crypto --diff-cng` on `x64-modern` and `x86-sse2`: randomized differential tests of our SHA-2/HMAC, AES-CTR/GCM, ECDH/ECDSA P-256/384/521, RSA, X25519/Ed25519 (where CNG has them) against CNG, plus all Wycheproof and RFC vectors. CNG is a reference only, never linked into shipping code paths for hashes |
-| `unit-arm64` | windows-11-arm | same as `unit-x64` for `arm64` (+ `crypto-diff` on ARM64) |
+| `unit-arm64` | windows-11-arm | same as `unit-x64` for `arm64` (+ `crypto-diff` on ARM64). **Not yet in CI:** the `build` matrix entry for `arm64` is build-only (Release and Debug cross-compiled on windows-2022, no `ctest` step, because the test binaries cannot run there); this job is the one that runs them, once the windows-11-arm runner is in use (M6, §1.1). |
 | `integration` | windows-2022 | §11.3 (runs `x64-modern`; a reduced auth/transfer set also runs `x64-xp` and `x86-sse2`) |
 | `package` | windows-2022 | needs build: Dokany files verified against `dokany.lock` (size, SHA-256, signer; at embed time, also when served from the cache, TM-R23) → payload CABs (six flavours) → six MSIs (WiX 3.14, ICE validation) → `sd-msilang` transforms → `sd-msilang --dump-sequences` custom-action condition check (TM-R35, §8.3) → sparse MSIX (only with `SD_SPARSE_MSIX=ON`) → setup EXEs with a test-key payload-table signature → test-sign → `sd-release manifest --unsigned` → artifacts |
 | `release-checks` | windows-2022 | TST-30 on every Release build: no `none` cipher or test-only flags, no fuzz hooks, no test certificates or test keys (only `installer/keys/` public keys), no `__DATE__`/`__TIME__` strings; `sd-importcheck --stub` (KnownDLLs-only imports, no delay-load, TM-R33) |
@@ -1574,6 +1824,14 @@ Goal: two clean builds of the same tag on the pinned toolchain produce byte-iden
   against `dokany.lock`), and compares the SHA-256 of every unsigned output and the toolchain
   fingerprint in `build-info.txt` with the CI draft. Any difference stops the release.
 
+Local check (M4): `tools/check-repro.ps1 -Preset <preset>` builds the preset twice in `build\repro-a\<preset>` and
+`build\repro-b\<preset>`, both from the same source through a `subst` drive (so `__FILE__` and source paths match), with
+`--config Release`, and compares byte for byte: `bin\Release\*.exe`, `*.dll`, `lib\Release\*.lib` and
+`generated\policy\**` (ADMX, ADML, policy headers). It exits 1 and names each differing file. PDBs are not compared
+(they hold build-directory object paths; each PE carries only the PDB name through `/PDBALTPATH`). The check is the
+opt-in CTest `repro.<preset>` (label `repro`, excluded from the default run with the matrix, bench and interop labels).
+Shipping code must not use `__DATE__`, `__TIME__`, `__TIMESTAMP__` or `__FILE__` (none is used today).
+
 ### 12.3 Release process
 
 **Release gates (D38, TM-R38, D29).** Each gate is a checklist item in the release PR and is checked by
@@ -1584,6 +1842,51 @@ Goal: two clean builds of the same tag on the pinned toolchain produce byte-iden
 | Named testers (private) | Lab pass; interim rules of §10 while unsigned; before crypto pass 1, the "not yet externally reviewed" notice |
 | **Public beta** (public links, public beta manifest) | External crypto review **pass 1** (end of M2: all SSH and crypto code, D38) completed and its findings closed; **and** Authenticode signing in place (TM-R38: no public download links for unsigned builds) |
 | **1.0 and later stable** | Crypto review **pass 2** closed (D38, TST-33); certificate (D29); all P3 tests of 05 §7; independent maintainer rebuild (TM-R39) |
+
+**Release gates record format (`installer/keys/release-gates.txt`, r21).** One record per release, committed in the
+release PR. It is ASCII (printable characters, notes included), with LF or CRLF line ends and no BOM; a CRLF pair is read
+as LF, because the maintainer edits the record on Windows. Any other control character is refused.
+Blank lines and `#` comment lines are allowed. The record has this shape, and the lines appear in this order:
+
+```
+release-gates 1
+version 1.0.0
+commit 0123456789abcdef0123456789abcdef01234567
+channel stable
+gate ci-local pass 2026-10-26 FacuM
+gate lab pass 2026-10-27 FacuM all VMs, smoke run
+gate review-pass1 pass 2026-06-12 FacuM pass 1 findings closed
+gate authenticode pass 2026-10-20 FacuM certificate in place (D29)
+gate review-pass2 pass 2026-10-27 FacuM
+gate p3-tests pass 2026-10-27 FacuM 05 section 7
+gate rebuild pass 2026-10-28 FacuM rebuilt outside GitHub, hashes equal
+approved FacuM 2026-10-28
+```
+
+- `release-gates 1` is the format version; any other value is refused. `version` is `N.N.N` with decimal numbers.
+  `commit` is the full 40-digit lowercase hex SHA of the tag. `channel` is `stable` or `beta`.
+- `gate <name> <status> <date> <who> [note]`: `status` is `pass`, `fail` or `waived`; `date` is `YYYY-MM-DD`; `who`
+  is one token without spaces; `note` is the rest of the line. A `waived` gate needs a note.
+- `approved <who> <date>` is the last line and appears once. The maintainer writes it after every gate is recorded.
+- Each gate name appears once, and only for the channel that requires or allows it:
+
+| Gate | Beta | Stable | Waiver |
+|---|---|---|---|
+| `ci-local` | required | required | never |
+| `lab` | required | required | beta only (named testers and beta VM runs); stable never |
+| `review-pass1` | required | required | never |
+| `authenticode` | required | required | never (TM-R38) |
+| `review-pass2` | not allowed | required | never |
+| `p3-tests` | not allowed | required | never |
+| `rebuild` | not allowed | required | never |
+
+`sd-release gates check FILE --version V --commit C` validates the record. A malformed record (grammar, unknown or
+duplicate gate, gate not allowed for the channel, missing header line, text after `approved`) exits 2. A record that is well formed
+but refuses the release exits 3: `version` or `commit` differ from `V` or `C`; a required gate is missing or `fail`; a
+`waived` status on a gate that cannot be waived; no `approved` line. `sd-release sign` (every `--kind`) takes
+`--gates FILE --version V --commit C` and refuses unless the check passes. For a manifest or payload table, the
+`channel` line of the signed body must also equal the record's channel, and a manifest's `version` must equal `V`.
+`release.yml` runs the check in job `check-gates` before the signing sessions, with no secrets.
 
 **Steps**
 

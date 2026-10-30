@@ -21,6 +21,11 @@ static wchar_t  g_path[MAX_PATH];
 static uint64_t g_file_size;
 static log_sink g_sinks[SD_LOG_MAX_SINKS];
 
+/* M4 (03 §10.1): privacy of names and paths. Set once at start-up (sd_log_set_privacy); read by the formatter. */
+static volatile LONG g_privacy = SD_LOG_PRIVACY_STANDARD;
+static sd_log_hash_fn g_hash;
+static void *g_hash_ctx;
+
 static void log_init_once(void *arg)
 {
   SD_UNUSED(arg);
@@ -45,6 +50,21 @@ sd_log_level sd_log_get_level(void)
 int sd_log_enabled(sd_log_level level)
 {
   return (LONG)level <= g_level;
+}
+
+void sd_log_set_privacy(sd_log_privacy mode, sd_log_hash_fn hash, void *ctx)
+{
+  log_init();
+  sd_mutex_lock(&g_lock);
+  g_hash = hash;
+  g_hash_ctx = ctx;
+  InterlockedExchange(&g_privacy, mode == SD_LOG_PRIVACY_STRICT ? SD_LOG_PRIVACY_STRICT : SD_LOG_PRIVACY_STANDARD);
+  sd_mutex_unlock(&g_lock);
+}
+
+sd_log_privacy sd_log_get_privacy(void)
+{
+  return (sd_log_privacy)g_privacy;
 }
 
 /* ---- restricted formatter ---- */
@@ -155,7 +175,52 @@ static void ob_str16(out_buf *o, const wchar_t *w)
   ob_str8(o, tmp);
 }
 
+/* Privacy filter of the typed fields (03 §10.1). kind: 'H' host, 'U' user, 'R' remote path.
+   standard: names are printed; a remote path only at error, debug and trace level ("(hidden)" otherwise).
+   strict: every such field is a keyed hash, "h:", "u:" or "p:" and the first three bytes in hex. Without a hash
+   function (no key) strict prints "[redacted]", never the text. */
+static void ob_private(out_buf *o, char kind, const char *s, sd_log_level level)
+{
+  static const char hex[] = "0123456789abcdef";
+  uint8_t mac[32];
+  size_t i;
+  if ((LONG)g_privacy != SD_LOG_PRIVACY_STRICT) {
+    if (kind == 'R' && level != SD_LOG_ERROR && level != SD_LOG_DEBUG && level != SD_LOG_TRACE)
+      ob_puts(o, "(hidden)");
+    else
+      ob_str8(o, s);
+    return;
+  }
+  if (s == NULL) {
+    ob_puts(o, "(null)");
+    return;
+  }
+  if (g_hash == NULL) {
+    ob_puts(o, "[redacted]");
+    return;
+  }
+  g_hash(g_hash_ctx, s, strlen(s), mac);
+  ob_putc(o, kind == 'H' ? 'h' : kind == 'U' ? 'u' : 'p');
+  ob_putc(o, ':');
+  for (i = 0; i < 3; i++) {
+    ob_putc(o, hex[(mac[i] >> 4) & 15]);
+    ob_putc(o, hex[mac[i] & 15]);
+  }
+}
+
+static size_t format_levelled(char *buf, size_t cap, const char *fmt, va_list ap, sd_log_level level);
+
 size_t sd_log_format(char *buf, size_t cap, const char *fmt, va_list ap)
+{
+  return format_levelled(buf, cap, fmt, ap, SD_LOG_TRACE);   /* no level: remote paths are printed */
+}
+
+size_t sd_log_format_level(char *buf, size_t cap, sd_log_level level, const char *fmt, va_list ap)
+{
+  return format_levelled(buf, cap, fmt, ap, level);
+}
+
+static size_t format_levelled(char *buf, size_t cap, const char *fmt, va_list ap, sd_log_level level)
 {
   out_buf o;
   o.p = buf;
@@ -178,6 +243,10 @@ size_t sd_log_format(char *buf, size_t cap, const char *fmt, va_list ap)
       if (ch >= 0x20 && ch < 0x7F) ob_putc(&o, (char)ch); else ob_hexbyte(&o, (unsigned)ch & 0xFF);
       break;
     }
+    case 'H': case 'U': case 'R':          /* typed private fields: %Hs host, %Us user, %Rs remote path */
+      if (*fmt == 's') { fmt++; ob_private(&o, c, va_arg(ap, const char *), level); }
+      else ob_puts(&o, "%?");
+      break;
     case 'd': ob_int(&o, va_arg(ap, int)); break;
     case 'u': ob_uint(&o, va_arg(ap, unsigned), 10, 0); break;
     case 'x': ob_uint(&o, va_arg(ap, unsigned), 16, 0); break;
@@ -343,7 +412,7 @@ void sd_logv(sd_log_level level, const char *component, const char *mount_id,
     ob_str8(&o, mount_id);
     ob_puts(&o, "] ");
   }
-  o.len += sd_log_format(o.p + o.len, o.cap - o.len, fmt, ap);
+  o.len += format_levelled(o.p + o.len, o.cap - o.len, fmt, ap, level);
 
   sd_mutex_lock(&g_lock);
   for (i = 0; i < SD_LOG_MAX_SINKS; i++) {
@@ -371,7 +440,7 @@ void sd_logv(sd_log_level level, const char *component, const char *mount_id,
 }
 
 void sd_log(sd_log_level level, const char *component, const char *mount_id,
-            _Printf_format_string_ const char *fmt, ...)
+            const char *fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);

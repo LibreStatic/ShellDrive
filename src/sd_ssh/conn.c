@@ -37,13 +37,13 @@ const char ssh_ident_c[] = SSH_IDENT_C;
 
 uint64_t ssh_now(void) { return sd_tick_ms(); }
 
-void ssh_log(sd_ssh_conn *c, sd_log_level level, _Printf_format_string_ const char *fmt, ...)
+void ssh_log(sd_ssh_conn *c, sd_log_level level, const char *fmt, ...)
 {
   char buf[1024];
   va_list ap;
   if (!sd_log_enabled(level) && !(c && c->cb.on_log)) return;
   va_start(ap, fmt);
-  sd_log_format(buf, sizeof(buf), fmt, ap);
+  sd_log_format_level(buf, sizeof(buf), level, fmt, ap);   /* %Rs follows the level rule of sd_log (03 §10.1) */
   va_end(ap);
   sd_log(level, "ssh", NULL, "%s", buf);
   if (c && c->cb.on_log) c->cb.on_log(c->cb.ctx, (int)level, buf);
@@ -81,13 +81,15 @@ sd_err sd_ssh_global_init(void)
 
 sd_err ssh_post_cmd(sd_ssh_conn *c, ssh_cmd *cmd)
 {
+  sd_ssh_conn *r = c->root ? c->root : c;    /* M2: every hop posts to the chain's queue */
   cmd->next = NULL;
-  sd_mutex_lock(&c->qlock);
-  if (c->queue_closed) { sd_mutex_unlock(&c->qlock); return SD_E_SHUTDOWN; }
-  if (c->qtail) c->qtail->next = cmd; else c->qhead = cmd;
-  c->qtail = cmd;
-  sd_mutex_unlock(&c->qlock);
-  SetEvent(c->cmd_ev);
+  cmd->conn = c;
+  sd_mutex_lock(&r->qlock);
+  if (r->queue_closed) { sd_mutex_unlock(&r->qlock); return SD_E_SHUTDOWN; }
+  if (r->qtail) r->qtail->next = cmd; else r->qhead = cmd;
+  r->qtail = cmd;
+  sd_mutex_unlock(&r->qlock);
+  SetEvent(r->cmd_ev);
   return SD_OK;
 }
 
@@ -95,19 +97,21 @@ static DWORD WINAPI work_thunk(LPVOID arg)
 {
   ssh_work *w = (ssh_work *)arg;
   sd_ssh_conn *c = w->c;
+  sd_ssh_conn *r = c->root ? c->root : c;
   w->work(w);
   if (ssh_post_cmd(c, &w->cmd) != SD_OK) w->cmd.drop(&w->cmd);
-  if (InterlockedDecrement(&c->workers) == 0) SetEvent(c->workers_idle);
+  if (InterlockedDecrement(&r->workers) == 0) SetEvent(r->workers_idle);
   return 0;
 }
 
 sd_err ssh_queue_work(sd_ssh_conn *c, ssh_work *w)
 {
+  sd_ssh_conn *r = c->root ? c->root : c;
   w->c = c;
   w->gen = c->gen;
-  if (InterlockedIncrement(&c->workers) == 1) ResetEvent(c->workers_idle);
+  if (InterlockedIncrement(&r->workers) == 1) ResetEvent(r->workers_idle);
   if (!QueueUserWorkItem(work_thunk, w, WT_EXECUTELONGFUNCTION)) {
-    if (InterlockedDecrement(&c->workers) == 0) SetEvent(c->workers_idle);
+    if (InterlockedDecrement(&r->workers) == 0) SetEvent(r->workers_idle);
     return SD_E_INTERNAL;
   }
   return SD_OK;
@@ -143,15 +147,33 @@ sd_err sd_ssh_conn_post(sd_ssh_conn *c, void (*fn)(void *), void *arg)
 
 int sd_ssh_conn_is_io_thread(const sd_ssh_conn *c)
 {
-  return c && c->thread.id == GetCurrentThreadId();
+  const sd_ssh_conn *r;
+  if (!c) return 0;
+  r = c->root ? c->root : c;
+  return r->thread.id == GetCurrentThreadId();
 }
 
 /* ---- output ---- */
 
 size_t ssh_out_pending(const sd_ssh_conn *c) { return (c->out.len - c->out_off) + c->pend_bytes; }
 
+/* The byte stream below SSH exists: the TCP socket (hop 0) or the open tunnel (hop i >= 1). */
+static int lower_up(const sd_ssh_conn *c)
+{
+  return c->s != INVALID_SOCKET || (c->tun && c->tun->open && c->tun->ch);
+}
+
 static void flush_out(sd_ssh_conn *c)
 {
+  if (c->tun) {      /* hop i >= 1: the direct-tcpip channel on hop i-1 (01 §3.3) */
+    while (c->tun && c->tun->open && c->tun->ch && c->out_off < c->out.len && !c->failing) {
+      size_t acc = 0;
+      sd_err e = sd_ssh_channel_write(c->tun->ch, c->out.p + c->out_off, c->out.len - c->out_off, &acc);
+      if (e != SD_OK) { ssh_fail(c, SD_E_DISCONNECTED, 0, "tunnel write failed"); return; }
+      if (acc == 0) break;      /* the tunnel's on_writable flushes again */
+      c->out_off += acc;
+    }
+  }
   while (c->s != INVALID_SOCKET && c->out_off < c->out.len) {
     size_t n = SD_MIN(c->out.len - c->out_off, (size_t)256 * 1024);
     int r = send(c->s, (const char *)c->out.p + c->out_off, (int)n, 0);
@@ -249,7 +271,7 @@ void ssh_fail(sd_ssh_conn *c, sd_err e, uint32_t reason, const char *why)
   c->fail_err = e;
   ssh_log(c, SD_LOG_INFO, "connection failed: %s (%s)", sd_err_name(e), why ? why : "");
   /* Best-effort DISCONNECT once the transport is up (keys or not). */
-  if (reason && c->s != INVALID_SOCKET && c->st >= SSH_ST_KEX) {
+  if (reason && lower_up(c) && c->st >= SSH_ST_KEX) {
     uint8_t buf[128];
     sd_wr w;
     sd_wr_init_fixed(&w, buf, sizeof(buf));
@@ -265,9 +287,21 @@ static void close_socket(sd_ssh_conn *c)
 {
   uint32_t i;
   if (c->s != INVALID_SOCKET) { closesocket(c->s); c->s = INVALID_SOCKET; }
+  if (c->ev) { WSACloseEvent(c->ev); c->ev = NULL; }   /* the next TCP connect brings its own */
   for (i = 0; i < 2; i++) {
     if (c->att[i].s != INVALID_SOCKET) { closesocket(c->att[i].s); c->att[i].s = INVALID_SOCKET; }
   }
+  ssh_tunnel_release(c);
+}
+
+/* Proxy reopen (01 §5.2): drops the lower transport and the bytes read from it. */
+void ssh_close_lower(sd_ssh_conn *c)
+{
+  close_socket(c);
+  c->in_len = 0;
+  c->in_reset = 1;
+  sd_wr_reset(&c->out);
+  c->out_off = 0;
 }
 
 static void wipe_transport(sd_ssh_conn *c)
@@ -276,6 +310,7 @@ static void wipe_transport(sd_ssh_conn *c)
   ssh_dir_clear(&c->rx);
   ssh_kex_reset(c);
   ssh_auth_clear(c);
+  ssh_proxy_done_cleanup(c);
   free_pending(c);
   sd_secure_zero(c->session_id, sizeof(c->session_id));
   if (c->in) sd_secure_zero(c->in, c->in_cap);
@@ -296,6 +331,7 @@ static void finalize(sd_ssh_conn *c)
   c->disc_done = NULL;
   if (c->cur_prompt) ssh_prompt_withdraw(c, c->cur_prompt);
   ssh_channels_fail_all(c, e);
+  ssh_hku_reset(c);           /* completes a pending fetch_hostkeys with the error */
   wipe_transport(c);
   c->failing = 0;
   if (cd) cd(cctx, e, 0);
@@ -315,6 +351,13 @@ static char *dup_str(const char *s)
   return d;
 }
 
+static char *dup_bytes_str(const char *s, size_t n)
+{
+  char *d = (char *)sd_alloc(n + 1);
+  if (d) { memcpy(d, s, n); d[n] = 0; }
+  return d;
+}
+
 static wchar_t *dup_wstr(const wchar_t *s)
 {
   size_t n;
@@ -328,54 +371,29 @@ static wchar_t *dup_wstr(const wchar_t *s)
 
 static void free_config(sd_ssh_conn *c)
 {
-  uint32_t i;
   sd_free(c->host_w);
   sd_free(c->host_utf8);
+  sd_free(c->host_ascii);
   if (c->user) sd_secure_free(c->user, strlen(c->user) + 1);
-  for (i = 0; i < c->id_count; i++) {
-    sd_free(c->ids[i].path);
-    sd_free(c->ids[i].path_utf8);
-    sd_secbuf_free(c->ids[i].blob);
-    sd_free(c->ids[i].label);
-  }
-  sd_free(c->ids);
+  ssh_auth_cfg_free(c);
   sd_free(c->disabled);
+  ssh_pxcfg_free(&c->pxcfg);
+  ssh_secret_clear(&c->px_secret);
 }
 
-static unsigned __stdcall io_main(void *arg);
-
-sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
+/* Per-hop configuration (deep copies). c is zero-filled by the caller (jump_chain.c). */
+sd_err ssh_hop_init(sd_ssh_conn *c, const sd_ssh_config *cfg, const sd_ssh_hop *h, uint32_t hop_index)
 {
-  sd_ssh_conn *c;
-  const sd_ssh_hop *h;
-  uint32_t i;
   char *host8 = NULL;
   sd_err e;
 
-  if (!out) return SD_E_INVALID_PARAM;
-  *out = NULL;
-  if (!cfg || cfg->struct_size < sizeof(sd_ssh_config) || !cfg->hops || cfg->hop_count == 0) return SD_E_INVALID_PARAM;
-  if (cfg->hop_count > 8) return SD_E_INVALID_PARAM;
-  if (cfg->hop_count != 1) return SD_E_UNSUPPORTED;               /* ProxyJump: M2 */
-  h = &cfg->hops[0];
   if (!h->host || !h->host[0] || !h->auth.user || !h->auth.user[0]) return SD_E_INVALID_PARAM;
-  if (h->proxy.kind != SD_PROXY_NONE) return SD_E_UNSUPPORTED;    /* proxies: M2 */
-  if (h->auth.agents) return SD_E_UNSUPPORTED;                     /* agents: M2 */
-  if (cfg->address_family != 0 && cfg->address_family != AF_INET && cfg->address_family != AF_INET6)
-    return SD_E_INVALID_PARAM;
-  for (i = 0; i < h->auth.identity_count; i++) {
-    const sd_ssh_identity *id = &h->auth.identities[i];
-    if (id->kind == SD_ID_AGENT_KEY) return SD_E_UNSUPPORTED;
-    if (id->kind == SD_ID_FILE && !id->path) return SD_E_INVALID_PARAM;
-    if (id->kind == SD_ID_BLOB && (!id->blob || !id->blob_len)) return SD_E_INVALID_PARAM;
-  }
-  e = sd_ssh_global_init();
+  e = ssh_auth_cfg_check(&h->auth);                                 /* identities, agents (auth_cfg.c) */
   if (e != SD_OK) return e;
 
-  c = (sd_ssh_conn *)sd_calloc(1, sizeof(*c));
-  if (!c) return SD_E_NO_MEMORY;
   c->s = INVALID_SOCKET;
   c->att[0].s = c->att[1].s = INVALID_SOCKET;
+  c->hop_index = hop_index;
   sd_mutex_init(&c->qlock);
   sd_wr_init(&c->out, 64u * 1024u * 1024u);
   ssh_dir_init(&c->tx);
@@ -394,6 +412,10 @@ sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, 
     if (!c->host_utf8) { e = SD_E_NO_MEMORY; goto fail; }
     if (sd_text_sanitize_host(host8, n, c->host_utf8, n * 3, &ol) != SD_OK) ol = 0;
     c->host_utf8[ol] = '\0';
+    /* as sent to a proxy or in direct-tcpip: IPv6 literals without brackets */
+    if (n >= 2 && host8[0] == '[' && host8[n - 1] == ']') c->host_ascii = dup_bytes_str(host8 + 1, n - 2);
+    else c->host_ascii = dup_str(host8);
+    if (!c->host_ascii) { e = SD_E_NO_MEMORY; goto fail; }
   }
   if (h->host_key_alias && h->host_key_alias[0]) {
     size_t n = strlen(h->host_key_alias);
@@ -403,32 +425,16 @@ sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, 
     e = ssh_kh_lookup_name(host8, c->port, c->lookup_name, sizeof(c->lookup_name));
     if (e != SD_OK) { e = SD_E_UNSUPPORTED; goto fail; }   /* non-ASCII names need IDN (M2) */
   }
-  if (h->auth.identity_count) {
-    c->ids = (ssh_ident *)sd_calloc(h->auth.identity_count, sizeof(ssh_ident));
-    if (!c->ids) { e = SD_E_NO_MEMORY; goto fail; }
-    for (i = 0; i < h->auth.identity_count; i++) {
-      const sd_ssh_identity *id = &h->auth.identities[i];
-      ssh_ident *d = &c->ids[i];
-      c->id_count = i + 1;
-      d->kind = id->kind;
-      if (id->kind == SD_ID_FILE) {
-        d->path = dup_wstr(id->path);
-        if (!d->path || sd_wide_to_utf8_alloc(id->path, (size_t)-1, SD_UTF_REPLACE, &d->path_utf8) != SD_OK) {
-          e = SD_E_NO_MEMORY;
-          goto fail;
-        }
-      } else {
-        e = sd_secbuf_from(id->blob, id->blob_len, &d->blob);
-        if (e != SD_OK) goto fail;
-        d->label = dup_str(id->label ? id->label : "");
-        if (!d->label) { e = SD_E_NO_MEMORY; goto fail; }
-      }
-    }
-  }
+  e = ssh_auth_cfg_copy(c, &h->auth);
+  if (e != SD_OK) goto fail;
+  e = ssh_pxcfg_copy(&c->pxcfg, &h->proxy, hop_index);
+  if (e != SD_OK) goto fail;
   c->methods = h->auth.methods ? h->auth.methods : (SD_AUTH_PUBLICKEY | SD_AUTH_KBDINT | SD_AUTH_PASSWORD);
   c->pool_member = (cfg->flags & SD_SSH_CFG_POOL_MEMBER) != 0;
+  c->compress = (cfg->flags & SD_SSH_CFG_COMPRESS) != 0;
   c->legacy_policy = cfg->algos.legacy_policy;
   c->refuse_terrapin = cfg->algos.refuse_terrapin_exposed;
+  c->hku_mode = h->update_host_keys;
   c->kh = cfg->known_hosts;
   c->connect_timeout_ms = cfg->connect_timeout_ms ? cfg->connect_timeout_ms : 15000u;
   c->ka_interval_ms = cfg->keepalive_interval_ms ? cfg->keepalive_interval_ms : 15000u;
@@ -439,52 +445,45 @@ sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, 
   c->cache_secrets = h->auth.cache_secrets_for_reconnect != 0;
   ssh_seccache_init(&c->cache, c->id_count);
   if (c->id_count && !c->cache.pass) { e = SD_E_NO_MEMORY; goto fail; }
-  if (cb) c->cb = *cb;
   sd_free(host8);
-  host8 = NULL;
-
-  c->cmd_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
-  c->workers_idle = CreateEventW(NULL, TRUE, TRUE, NULL);
-  if (!c->cmd_ev || !c->workers_idle) { e = SD_E_INTERNAL; goto fail; }
-  e = sd_thread_create(&c->thread, io_main, c, 256u * 1024u, L"sd_ssh io");
-  if (e != SD_OK) goto fail;
-  *out = c;
   return SD_OK;
 
 fail:
   sd_free(host8);
-  ssh_seccache_free(&c->cache);
-  free_config(c);
-  if (c->cmd_ev) CloseHandle(c->cmd_ev);
-  if (c->workers_idle) CloseHandle(c->workers_idle);
-  sd_wr_free(&c->out);
-  sd_mutex_destroy(&c->qlock);
-  sd_free(c);
+  ssh_hop_release(c);
   return e;
 }
 
-void sd_ssh_conn_destroy(sd_ssh_conn *c)
+/* Frees what ssh_hop_init allocated (the struct itself stays with the caller). */
+void ssh_hop_release(sd_ssh_conn *c)
 {
-  ssh_cmd *q;
-  if (!c) return;
-  sd_mutex_lock(&c->qlock);
-  c->stopping = 1;
-  sd_mutex_unlock(&c->qlock);
-  SetEvent(c->cmd_ev);
-  sd_thread_join(&c->thread, SD_WAIT_INFINITE, NULL);
-  WaitForSingleObject(c->workers_idle, INFINITE);
-  /* the I/O thread closed the queue; anything left was posted by workers after it exited */
-  q = c->qhead;
-  while (q) { ssh_cmd *n = q->next; q->drop(q); q = n; }
-  CloseHandle(c->cmd_ev);
-  CloseHandle(c->workers_idle);
+  ssh_hku_free(c);
   ssh_seccache_free(&c->cache);
   free_config(c);
   sd_wr_free(&c->out);
   if (c->in) sd_secure_free(c->in, c->in_cap);
+  c->in = NULL;
   sd_mutex_destroy(&c->qlock);
-  sd_secure_zero(c, sizeof(*c));
-  sd_free(c);
+}
+
+sd_err sd_ssh_conn_create(const sd_ssh_config *cfg, const sd_ssh_callbacks *cb, sd_ssh_conn **out)
+{
+  sd_err e;
+  if (!out) return SD_E_INVALID_PARAM;
+  *out = NULL;
+  if (!cfg || cfg->struct_size < sizeof(sd_ssh_config) || !cfg->hops || cfg->hop_count == 0) return SD_E_INVALID_PARAM;
+  if (cfg->hop_count > 8) return SD_E_INVALID_PARAM;
+  if (cfg->address_family != 0 && cfg->address_family != AF_INET && cfg->address_family != AF_INET6)
+    return SD_E_INVALID_PARAM;
+  e = sd_ssh_global_init();
+  if (e != SD_OK) return e;
+  return ssh_chain_create(cfg, cb, out);     /* jump_chain.c: one sd_ssh_conn per hop + the I/O thread */
+}
+
+void sd_ssh_conn_destroy(sd_ssh_conn *c)
+{
+  if (!c) return;
+  ssh_chain_destroy(c);
 }
 
 /* ---- DNS and TCP connect ---- */
@@ -680,34 +679,72 @@ static void set_socket_options(sd_ssh_conn *c)
   }
 }
 
+static void send_ident(sd_ssh_conn *c)
+{
+  c->st = SSH_ST_VERSION;
+  sd_wr_bytes(&c->out, ssh_ident_c, sizeof(ssh_ident_c) - 1);
+  sd_wr_bytes(&c->out, "\r\n", 2);
+  flush_out(c);
+  ssh_log(c, SD_LOG_DEBUG, "hop %u: transport up, sent %s", c->hop_index, ssh_ident_c);
+}
+
+/* The byte stream below SSH is up (TCP or tunnel): a proxy handshake first, or the identification. */
+void ssh_transport_up(sd_ssh_conn *c)
+{
+  if (ssh_proxy_active(c)) { c->st = SSH_ST_PROXY; ssh_proxy_start(c); return; }
+  send_ident(c);
+}
+
+void ssh_proxy_tunnel_ready(sd_ssh_conn *c) { send_ident(c); }
+
+void ssh_flush(sd_ssh_conn *c) { if (!c->failing) flush_out(c); }
+
 static void on_tcp_connected(sd_ssh_conn *c, uint32_t slot)
 {
   uint32_t other = slot ^ 1u;
   if (c->att[other].s != INVALID_SOCKET) { closesocket(c->att[other].s); c->att[other].s = INVALID_SOCKET; }
+  if (c->ev) WSACloseEvent(c->ev);
   c->s = c->att[slot].s;
   c->ev = c->att[slot].ev;
   c->att[slot].s = INVALID_SOCKET;
   c->att[slot].ev = NULL;
   set_socket_options(c);
-  c->st = SSH_ST_VERSION;
-  sd_wr_bytes(&c->out, ssh_ident_c, sizeof(ssh_ident_c) - 1);
-  sd_wr_bytes(&c->out, "\r\n", 2);
-  flush_out(c);
-  ssh_log(c, SD_LOG_DEBUG, "tcp connected, sent %s", ssh_ident_c);
+  ssh_transport_up(c);
 }
 
-/* ---- connect / disconnect commands ---- */
+/* Hop 0: resolve the proxy (if any) or the host, then TCP (01 §3.2). */
+void ssh_start_dns(sd_ssh_conn *c)
+{
+  dns_work *d = (dns_work *)sd_calloc(1, sizeof(*d));
+  c->st = SSH_ST_RESOLVING;
+  if (d) d->host = dup_wstr(ssh_lower_host_w(c));
+  if (!d || !d->host) { if (d) sd_free(d); ssh_fail(c, SD_E_NO_MEMORY, 0, "dns"); return; }
+  d->port = ssh_lower_port(c);
+  d->af = c->af;
+  d->w.cmd.run = dns_done;
+  d->w.cmd.drop = dns_drop;
+  d->w.work = dns_do;
+  if (ssh_queue_work(c, &d->w) != SD_OK) { dns_drop(&d->w.cmd); ssh_fail(c, SD_E_INTERNAL, 0, "worker"); }
+}
+
+/* Proxy reopen on hop 0 (01 §5.2): a new TCP connection to the already resolved proxy addresses. */
+void ssh_reconnect_lower(sd_ssh_conn *c)
+{
+  ssh_close_lower(c);
+  if (c->outer) { ssh_tunnel_open(c); return; }
+  c->st = SSH_ST_CONNECTING;
+  c->next_addr = 0;
+  start_next_attempt(c);
+}
+
+/* ---- connect / disconnect (per hop; the public calls run the chain, jump_chain.c) ---- */
 
 typedef struct life_cmd { ssh_cmd cmd; sd_ssh_done_cb done; void *ctx; } life_cmd;
 
-static void connect_run(sd_ssh_conn *c, ssh_cmd *cmd)
+void ssh_hop_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
 {
-  life_cmd *lc = (life_cmd *)cmd;
-  sd_ssh_done_cb done = lc->done;
-  void *ctx = lc->ctx;
-  dns_work *d;
-  sd_free(lc);
-  if (c->stopping) { if (done) done(ctx, SD_E_SHUTDOWN, 0); return; }
+  sd_ssh_conn *r = c->root ? c->root : c;
+  if (r->stopping) { if (done) done(ctx, SD_E_SHUTDOWN, 0); return; }
   if (c->st != SSH_ST_IDLE && c->st != SSH_ST_CLOSED) { if (done) done(ctx, SD_E_BUSY, 0); return; }
   c->gen++;
   c->is_reconnect = c->ever_connected;
@@ -732,22 +769,13 @@ static void connect_run(sd_ssh_conn *c, ssh_cmd *cmd)
   c->ka_count = c->ka_head = 0;
   c->probe_deadline = 0;
   c->probe_pending = 0;
+  c->in_len = 0;
   ssh_dir_init(&c->tx);
   ssh_dir_init(&c->rx);
   ssh_kex_reset(c);
   c->kex.active = 1;
   c->kex.initial = 1;
   memset(&c->auth, 0, sizeof(c->auth));
-
-  d = (dns_work *)sd_calloc(1, sizeof(*d));
-  if (d) d->host = dup_wstr(c->host_w);
-  if (!d || !d->host) { sd_free(d); ssh_fail(c, SD_E_NO_MEMORY, 0, "dns"); return; }
-  d->port = c->port;
-  d->af = c->af;
-  d->w.cmd.run = dns_done;
-  d->w.cmd.drop = dns_drop;
-  d->w.work = dns_do;
-  if (ssh_queue_work(c, &d->w) != SD_OK) { dns_drop(&d->w.cmd); ssh_fail(c, SD_E_INTERNAL, 0, "worker"); return; }
 
   /* TM-R04: stored key types, in parallel with DNS and TCP */
   if (c->kh) {
@@ -764,6 +792,20 @@ static void connect_run(sd_ssh_conn *c, ssh_cmd *cmd)
     memset(&c->stored_types, 0, sizeof(c->stored_types));
     c->stored_types_done = 1;
   }
+
+  /* proxy (system resolution first), then DNS + TCP (hop 0) or the tunnel on the previous hop */
+  ssh_proxy_reset(c);
+  ssh_proxy_begin(c);
+}
+
+static void connect_run(sd_ssh_conn *c, ssh_cmd *cmd)
+{
+  life_cmd *lc = (life_cmd *)cmd;
+  sd_ssh_done_cb done = lc->done;
+  void *ctx = lc->ctx;
+  sd_free(lc);
+  if (c->stopping) { if (done) done(ctx, SD_E_SHUTDOWN, 0); return; }
+  ssh_chain_connect(c, done, ctx);
 }
 
 sd_err sd_ssh_conn_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
@@ -786,12 +828,8 @@ sd_err sd_ssh_conn_connect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
   return e;
 }
 
-static void disconnect_run(sd_ssh_conn *c, ssh_cmd *cmd)
+void ssh_hop_disconnect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
 {
-  life_cmd *lc = (life_cmd *)cmd;
-  sd_ssh_done_cb done = lc->done;
-  void *ctx = lc->ctx;
-  sd_free(lc);
   if (c->st == SSH_ST_IDLE || c->st == SSH_ST_CLOSED) { if (done) done(ctx, SD_OK, 0); return; }
   if (c->disc_done) { if (done) done(ctx, SD_E_BUSY, 0); return; }
   c->disc_done = done;
@@ -816,6 +854,15 @@ static void disconnect_run(sd_ssh_conn *c, ssh_cmd *cmd)
   c->close_deadline = ssh_now() + 1000;
 }
 
+static void disconnect_run(sd_ssh_conn *c, ssh_cmd *cmd)
+{
+  life_cmd *lc = (life_cmd *)cmd;
+  sd_ssh_done_cb done = lc->done;
+  void *ctx = lc->ctx;
+  sd_free(lc);
+  ssh_chain_disconnect(c, done, ctx);
+}
+
 sd_err sd_ssh_conn_disconnect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
 {
   life_cmd *lc;
@@ -832,22 +879,25 @@ sd_err sd_ssh_conn_disconnect(sd_ssh_conn *c, sd_ssh_done_cb done, void *ctx)
   return e;
 }
 
+/* 01 §10.9: noninteractive covers every hop of the chain (no prompt was shown to a user anywhere). */
 sd_err sd_ssh_conn_auth_info(const sd_ssh_conn *c, sd_ssh_auth_info *out)
 {
+  uint32_t i, n;
   if (!c || !out) return SD_E_INVALID_PARAM;
   out->noninteractive = !c->interactive_used;
   out->methods_used = c->methods_used;
   out->is_reconnect = c->is_reconnect;
   out->hostkey_just_accepted = c->hostkey_just_accepted;
+  n = c->hops ? c->nhops : 0;
+  for (i = 0; i + 1 < n; i++) {
+    const sd_ssh_conn *h = c->hops[i];
+    if (h->interactive_used) out->noninteractive = 0;
+    if (h->hostkey_just_accepted) out->hostkey_just_accepted = 1;
+  }
   return SD_OK;
 }
 
-sd_err sd_ssh_conn_fetch_hostkeys(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
-                                  sd_ssh_hostkeys_cb done, void *ctx)
-{
-  SD_UNUSED(c); SD_UNUSED(hop_index); SD_UNUSED(types); SD_UNUSED(ntypes); SD_UNUSED(done); SD_UNUSED(ctx);
-  return SD_E_UNSUPPORTED;   /* M2 (TM-R04 "add key", UpdateHostKeys) */
-}
+/* sd_ssh_conn_fetch_hostkeys: hostkey_update.c (M2 transport) */
 
 /* ---- keepalive, probe, RTT (01 §4.6) ---- */
 
@@ -904,9 +954,13 @@ typedef struct ka_cmd { ssh_cmd cmd; uint32_t interval_ms, max_missed; } ka_cmd;
 static void ka_run(sd_ssh_conn *c, ssh_cmd *cmd)
 {
   ka_cmd *k = (ka_cmd *)cmd;
-  if (k->interval_ms) c->ka_interval_ms = k->interval_ms;
-  if (k->max_missed) c->ka_max_missed = k->max_missed;
-  if (c->st == SSH_ST_CONNECTED) c->next_ka_tick = SD_MIN(c->next_ka_tick, ssh_now() + c->ka_interval_ms);
+  uint32_t i, n = c->hops ? c->nhops : 1;
+  for (i = 0; i < n; i++) {     /* every hop of the chain */
+    sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+    if (k->interval_ms) h->ka_interval_ms = k->interval_ms;
+    if (k->max_missed) h->ka_max_missed = k->max_missed;
+    if (h->st == SSH_ST_CONNECTED) h->next_ka_tick = SD_MIN(h->next_ka_tick, ssh_now() + h->ka_interval_ms);
+  }
   sd_free(k);
 }
 
@@ -928,8 +982,13 @@ sd_err sd_ssh_conn_set_keepalive(sd_ssh_conn *c, uint32_t interval_ms, uint32_t 
 
 static void clear_secrets_run(sd_ssh_conn *c, ssh_cmd *cmd)
 {
+  uint32_t i, n = c->hops ? c->nhops : 1;
   sd_free(cmd);
-  ssh_seccache_clear(&c->cache);
+  for (i = 0; i < n; i++) {
+    sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+    ssh_seccache_clear(&h->cache);
+    ssh_secret_clear(&h->px_secret);
+  }
 }
 
 sd_err sd_ssh_conn_clear_secrets(sd_ssh_conn *c)
@@ -1001,8 +1060,9 @@ static void handle_global_request(sd_ssh_conn *c, const uint8_t *p, size_t n)
   name = sd_rd_string(&r, 256);
   want = sd_rd_bool(&r);
   if (!sd_rd_ok(&r)) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "bad GLOBAL_REQUEST"); return; }
+  if (ssh_hku_on_global_request(c, name, want, p, n)) return;   /* hostkeys-00@openssh.com (01 §7.5) */
   ssh_sanitize(name.p, name.n, nm, sizeof(nm));
-  ssh_log(c, SD_LOG_DEBUG, "server global request %s ignored", nm);   /* hostkeys-00: M2 */
+  ssh_log(c, SD_LOG_DEBUG, "server global request %s ignored", nm);
   if (want) { uint8_t b = SSH_MSG_REQUEST_FAILURE; ssh_send(c, &b, 1); }
 }
 
@@ -1072,6 +1132,7 @@ static void handle_packet(sd_ssh_conn *c, const uint8_t *p, size_t n)
   case SSH_MSG_IGNORE:
     return;
   case SSH_MSG_UNIMPLEMENTED:
+    if (ssh_hku_on_reply(c, p, n)) return;   /* hostkeys-prove-00 refused */
     on_global_reply(c);   /* counts as liveness for keepalives (01 §4.1) */
     return;
   case SSH_MSG_DEBUG: {
@@ -1105,6 +1166,7 @@ static void handle_packet(sd_ssh_conn *c, const uint8_t *p, size_t n)
     handle_global_request(c, p, n);
     return;
   case SSH_MSG_REQUEST_SUCCESS: case SSH_MSG_REQUEST_FAILURE:
+    if (ssh_hku_on_reply(c, p, n)) return;   /* hostkeys-prove-00 reply (01 §7.5) */
     on_global_reply(c);
     return;
   case SSH_MSG_CHANNEL_OPEN:
@@ -1122,7 +1184,16 @@ static void handle_packet(sd_ssh_conn *c, const uint8_t *p, size_t n)
 static void process_input(sd_ssh_conn *c)
 {
   size_t off = 0;
+  c->in_reset = 0;
   while (!c->failing && c->st != SSH_ST_CLOSED && off < c->in_len) {
+    if (c->st == SSH_ST_PROXY) {           /* proxy handshake (01 §5.2); bytes after it are SSH */
+      size_t used = ssh_proxy_input(c, c->in + off, c->in_len - off);
+      if (c->in_reset) { c->in_reset = 0; return; }   /* reopened: the buffer was dropped */
+      off += used;
+      if (c->st == SSH_ST_PROXY && !used) break;
+      continue;
+    }
+    if (c->st < SSH_ST_PROXY) { off = c->in_len; break; }   /* nothing is expected yet */
     if (c->st == SSH_ST_VERSION) {
       size_t ll;
       int ident;
@@ -1212,6 +1283,27 @@ static void do_recv(sd_ssh_conn *c)
   }
 }
 
+/* Bytes from the tunnel of hop i >= 1 (jump_chain.c). */
+void ssh_ingest(sd_ssh_conn *c, const uint8_t *p, size_t n)
+{
+  if (c->failing || c->st == SSH_ST_CLOSED) return;
+  if (!n) { if (c->in_len) process_input(c); return; }   /* re-run on buffered bytes */
+  if (c->in_cap - c->in_len < n) {
+    size_t ncap = c->in_cap ? c->in_cap : 128u * 1024u;
+    uint8_t *nb;
+    while (ncap - c->in_len < n) ncap *= 2;
+    if (ncap > SSH_IN_MAX) { ssh_fail(c, SD_E_PROTOCOL, SSH_DISCONNECT_PROTOCOL_ERROR, "input overflow"); return; }
+    nb = (uint8_t *)sd_alloc(ncap);
+    if (!nb) { ssh_fail(c, SD_E_NO_MEMORY, 0, "input buffer"); return; }
+    if (c->in) { memcpy(nb, c->in, c->in_len); sd_secure_free(c->in, c->in_cap); }
+    c->in = nb;
+    c->in_cap = ncap;
+  }
+  memcpy(c->in + c->in_len, p, n);
+  c->in_len += n;
+  process_input(c);
+}
+
 /* ---- prompts answered ---- */
 
 void ssh_on_prompt_answered(sd_ssh_conn *c, sd_prompt *p)
@@ -1221,6 +1313,7 @@ void ssh_on_prompt_answered(sd_ssh_conn *c, sd_prompt *p)
   if (c->failing || c->st == SSH_ST_CLOSED) return;
   if (!a->cancelled && !(a->flags & SD_ANSWER_FROM_STORE)) c->interactive_used = 1;
   if (pp == SSH_PP_HOSTKEY) ssh_kex_on_hostkey_answer(c, a);
+  else if (pp == SSH_PP_PROXY) ssh_proxy_on_answer(c, a);
   else if (pp == SSH_PP_LEGACY) ssh_kex_on_legacy_answer(c, a);
   else ssh_auth_on_answer(c, pp, a);
 }
@@ -1237,7 +1330,11 @@ void ssh_after_initial_kex(sd_ssh_conn *c)
     if (!p) { ssh_fail(c, SD_E_NO_MEMORY, SSH_DISCONNECT_BY_APPLICATION, "prompt"); return; }
     ai = ssh_prompt_auth_info(p);
     ai->legacy_mask = c->legacy_mask;
-    ai->legacy_names = ssh_prompt_str(p, (c->legacy_mask & SD_LEGACY_TERRAPIN_EXPOSED) ? "terrapin_exposed" : "no_strict_kex");
+    {
+      char names[512];
+      ssh_kex_legacy_names(c, names, sizeof(names));   /* e.g. "3des-cbc,hmac-sha1,no_strict_kex" */
+      ai->legacy_names = ssh_prompt_str(p, names);
+    }
     c->st = SSH_ST_LEGACY_ACK;
     ssh_prompt_raise(c, p);
     return;
@@ -1265,7 +1362,7 @@ void ssh_on_authenticated(sd_ssh_conn *c)
   c->last_rx_tick = ssh_now();
   c->next_ka_tick = c->last_rx_tick + c->ka_interval_ms;
   ssh_auth_clear(c);
-  ssh_log(c, SD_LOG_INFO, "authenticated as %s", c->user);
+  ssh_log(c, SD_LOG_INFO, "authenticated as %Us", c->user);
   if (cd) cd(ctx, SD_OK, 0);
 }
 
@@ -1278,7 +1375,9 @@ static uint64_t run_timers(sd_ssh_conn *c)
   uint64_t now = ssh_now(), next = 0;
   if (c->failing) return 0;
   /* connect timeout: until the server's KEX reply arrived */
-  if (c->st >= SSH_ST_RESOLVING && (c->st < SSH_ST_KEX || (c->st == SSH_ST_KEX && !c->kex.reply_done && c->kex.initial))) {
+  /* (not while a proxy password prompt is out: the deadline restarts when it is answered) */
+  if (c->st > SSH_ST_IDLE && (c->st < SSH_ST_KEX || (c->st == SSH_ST_KEX && !c->kex.reply_done && c->kex.initial)) &&
+      !(c->st == SSH_ST_PROXY && c->cur_prompt)) {
     if (now >= c->connect_deadline) { ssh_fail(c, SD_E_TIMEOUT, SSH_DISCONNECT_BY_APPLICATION, "connect timeout"); return 0; }
     upd(&next, c->connect_deadline);
   }
@@ -1318,6 +1417,24 @@ static uint64_t run_timers(sd_ssh_conn *c)
 
 /* ---- the loop ---- */
 
+/* Every hop that failed is torn down, outermost first: an outer hop's teardown fails the tunnel of
+   the next hop, which is then finalized in the same pass. */
+static void finalize_all(sd_ssh_conn *r)
+{
+  uint32_t i, n = r->hops ? r->nhops : 1;
+  for (i = 0; i < n; i++) {
+    sd_ssh_conn *h = r->hops ? r->hops[i] : r;
+    if (h->failing) finalize(h);
+  }
+}
+
+static int any_failing(const sd_ssh_conn *r)
+{
+  uint32_t i, n = r->hops ? r->nhops : 1;
+  for (i = 0; i < n; i++) if ((r->hops ? r->hops[i] : r)->failing) return 1;
+  return 0;
+}
+
 static void run_queue(sd_ssh_conn *c)
 {
   for (;;) {
@@ -1327,8 +1444,8 @@ static void run_queue(sd_ssh_conn *c)
     if (q) { c->qhead = q->next; if (!c->qhead) c->qtail = NULL; }
     sd_mutex_unlock(&c->qlock);
     if (!q) return;
-    q->run(c, q);
-    if (c->failing) finalize(c);
+    q->run(q->conn ? q->conn : c, q);
+    if (any_failing(c)) finalize_all(c);
   }
 }
 
@@ -1358,22 +1475,31 @@ static void socket_events(sd_ssh_conn *c)
   }
 }
 
-static unsigned __stdcall io_main(void *arg)
+unsigned __stdcall ssh_io_main(void *arg)
 {
-  sd_ssh_conn *c = (sd_ssh_conn *)arg;
+  sd_ssh_conn *c = (sd_ssh_conn *)arg;      /* the root (target hop) */
+  uint32_t nh_hops = c->hops ? c->nhops : 1, i;
+  sd_ssh_conn *h0 = c->hops ? c->hops[0] : c;   /* the only hop with a socket */
   for (;;) {
     HANDLE hs[3];
     DWORD nh = 0, timeout, w;
-    uint64_t next, now;
+    uint64_t next = 0, now;
     int stop;
 
     run_queue(c);
-    if (c->s != INVALID_SOCKET && !c->failing) {
-      flush_out(c);
-      if (c->st == SSH_ST_CONNECTED && !c->failing && ssh_out_pending(c) < SSH_OUT_BUDGET / 2) ssh_channels_writable(c);
+    for (i = 0; i < nh_hops; i++) {         /* outermost first: inner hops write into outer channels */
+      sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+      if (lower_up(h) && !h->failing) {
+        flush_out(h);
+        if (h->st == SSH_ST_CONNECTED && !h->failing && ssh_out_pending(h) < SSH_OUT_BUDGET / 2) ssh_channels_writable(h);
+      }
     }
-    next = run_timers(c);
-    if (c->failing) { finalize(c); continue; }
+    for (i = 0; i < nh_hops; i++) {
+      sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+      uint64_t t = run_timers(h);
+      if (t && (next == 0 || t < next)) next = t;
+    }
+    if (any_failing(c)) { finalize_all(c); continue; }
 
     sd_mutex_lock(&c->qlock);
     stop = c->stopping;
@@ -1381,24 +1507,28 @@ static unsigned __stdcall io_main(void *arg)
     if (stop) break;
 
     hs[nh++] = c->cmd_ev;
-    if (c->st == SSH_ST_CONNECTING) {
-      if (c->att[0].s != INVALID_SOCKET) hs[nh++] = c->att[0].ev;
-      if (c->att[1].s != INVALID_SOCKET) hs[nh++] = c->att[1].ev;
-    } else if (c->s != INVALID_SOCKET) {
-      hs[nh++] = c->ev;
+    if (h0->st == SSH_ST_CONNECTING) {
+      if (h0->att[0].s != INVALID_SOCKET) hs[nh++] = h0->att[0].ev;
+      if (h0->att[1].s != INVALID_SOCKET) hs[nh++] = h0->att[1].ev;
+    } else if (h0->s != INVALID_SOCKET) {
+      hs[nh++] = h0->ev;
     }
     now = ssh_now();
     timeout = next == 0 ? INFINITE : (next <= now ? 0 : (DWORD)SD_MIN(next - now, (uint64_t)0x7FFFFFFF));
     w = WaitForMultipleObjects(nh, hs, FALSE, timeout);
-    if (w != WAIT_OBJECT_0 && w != WAIT_TIMEOUT) socket_events(c);
-    if (c->failing) finalize(c);
+    if (w != WAIT_OBJECT_0 && w != WAIT_TIMEOUT) socket_events(h0);
+    if (any_failing(c)) finalize_all(c);
   }
 
-  /* shutdown: fail the connection, then run every queued command so callbacks are delivered */
-  if (c->st != SSH_ST_IDLE && c->st != SSH_ST_CLOSED) {
-    if (!c->failing) { ssh_fail(c, SD_E_SHUTDOWN, SSH_DISCONNECT_BY_APPLICATION, "shutdown"); }
-    finalize(c);
+  /* shutdown: fail every hop (innermost first), then run every queued command so callbacks are delivered */
+  for (i = nh_hops; i-- > 0;) {
+    sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+    if (h->st != SSH_ST_IDLE && h->st != SSH_ST_CLOSED) {
+      if (!h->failing) ssh_fail(h, SD_E_SHUTDOWN, SSH_DISCONNECT_BY_APPLICATION, "shutdown");
+      finalize(h);
+    }
   }
+  if (any_failing(c)) finalize_all(c);
   for (;;) {
     ssh_cmd *q;
     sd_mutex_lock(&c->qlock);
@@ -1407,12 +1537,15 @@ static unsigned __stdcall io_main(void *arg)
     else c->queue_closed = 1;
     sd_mutex_unlock(&c->qlock);
     if (!q) break;
-    q->run(c, q);
-    if (c->failing) finalize(c);
+    q->run(q->conn ? q->conn : c, q);
+    if (any_failing(c)) finalize_all(c);
   }
-  if (c->ev) WSACloseEvent(c->ev);
-  if (c->att[0].ev) WSACloseEvent(c->att[0].ev);
-  if (c->att[1].ev) WSACloseEvent(c->att[1].ev);
-  c->ev = c->att[0].ev = c->att[1].ev = NULL;
+  for (i = 0; i < nh_hops; i++) {
+    sd_ssh_conn *h = c->hops ? c->hops[i] : c;
+    if (h->ev) WSACloseEvent(h->ev);
+    if (h->att[0].ev) WSACloseEvent(h->att[0].ev);
+    if (h->att[1].ev) WSACloseEvent(h->att[1].ev);
+    h->ev = h->att[0].ev = h->att[1].ev = NULL;
+  }
   return 0;
 }

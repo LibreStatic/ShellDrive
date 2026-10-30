@@ -3,8 +3,12 @@
   Creates the Hyper-V lab VMs from user-supplied disks or ISOs, or takes their "base" checkpoint.
 
 .DESCRIPTION
-  For each VM in the lab config (or only -Name): generation 1, COM1 on the named pipe
-  \\.\pipe\sd-lab-<name> (read by Read-LabSerial.ps1), standard checkpoints, no automatic checkpoints.
+  For each VM in the lab config (or only -Name): COM1 on the named pipe
+  \\.\pipe\sd-lab-<name> (read by Read-LabSerial.ps1; Set-VMComPort works on both generations),
+  standard checkpoints, no automatic checkpoints. The config's Generation field selects the VM
+  generation (1 by default; Windows 11 and Server 2022 use 2 with Secure Boot, and Windows 11
+  also with a virtual TPM via Tpm = $true). CompatOlderOs = $true limits the guest's CPUID set
+  (generation 1 only; off by default, set it for XP).
   With BaseVhdx a differencing disk is created on top of it (the base image is never written).
   Without it, a 20 GB dynamic disk is created and InstallIso is attached for a manual Windows setup.
 
@@ -57,15 +61,50 @@ foreach ($v in $vms) {
   } else {
     throw "$($v.Name): set BaseVhdx or InstallIso in the lab config."
   }
-  $vm = New-VM -Name $v.Name -Generation 1 -MemoryStartupBytes ([int64]$v.MemoryMB * 1MB) -VHDPath $disk -Path $dir
+  $gen = 1
+  if ($v.ContainsKey('Generation')) { $gen = [int]$v.Generation }
+  if ($gen -ne 1 -and $gen -ne 2) { throw "$($v.Name): Generation must be 1 or 2." }
+  $wantTpm = $false
+  if ($v.ContainsKey('Tpm')) { $wantTpm = [bool]$v.Tpm }
+  if ($wantTpm -and $gen -ne 2) { throw "$($v.Name): Tpm needs Generation 2." }
+  $vm = New-VM -Name $v.Name -Generation $gen -MemoryStartupBytes ([int64]$v.MemoryMB * 1MB) -VHDPath $disk -Path $dir
   Set-VM -VM $vm -CheckpointType Standard -AutomaticStopAction TurnOff -AutomaticCheckpointsEnabled $false
   Set-VMMemory -VM $vm -DynamicMemoryEnabled $false
-  # NT 5.x / 6.1 guests need the reduced CPUID set (it also keeps the guest's view of the CPU stable).
-  Set-VMProcessor -VM $vm -Count $v.Cpus -CompatibilityForOlderOperatingSystemsEnabled $true
+  $wantCompat = $false
+  if ($v.ContainsKey('CompatOlderOs')) { $wantCompat = [bool]$v.CompatOlderOs }
+  if ($wantCompat -and $gen -ne 1) { throw "$($v.Name): CompatOlderOs needs Generation 1." }
+  # Reduced CPUID set, opt-in per VM: only pre-Windows 7 guests (XP) need it.
+  Set-VMProcessor -VM $vm -Count $v.Cpus -CompatibilityForOlderOperatingSystemsEnabled $wantCompat
   Get-VMNetworkAdapter -VM $vm | Remove-VMNetworkAdapter
-  if ($cfg.SwitchName) { Add-VMNetworkAdapter -VM $vm -SwitchName $cfg.SwitchName -IsLegacy $true }
+  if ($cfg.SwitchName) {
+    if ($gen -eq 1) {
+      # XP has no synthetic NIC driver: use the emulated DEC 21140 adapter.
+      Add-VMNetworkAdapter -VM $vm -SwitchName $cfg.SwitchName -IsLegacy $true
+    } else {
+      Add-VMNetworkAdapter -VM $vm -SwitchName $cfg.SwitchName
+    }
+  }
   Set-VMComPort -VM $vm -Number 1 -Path "\\.\pipe\$pipe"
-  if (-not (Get-VMDvdDrive -VM $vm)) { Add-VMDvdDrive -VM $vm -ControllerNumber 1 -ControllerLocation 0 }
-  if (-not $v.BaseVhdx) { Set-VMDvdDrive -VMName $v.Name -Path $v.InstallIso }
-  Write-Host "$($v.Name): created, COM1 = \\.\pipe\$pipe. Next: install-runner.cmd in the guest, then -Checkpoint."
+  if (-not (Get-VMDvdDrive -VM $vm)) {
+    if ($gen -eq 1) { Add-VMDvdDrive -VM $vm -ControllerNumber 1 -ControllerLocation 0 }
+    else { Add-VMDvdDrive -VM $vm }
+  }
+  if (-not $v.BaseVhdx) {
+    Set-VMDvdDrive -VMName $v.Name -Path $v.InstallIso
+    # Fresh install: boot the setup ISO first.
+    if ($gen -eq 1) { Set-VMBios -VM $vm -StartupOrder @('CD', 'IDE', 'LegacyNetworkAdapter', 'Floppy') }
+    else {
+      $dvd = Get-VMDvdDrive -VM $vm
+      Set-VMFirmware -VM $vm -FirstBootDevice $dvd
+    }
+  }
+  if ($gen -eq 2) {
+    # 04 section 11.4: Server 2022 with Secure Boot; Windows 11 also with a virtual TPM.
+    Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
+    if ($wantTpm) {
+      Set-VMKeyProtector -VM $vm -NewLocalKeyProtector
+      Enable-VMTPM -VM $vm
+    }
+  }
+  Write-Host "$($v.Name): created (generation $gen), COM1 = \\.\pipe\$pipe. Next: install-runner.cmd in the guest, then -Checkpoint."
 }

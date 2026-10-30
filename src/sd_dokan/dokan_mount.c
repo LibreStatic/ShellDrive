@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
+#include "dokan_cache.h"
 #include "dokan_internal.h"
 #include "sd_base/sd_mem.h"
 #include "sd_platform/sd_log.h"
@@ -29,6 +30,8 @@ struct sd_dokan_mount {
   sd_dokan_unmounted_cb cb; void *cb_ctx;
   volatile LONG unmounted;
   sd_vfs_volume vol;
+  BOOL global;                          /* M5: service mount; the vfs checks the requestor per create */
+  dk_cache *cache;                      /* M5: requestor identities of a global mount (02 6.7); NULL otherwise */
 };
 
 static sd_dokan_mount *M(SD_DOKAN_FILE_INFO *fi)
@@ -73,6 +76,89 @@ static BOOL requestor_allowed(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi)
   return ok;
 }
 
+/* Requestor identity of a global mount (02 6.7, 7.7): the token user and its enabled, non-deny-only groups.
+   The buffers back the caller's pointers until sd_vfs_create returns (requestor_free). A request without a
+   token (kernel-originated) gets no identity and is refused: global mounts have no implicit audience. */
+typedef struct requestor_ident {
+  BYTE *user, *groups;                  /* token buffers, read on a cache miss */
+  PSID *gsids; UINT n_gsids;            /* enabled groups: into groups, or owned copies from the cache */
+  BOOL gsids_owned;
+  sd_vfs_caller caller;
+} requestor_ident;
+
+static void requestor_free(requestor_ident *r)
+{
+  sd_free(r->user);
+  sd_free(r->groups);
+  if (r->gsids_owned)
+    dk_groups_free(r->gsids, r->n_gsids);
+  else
+    sd_free(r->gsids);
+  memset(r, 0, sizeof(*r));
+}
+
+/* Requestor identity (02 6.7, 7.7), cached per token object: the key is TOKEN_STATISTICS (TokenId, ModifiedId) and the
+   user SID (dokan_cache.h). Each create reads the statistics and the user; the groups are read only on a miss. The
+   TokenId separates filtered, restricted and duplicated tokens of one logon, so no restriction check is needed.
+   Every token query that fails returns FALSE and stores nothing. */
+static BOOL requestor_identity(sd_dokan_mount *m, SD_DOKAN_FILE_INFO *fi, requestor_ident *r)
+{
+  const sd_dokan_api *api = sd_dokan_api_get();
+  HANDLE tok;
+  DWORD n = 0, i, ng = 0, now;
+  TOKEN_STATISTICS stats;
+  TOKEN_GROUPS *tg;
+  BOOL ok = FALSE, hit = FALSE;
+  memset(r, 0, sizeof(*r));
+  tok = api->OpenRequestorToken(fi);
+  if (tok == INVALID_HANDLE_VALUE || tok == NULL)
+    return FALSE;
+  if (!GetTokenInformation(tok, TokenStatistics, &stats, sizeof(stats), &n))
+    goto out;
+  if (!GetTokenInformation(tok, TokenUser, NULL, 0, &n) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    goto out;
+  r->user = (BYTE *)sd_alloc(n);
+  if (r->user == NULL || !GetTokenInformation(tok, TokenUser, r->user, n, &n))
+    goto out;
+#pragma warning(suppress: 28159)   /* deliberate: XP has no GetTickCount64; the cache's expiry test is wrap-safe */
+  now = GetTickCount();
+  if (m->cache != NULL && dk_cache_get(m->cache, &stats.TokenId, &stats.ModifiedId,
+                                       ((TOKEN_USER *)r->user)->User.Sid, now, &r->gsids, &r->n_gsids)) {
+    r->gsids_owned = TRUE;
+    hit = TRUE;
+  }
+  if (!hit) {
+    n = 0;
+    if (!GetTokenInformation(tok, TokenGroups, NULL, 0, &n) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+      goto out;
+    r->groups = (BYTE *)sd_alloc(n);
+    if (r->groups == NULL || !GetTokenInformation(tok, TokenGroups, r->groups, n, &n))
+      goto out;
+    tg = (TOKEN_GROUPS *)r->groups;
+    r->gsids = (PSID *)sd_calloc(tg->GroupCount ? tg->GroupCount : 1, sizeof(PSID));
+    if (r->gsids == NULL)
+      goto out;
+    for (i = 0; i < tg->GroupCount; i++) {
+      DWORD a = tg->Groups[i].Attributes;
+      if ((a & SE_GROUP_ENABLED) && !(a & SE_GROUP_USE_FOR_DENY_ONLY))
+        r->gsids[ng++] = tg->Groups[i].Sid;
+    }
+    r->n_gsids = ng;
+    if (m->cache != NULL)
+      dk_cache_put(m->cache, &stats.TokenId, &stats.ModifiedId, ((TOKEN_USER *)r->user)->User.Sid, r->gsids, ng, now);
+  }
+  r->caller.sid = ((TOKEN_USER *)r->user)->User.Sid;
+  r->caller.can_write = TRUE;           /* the vfs applies the write rule (TM-R24) */
+  r->caller.groups = r->gsids;
+  r->caller.n_groups = r->n_gsids;
+  ok = TRUE;
+out:
+  CloseHandle(tok);
+  if (!ok)
+    requestor_free(r);
+  return ok;
+}
+
 /* ---- callbacks ---- */
 
 static SD_DOKAN_NTSTATUS WINAPI cb_create(LPCWSTR name, SD_DOKAN_IO_SECURITY_CONTEXT *sc, ACCESS_MASK access,
@@ -80,17 +166,28 @@ static SD_DOKAN_NTSTATUS WINAPI cb_create(LPCWSTR name, SD_DOKAN_IO_SECURITY_CON
 {
   sd_dokan_mount *m = M(fi);
   sd_vfs_caller caller;
+  requestor_ident ident;
   sd_vfs_handle *h = NULL;
   BOOL existed = FALSE, is_dir = FALSE;
   sd_vfs_status st;
   SD_UNUSED(sc);
-  if (!requestor_allowed(m, fi))
-    return SD_STATUS_ACCESS_DENIED;
-  caller.sid = m->vol.owner_sid;
-  caller.can_write = TRUE;                   /* per-user mount: the owner may write (global: M5) */
+  memset(&ident, 0, sizeof(ident));
+  if (m->global) {
+    /* M5 (02 6.7, 7.7): the vfs decides from the requestor's SID and groups; no token, no access */
+    if (!requestor_identity(m, fi, &ident))
+      return SD_STATUS_ACCESS_DENIED;
+    caller = ident.caller;
+  } else {
+    if (!requestor_allowed(m, fi))
+      return SD_STATUS_ACCESS_DENIED;
+    memset(&caller, 0, sizeof(caller));
+    caller.sid = m->vol.owner_sid;
+    caller.can_write = TRUE;                 /* per-user mount: the owner may write */
+  }
   if (fi->IsDirectory)
     opts |= SD_VFS_FILE_DIRECTORY_FILE;
   st = sd_vfs_create(m->vfs, name, &caller, access, share, disp, opts, attrs, &h, &existed, &is_dir);
+  requestor_free(&ident);
   if (st != SD_VFS_OK)
     return sd_vfs_to_ntstatus(st);
   fi->Context = (ULONG64)(ULONG_PTR)h;
@@ -360,8 +457,10 @@ sd_err sd_dokan_mount_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
     return SD_E_INVALID_PARAM;
   if (!api)
     return SD_E_UNSUPPORTED;                 /* sd_dokan_probe() first */
-  if (cfg->global_mount)
-    return SD_E_UNSUPPORTED;                 /* service mounts (D35): M5 */
+  /* M5: a global mount (service, D35) has no per-session flag and must carry the volume security descriptor that
+     encodes service_access and service_access_write; without it the volume would get Dokany's default. */
+  if (cfg->global_mount && (!cfg->volume_sd || cfg->volume_sd_len == 0))
+    return SD_E_INVALID_PARAM;
   if (cfg->volume_sd_len > SD_DOKAN_VOLUME_SECURITY_DESCRIPTOR_MAX_SIZE)
     return SD_E_INVALID_PARAM;
   m = (sd_dokan_mount *)sd_calloc(1, sizeof(*m));
@@ -371,6 +470,7 @@ sd_err sd_dokan_mount_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
   m->cb = cb;
   m->cb_ctx = ctx;
   sd_vfs_get_volume(vfs, &m->vol);
+  m->global = cfg->global_mount ? TRUE : FALSE;
   wcsncpy_s(m->mount_point, SD_COUNTOF(m->mount_point), cfg->mount_point, _TRUNCATE);
 
   m->opt.Version = (USHORT)SD_MIN(SD_DOKAN_VERSION, api->lib_version);
@@ -419,9 +519,12 @@ sd_err sd_dokan_mount_start(sd_vfs *vfs, const sd_dokan_mount_cfg *cfg, sd_dokan
   m->ops.SetFileSecurity = cb_setsec;
   m->ops.FindStreams = NULL;                 /* only the unnamed stream (mark_of_the_web: M1) */
 
+  if (m->global)
+    m->cache = dk_cache_new();          /* NULL on OOM: every create then reads the token (correct, just slower) */
   r = api->CreateFileSystem(&m->opt, &m->ops, &m->inst);
   if (r != SD_DOKAN_SUCCESS) {
     SD_LOGW(DOKAN_LOG, "DokanCreateFileSystem failed: %d", r);
+    dk_cache_free(m->cache);
     sd_free(m);
     return r == SD_DOKAN_DRIVE_LETTER_ERROR || r == SD_DOKAN_MOUNT_POINT_ERROR ? SD_E_EXISTS
          : r == SD_DOKAN_VERSION_ERROR ? SD_E_UNSUPPORTED : SD_E_FAILURE;
@@ -438,6 +541,7 @@ sd_err sd_dokan_mount_stop(sd_dokan_mount *m)
   /* Host control thread only: DokanCloseHandle unmounts and waits for every running callback. */
   if (api && m->inst)
     api->CloseHandle(m->inst);
+  dk_cache_free(m->cache);              /* after CloseHandle: no callback can still be reading the cache */
   sd_free(m);
   return SD_OK;
 }

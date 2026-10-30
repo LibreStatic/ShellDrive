@@ -1,0 +1,61 @@
+# ShellDrive service strings, German (informal imperative).
+msgid ""
+msgstr ""
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "svc.debug_started"
+msgid "ShellDrive service running in console mode. Press Ctrl+C to stop."
+msgstr "Der ShellDrive-Dienst läuft im Konsolenmodus. Drück Strg+C, um ihn zu beenden."
+
+msgctxt "svc.debug_stopped"
+msgid "ShellDrive service stopped."
+msgstr "Der ShellDrive-Dienst wurde beendet."
+
+msgctxt "svc.not_scm"
+msgid "This program is the ShellDrive service and needs the Service Control Manager. To run it in a console, use: shelldrive-host.exe service-debug"
+msgstr "Dieses Programm ist der ShellDrive-Dienst und benötigt den Dienststeuerungs-Manager. Zum Ausführen in einer Konsole verwende: shelldrive-host.exe service-debug"
+
+# Event Log messages (03 §10.3): the same ids, placeholders and placeholder order as en.po.
+msgctxt "evt.started"
+msgid "ShellDrive service started (version %1)."
+msgstr "Der ShellDrive-Dienst wurde gestartet (Version %1)."
+
+msgctxt "evt.stopped"
+msgid "ShellDrive service stopped."
+msgstr "Der ShellDrive-Dienst wurde beendet."
+
+msgctxt "evt.mounted"
+msgid "Global drive for profile %1 is mounted at %2."
+msgstr "Das globale Laufwerk für das Profil %1 ist unter %2 eingebunden."
+
+msgctxt "evt.unmounted"
+msgid "Global drive for profile %1 at %2 was unmounted."
+msgstr "Das globale Laufwerk für das Profil %1 unter %2 wurde getrennt."
+
+msgctxt "evt.mount_failed"
+msgid "Global drive for profile %1 failed to mount (%2): %3"
+msgstr "Das globale Laufwerk für das Profil %1 konnte nicht eingebunden werden (%2): %3"
+
+msgctxt "evt.start_failed"
+msgid "ShellDrive service could not start (%1)."
+msgstr "Der ShellDrive-Dienst konnte nicht gestartet werden (%1)."
+
+msgctxt "evt.client_refused"
+msgid "ShellDrive refused a service pipe client of user %1 (%2: token, per_sid, reserved or rate). At most one such event is written per user every 10 minutes."
+msgstr "ShellDrive hat einen Client der Dienst-Pipe des Benutzers %1 abgelehnt (%2: token, per_sid, reserved oder rate). Pro Benutzer wird höchstens alle 10 Minuten ein solches Ereignis geschrieben."
+
+msgctxt "evt.untrusted_folder"
+msgid "ShellDrive refused the untrusted machine folder or service file %1 (%2). A refused folder keeps the service idle until an elevated shelldrive service repair-data renames it aside; a refused file fails the mount that uses it."
+msgstr "ShellDrive hat den nicht vertrauenswürdigen Maschinenordner oder die nicht vertrauenswürdige Dienstdatei %1 abgelehnt (%2). Ein abgelehnter Ordner hält den Dienst im Leerlauf, bis ein erhöhter Aufruf von shelldrive service repair-data ihn beiseite verschiebt; eine abgelehnte Datei lässt die Einbindung scheitern, die sie verwendet."
+
+msgctxt "evt.audit"
+msgid "Change through the global drive for profile %1 by %3 (SID %2): %4 %5."
+msgstr "Änderung über das globale Laufwerk für das Profil %1 durch %3 (SID %2): %4 %5."
+
+msgctxt "evt.hostkeys_announced"
+msgid "A server announced host keys for %1 (new: %2; no longer offered: %3). The machine host keys are not changed until an administrator accepts them with shelldrive hostkey list --announced --machine."
+msgstr "Ein Server hat Hostschlüssel für %1 angekündigt (neu: %2; nicht mehr angeboten: %3). Die Hostschlüssel der Maschine werden erst geändert, wenn ein Administrator sie mit shelldrive hostkey list --announced --machine akzeptiert."

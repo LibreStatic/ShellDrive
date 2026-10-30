@@ -787,7 +787,14 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
   n = vfs_table_find(v, ckey);
   if (n) {
     if (n->flags & VFS_NF_NEG) {
-      if (now - n->attr_time < n->neg_ttl || !online) {
+      if (!online) {
+        /* A miss while the link is down is not "does not exist" (02 §5.2, §7.6): the redirector would
+           cache the 404 for ~60 s, the WebDAV layer answers 503 for DISCONNECTED. */
+        sd_mutex_unlock(&v->lock);
+        sd_atomic_inc64(&v->cache_hits);
+        return SD_VFS_E_DISCONNECTED;
+      }
+      if (now - n->attr_time < n->neg_ttl) {
         sd_mutex_unlock(&v->lock);
         sd_atomic_inc64(&v->cache_hits);
         return SD_VFS_E_NOT_FOUND;
@@ -818,6 +825,11 @@ static sd_vfs_status lookup_child(sd_vfs *v, vfs_node *parent, const WCHAR *comp
       raw = vfs_strndup(e->raw, e->raw_len);   /* revalidate this exact remote name */
       raw_len = e->raw_len;
     } else {
+      if (!online) {                      /* absent from a cached listing only: not a verified miss */
+        sd_mutex_unlock(&v->lock);
+        sd_atomic_inc64(&v->cache_hits);
+        return SD_VFS_E_DISCONNECTED;
+      }
       insert_negative(v, ckey, comp);
       sd_mutex_unlock(&v->lock);
       sd_atomic_inc64(&v->cache_hits);
@@ -1380,6 +1392,7 @@ static void vfs_free_all(sd_vfs *v)
     sd_vfs_handle *h = v->handles;
     v->handles = h->next;
     vfs_node_unref(v, h->node);
+    sd_free(h->audit_sid);
     sd_free(h);
   }
   for (i = 0; i < v->nodes.nb; i++) {
@@ -1397,7 +1410,10 @@ static void vfs_free_all(sd_vfs *v)
   sd_free(v->fs_name);
   sd_free(v->offline_suffix);
   sd_free(v->owner_sid);
+  vfs_access_free(v);
   vfs_disk_close(v);
+  sd_mutex_destroy(&v->wait_lock);
+  vfs_audit_destroy(v);
   sd_mutex_destroy(&v->lock);
   sd_free(v);
 }
@@ -1433,12 +1449,13 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   char *rp = NULL;
   sd_sftp_attrs ra;
   sd_err e;
+  sd_vfs_status e_st;
   uint64_t dl;
   if (out) *out = NULL;
   if (!s || !o || !out || o->struct_size < sizeof(sd_vfs_options))
     return SD_VFS_E_UNSUPPORTED;
-  /* Later-milestone features (M1 scope). */
-  if ((o->write_mode != SD_VFS_WRITE_THROUGH && o->write_mode != SD_VFS_WRITE_BEHIND) || o->global_mount ||
+  /* Later-milestone features (M1 scope). global_mount is M5 (per-request access, vfs_access.c). */
+  if ((o->write_mode != SD_VFS_WRITE_THROUGH && o->write_mode != SD_VFS_WRITE_BEHIND) ||
       o->mark_of_the_web || o->remote_codepage || o->symlinks < SD_SYMLINK_FOLLOW_INSIDE ||
       o->symlinks > SD_SYMLINK_HIDE || o->remote_case < SD_VFS_CASE_AUTO || o->remote_case > SD_VFS_CASE_INSENSITIVE)
     return SD_VFS_E_UNSUPPORTED;
@@ -1448,6 +1465,8 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (!v)
     return SD_VFS_E_NO_MEMORY;
   sd_mutex_init(&v->lock);
+  sd_mutex_init(&v->wait_lock);
+  vfs_audit_init(v);
   v->s = s;
   v->cb = cb;
   v->cb_ctx = cb_ctx;
@@ -1478,6 +1497,7 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (v->wb_window_mount < v->wb_window) v->wb_window_mount = v->wb_window;
   v->grace = o->reconnect_grace_ms == 0xFFFFFFFFu ? 0 : def_u(o->reconnect_grace_ms, VFS_DEF_GRACE);
   v->offline_wait = def_u(o->offline_wait_ms, VFS_DEF_OFFLINE_WAIT);
+  v->stripe_min_file = def_u(o->stripe_min_file, VFS_DEF_STRIPE_FILE);
   v->mount_id = vc_new_mount_id();
   v->label = vfs_wcsdup(o->volume_label ? o->volume_label : L"ShellDrive");
   v->fs_name = vfs_wcsdup(o->volume_fs_name ? o->volume_fs_name : L"NTFS");
@@ -1486,6 +1506,11 @@ sd_vfs_status sd_vfs_mount(sd_sftp_session *s, const sd_vfs_options *o, sd_vfs_e
   if (!v->label || !v->fs_name || !v->offline_suffix) {
     vfs_free_all(v);
     return SD_VFS_E_NO_MEMORY;
+  }
+  e_st = vfs_access_init(v, o);         /* M5: global lists copied; scope = service needs service_access */
+  if (e_st != SD_VFS_OK) {
+    vfs_free_all(v);
+    return e_st;
   }
 
   memset(&info, 0, sizeof(info));
@@ -1594,6 +1619,7 @@ void sd_vfs_quiesce(sd_vfs *v, DWORD budget_ms)
   if (!v)
     return;
   InterlockedExchange(&v->quiescing, 1);
+  vfs_cancel_waits(v);                    /* offline waiters return now, not at their deadline */
   end = sd_tick_ms() + budget_ms;
   /* Write-behind data drains within the budget; what is left is reported (02 §4.4, §6.6). */
   vfs_data_quiesce(v, end);
@@ -1608,6 +1634,7 @@ void sd_vfs_unmount(sd_vfs *v)
   if (!v)
     return;
   InterlockedExchange(&v->quiescing, 1);
+  vfs_cancel_waits(v);
   vfs_timer_stop(v);
   vfs_data_quiesce(v, sd_tick_ms() + v->req_timeout);
   end = sd_tick_ms() + v->req_timeout + VFS_WAIT_GRACE_MS * 2;

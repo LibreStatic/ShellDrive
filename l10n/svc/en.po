@@ -1,0 +1,87 @@
+# ShellDrive service strings, English source of truth (03 §9.1). msgstr stays empty in en.po.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Printed by "shelldrive-host.exe service-debug" when the console service is listening.
+msgctxt "svc.debug_started"
+msgid "ShellDrive service running in console mode. Press Ctrl+C to stop."
+msgstr ""
+
+#. Printed when the console service has stopped.
+msgctxt "svc.debug_stopped"
+msgid "ShellDrive service stopped."
+msgstr ""
+
+#. Printed by "shelldrive-host.exe service" when the process was not started by the Service Control Manager.
+msgctxt "svc.not_scm"
+msgid "This program is the ShellDrive service and needs the Service Control Manager. To run it in a console, use: shelldrive-host.exe service-debug"
+msgstr ""
+
+#. Event Log 1000 (information), written when the service starts. %1 is the product version.
+#. sdl10n:event=1000,Informational,SVC_MSG_STARTED
+msgctxt "evt.started"
+msgid "ShellDrive service started (version %1)."
+msgstr ""
+
+#. Event Log 1001 (information), written when the service stops.
+#. sdl10n:event=1001,Informational,SVC_MSG_STOPPED
+msgctxt "evt.stopped"
+msgid "ShellDrive service stopped."
+msgstr ""
+
+#. Event Log 1100 (information): a global drive is mounted. %1 is the profile, %2 the target.
+#. sdl10n:event=1100,Informational,SVC_MSG_MOUNTED
+msgctxt "evt.mounted"
+msgid "Global drive for profile %1 is mounted at %2."
+msgstr ""
+
+#. Event Log 1101 (information): a global drive was unmounted. %1 is the profile, %2 the target.
+#. sdl10n:event=1101,Informational,SVC_MSG_UNMOUNTED
+msgctxt "evt.unmounted"
+msgid "Global drive for profile %1 at %2 was unmounted."
+msgstr ""
+
+#. Event Log 2100 (error): a global drive did not mount. %1 is the profile, %2 the reason code, %3 the detail.
+#. sdl10n:event=2100,Error,SVC_MSG_MOUNT_FAILED
+msgctxt "evt.mount_failed"
+msgid "Global drive for profile %1 failed to mount (%2): %3"
+msgstr ""
+
+#. Event Log 2110 (error): the service did not start. %1 is the reason.
+#. sdl10n:event=2110,Error,SVC_MSG_START_FAILED
+msgctxt "evt.start_failed"
+msgid "ShellDrive service could not start (%1)."
+msgstr ""
+
+#. Event Log 3101 (warning): a service pipe client was refused. %1 is the user, %2 the reason (token, per_sid, reserved or rate);
+#. the reason words are literal identifiers. Written at most once per user every 10 minutes.
+#. sdl10n:event=3101,Warning,SVC_MSG_CLIENT_REFUSED
+msgctxt "evt.client_refused"
+msgid "ShellDrive refused a service pipe client of user %1 (%2: token, per_sid, reserved or rate). At most one such event is written per user every 10 minutes."
+msgstr ""
+
+#. Event Log 3102 (warning): an untrusted machine folder or service file was refused. %1 is the path, %2 the reason
+#. (owner, reparse_point, acl or not_directory, literal identifiers).
+#. sdl10n:event=3102,Warning,SVC_MSG_UNTRUSTED_FOLDER
+msgctxt "evt.untrusted_folder"
+msgid "ShellDrive refused the untrusted machine folder or service file %1 (%2). A refused folder keeps the service idle until an elevated shelldrive service repair-data renames it aside; a refused file fails the mount that uses it."
+msgstr ""
+
+#. Event Log 1200 (information): a change through a global drive. %1 is the profile, %2 the user SID, %3 the account name,
+#. %4 the operation, %5 the remote path.
+#. sdl10n:event=1200,Informational,SVC_MSG_AUDIT
+msgctxt "evt.audit"
+msgid "Change through the global drive for profile %1 by %3 (SID %2): %4 %5."
+msgstr ""
+
+#. Event Log 2300 (warning): a server announced host keys. %1 is the host, %2 the new fingerprints, %3 the fingerprints
+#. no longer offered. The shelldrive command is literal.
+#. sdl10n:event=2300,Warning,SVC_MSG_HOSTKEYS_ANNOUNCED
+msgctxt "evt.hostkeys_announced"
+msgid "A server announced host keys for %1 (new: %2; no longer offered: %3). The machine host keys are not changed until an administrator accepts them with shelldrive hostkey list --announced --machine."
+msgstr ""

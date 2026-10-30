@@ -1,0 +1,20 @@
+# Mnemonic fixture: letter a is used twice in group menu.file, and twice in one string.
+msgid ""
+msgstr ""
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "menu.file.open"
+msgid "&Open"
+msgstr ""
+
+msgctxt "menu.file.save"
+msgid "&Save"
+msgstr ""
+
+msgctxt "menu.edit.paste"
+msgid "&Paste"
+msgstr ""

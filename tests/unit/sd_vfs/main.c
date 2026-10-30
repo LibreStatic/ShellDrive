@@ -37,10 +37,31 @@ SD_TEST_DECL(vfs_write_behind_conflict_after_reconnect);
 SD_TEST_DECL(vfs_reconnect_serves_cache_and_reopens);
 SD_TEST_DECL(vfs_reconnect_detects_remote_change);
 SD_TEST_DECL(vfs_write_through_disconnect_fails_the_call);
+SD_TEST_DECL(vfs_offline_wait_completes_on_reconnect);
+SD_TEST_DECL(vfs_offline_wait_cancel_returns_promptly);
+SD_TEST_DECL(vfs_offline_negative_lookup_is_disconnected);
+SD_TEST_DECL(vfs_offline_unknown_lookup_fails_at_once);
 SD_TEST_DECL(vfs_identity_home_owner_then_first_create);
 SD_TEST_DECL(vfs_disk_cache_persists_across_mounts);
 SD_TEST_DECL(vfs_disk_cache_refused_unsafe_directories);
 SD_TEST_DECL(vfs_disk_cache_trim_to_limit);
+SD_TEST_DECL(vfs_striping_size_threshold);
+SD_TEST_DECL(vfs_striping_sequential_write_threshold);
+SD_TEST_DECL(vfs_striping_write_behind_kick);
+SD_TEST_DECL(vfs_striping_needs_more_than_the_primary);
+SD_TEST_DECL(vfs_striping_append_and_directory_excluded);
+SD_TEST_DECL(vfs_access_global_mount_needs_service_access);
+SD_TEST_DECL(vfs_access_per_user_owner_only);
+SD_TEST_DECL(vfs_access_read_needs_access_list);
+SD_TEST_DECL(vfs_access_member_without_write_is_read_only);
+SD_TEST_DECL(vfs_access_write_list_grants_write);
+SD_TEST_DECL(vfs_access_groups_match_and_admins_write);
+SD_TEST_DECL(vfs_access_group_in_write_list);
+SD_TEST_DECL(vfs_access_system_needs_allow_system);
+SD_TEST_DECL(vfs_access_frontend_write_flag_restricts_members);
+SD_TEST_DECL(vfs_audit_raised_for_global_changes);
+SD_TEST_DECL(vfs_audit_coalesces_per_window);
+SD_TEST_DECL(vfs_audit_never_raised_on_per_user_mount);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_err_table_covers_every_value),
@@ -80,10 +101,31 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(vfs_reconnect_serves_cache_and_reopens),
   SD_TEST_ENTRY(vfs_reconnect_detects_remote_change),
   SD_TEST_ENTRY(vfs_write_through_disconnect_fails_the_call),
+  SD_TEST_ENTRY(vfs_offline_wait_completes_on_reconnect),
+  SD_TEST_ENTRY(vfs_offline_wait_cancel_returns_promptly),
+  SD_TEST_ENTRY(vfs_offline_negative_lookup_is_disconnected),
+  SD_TEST_ENTRY(vfs_offline_unknown_lookup_fails_at_once),
   SD_TEST_ENTRY(vfs_identity_home_owner_then_first_create),
   SD_TEST_ENTRY(vfs_disk_cache_persists_across_mounts),
   SD_TEST_ENTRY(vfs_disk_cache_refused_unsafe_directories),
   SD_TEST_ENTRY(vfs_disk_cache_trim_to_limit),
+  SD_TEST_ENTRY(vfs_striping_size_threshold),
+  SD_TEST_ENTRY(vfs_striping_sequential_write_threshold),
+  SD_TEST_ENTRY(vfs_striping_write_behind_kick),
+  SD_TEST_ENTRY(vfs_striping_needs_more_than_the_primary),
+  SD_TEST_ENTRY(vfs_striping_append_and_directory_excluded),
+  SD_TEST_ENTRY(vfs_access_global_mount_needs_service_access),
+  SD_TEST_ENTRY(vfs_access_per_user_owner_only),
+  SD_TEST_ENTRY(vfs_access_read_needs_access_list),
+  SD_TEST_ENTRY(vfs_access_member_without_write_is_read_only),
+  SD_TEST_ENTRY(vfs_access_write_list_grants_write),
+  SD_TEST_ENTRY(vfs_access_groups_match_and_admins_write),
+  SD_TEST_ENTRY(vfs_access_group_in_write_list),
+  SD_TEST_ENTRY(vfs_access_system_needs_allow_system),
+  SD_TEST_ENTRY(vfs_access_frontend_write_flag_restricts_members),
+  SD_TEST_ENTRY(vfs_audit_raised_for_global_changes),
+  SD_TEST_ENTRY(vfs_audit_coalesces_per_window),
+  SD_TEST_ENTRY(vfs_audit_never_raised_on_per_user_mount),
 };
 
 int main(int argc, char **argv)

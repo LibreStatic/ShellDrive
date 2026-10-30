@@ -51,3 +51,5 @@ account password and stop the instance with Ctrl+C.
 processes only: established connections drop, new ones are accepted), `freeze` / `thaw` / `reap`
 (SIGSTOP / SIGCONT / kill the session processes: a silent link), `status`. Only the fixture's own
 processes are touched. `interop.sftp_ssh` uses it and starts the fixture again at the end.
+An optional second argument (`ctl.sh drop ossh10`, `ctl.ps1 kill -Instance bastion1`) applies the same commands to
+an M2 fixture instance (`tests/fixtures/matrix/README.md`); without it this fixture is meant, as before.

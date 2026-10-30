@@ -1,0 +1,8 @@
+# sd-isacheck allow list for the x86/x64 hardware fast paths (sd_crypto, M6): SHA-NI and AES-NI. Both
+# functions are built into the x86-sse2 flavour only (src/sd_crypto/sources_hw.cmake). Their SHA and AES
+# instructions (0F 38 / 0F 3A opcode maps, SSE3+ class) are reached only after a CPUID check in
+# sd_crypto_use_hw_sha256() / sd_crypto_use_hw_aes(), so they never run on a CPU without the feature, and the
+# x86-sse2 floor CPU never executes them. Each name is the undecorated function name (crypto_internal.h).
+sd_sha256_ni_blocks_ct   # SHA-NI + SSSE3, gated by CPUID leaf 7 (SHA) and leaf 1 (SSSE3) in sd_crypto_hw_sha256_capable
+sd_sha256_ni_rounds4   # SD_FORCEINLINE helper of sd_sha256_ni_blocks_ct, its only caller; out of line in Debug (/Ob0)
+sd_aes_ni_encrypt_blocks_ct   # AES-NI, gated by CPUID leaf 1 (AESNI) in sd_crypto_hw_aes_capable; key setup sets k->hw

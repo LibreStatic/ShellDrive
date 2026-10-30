@@ -170,7 +170,7 @@ SD_TEST(aes_gcm_spec_vectors)
   for (i = 0; i < SD_COUNTOF(k_gcm); i++) {
     uint8_t *key, *iv, *pt, *aad, *ct, tag[16], out[64], t[16];
     size_t kl = tu_hex(k_gcm[i].key, &key), pl, al, cl;
-    tu_hex(k_gcm[i].iv, &iv);
+    (void)tu_hex(k_gcm[i].iv, &iv);   /* the IV length is known to the test table */
     pl = tu_hex(k_gcm[i].pt, &pt);
     al = tu_hex(k_gcm[i].aad, &aad);
     cl = tu_hex(k_gcm[i].ct, &ct);
@@ -207,18 +207,18 @@ static int run_wycheproof_gcm(sd_test_ctx *sd_t_, gcm_dec_fn dec, int use_encryp
     return 0;
   }
   while ((n = tu_lines_next(&l, f, 10)) != 0) {
-    uint8_t *key, *iv, *aad, *msg, *ct, *tag, *out, t[16];
+    uint8_t *key, *iv, *aad, *msg, *ct, *out, tag[16], t[16];
     size_t kl = tu_hex(f[1], &key), al, ml, cl;
     sd_err err;
-    tu_hex(f[2], &iv);
+    (void)tu_hex(f[2], &iv);        /* the IV length is unused on this path */
     al = tu_hex(f[3], &aad);
     ml = tu_hex(f[4], &msg);
     cl = tu_hex(f[5], &ct);
-    tu_hex(f[6], &tag);
+    if (tu_hexbuf(f[6], tag, 16) != 16) continue;   /* wycheproof GCM tags are 16 bytes */
     out = (uint8_t *)tu_alloc(cl + 1);
     if (kl == 24 && dec != sd_aes_gcm_decrypt_own) {
       /* the public API documents 16/32-byte GCM keys; 24 is exercised on the own path only */
-      free(key); free(iv); free(aad); free(msg); free(ct); free(tag); free(out);
+      free(key); free(iv); free(aad); free(msg); free(ct); free(out);
       continue;
     }
     err = dec(key, kl, iv, aad, al, ct, cl, tag, out);
@@ -233,7 +233,7 @@ static int run_wycheproof_gcm(sd_test_ctx *sd_t_, gcm_dec_fn dec, int use_encryp
     } else if (f[7][0] == 'i' && err == SD_OK) {
       sd_test_fail(sd_t_, __FILE__, __LINE__, "aes-gcm tcId %s: invalid case accepted", f[0]);
     }
-    free(key); free(iv); free(aad); free(msg); free(ct); free(tag); free(out);
+    free(key); free(iv); free(aad); free(msg); free(ct); free(out);
     count++;
   }
   tu_lines_close(&l);
@@ -318,7 +318,7 @@ SD_TEST(wycheproof_chacha20_poly1305)
     al = tu_hex(f[3], &aad);
     ml = tu_hex(f[4], &msg);
     cl = tu_hex(f[5], &ct);
-    tu_hex(f[6], &tag);
+    (void)tu_hex(f[6], &tag);       /* Poly1305 tags are 16 bytes; checked against t below */
     out = (uint8_t *)tu_alloc(cl + 1);
     SD_REQUIRE(kl == 32 && il == 12);
     aead_tag(key, iv, aad, al, ct, cl, t);
@@ -329,7 +329,7 @@ SD_TEST(wycheproof_chacha20_poly1305)
       sd_test_fail(sd_t_, __FILE__, __LINE__, "chacha20-poly1305 tcId %s: valid case failed", f[0]);
     if (f[7][0] == 'i' && ok)
       sd_test_fail(sd_t_, __FILE__, __LINE__, "chacha20-poly1305 tcId %s: invalid case accepted", f[0]);
-    free(key); free(iv); free(aad); free(msg); free(ct); free(tag); free(out);
+    free(key); free(iv); free(aad); free(msg); free(ct); free(out);
     count++;
   }
   tu_lines_close(&l);
@@ -406,9 +406,14 @@ static void gcm_pkt_roundtrip(sd_test_ctx *sd_t_, const char *name, size_t kl)
       memcpy(keep, pkt, sizeof(pkt));
       tag[0] ^= 1;
       SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_E_CRYPTO);
+      /* no plaintext released on a tag mismatch: CNG zeroes the buffer, the own path never decrypted it */
+      SD_CHECK(memcmp(pkt + 4, orig + 4, 64) != 0);
       tag[0] ^= 1;
-      memcpy(pkt, keep, sizeof(pkt));              /* the CNG backend wipes the buffer on failure */
-      sd_pktcipher_free(dec);                      /* the failed open consumed a nonce: restart */
+      memcpy(pkt, keep, sizeof(pkt));
+      /* sticky failure: the same object refuses the next record, even with a valid tag */
+      SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_E_CRYPTO);
+      memcpy(pkt, keep, sizeof(pkt));
+      sd_pktcipher_free(dec);                      /* the failed open ends this stream: restart */
       SD_REQUIRE(sd_pktcipher_new(info, 0, key, nonce, &dec) == SD_OK);
     }
     SD_CHECK(sd_pktcipher_open(dec, 0, pkt, sizeof(pkt), tag) == SD_OK);
@@ -435,7 +440,7 @@ SD_TEST(pktcipher_aes_ctr_streams)
 {
   static const char *names[3] = { "aes128-ctr", "aes192-ctr", "aes256-ctr" };
   int i;
-  SD_CHECK(sd_pktcipher_find("aes256-cbc") == NULL);
+  SD_CHECK(sd_pktcipher_find("blowfish-cbc") == NULL);   /* aes*-cbc and 3des-cbc exist since M2 */
   SD_CHECK(sd_pktcipher_find(NULL) == NULL);
   for (i = 0; i < 3; i++) {
     const sd_pktcipher_info *info = sd_pktcipher_find(names[i]);

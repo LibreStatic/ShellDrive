@@ -10,15 +10,30 @@
 
 #include "sd/base.h"
 
+/* 32x32->64 product, one MUL instruction on every 32-bit target: __emulu on x86 (MUL), _arm_umull on ARM32
+   (UMULL). The portable expression is the fallback for other targets (64-bit ones use 64-bit limbs and never
+   reach SD_MUL32 with secrets, see bn.c). Rule 01 2.4.3: no 64x64 multiply on 32-bit targets. */
 #if defined(_M_IX86)
 #include <intrin.h>
 #define SD_MUL32(a, b) __emulu((unsigned int)(a), (unsigned int)(b))
+#elif defined(_M_ARM)
+#include <intrin.h>
+#define SD_MUL32(a, b) _arm_umull((unsigned int)(a), (unsigned int)(b))
 #else
 #define SD_MUL32(a, b) ((uint64_t)(uint32_t)(a) * (uint64_t)(uint32_t)(b))
 #endif
 
 #if defined(_M_X64) || defined(_M_ARM64)
 #include <intrin.h>
+#endif
+
+/* Put before a loop that handles a secret mask. MSVC vectorizes such loops at /arch:SSE2 and emits a
+   pointer-overlap check and a length split (forward branches on addresses and public sizes) around the vector
+   body. Keeping the scalar body alone leaves one straight-line sequence per element (sd-isacheck, 01 2.4.1). */
+#if defined(_MSC_VER)
+#define SD_CT_NO_VECTOR __pragma(loop(no_vector))
+#else
+#define SD_CT_NO_VECTOR
 #endif
 
 /* Value barrier: the optimizer cannot see through a volatile round trip, so masks stay masks. */
@@ -43,17 +58,47 @@ static SD_FORCEINLINE uint64_t sd_mul64_lo(uint64_t a, uint64_t b)
   return lo + ((uint64_t)cross << 32);
 }
 
-/* Full 128-bit product. */
+/* Full 128-bit product. x64: _umul128; ARM64: MUL + UMULH (01 §2.4 rule 3: both are constant time on the
+   cores that run Windows on ARM); other targets: 32x32 pieces. */
 static SD_FORCEINLINE void sd_mul64_wide(uint64_t a, uint64_t b, uint64_t *lo, uint64_t *hi)
 {
 #if defined(_M_X64)
   *lo = _umul128(a, b, hi);
+#elif defined(_M_ARM64)
+  *lo = a * b;
+  *hi = __umulh(a, b);
 #else
   uint32_t al = (uint32_t)a, ah = (uint32_t)(a >> 32), bl = (uint32_t)b, bh = (uint32_t)(b >> 32);
   uint64_t ll = SD_MUL32(al, bl), lh = SD_MUL32(al, bh), hl = SD_MUL32(ah, bl), hh = SD_MUL32(ah, bh);
   uint64_t mid = (ll >> 32) + (uint32_t)lh + (uint32_t)hl;
   *lo = (mid << 32) | (uint32_t)ll;
   *hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
+#endif
+}
+
+/* 64-bit carry and borrow chains (cin, bin are 0 or 1). x64 uses the intrinsics; the other 64-bit targets
+   (ARM64 has no _addcarry_u64) use branch-free arithmetic. The result may alias an input. */
+static SD_FORCEINLINE unsigned char sd_addcarry64(unsigned char cin, uint64_t a, uint64_t b, uint64_t *r)
+{
+#if defined(_M_X64)
+  return _addcarry_u64(cin, a, b, (unsigned __int64 *)r);
+#else
+  uint64_t t = a + b, s = t + cin;
+  unsigned char c1 = (unsigned char)(t < a), c2 = (unsigned char)(s < t);
+  *r = s;
+  return (unsigned char)(c1 | c2);
+#endif
+}
+
+static SD_FORCEINLINE unsigned char sd_subborrow64(unsigned char bin, uint64_t a, uint64_t b, uint64_t *r)
+{
+#if defined(_M_X64)
+  return _subborrow_u64(bin, a, b, (unsigned __int64 *)r);
+#else
+  uint64_t t = a - b, s = t - bin;
+  unsigned char b1 = (unsigned char)(a < b), b2 = (unsigned char)(t < bin);
+  *r = s;
+  return (unsigned char)(b1 | b2);
 #endif
 }
 

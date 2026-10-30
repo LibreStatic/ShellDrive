@@ -15,6 +15,15 @@ static sd_crypto_caps g_caps;
 static sd_bcrypt_handle g_rng_alg;          /* Vista fallback handle, NULL otherwise */
 static int g_rng_preferred;                 /* system-preferred RNG works */
 static volatile LONG g_force_own;           /* test hook */
+static volatile LONG g_force_portable;      /* SD_CRYPTO_PORTABLE=1 or the test hook: no SHA-NI/AES-NI */
+
+static void probe_portable_env(void)
+{
+  wchar_t env[4];
+  DWORD n = GetEnvironmentVariableW(L"SD_CRYPTO_PORTABLE", env, SD_COUNTOF(env));
+  if (n > 0 && n < SD_COUNTOF(env) && env[0] != L'0')
+    g_force_portable = 1;
+}
 
 static void probe_rng(void)
 {
@@ -44,6 +53,7 @@ static void init_once(void *arg)
   if (!(flags & SD_CRYPTO_INIT_OWN_ONLY))
     sd_cng_probe(&g_caps.os);
   probe_rng();
+  probe_portable_env();
 }
 
 sd_err sd_crypto_init(uint32_t flags)
@@ -80,6 +90,44 @@ int sd_crypto_use_cng_gcm(void)
 void sd_crypto_test_force_own(int on)
 {
   InterlockedExchange(&g_force_own, on ? 1 : 0);
+}
+
+/* The hardware fast paths need CPUID bits only: AES-NI and SHA-NI use XMM registers alone, and the SSE2 floor
+   already implies that the OS saves XMM state (FXSR on XP), so no XGETBV/XSAVE check is needed. SHA-NI also
+   needs SSSE3 (pshufb, palignr); every CPU with SHA-NI has it. */
+int sd_crypto_hw_aes_capable(void)
+{
+#if SD_CRYPTO_X86_HW
+  sd_crypto_ensure_init();
+  return (g_caps.cpu & SD_CPU_AESNI) != 0;
+#else
+  return 0;
+#endif
+}
+
+int sd_crypto_hw_sha256_capable(void)
+{
+#if SD_CRYPTO_X86_HW
+  sd_crypto_ensure_init();
+  return (g_caps.cpu & SD_CPU_SHANI) != 0 && (g_caps.cpu & SD_CPU_SSSE3) != 0;
+#else
+  return 0;
+#endif
+}
+
+int sd_crypto_use_hw_aes(void)
+{
+  return sd_crypto_hw_aes_capable() && InterlockedCompareExchange(&g_force_portable, 0, 0) == 0;
+}
+
+int sd_crypto_use_hw_sha256(void)
+{
+  return sd_crypto_hw_sha256_capable() && InterlockedCompareExchange(&g_force_portable, 0, 0) == 0;
+}
+
+void sd_crypto_test_force_portable(int on)
+{
+  InterlockedExchange(&g_force_portable, on ? 1 : 0);
 }
 
 sd_err sd_random(void *buf, size_t len)

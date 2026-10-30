@@ -7,6 +7,7 @@
 
 static int all_ciphers(const char *n) { SD_UNUSED(n); return 1; }
 static int no_gcm(const char *n) { return strstr(n, "gcm") == NULL; }
+static int curve_only(const char *n) { return strncmp(n, "curve25519", 10) == 0; }
 
 /* Builds a server KEXINIT payload from CSV lists into w and parses it into k. */
 static int make_server(sd_wr *w, ssh_kexinit *k, const char *kex, const char *hk, const char *enc, const char *mac)
@@ -62,7 +63,7 @@ SD_TEST(ssh_lists_strict_server_keeps_static_order)
   SD_CHECK(strncmp(l.enc_c2s, "chacha20-poly1305@openssh.com,", 30) == 0);
   SD_CHECK(ssh_csv_contains(l.kex, "ext-info-c"));
   SD_CHECK(ssh_csv_contains(l.kex, "kex-strict-c-v00@openssh.com"));
-  SD_CHECK_STR(l.hostkey, "ssh-ed25519");
+  SD_CHECK(ssh_csv_contains(l.hostkey, "ssh-ed25519"));
   /* hardware AES: GCM first */
   in.hw_aes = 1;
   SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_OK);
@@ -160,19 +161,21 @@ SD_TEST(ssh_lists_hostkey_restricted_to_stored_types)
   in.stored = &t;
   /* nothing stored: full list */
   SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_OK);
-  SD_CHECK_STR(l.hostkey, "ssh-ed25519");
-  /* only an RSA key stored: no M0 algorithm can verify it -> type unavailable, never a prompt */
+  SD_CHECK(strncmp(l.hostkey, "ssh-ed25519-cert-v01@openssh.com,", 33) == 0 && ssh_csv_contains(l.hostkey, "rsa-sha2-512"));
+  /* only an RSA key stored: the RSA algorithms only (legacy ssh-rsa not offered: legacy not allowed here) */
   t.count = 1;
   memcpy(t.type[0], "ssh-rsa", 8);
-  SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_E_HOSTKEY_TYPE_UNAVAILABLE);
+  SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_OK);
+  SD_CHECK_STR(l.hostkey, "rsa-sha2-512,rsa-sha2-256");
   t.count = 2;
   memcpy(t.type[1], "ssh-ed25519", 12);
   SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_OK);
-  SD_CHECK_STR(l.hostkey, "ssh-ed25519");
-  /* only @cert-authority: cert algorithms only (none in M0) */
+  SD_CHECK_STR(l.hostkey, "ssh-ed25519,rsa-sha2-512,rsa-sha2-256");
+  /* only @cert-authority: certificate algorithms only */
   t.count = 0;
   t.has_ca = 1;
-  SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_E_HOSTKEY_TYPE_UNAVAILABLE);
+  SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_OK);
+  SD_CHECK(strstr(l.hostkey, "-cert-v01@openssh.com") != NULL && !ssh_csv_contains(l.hostkey, "ssh-ed25519"));
 }
 
 SD_TEST(ssh_lists_disabled_and_unavailable)
@@ -189,6 +192,7 @@ SD_TEST(ssh_lists_disabled_and_unavailable)
   SD_CHECK(!ssh_csv_contains(l.enc_c2s, "aes128-ctr"));
   SD_CHECK(!ssh_csv_contains(l.mac_c2s, "hmac-sha2-512"));
   SD_CHECK(ssh_csv_contains(l.mac_c2s, "hmac-sha2-512-etm@openssh.com"));
+  in.kex_available = curve_only;
   in.disabled = "curve25519-sha256,curve25519-sha256@libssh.org";
   SD_CHECK_EQ_INT(ssh_build_lists(&in, &l, &r), SD_E_KEX_FAILED);
 }
@@ -202,7 +206,7 @@ SD_TEST(ssh_negotiate_reports_category)
   ssh_list_result r;
   ssh_algs a;
   const char *cat = NULL;
-  SD_REQUIRE(make_server(&w, &k, OPENSSH_KEX, "rsa-sha2-512,ecdsa-sha2-nistp256", OPENSSH_ENC, OPENSSH_MAC));
+  SD_REQUIRE(make_server(&w, &k, OPENSSH_KEX, "ssh-dss,sk-ssh-ed25519@openssh.com", OPENSSH_ENC, OPENSSH_MAC));
   memset(&in, 0, sizeof(in));
   in.server = &k;
   in.initial = 1;
