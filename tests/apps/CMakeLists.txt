@@ -31,7 +31,7 @@ target_link_libraries(sd-test-cli PRIVATE sd_headers sd_ipc sd_config sd_l10n sd
 set_target_properties(sd-test-cli PROPERTIES FOLDER "tests")
 
 sd_add_unit_test(apps
-  SOURCES main.c test_cli_args.c test_cli_m3.c test_smoke.c test_agent_m3.c test_diag_units.c "${_cli_dir}/cli_args.c"
+  SOURCES main.c test_cli_args.c test_cli_m3.c test_smoke.c test_agent_m3.c test_hooks.c test_diag_units.c "${_cli_dir}/cli_args.c"
           "${_cli_dir}/cli_zip.c" "${_cli_dir}/cli_anon.c" "${_cli_dir}/cli_diag_rules.c" test_agent_events.c
           "${_host_dir}/agent_events.c"
   DEPS sd_ipc sd_state sd_config sd_platform sd_base sd_crypto ole32 shell32 advapi32 user32)
