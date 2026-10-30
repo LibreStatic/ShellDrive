@@ -897,5 +897,7 @@ Open (lab or later):
   resolve to.
 - The ARM64 package carries no x64 shell extension for x64 apps under emulation (04 §11.4 row "11 ARM64").
 - The setup EXE's own ARM32 24H2/RT refusal (04 §5.1) is not implemented.
-- GitHub CI does not build any MSI (`ci.yml` passes no `SD_BUILD_MSI`); the release pipeline's `package` job is still
-  a stub.
+- The release pipeline's `package` job is still a stub. GitHub CI (`ci.yml`) builds the MSIs on `x86-ia32`,
+  `x64-modern`, `arm64` and `arm32` with the runner's WiX 3.14, runs their `msi.*` checks and uploads the packages.
+  The `x64-modern` and `arm64` jobs now also install `v141_xp` for the x86 shell extension, which adds several
+  minutes to each.

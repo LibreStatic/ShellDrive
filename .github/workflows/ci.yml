@@ -4,6 +4,9 @@
 # runner (Dokany tests skip there). The arm64 and arm32 entries are build-only (M6, 04 §1.1, §5.1): they
 # cross-compile on the x64 runner, the build-time tools run from a nested x64 build, and no test runs (ARM
 # binaries cannot run there; the ARM64 test job belongs to windows-11-arm, §11.2; arm32 has no test job, D5).
+# The per-machine MSIs (04 §8, D31) are built on x86-ia32, x64-modern, arm64 and arm32 with WiX 3.14 of the runner image,
+# and their msi.* checks run there; on the ARM entries those are the only tests (x64 sd-test-msi from the nested
+# host-tools build, CMakePresets.json). The x64 and ARM64 MSIs carry the x86-sse2 shell extension, built with v141_xp.
 # TM-R39: first-party actions only, pinned by commit SHA; read-only token.
 name: ci
 
@@ -28,21 +31,44 @@ jobs:
       fail-fast: false
       matrix:
         preset: [x64-modern, x64-xp, x86-ia32, x86-sse2, arm64, arm32]
+        include:
+          - preset: x64-modern
+            msi: true
+          - preset: x86-ia32
+            msi: true
+          - preset: arm64
+            msi: true
+          - preset: arm32
+            msi: true
     env:
       SD_BUILD_NUMBER: ${{ github.run_number }}
+      SD_MSI: ${{ matrix.msi }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The XP presets need it, and so do x64-modern and arm64 for the x86 shell extension of their MSI.
       - name: Set up v141_xp toolset
-        if: matrix.preset != 'x64-modern' && matrix.preset != 'arm64' && matrix.preset != 'arm32'
+        if: matrix.preset != 'arm32'
         uses: ./.github/actions/setup-xp-toolset
+
+      - name: Check WiX 3.14
+        if: matrix.msi
+        shell: pwsh
+        run: |
+          $wix = if ($env:WIX) { $env:WIX } else { "${env:ProgramFiles(x86)}\WiX Toolset v3.14" }
+          if (-not (Test-Path (Join-Path $wix 'bin\candle.exe'))) { throw "WiX 3.14 not found at $wix (04 section 8.1)" }
+          Write-Host "WiX: $wix"
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset ${{ matrix.preset }} "-DSD_BUILD_NUMBER=${{ github.run_number }}"
+        run: |
+          $msiArgs = @()
+          if ($env:SD_MSI -eq 'true') { $msiArgs += '-DSD_BUILD_MSI=ON' }
+          cmake --preset ${{ matrix.preset }} "-DSD_BUILD_NUMBER=${{ github.run_number }}" @msiArgs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # Release and Debug both run the post-build import audit (sd-importcheck) and the sdl10n
       # completeness check; either failure fails the build.
@@ -54,9 +80,10 @@ jobs:
         shell: pwsh
         run: cmake --build --preset ${{ matrix.preset }}-debug
 
-      # arm64 and arm32 are build-only (ARM test binaries cannot run on the x64 runner, 04 §11.4): ctest is skipped.
+      # arm64 and arm32 run no unit tests (ARM test binaries cannot run on the x64 runner, 04 §11.4): their Release
+      # ctest preset selects only the msi.* checks, and their Debug ctest is skipped.
       - name: Test Release
-        if: matrix.preset != 'arm64' && matrix.preset != 'arm32'
+        if: (matrix.preset != 'arm64' && matrix.preset != 'arm32') || matrix.msi
         shell: pwsh
         run: ctest --preset ${{ matrix.preset }} --output-on-failure --output-junit "${{ github.workspace }}/build/ctest-${{ matrix.preset }}.xml"
 
@@ -72,6 +99,7 @@ jobs:
           path: |
             build/${{ matrix.preset }}/bin/Release/*.exe
             build/${{ matrix.preset }}/bin/Release/*.pdb
+            build/${{ matrix.preset }}/msi/Release/*.msi
             build/ctest-${{ matrix.preset }}.xml
           if-no-files-found: error
 
