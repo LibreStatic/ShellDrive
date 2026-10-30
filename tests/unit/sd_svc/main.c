@@ -37,6 +37,8 @@ SD_TEST_DECL(svc_system_proxy_refuses_basic_auth_on_its_leg);
 SD_TEST_DECL(svc_system_proxy_policy_is_read_from_the_machine_values);
 SD_TEST_DECL(svc_secret_proxy_set_and_delete_through_the_pipe);
 SD_TEST_DECL(svc_hostkey_add_through_an_unknown_jump_host_is_refused);
+SD_TEST_DECL(svc_webdav_mount_reports_its_attach_point);
+SD_TEST_DECL(svc_attach_info_refuses_a_caller_outside_service_access);
 SD_TEST_DECL(svc_one_profile_mounted_twice_keeps_both_announcements);
 SD_TEST_DECL(svc_core_stops_and_leaves_nothing_behind);
 SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
@@ -134,6 +136,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_system_proxy_policy_is_read_from_the_machine_values),
   SD_TEST_ENTRY(svc_secret_proxy_set_and_delete_through_the_pipe),
   SD_TEST_ENTRY(svc_hostkey_add_through_an_unknown_jump_host_is_refused),
+  SD_TEST_ENTRY(svc_webdav_mount_reports_its_attach_point),
+  SD_TEST_ENTRY(svc_attach_info_refuses_a_caller_outside_service_access),
   SD_TEST_ENTRY(svc_one_profile_mounted_twice_keeps_both_announcements),
   SD_TEST_ENTRY(svc_core_stops_and_leaves_nothing_behind),
   SD_TEST_ENTRY(refuse_log_is_once_per_sid_per_window),

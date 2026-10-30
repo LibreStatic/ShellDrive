@@ -49,6 +49,7 @@ struct sd_webdav_server {
   SOCKET ls[2]; int nls;
   uint16_t port;
   PSID owner;
+  BOOL service_mode;              /* 02 §7.7: no owner check at the connection; sd_vfs decides per request */
   uint32_t header_ms, auth_ms, idle_ms, max_unauth, max_unauth_pp, max_conn;
   sd_thread accept_thr;
   volatile LONG stop;
@@ -66,8 +67,12 @@ enum { WD_AUTH_FAIL = -1, WD_AUTH_CONTINUE = 0, WD_AUTH_OK = 1 };
 typedef struct wd_auth { void *ctx; int have; } wd_auth;   /* ctx: CtxtHandle (opaque here) */
 int  wd_auth_available(void);
 /* value = "Negotiate <b64>" or "NTLM <b64>". On CONTINUE/OK with a token, out = "<scheme> <b64>"
-   (NUL-terminated, empty when no token). On OK *user is the token user SID (sd_alloc). */
-int  wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap, PSID *user);
+   (NUL-terminated, empty when no token). On OK *user is the token user SID (sd_alloc) and, when *groups is
+   not NULL, *groups/*n_groups are the token's enabled, non-deny-only group SIDs (one sd_alloc buffer plus an
+   index array, freed with wd_groups_free). The service server needs them: service_access may name a group. */
+int  wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap, PSID *user,
+                  PSID **groups, UINT *n_groups);
+void wd_groups_free(PSID *groups, UINT n_groups);
 void wd_auth_reset(wd_auth *a);
 
 /* ---- connection ---- */
@@ -84,6 +89,8 @@ typedef struct wd_conn {
   volatile LONG evict;
   wd_auth auth;
   PSID user;
+  PSID *groups;                   /* enabled, non-deny-only groups of the authenticated token (service mode) */
+  UINT n_groups;
   char auth_reply[1024];          /* final mutual-auth token for the next response, rarely used */
   char *ib; size_t ilen, ipos;
 } wd_conn;

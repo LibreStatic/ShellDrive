@@ -86,6 +86,8 @@ static int make_chain_profiles(void);
 #define T_ID_SYSPROXY  "00000000000000000000000000000016"
 #define T_ID_SYSBASIC  "00000000000000000000000000000017"
 #define T_ID_HKCHAIN   "00000000000000000000000000000018"
+#define T_ID_WEBDAV    "00000000000000000000000000000019"
+#define T_ID_WEBDAVDENY "0000000000000000000000000000001a"
 
 /* proxy = system seam (svc_opts.sysproxy_ops): a stub machine configuration; the test changes allow to refuse by policy */
 static svc_sysproxy_ops g_sysops;
@@ -307,6 +309,20 @@ static int make_chain_profiles(void)
   identity_of(&p);
   strcpy_s(p.jump, sizeof(p.jump), "hkjump.untrusted.test");
   if (!write_profile(L"t-hkchain.ini", &p)) return 0;
+
+  /* 02 §7.7 attach: a global WebDAV profile (hosted by the service, mapped per user) and one whose service_access
+     names nobody this test can be (the attach reply must refuse it) */
+  p = base_profile(T_ID_WEBDAV, "webdav", "webdav.example");
+  identity_of(&p);
+  p.backend = SD_PROFILE_BACKEND_WEBDAV;
+  if (!write_profile(L"u-webdav.ini", &p)) return 0;
+  fake_backend_pre_trust("webdav.example");
+
+  p = base_profile(T_ID_WEBDAVDENY, "webdavdeny", "webdav.example");
+  identity_of(&p);
+  p.backend = SD_PROFILE_BACKEND_WEBDAV;
+  strcpy_s(p.service_access, sizeof(p.service_access), "S-1-5-21-1-2-3-4");   /* valid SID, matches no token */
+  if (!write_profile(L"v-webdavdeny.ini", &p)) return 0;
   return 1;
 }
 
@@ -559,16 +575,16 @@ SD_TEST(svc_loads_only_valid_service_profiles)
   const sd_json *loaded;
   SD_REQUIRE(ensure_core());
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
-  /* 18 valid: mounted, nosub, tofu, pwprompt, adminonly, the M5 hostkey and rotate profiles and the M5 chain and proxy
-     profiles (a chain is checked per hop at mount time, not at load). Refused: pageant (D17). Not loaded: the user
-     profile. */
+  /* 20 valid: mounted, nosub, tofu, pwprompt, adminonly, the M5 hostkey and rotate profiles, the M5 chain and proxy
+     profiles and the two global WebDAV profiles (a chain is checked per hop at mount time, not at load). Refused:
+     pageant (D17). Not loaded: the user profile. */
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
   loaded = sd_json_get(res, "profiles");
   {
     int64_t n = -1;
     SD_CHECK(sd_json_get_int64(loaded, "loaded", &n));
-    SD_CHECK_EQ_INT(n, 18);
+    SD_CHECK_EQ_INT(n, 20);
   }
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1474,7 +1490,7 @@ SD_TEST(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder)
   SD_CHECK(sd_json_get_int64(o, "prompts", &n) && n == 0);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 20);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   SD_CHECK(sd_json_get_str(o, "reason") == NULL);
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1533,7 +1549,7 @@ SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
   SD_REQUIRE(res != NULL);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 20);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   sd_json_free(res);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
@@ -1807,6 +1823,72 @@ SD_TEST(svc_hostkey_add_through_an_unknown_jump_host_is_refused)
   SD_CHECK_STR(err.code, "host_key_rejected");
   SD_CHECK(fake_backend_hk_jump_prompts() == prompts + 1);
   SD_CHECK(before == fake_backend_apply_machine_calls());
+  sd_ipc_close(c);
+}
+
+/* 02 §7.7 attach (G2/G7 shape): a global WebDAV profile is hosted by the service and reports the export a member's
+   agent maps. The reply carries the UNC with the path token and the letter, and no credential. The mount is hosted,
+   not mapped, so it needs no second session. */
+SD_TEST(svc_webdav_mount_reports_its_attach_point)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "";
+  int attach = 0;
+  int64_t port = 0;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  fake_backend_set_webclient(SD_WD_CLIENT_RUNNING, 1);
+  SD_REQUIRE(mount_and_wait(c, "webdav", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"webdav\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK_STR(sd_json_get_str(res, "backend"), "webdav");
+  SD_CHECK(sd_json_get_bool(res, "attach", &attach) && attach);
+  SD_CHECK_STR(sd_json_get_str(res, "unc"), "\\\\localhost@49321\\DavWWWRoot\\s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  SD_CHECK_STR(sd_json_get_str(res, "xp_url"), "http://localhost:49321/s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  SD_CHECK(sd_json_get_int64(res, "port", &port) && port == 49321);
+  sd_json_free(res);
+  /* a Dokany global mount has no export: the same method reports nothing to attach */
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  SD_REQUIRE(mount_and_wait(c, "mounted", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"mounted\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK_STR(sd_json_get_str(res, "backend"), "dokany");
+  attach = 1;
+  SD_CHECK(sd_json_get_bool(res, "attach", &attach) && attach == 0);
+  SD_CHECK(sd_json_get(res, "unc") == NULL);
+  sd_json_free(res);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+/* 02 §7.7 G7 / TM-R18: the attach information is only for a caller in service_access. A profile whose list names a
+   SID this process does not carry answers access_denied, and no UNC leaves the service. */
+SD_TEST(svc_attach_info_refuses_a_caller_outside_service_access)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  fake_backend_set_webclient(SD_WD_CLIENT_RUNNING, 1);
+  SD_REQUIRE(mount_and_wait(c, "webdavdeny", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"webdavdeny\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  if (res)
+    sd_json_free(res);
+  SD_CHECK_STR(err.code, "access_denied");
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
   sd_ipc_close(c);
 }
 

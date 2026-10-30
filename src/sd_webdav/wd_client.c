@@ -296,11 +296,50 @@ static int ours(const wchar_t *r, uint16_t *port)
   return 1;
 }
 
+/* 02 §7.7 attach: ports of foreign (service) servers whose mappings the mount-start cleanup keeps. */
+#define WD_PRESERVE_MAX 4
+static volatile LONG g_preserve[WD_PRESERVE_MAX];
+
+void sd_webdav_preserve_port(uint16_t port, BOOL on)
+{
+  int i;
+  if (port == 0)
+    return;
+  for (i = 0; i < WD_PRESERVE_MAX; i++) {
+    if (on && InterlockedCompareExchange(&g_preserve[i], 0, 0) == (LONG)port)
+      return;                              /* already kept */
+    if (!on && InterlockedCompareExchange(&g_preserve[i], 0, (LONG)port) == (LONG)port)
+      return;
+  }
+  if (!on)
+    return;
+  for (i = 0; i < WD_PRESERVE_MAX; i++)
+    if (InterlockedCompareExchange(&g_preserve[i], (LONG)port, 0) == 0)
+      return;
+  SD_LOGW(WD_LOG, "more than %d preserved WebDAV ports; port %u is not kept", WD_PRESERVE_MAX, (unsigned)port);
+}
+
+static int preserved(uint16_t port)
+{
+  int i;
+  for (i = 0; i < WD_PRESERVE_MAX; i++)
+    if (InterlockedCompareExchange(&g_preserve[i], 0, 0) == (LONG)port)
+      return 1;
+  return 0;
+}
+
 typedef DWORD (APIENTRY *pfn_WNetOpenEnumW)(DWORD, DWORD, DWORD, LPNETRESOURCEW, LPHANDLE);
 typedef DWORD (APIENTRY *pfn_WNetEnumResourceW)(HANDLE, LPDWORD, LPVOID, LPDWORD);
 typedef DWORD (APIENTRY *pfn_WNetCloseEnum)(HANDLE);
 
+static sd_err cleanup_impl(uint16_t keep_port, uint16_t only_port, int keep_preserved, uint32_t *removed);
+
 sd_err sd_webdav_cleanup_mappings(uint16_t keep_port, uint16_t only_port, uint32_t *removed)
+{
+  return cleanup_impl(keep_port, only_port, 0, removed);
+}
+
+static sd_err cleanup_impl(uint16_t keep_port, uint16_t only_port, int keep_preserved, uint32_t *removed)
 {
   pfn_WNetOpenEnumW oe = (pfn_WNetOpenEnumW)sd_platform_resolve_by_name(L"mpr.dll", "WNetOpenEnumW");
   pfn_WNetEnumResourceW er = (pfn_WNetEnumResourceW)sd_platform_resolve_by_name(L"mpr.dll", "WNetEnumResourceW");
@@ -322,7 +361,8 @@ sd_err sd_webdav_cleanup_mappings(uint16_t keep_port, uint16_t only_port, uint32
       for (i = 0; i < n; i++) {
         NETRESOURCEW *r = &((NETRESOURCEW *)buf)[i];
         uint16_t port;
-        if (r->lpRemoteName && ours(r->lpRemoteName, &port) && port != keep_port && (!only_port || port == only_port)) {
+        if (r->lpRemoteName && ours(r->lpRemoteName, &port) && port != keep_port && (!only_port || port == only_port) &&
+            !(keep_preserved && preserved(port))) {
           const wchar_t *name = (r->lpLocalName && r->lpLocalName[0]) ? r->lpLocalName : r->lpRemoteName;
           if (WNetCancelConnection2W(name, 0, TRUE) == NO_ERROR) {
             count++;
@@ -350,7 +390,7 @@ sd_err sd_webdav_cleanup_mappings(uint16_t keep_port, uint16_t only_port, uint32
         unc[k] = name[k] == L'#' ? L'\\' : name[k];
       unc[k] = 0;
       if (ours(unc, &port) && port != keep_port && (!only_port || port == only_port) &&
-          RegDeleteKeyW(mp2, name) == ERROR_SUCCESS)
+          !(keep_preserved && preserved(port)) && RegDeleteKeyW(mp2, name) == ERROR_SUCCESS)
         continue;                          /* same index now holds the next key */
       idx++;
     }
@@ -365,6 +405,7 @@ sd_err sd_webdav_cleanup_mappings(uint16_t keep_port, uint16_t only_port, uint32
 struct sd_webdav_mount {
   sd_webdav_export *ex;
   wchar_t letter;
+  BOOL no_map;                    /* 02 §7.7 attach: the service hosts the export and maps nothing */
 };
 
 static sd_once g_mount_once = SD_ONCE_INIT;
@@ -438,12 +479,15 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
   if (g_srv == NULL) {
     sd_webdav_server_cfg sc;
     uint32_t removed = 0;
-    /* TM-R17 d: before binding, remove our stale mappings from earlier runs (any port) */
-    sd_webdav_cleanup_mappings(0, 0, &removed);
+    /* TM-R17 d: before binding, remove our stale mappings from earlier runs (any port); a live attach of the
+       service's drive (02 §7.7, sd_webdav_preserve_port) is not stale and stays */
+    cleanup_impl(0, 0, 1, &removed);
     memset(&sc, 0, sizeof(sc));
     sc.struct_size = sizeof(sc);
     sc.owner_sid = cfg->owner_sid;
     sc.token_only = cfg->token_only;
+    /* 02 §7.7: a hosted (no_map) mount is a service server: sd_vfs decides per request, groups included */
+    sc.service_mode = cfg->no_map ? TRUE : FALSE;
     e = sd_webdav_server_start(&sc, &g_srv);
     if (e == SD_OK)
       warn_redirector_limits();
@@ -464,7 +508,7 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
     /* the redirector and the self-test connect back to our server while this runs: no lock held */
     if (cfg->token_only)
       e = sd_webdav_token_selftest(port, sd_webdav_export_prefix(m->ex));
-    if (e == SD_OK)
+    if (e == SD_OK && !cfg->no_map)
       e = sd_webdav_map(m->ex, cfg->letter, &werr);
     sd_mutex_lock(&g_mount_mu);
     if (e != SD_OK) {
@@ -483,6 +527,7 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
     return e;
   }
   m->letter = cfg->letter;
+  m->no_map = cfg->no_map ? TRUE : FALSE;
   *out = m;
   return SD_OK;
 }
@@ -492,7 +537,7 @@ sd_err sd_webdav_mount_stop(sd_webdav_mount *m)
   sd_err e;
   if (m == NULL)
     return SD_E_INVALID_PARAM;
-  e = sd_webdav_unmap(m->ex, m->letter);
+  e = m->no_map ? SD_OK : sd_webdav_unmap(m->ex, m->letter);
   sd_mutex_lock(&g_mount_mu);
   sd_webdav_export_remove(m->ex);
   if (--g_refs == 0 && g_srv) {
@@ -507,4 +552,11 @@ sd_err sd_webdav_mount_stop(sd_webdav_mount *m)
 uint16_t sd_webdav_mount_port(const sd_webdav_mount *m)
 {
   return (m && m->ex) ? m->ex->srv->port : 0;
+}
+
+sd_err sd_webdav_mount_remote(const sd_webdav_mount *m, BOOL xp_form, wchar_t *out, size_t cap)
+{
+  if (m == NULL || m->ex == NULL)
+    return SD_E_INVALID_PARAM;
+  return sd_webdav_export_remote_name(m->ex, xp_form, out, cap);
 }

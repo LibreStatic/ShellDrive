@@ -318,3 +318,55 @@ Notes for the record:
   `InstallFrom`) for Win11/Server.
 - New-LabVM.ps1 still does not set AutomaticStartAction; it was set manually on the
   recreated VM.
+
+## Appendix: procedure for the live global Dokany mount (M5, not yet run)
+
+Written 2026-10-30 because `sd-win10-ltsc21-x64` was held by the M3 acceptance run. Nothing here has been executed;
+it is the exact sequence to run as soon as the VM is free, so that the first live global mount is a measurement and
+not an exploration. It closes the "a real global mount seen by a second session" item of `docs/dev/m5-notes.md`
+(M5 rows 2 and "Left") and the M5 demo (a) of `docs/design/00-integration-review.md` §6 for Windows 10 (Server 2022
+needs a Gen2 guest, still blocked by the host DVD defect of this file's 2026-10-29 night section; Gen1 validates the
+code but not Secure Boot).
+
+Preconditions
+
+- `sd-win10-ltsc21-x64` restored to its `base` checkpoint (`Invoke-SdLab.ps1` restores before a run). Two local
+  accounts exist: `sduser1` and `sduser2` (create them with `net user ... /add` inside the guest if the base lacks
+  them; both standard users, distinct passwords).
+- The payload ISO of the build under test is attached (`Invoke-SdLab.ps1` convention: IDE 1:0).
+- Dokany 2.1+ is installed in the base (the payload installs it). `sc query dokan2` in the guest reports RUNNING.
+- A test service profile. Write `%ProgramData%\LibreStatic\ShellDrive\profiles\global10.ini` on the guest:
+  `scope = service`, `user = svc`, `backend = dokany`, one `service_access` entry per account
+  (`service_access = sduser1, sduser2` — resolved to SIDs by the service), `service_access_write` optional,
+  `letter = Z`, `autostart = boot`, and a `[host]` that reaches the WSL sshd fixture (host-side port forwarded into
+  the guest, as the M0 smoke runs already do).
+- Elevation for the service install and for the two `net user` calls; the mount and the check itself are unelevated.
+
+Steps
+
+1. Install the payload from the ISO (`D:\sdlab\staging\sd-win10-wimdisk.vhdx` style staging is not needed; the
+   payload ISO installs over the base). Record `sc query ShellDriveSvc`: STOPPED before the profile exists.
+2. Start the service (`sc start ShellDriveSvc`) and read the Application log for Event 1000/1001 (started) and the
+   mount events. Expect Event 1001 with the profile count.
+3. Confirm the drive at the service side: `shelldrive list --machine` as an elevated administrator shows `Z:` with
+   state `mounted`; as a non-admin in `service_access` it shows the letter and label but no host/user.
+4. Log on as `sduser1` (console). In `cmd`: `dir Z:\` must list the remote directory with no prompt and no
+   elevation. In Explorer, `Z:` shows the label. Record `whoami`.
+5. Fast user switch to `sduser2`. Same check. The drive must already be there (G1), and the server (the WSL sshd
+   fixture's log) must show **two different remote sessions** for the same service identity — that is the expected
+   result: the remote identity is shared (T-43), the local access control is `service_access` (G7).
+6. Negative access (G7): from `sduser2`, remove `sduser2` from `service_access` in the profile and run
+   `shelldrive config reload --machine` (elevated). Within 60 s `dir Z:\` must fail with access denied; the audit
+   Event 1200 names the SID of each mutating operation before the change.
+7. Write test: create, rename and delete one file as `sduser1` through `Z:` (with `service_access_write` naming
+   `sduser1` only, `sduser2` must get access denied on the write).
+8. Reboot the guest. After the boot, before any interactive logon, the service must have mounted `Z:` (Event 1001 +
+   the mount events). Verify at the first logon that the letter is present and usable without user action.
+9. Uninstall check: `sc stop ShellDriveSvc` then `sc delete`; confirm no orphaned drive letter remains in either
+   session (the Dokany volume disappears with the service).
+10. Collect: `%ProgramData%\LibreStatic\ShellDrive\logs\*` and the Application log export, and append a result
+    section to this file (per-OS table: G1/G2/G5/G7 pass/fail, the two remote session identities seen by sshd).
+
+What would fail the acceptance: the drive absent before logon, a mount that only appears after a user runs
+`shelldrive mount`, a `dir Z:` prompt or 403 for a `service_access` member, data visible to a removed member after
+the 60 s window, or writes accepted from a member outside `service_access_write`.

@@ -25,6 +25,7 @@
 #include "service.h"
 #include "svc_access.h"
 #include "svc_events.h"
+#include "svc_gw.h"
 #include "svc_repair.h"
 #include "svc_scm.h"
 #include "svc_status.h"
@@ -102,6 +103,9 @@ typedef struct svc_mount {
   const char *refuse_code;          /* IPC code of the refused prompt (prompt_unavailable, host_key_unknown) */
   char err_code[64];
   char err_detail[160];
+  /* 02 §7.7 attach: the hosted WebDAV export, filled on MOUNTED, empty for a Dokany mount */
+  uint16_t wd_port;
+  wchar_t wd_remote[104], wd_remote_xp[104];
 } svc_mount;
 
 typedef struct svc_job {
@@ -837,11 +841,25 @@ static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   wchar_t letter = 0;
   svc_mount *r;
   const char *code = NULL;
+  sd_mount_attach at;
+  int have_at = 0;
   (void)ctx;
+  /* 02 §7.7: the hosted export exists as soon as the mount is up; read it before taking g.lock (the mount's
+     own lock must never be held while g.lock is asked for the other way round). */
+  memset(&at, 0, sizeof(at));
+  if (st == SD_MOUNT_MOUNTED && m != NULL) {
+    sd_mount_get_attach(m, &at);
+    have_at = at.webdav_remote[0] != 0;
+  }
   sd_mutex_lock(&g.lock);
   r = find_by_m_locked(m);
   if (r) {
     r->st = st;
+    if (have_at) {
+      r->wd_port = at.webdav_port;
+      wcscpy_s(r->wd_remote, SD_COUNTOF(r->wd_remote), at.webdav_remote);
+      wcscpy_s(r->wd_remote_xp, SD_COUNTOF(r->wd_remote_xp), at.webdav_remote_xp);
+    }
     strcpy_s(id, sizeof(id), r->id);
     letter = r->letter;
     if (r->prof != NULL)
@@ -1936,6 +1954,45 @@ static void svc_hk_release(svc_hk *hk)
 
 /* ---- control-thread jobs ---- */
 
+static svc_gw_client svc_gw_client_of(sd_webdav_client_state s)
+{
+  switch (s) {
+  case SD_WD_CLIENT_RUNNING: return SVC_GW_CLIENT_RUNNING;
+  case SD_WD_CLIENT_STOPPED: return SVC_GW_CLIENT_STOPPED;
+  case SD_WD_CLIENT_DISABLED: return SVC_GW_CLIENT_DISABLED;
+  case SD_WD_CLIENT_MISSING: return SVC_GW_CLIENT_MISSING;
+  default: return SVC_GW_CLIENT_UNKNOWN;
+  }
+}
+
+/* 02 §7.7, the M5 spike: the mechanism of a global WebDAV mount. Only attach is built; it is what auto resolves to
+   while the compiled table has no GO cell. A system or link verdict (a lab-flipped cell) is refused here until that
+   mechanism exists, never served as attach. The mode is always auto: the service does not read settings.ini
+   (webdav_global_mode needs the checked read of TM-R27 first). NULL = attach, else an English reason (log, usage). */
+static const char *svc_webdav_mechanism(void)
+{
+  svc_gw_input in;
+  svc_gw_verdict v;
+  sd_webdav_client_info ci;
+  const sd_os_version *ov = sd_os_version_get();
+  memset(&in, 0, sizeof(in));
+  memset(&ci, 0, sizeof(ci));
+  in.family = ov ? svc_gw_family_of(ov->major, ov->minor) : SVC_GW_OS_UNKNOWN;
+  in.mode = SVC_GW_MODE_AUTO;
+  in.service_running = 1;
+  in.client = g.be->webdav_query_client ? svc_gw_client_of(g.be->webdav_query_client(&ci)) : SVC_GW_CLIENT_MISSING;
+  in.token_only = 0;
+  svc_gw_decide(&in, &v);
+  if (v.mech == SVC_GW_ATTACH)
+    return NULL;
+  if (v.mech == SVC_GW_REFUSE) {
+    SD_LOGW("svc", "global WebDAV refused: %s", svc_gw_reason_name(v.reason));
+    return svc_gw_reason_name(v.reason);
+  }
+  SD_LOGW("svc", "global WebDAV mechanism %s is not built (attach only)", svc_gw_mech_name(v.mech));
+  return "this global WebDAV mechanism is not in this build (attach only, 02 7.7)";
+}
+
 static void job_start(void *arg)
 {
   svc_job *j = (svc_job *)arg;
@@ -2007,7 +2064,11 @@ static void job_start(void *arg)
     pr.volume_label = labelw;
     wide_from_utf8(p->name, namew, SD_COUNTOF(namew));
     pr.profile_name = namew;
-    pr.backend = SD_MOUNT_BACKEND_DOKANY;          /* global drives are Dokany in this build (1.3, D11) */
+    /* D11, 02 §7.7: Dokany is the global path; a profile forced to WebDAV is hosted by the service and
+       attached per user at logon (attach), never mapped by LocalSystem (mechanism A is a no-go). */
+    pr.backend = p->backend == SD_PROFILE_BACKEND_WEBDAV ? SD_MOUNT_BACKEND_WEBDAV : SD_MOUNT_BACKEND_DOKANY;
+    if (why == NULL && pr.backend == SD_MOUNT_BACKEND_WEBDAV)
+      why = svc_webdav_mechanism();
     pr.global_mount = 1;
     pr.legacy_policy = p->legacy_algorithms;
     pr.refuse_terrapin_exposed = p->refuse_terrapin_exposed;
@@ -2379,6 +2440,51 @@ static sd_err handle_list(sd_ipc_client *c, sd_json_writer *res)
     sd_jw_cstr(res, tgt);
   }
   sd_jw_arr_end(res);
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
+/* mount.attach_info {mount_id | target | profile} (02 §7.7, 03 §2.4): the export a member's agent maps in its own
+   logon session. Only a caller in that profile's service_access gets it (D35); the reply carries the UNC with the
+   path token, never a credential. A Dokany global mount has nothing to attach. Read-only, no administrator needed. */
+static sd_err handle_attach_info(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  svc_mount *r;
+  svc_member mb;
+  svc_rights rt;
+  char unc[256] = "", xp[256] = "", tgt[4], id[16];
+  int webdav;
+  sd_mutex_lock(&g.lock);
+  r = find_mount_locked(params);
+  if (r == NULL) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  }
+  member_of(c, &r->prof->acl, &mb);
+  svc_decide(&mb, &rt);
+  if (!rt.use) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_ACCESS_DENIED, "access_denied", "the caller is not in service_access for this drive");
+  }
+  webdav = r->prof->p.backend == SD_PROFILE_BACKEND_WEBDAV;
+  if (webdav) {
+    utf8_from_wide(r->wd_remote, unc, sizeof(unc));
+    utf8_from_wide(r->wd_remote_xp, xp, sizeof(xp));
+  }
+  strcpy_s(id, sizeof(id), r->id);
+  target_of(r->letter, tgt);
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, id);
+  sd_jw_key(res, "target"); sd_jw_cstr(res, tgt);
+  sd_jw_key(res, "label"); sd_jw_cstr(res, r->prof->p.label[0] ? r->prof->p.label : r->prof->p.name);
+  sd_jw_key(res, "backend");
+  sd_jw_cstr(res, sd_mount_backend_kind_name(webdav ? SD_MOUNT_BACKEND_WEBDAV : SD_MOUNT_BACKEND_DOKANY));
+  sd_jw_key(res, "state"); sd_jw_cstr(res, sd_mount_state_name(r->st));
+  sd_jw_key(res, "attach"); sd_jw_bool(res, unc[0] != 0);
+  if (unc[0]) {
+    sd_jw_key(res, "unc"); sd_jw_cstr(res, unc);
+    sd_jw_key(res, "xp_url"); sd_jw_cstr(res, xp);
+    sd_jw_key(res, "port"); sd_jw_int(res, r->wd_port);
+  }
   sd_mutex_unlock(&g.lock);
   return SD_OK;
 }
@@ -3097,6 +3203,7 @@ static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *meth
   if (strcmp(method, "status") == 0) return handle_status(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(client, params, res, err);
+  if (strcmp(method, "mount.attach_info") == 0) return handle_attach_info(client, params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
   if (strcmp(method, "service.status") == 0) return handle_service_status(client, res, err);
   if (strcmp(method, "service.repair_data") == 0) return handle_service_repair(client, res, err);
@@ -3171,7 +3278,8 @@ static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 static const char *const k_service_features[] = {
   "list", "status", "mount", "unmount", "selftest", "secret.set", "secret.delete", "prompt.list",
   "prompt.answer", "config.reload", "prompt.routing", "hostkey.add", "hostkey.announced.list",
-  "hostkey.announced.accept", "hostkey.announced.reject", "service.status", "service.repair_data", NULL
+  "hostkey.announced.accept", "hostkey.announced.reject", "service.status", "service.repair_data",
+  "mount.attach_info", NULL
 };
 
 /* ---- the core ---- */
