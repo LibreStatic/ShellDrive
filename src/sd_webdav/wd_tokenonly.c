@@ -154,35 +154,57 @@ static int wh_load(wh_api *a)
 #define WINHTTP_AUTOLOGON_SECURITY_LEVEL_PROXY_ONLY 3
 #endif
 
-/* Answers the 401 that the server sends for a path without a token (no automatic Negotiate). */
+/* Answers the 401 that the server sends for a path without a token (no automatic Negotiate).
+   Every failure records its step and the Win32 error for wd_selftest_last_diag (unit tests have
+   no log sink). */
+static volatile uint32_t g_selftest_step, g_selftest_err;
+
+void wd_selftest_last_diag(uint32_t *step, uint32_t *err)
+{
+  *step = g_selftest_step;
+  *err = g_selftest_err;
+}
+
 static sd_err wh_probe(const wh_api *a, uint16_t port, const wchar_t *path, int *status)
 {
   HINTERNET session, conn = NULL, req = NULL;
   DWORD code = 0, cb = sizeof(code), level = WINHTTP_AUTOLOGON_SECURITY_LEVEL_PROXY_ONLY;
   sd_err e = SD_E_FAILURE;
   *status = 0;
+  g_selftest_step = 1;                              /* WinHttpOpen */
   session = a->open(L"ShellDrive-webdav-selftest", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
                     WINHTTP_NO_PROXY_BYPASS, 0);
-  if (session == NULL)
+  if (session == NULL) {
+    g_selftest_err = GetLastError();
     return SD_E_FAILURE;
-  a->set_timeouts(session, 5000, 5000, 5000, 5000);
+  }
+  a->set_timeouts(session, 15000, 15000, 15000, 15000);
   /* numeric IPv4 loopback: "localhost" resolves to ::1 first on some systems, where the server
      does not listen, and this probe is about this machine's server only (never leaves it) */
+  g_selftest_step = 2;                              /* WinHttpConnect */
   conn = a->connect(session, L"127.0.0.1", (INTERNET_PORT)port, 0);
-  if (conn == NULL)
-    goto out;
+  if (conn == NULL) { g_selftest_err = GetLastError(); goto out; }
+  g_selftest_step = 3;                              /* WinHttpOpenRequest */
   req = a->open_request(conn, L"PROPFIND", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-  if (req == NULL)
-    goto out;
+  if (req == NULL) { g_selftest_err = GetLastError(); goto out; }
   /* the probe must authenticate by the token alone, never by the default credentials (TM-R19) */
-  if (!a->set_option(req, WINHTTP_OPTION_AUTOLOGON_POLICY, &level, sizeof(level)))
+  g_selftest_step = 4;                              /* autologon policy */
+  if (!a->set_option(req, WINHTTP_OPTION_AUTOLOGON_POLICY, &level, sizeof(level))) {
+    g_selftest_err = GetLastError();
     goto out;
-  if (!a->send(req, L"Depth: 0\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+  }
+  g_selftest_step = 5;                              /* send */
+  if (!a->send(req, L"Depth: 0\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+    g_selftest_err = GetLastError();
     goto out;
-  if (!a->receive(req, NULL))
+  }
+  g_selftest_step = 6;                              /* receive */
+  if (!a->receive(req, NULL)) { g_selftest_err = GetLastError(); goto out; }
+  g_selftest_step = 7;                              /* status query */
+  if (!a->query(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &code, &cb, NULL)) {
+    g_selftest_err = GetLastError();
     goto out;
-  if (!a->query(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &code, &cb, NULL))
-    goto out;
+  }
   *status = (int)code;
   e = SD_OK;
 out:

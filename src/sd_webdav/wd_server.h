@@ -118,6 +118,10 @@ int  wd_body_read_all(wd_rq *q, wd_sb *b, size_t max);
 
 /* wd_tokenonly.c: 1 when the self-test pair passes (token PROPFIND 2xx, token-less PROPFIND 4xx). */
 int  wd_selftest_verdict(int token_status, int plain_status);
+/* wd_tokenonly.c: the failing step of the last self-test probe (1 WinHttpOpen, 2 connect, 3 open
+   request, 4 autologon policy, 5 send, 6 receive, 7 status query) and its Win32 error. Unit tests
+   have no log sink, so the failure detail goes out through here instead of the product log. */
+void wd_selftest_last_diag(uint32_t *step, uint32_t *err);
 
 /* wd_methods.c */
 void wd_dispatch(wd_rq *q);

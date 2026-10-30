@@ -262,13 +262,33 @@ SD_TEST(webdav_token_only_gate_per_mode)
 SD_TEST(webdav_token_only_selftest)
 {
   tfix f;
+  uint32_t step = 0, err = 0;
+  sd_err e;
   SD_REQUIRE(tfx_up(&f) == 0);
-  /* token accepted, token-less refused */
-  SD_CHECK(sd_webdav_token_selftest(f.port, f.tok_prefix) == SD_OK);
+  /* token accepted, token-less refused; on failure the probe's step and Win32 error say why */
+  e = sd_webdav_token_selftest(f.port, f.tok_prefix);
+  if (e != SD_OK) {
+    wd_selftest_last_diag(&step, &err);
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "selftest(token) = %s at step %lu (Win32 %lu)",
+                 sd_err_name(e), (unsigned long)step, (unsigned long)err);
+  }
+  SD_CHECK(e == SD_OK);
   /* an ordinary export does not accept its token alone: the self-test fails */
-  SD_CHECK(sd_webdav_token_selftest(f.port, f.plain_prefix) == SD_E_AUTH_FAILED);
+  e = sd_webdav_token_selftest(f.port, f.plain_prefix);
+  if (e != SD_E_AUTH_FAILED) {
+    wd_selftest_last_diag(&step, &err);
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "selftest(plain) = %s at step %lu (Win32 %lu)",
+                 sd_err_name(e), (unsigned long)step, (unsigned long)err);
+  }
+  SD_CHECK(e == SD_E_AUTH_FAILED);
   /* an unknown token is refused */
-  SD_CHECK(sd_webdav_token_selftest(f.port, "/s-aaaaaaaaaaaaaaaaaaaaaaaaaa") == SD_E_AUTH_FAILED);
+  e = sd_webdav_token_selftest(f.port, "/s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  if (e != SD_E_AUTH_FAILED) {
+    wd_selftest_last_diag(&step, &err);
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "selftest(unknown) = %s at step %lu (Win32 %lu)",
+                 sd_err_name(e), (unsigned long)step, (unsigned long)err);
+  }
+  SD_CHECK(e == SD_E_AUTH_FAILED);
   /* bad arguments */
   SD_CHECK(sd_webdav_token_selftest(0, f.tok_prefix) == SD_E_INVALID_PARAM);
   SD_CHECK(sd_webdav_token_selftest(f.port, "s-aaaaaaaaaaaaaaaaaaaaaaaaaa") == SD_E_INVALID_PARAM);
