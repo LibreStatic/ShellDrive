@@ -12,7 +12,11 @@
  *
  * Ad-hoc mount (UI_EDIT_ADHOC): the same pages without the name; the caller sends the connection to the agent
  * (ui_mount_params_json). A drop-down list grows while it is open (combo_drop): the template height of a combo
- * box is its closed height. */
+ * box is its closed height.
+ *
+ * The sheet is one size, as tall as its tallest page; on a small screen at high DPI (1080 px at 150 %) that
+ * would push the sheet's own OK and Cancel off the screen, so the page height is capped to the work area and
+ * a page taller than the cap scrolls (page_scroll_*). */
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -27,6 +31,7 @@
 #include "sd_l10n_ui_ids.h"
 #include "sd_policy/sd_policy.h"
 #include "ui_dlg.h"
+#include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_measure.h"
 #include "ui_profile_model.h"
@@ -43,6 +48,7 @@
 #define ED_ID_LEGACY  1503
 #define ED_ID_WMNOTE  1504
 #define ED_ERR_CHARS  1024                /* wide characters of the error text of one page */
+#define ED_SHEET_CHROME 112               /* 96-DPI pixels of the sheet around the page: tab strip, buttons, slack */
 
 enum { PG_GENERAL = 0, PG_AUTH, PG_CONN, PG_MOUNT, PG_SECURITY };
 
@@ -68,6 +74,8 @@ typedef struct ed_page {
   ed_ctx *ed;
   int index;
   HWND hwnd;                        /* set by WM_INITDIALOG */
+  int scroll;                       /* px the content is scrolled up; 0 while the page fits its template */
+  int scroll_max;                   /* px of content hidden below the capped template height */
 } ed_page;
 
 struct ed_ctx {
@@ -541,6 +549,91 @@ static void browse_identity(ed_ctx *ed, HWND page)
     SetWindowTextW(edit, path);
 }
 
+/* ---- scrolling a page that does not fit the capped sheet ---- */
+
+/* The pages of one sheet all get the height of the tallest page (build_pages), capped to the work area. A
+   page whose content is taller keeps its controls below the fold: they are created and work, and are brought
+   into view with the page's scroll bar, the mouse wheel, Tab and the error box of a failed apply. The hidden
+   range is measured from the real controls, so no build-time geometry is carried into the page procedure. */
+
+/* Greatest bottom of a child window, in client coordinates of page. */
+static int page_content_bottom(HWND page)
+{
+  HWND c = GetWindow(page, GW_CHILD);
+  int bottom = 0;
+  for (; c != NULL; c = GetWindow(c, GW_HWNDNEXT)) {
+    RECT rc;
+    POINT tl, br;
+    if (!GetWindowRect(c, &rc))
+      continue;
+    tl.x = rc.left; tl.y = rc.top;
+    br.x = rc.right; br.y = rc.bottom;
+    ScreenToClient(page, &tl);
+    ScreenToClient(page, &br);
+    if (br.y > bottom)
+      bottom = br.y;
+  }
+  return bottom;
+}
+
+/* Scrolls the page so pos is the new offset. ScrollWindowEx moves the children with the content; the closed
+   height of a combo box travels with it (combo_drop reads the box position back on every open). */
+static void page_scroll_to(ed_page *pg, HWND page, int pos)
+{
+  SCROLLINFO si;
+  int old = pg->scroll, dy;
+  if (pos < 0)
+    pos = 0;
+  if (pos > pg->scroll_max)
+    pos = pg->scroll_max;
+  pg->scroll = pos;
+  dy = pg->scroll - old;
+  if (dy != 0)
+    ScrollWindowEx(page, 0, dy, NULL, NULL, NULL, NULL, SW_SCROLLCHILDREN | SW_INVALIDATE);
+  memset(&si, 0, sizeof(si));
+  si.cbSize = sizeof(si);
+  si.fMask = SIF_POS;
+  si.nPos = pg->scroll;
+  SetScrollInfo(page, SB_VERT, &si, TRUE);
+}
+
+/* Brings ctl into view; a no-op while the page fits. */
+static void page_scroll_visible(ed_page *pg, HWND page, HWND ctl)
+{
+  RECT rc, cl;
+  POINT tl, br;
+  if (pg->scroll_max <= 0 || ctl == NULL || !GetWindowRect(ctl, &rc) || !GetClientRect(page, &cl))
+    return;
+  tl.x = rc.left; tl.y = rc.top;
+  br.x = rc.right; br.y = rc.bottom;
+  ScreenToClient(page, &tl);
+  ScreenToClient(page, &br);
+  if (tl.y < 0)
+    page_scroll_to(pg, page, pg->scroll + tl.y);
+  else if (br.y > cl.bottom)
+    page_scroll_to(pg, page, pg->scroll + br.y - cl.bottom);
+}
+
+/* Adds a vertical scroll bar when the content is taller than the page (the capped template height). */
+static void page_scroll_setup(ed_page *pg, HWND page)
+{
+  RECT cl;
+  SCROLLINFO si;
+  int bottom = page_content_bottom(page);
+  if (!GetClientRect(page, &cl) || bottom <= cl.bottom)
+    return;
+  pg->scroll_max = bottom - cl.bottom;
+  SetWindowLongPtrW(page, GWL_STYLE, GetWindowLongPtrW(page, GWL_STYLE) | WS_VSCROLL);
+  SetWindowPos(page, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  memset(&si, 0, sizeof(si));
+  si.cbSize = sizeof(si);
+  si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+  si.nMin = 0;
+  si.nMax = pg->scroll_max + cl.bottom;
+  si.nPage = (UINT)cl.bottom;
+  SetScrollInfo(page, SB_VERT, &si, TRUE);
+}
+
 /* ---- the page procedure ---- */
 
 static INT_PTR CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -554,6 +647,7 @@ static INT_PTR CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     SetWindowLongPtrW(hwnd, DWLP_USER, (LONG_PTR)pg);
     pg->hwnd = hwnd;
     write_page(pg->ed, pg->index, hwnd);
+    page_scroll_setup(pg, hwnd);
     return TRUE;
   }
   case WM_NOTIFY: {
@@ -561,6 +655,13 @@ static INT_PTR CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     ed_page *pg = (ed_page *)GetWindowLongPtrW(hwnd, DWLP_USER);
     if (pg == NULL)
       break;
+    if (nm->code == PSN_SETACTIVE) {
+      /* a page that failed the apply comes to the front; show its error box, which may sit below the fold */
+      HWND err = GetDlgItem(hwnd, ED_ID_ERR);
+      if (err != NULL && GetWindowTextLengthW(err) > 0)
+        page_scroll_visible(pg, hwnd, err);
+      break;
+    }
     if (nm->code == PSN_KILLACTIVE) {
       SetWindowLongPtrW(hwnd, DWLP_MSGRESULT, FALSE);
       return TRUE;
@@ -588,11 +689,47 @@ static INT_PTR CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       browse_identity(pg->ed, hwnd);
       return TRUE;
     }
+    if (code == EN_SETFOCUS || code == CBN_SETFOCUS) {
+      page_scroll_visible(pg, hwnd, (HWND)lp);
+      return TRUE;
+    }
     if (code == CBN_DROPDOWN || code == CBN_CLOSEUP) {
       combo_drop((HWND)lp, code == CBN_DROPDOWN);
       return TRUE;
     }
     break;
+  }
+  case WM_VSCROLL: {
+    /* the scroll bar of a capped page (page_scroll_setup); a page that fits has none and never gets here */
+    ed_page *pg = (ed_page *)GetWindowLongPtrW(hwnd, DWLP_USER);
+    RECT cl;
+    int line, page_px;
+    if (pg == NULL || pg->scroll_max <= 0)
+      break;
+    line = GetSystemMetrics(SM_CYVSCROLL);
+    if (!GetClientRect(hwnd, &cl) || cl.bottom <= 0)
+      break;
+    page_px = cl.bottom;
+    switch (LOWORD(wp)) {
+    case SB_LINEUP:          page_scroll_to(pg, hwnd, pg->scroll - line); break;
+    case SB_LINEDOWN:        page_scroll_to(pg, hwnd, pg->scroll + line); break;
+    case SB_PAGEUP:          page_scroll_to(pg, hwnd, pg->scroll - page_px); break;
+    case SB_PAGEDOWN:        page_scroll_to(pg, hwnd, pg->scroll + page_px); break;
+    case SB_THUMBPOSITION:
+    case SB_THUMBTRACK:      page_scroll_to(pg, hwnd, (short)HIWORD(wp)); break;
+    default:                 break;
+    }
+    return TRUE;
+  }
+  case WM_MOUSEWHEEL: {
+    /* DefWindowProc passes the wheel on to the parent when the focused child does not use it */
+    ed_page *pg = (ed_page *)GetWindowLongPtrW(hwnd, DWLP_USER);
+    RECT cl;
+    int delta = (short)HIWORD(wp);
+    if (pg == NULL || pg->scroll_max <= 0 || delta == 0 || !GetClientRect(hwnd, &cl) || cl.bottom <= 0)
+      break;
+    page_scroll_to(pg, hwnd, pg->scroll - delta / WHEEL_DELTA * 3 * GetSystemMetrics(SM_CYVSCROLL));
+    return TRUE;
   }
   default:
     break;
@@ -703,14 +840,29 @@ static void add_page_security(ui_dlg *d)
   add_errors(d);
 }
 
-/* Builds the five page templates. All pages get the height of the tallest one, so the sheet is one size. */
+/* Height of a page template, in dialog units, beyond which the sheet's own buttons would leave the work area:
+   the work area minus the caption, the frame and the rest of the sheet (tab strip, buttons, slack). 0 when the
+   work area cannot be read; the pages are then left uncapped. */
+static int page_height_cap(int dpi, const ui_measure *m)
+{
+  RECT wa;
+  int chrome;
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0) || m->base_y <= 0)
+    return 0;
+  chrome = GetSystemMetrics(SM_CYCAPTION) + 2 * GetSystemMetrics(SM_CYFIXEDFRAME) +
+           ui_dpi_scale(ED_SHEET_CHROME, dpi);
+  return ((wa.bottom - wa.top) - chrome) * 8 / m->base_y;
+}
+
+/* Builds the five page templates. All pages get the height of the tallest one, so the sheet is one size; a
+   tallest page beyond the work area is capped and the pages that do not fit scroll (page_scroll_setup). */
 static sd_err build_pages(ed_ctx *ed, unsigned char *blob[ED_PAGES], size_t len[ED_PAGES])
 {
   static const sd_msg_id titles[ED_PAGES] = { SD_MSG_UI_TAB_GENERAL, SD_MSG_UI_TAB_AUTH, SD_MSG_UI_TAB_CONN,
                                               SD_MSG_UI_TAB_MOUNT, SD_MSG_UI_TAB_SECURITY };
   wchar_t face[UI_DLG_FACE_MAX];
   WORD points = 8;
-  int dpi = 96, tallest = 0, pg;
+  int dpi = 96, tallest = 0, cap, pg;
   ui_measure m;
   ui_dlg *d[ED_PAGES];
   sd_err e = SD_OK;
@@ -741,6 +893,9 @@ static sd_err build_pages(ed_ctx *ed, unsigned char *blob[ED_PAGES], size_t len[
     if (d[pg]->cursor + d[pg]->margin > tallest)
       tallest = d[pg]->cursor + d[pg]->margin;
   }
+  cap = page_height_cap(dpi, &m);
+  if (cap > 0 && tallest > cap)
+    tallest = cap;                /* the hidden content of the capped pages scrolls at run time */
   for (pg = 0; pg < ED_PAGES && e == SD_OK; pg++) {
     d[pg]->min_height = tallest;
     e = ui_dlg_build(d[pg], &blob[pg], &len[pg]);
