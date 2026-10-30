@@ -122,6 +122,14 @@ int  wd_selftest_verdict(int token_status, int plain_status);
    request, 4 autologon policy, 5 send, 6 receive, 7 status query) and its Win32 error. Unit tests
    have no log sink, so the failure detail goes out through here instead of the product log. */
 void wd_selftest_last_diag(uint32_t *step, uint32_t *err);
+/* wd_tokenonly.c: the HTTP statuses the last self-test pair saw (token request, token-less request). */
+void wd_selftest_last_statuses(int *token_status, int *plain_status);
+/* wd_server.c: request ring for unit tests (they have no log sink). Off by default: the product
+   never records request targets (they carry the per-mount token, 02 7.3). When enabled, the last
+   WD_SERVER_DBG_N requests are kept as "METHOD target -> status" lines. */
+#define WD_SERVER_DBG_N 8
+void wd_server_dbg_enable(int on);
+int  wd_server_dbg_last(char out[][96], int max);
 
 /* wd_methods.c */
 void wd_dispatch(wd_rq *q);

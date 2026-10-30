@@ -265,12 +265,19 @@ SD_TEST(webdav_token_only_selftest)
   uint32_t step = 0, err = 0;
   sd_err e;
   SD_REQUIRE(tfx_up(&f) == 0);
+  wd_server_dbg_enable(1);      /* diagnostic ring: this test is the WinHTTP-vs-server oracle */
   /* token accepted, token-less refused; on failure the probe's step and Win32 error say why */
   e = sd_webdav_token_selftest(f.port, f.tok_prefix);
   if (e != SD_OK) {
+    int ts = 0, ps = 0, n, i;
+    char ring[WD_SERVER_DBG_N][96];
     wd_selftest_last_diag(&step, &err);
-    sd_test_fail(sd_t_, __FILE__, __LINE__, "selftest(token) = %s at step %lu (Win32 %lu)",
-                 sd_err_name(e), (unsigned long)step, (unsigned long)err);
+    wd_selftest_last_statuses(&ts, &ps);
+    sd_test_fail(sd_t_, __FILE__, __LINE__, "selftest(token) = %s at step %lu (Win32 %lu, token %d, plain %d)",
+                 sd_err_name(e), (unsigned long)step, (unsigned long)err, ts, ps);
+    n = wd_server_dbg_last(ring, WD_SERVER_DBG_N);
+    for (i = n - 1; i >= 0; i--)
+      sd_test_fail(sd_t_, __FILE__, __LINE__, "server saw: %s", ring[i]);
   }
   SD_CHECK(e == SD_OK);
   /* an ordinary export does not accept its token alone: the self-test fails */
@@ -293,6 +300,7 @@ SD_TEST(webdav_token_only_selftest)
   SD_CHECK(sd_webdav_token_selftest(0, f.tok_prefix) == SD_E_INVALID_PARAM);
   SD_CHECK(sd_webdav_token_selftest(f.port, "s-aaaaaaaaaaaaaaaaaaaaaaaaaa") == SD_E_INVALID_PARAM);
   SD_CHECK(sd_webdav_token_selftest(f.port, NULL) == SD_E_INVALID_PARAM);
+  wd_server_dbg_enable(0);
   tfx_down(&f);
 }
 

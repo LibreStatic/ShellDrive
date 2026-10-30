@@ -39,6 +39,29 @@ typedef struct wd_tcprow6 {
 } wd_tcprow6;
 #define WD_TCP_TABLE_OWNER_PID_CONNECTIONS 4
 
+/* Request ring for unit tests (no log sink there); off by default, product never records targets. */
+static volatile LONG wd_dbg_on;
+static volatile LONG wd_dbg_idx;
+static char wd_dbg_ring[WD_SERVER_DBG_N][96];
+
+void wd_server_dbg_enable(int on)
+{
+  wd_dbg_on = on;
+  wd_dbg_idx = 0;
+}
+
+int wd_server_dbg_last(char out[][96], int max)
+{
+  LONG total = wd_dbg_idx;
+  int n = (int)(total < WD_SERVER_DBG_N ? total : WD_SERVER_DBG_N), i;
+  if (n > max) n = max;
+  for (i = 0; i < n; i++) {
+    LONG k = (total - i) % WD_SERVER_DBG_N;   /* request k wrote slot k (idx increments first) */
+    memcpy(out[i], wd_dbg_ring[k], 96);
+  }
+  return n;
+}
+
 static DWORD peer_pid(int family, uint16_t peer_port_net, uint16_t our_port_net)
 {
   static pfn_GetExtendedTcpTable fn;
@@ -587,6 +610,11 @@ static unsigned __stdcall conn_main(void *arg)
     }
     /* the path is never logged: it carries the per-mount token (02 §7.3) */
     SD_LOGD(WD_LOG, "request %s -> %d%s", q.r.method, q.status, c->authed ? "" : " (unauthenticated)");
+    if (wd_dbg_on) {
+      char *r = wd_dbg_ring[InterlockedIncrement(&wd_dbg_idx) % WD_SERVER_DBG_N];
+      _snprintf_s(r, 96, _TRUNCATE, "-> %d authed=%d tok=%d %s [%.20s]", q.status, c->authed, c->tok,
+                  q.r.method, q.r.target);
+    }
     /* whatever the handler left of the body is drained (or the connection closes) */
     if (!q.close_after && wd_has_body(&q) && !q.body_done) {
       if (q.r.expect_continue && !q.continue_sent)

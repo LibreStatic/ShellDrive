@@ -144,20 +144,18 @@ static int wh_load(wh_api *a)
          a->receive && a->query && a->close;
 }
 
-#ifndef WINHTTP_OPTION_AUTOLOGON_POLICY
-#define WINHTTP_OPTION_AUTOLOGON_POLICY 77
+#ifndef WINHTTP_OPTION_DISABLE_FEATURE
+#define WINHTTP_OPTION_DISABLE_FEATURE 63
 #endif
-#ifndef WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH
-#define WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH 2
-#endif
-#ifndef WINHTTP_AUTOLOGON_SECURITY_LEVEL_PROXY_ONLY
-#define WINHTTP_AUTOLOGON_SECURITY_LEVEL_PROXY_ONLY 3
+#ifndef WINHTTP_DISABLE_AUTHENTICATION
+#define WINHTTP_DISABLE_AUTHENTICATION 0x00000004
 #endif
 
 /* Answers the 401 that the server sends for a path without a token (no automatic Negotiate).
    Every failure records its step and the Win32 error for wd_selftest_last_diag (unit tests have
    no log sink). */
 static volatile uint32_t g_selftest_step, g_selftest_err;
+static volatile int g_selftest_ts, g_selftest_ps;
 
 void wd_selftest_last_diag(uint32_t *step, uint32_t *err)
 {
@@ -165,10 +163,16 @@ void wd_selftest_last_diag(uint32_t *step, uint32_t *err)
   *err = g_selftest_err;
 }
 
+void wd_selftest_last_statuses(int *token_status, int *plain_status)
+{
+  *token_status = g_selftest_ts;
+  *plain_status = g_selftest_ps;
+}
+
 static sd_err wh_probe(const wh_api *a, uint16_t port, const wchar_t *path, int *status)
 {
   HINTERNET session, conn = NULL, req = NULL;
-  DWORD code = 0, cb = sizeof(code), level = WINHTTP_AUTOLOGON_SECURITY_LEVEL_PROXY_ONLY;
+  DWORD code = 0, cb = sizeof(code), noauth = WINHTTP_DISABLE_AUTHENTICATION;
   sd_err e = SD_E_FAILURE;
   *status = 0;
   g_selftest_step = 1;                              /* WinHttpOpen */
@@ -187,9 +191,14 @@ static sd_err wh_probe(const wh_api *a, uint16_t port, const wchar_t *path, int 
   g_selftest_step = 3;                              /* WinHttpOpenRequest */
   req = a->open_request(conn, L"PROPFIND", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
   if (req == NULL) { g_selftest_err = GetLastError(); goto out; }
-  /* the probe must authenticate by the token alone, never by the default credentials (TM-R19) */
-  g_selftest_step = 4;                              /* autologon policy */
-  if (!a->set_option(req, WINHTTP_OPTION_AUTOLOGON_POLICY, &level, sizeof(level))) {
+  /* the probe must authenticate by the token alone, never by the default credentials (TM-R19).
+     The request's authentication machinery is DISABLED, so no credential is ever attached and the
+     server's 401 comes back verbatim. The autologon levels are not portable: PROXY_ONLY (3) is
+     newer than Server 2022's winhttp (rejected with ERROR_INVALID_PARAMETER), and LEVEL_HIGH
+     still negotiated with the default credentials on Windows 11 26100 — the ring buffer in the
+     unit test caught it answering the plain path 207 after a Negotiate retry. */
+  g_selftest_step = 4;                              /* disable authentication */
+  if (!a->set_option(req, WINHTTP_OPTION_DISABLE_FEATURE, &noauth, sizeof(noauth))) {
     g_selftest_err = GetLastError();
     goto out;
   }
@@ -242,6 +251,8 @@ sd_err sd_webdav_token_selftest(uint16_t port, const char *prefix)
     return e;
   if (!wd_selftest_verdict(ts, ps)) {
     SD_LOGW(WD_LOG, "token-only self-test: token request %d, plain request %d", ts, ps);
+    g_selftest_ts = ts;
+    g_selftest_ps = ps;
     return SD_E_AUTH_FAILED;
   }
   return SD_OK;
