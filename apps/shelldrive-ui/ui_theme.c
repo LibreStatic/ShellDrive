@@ -366,3 +366,47 @@ void ui_theme_apply_control(HWND ctl)
   }
   /* Classic: nothing (06 §3.1) */
 }
+
+static BOOL CALLBACK apply_child_cb(HWND child, LPARAM lp)
+{
+  (void)lp;
+  ui_theme_apply_control(child);
+  return TRUE;
+}
+
+void ui_theme_apply_dialog(HWND dlg)
+{
+  const ui_theme *t = ui_theme_current();
+
+  if (dlg == NULL || t == NULL)
+    return;
+  ui_theme_apply_window(dlg, UI_THEME_WND_DIALOG);
+  if (t->dark)
+    EnumChildWindows(dlg, apply_child_cb, 0);
+}
+
+int ui_theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *result)
+{
+  const ui_theme *t = ui_theme_current();
+  HDC dc = (HDC)wp;
+  int bg;
+
+  (void)lp;
+  if (t == NULL || !t->dark || result == NULL)
+    return 0;
+  /* edits and lists sit on the layer color, dialog backgrounds, labels and buttons on the surface (06 §5.1) */
+  bg = msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX ? UI_TOK_LAYER : UI_TOK_SURFACE;
+  switch (msg) {
+  case WM_CTLCOLORDLG:
+  case WM_CTLCOLORSTATIC:
+  case WM_CTLCOLORBTN:
+  case WM_CTLCOLOREDIT:
+  case WM_CTLCOLORLISTBOX:
+    SetTextColor(dc, ui_theme_color(UI_TOK_TEXT));
+    SetBkColor(dc, ui_theme_color(bg));
+    *result = (LRESULT)ui_theme_brush(bg);
+    return 1;
+  default:
+    return 0;
+  }
+}

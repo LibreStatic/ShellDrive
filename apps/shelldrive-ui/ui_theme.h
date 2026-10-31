@@ -39,5 +39,12 @@ void ui_theme_apply_window(HWND hwnd, int kind);
 /* Themes one control for the tier: the DarkMode_* classes with the helpers on dark, "Explorer" on the light
    Fluent and Aero ListViews, nothing on Classic (06 §3.6, §6.1). */
 void ui_theme_apply_control(HWND ctl);
+/* Dialogs and secondary windows on a dark Fluent theme (06 §3.5, §6.2, §6.4): ui_theme_apply_dialog themes
+   dlg (UI_THEME_WND_DIALOG) and every child control; call it from WM_INITDIALOG or after creating the
+   children. ui_theme_ctlcolor answers WM_CTLCOLORDLG/STATIC/BTN/EDIT/LISTBOX: it returns 1 and sets *result
+   to the brush to return when the dark palette applies, 0 otherwise (the default handling then runs, so
+   Classic, Aero, light Fluent and High Contrast keep the system colors). */
+void ui_theme_apply_dialog(HWND dlg);
+int  ui_theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *result);
 
 #endif /* SD_UI_THEME_H */
