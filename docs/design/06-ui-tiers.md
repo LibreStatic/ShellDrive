@@ -403,7 +403,14 @@ Host screenshots (Windows 11 24H2, `--test-shot`): Fluent 2c dark and light, Flu
 checked. They found the list group titles centered over the rows of their group (`nmcd.rc` of an `LVCDI_GROUP` item
 spans header and rows); the custom draw now takes the header band from `LVM_GETGROUPRECT`.
 
-Open items: the lab screenshots of §8.2 on 7 and 10 (Aero glass is verified on the 11 host only as geometry); the Wizard97 header
+Lab screenshots (2026-10-31; an autologon lab user and an interactive logon task run `--test-shot`, the PNGs return
+over COM1): Windows 10 LTSC 2021 (`x64-modern`: automatic light, forced dark, Classic) and Windows 7 SP1 x64
+(`x64-xp`: automatic, forced Aero, Classic). On 10 the dark list drew the selected row with the classic light
+highlight behind the text; the list custom draw now fills it with `UI_TOK_SELECTION`. The 7 guest has no desktop
+composition (Windows 7 Basic), so the Aero tier shows the toolbar without glass, as §4 specifies. The images are in
+`docs/images/ui/` and the README.
+
+Open items: Aero glass with composition on (verified on the 11 host only as geometry); XP and 11 lab guests are not installed; the Wizard97 header
 band stays white on dark; error strings that name `{code}` inline keep it there (the details are omitted for them);
 the flyout shows at most 12 profiles without scrolling.
 
