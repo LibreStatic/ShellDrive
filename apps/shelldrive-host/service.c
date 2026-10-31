@@ -2513,44 +2513,47 @@ static sd_err handle_status(sd_ipc_client *c, const sd_json *params, sd_json_wri
   return SD_OK;
 }
 
-static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+/* The one code path that brings a global mount up (2.4 "mount"; 1.8 and 3.4.1 boot autostart): finds the loaded
+   service profile `key`, refuses a duplicate, picks the drive letter and publishes the record, then queues the
+   start job for the control thread. Takes g.lock. Returns SD_OK and fills out_id and out_target; on failure
+   returns the sd_err of the reply, with *code set (NULL for the plain errors) and detail filled. */
+static sd_err svc_mount_queue(const char *key, const char *tgt, char out_id[16], char out_target[4],
+                              const char **code, char detail[200])
 {
-  const char *key = sd_json_get_str(params, "profile");
-  const char *tgt = sd_json_get_str(params, "target");
   svc_prof *src;
   svc_prof *copy = NULL;
   svc_mount *r = NULL;
-  sd_err e;
   wchar_t letter = 0;
   svc_job *job;
   uint32_t i, slot = SVC_MAX_MOUNTS;
   const char *bad = NULL, *why = NULL;
-  char detail[200];
-  e = need_admin(c, err);
-  if (e != SD_OK)
-    return e;
-  if (key == NULL)
-    return fail(err, SD_E_INVALID_PARAM, "usage", "mount needs a profile");
   sd_mutex_lock(&g.lock);
   src = find_profile_locked(key);
   if (src == NULL) {
     sd_mutex_unlock(&g.lock);
-    return fail(err, SD_E_NOT_FOUND, "profile_not_found", "no machine profile of scope service with that id or name");
+    *code = "profile_not_found";
+    strcpy_s(detail, 200, "no machine profile of scope service with that id or name");
+    return SD_E_NOT_FOUND;
   }
   if (svc_validate_profile(&src->p, &bad, &why) != SD_OK) {
     sd_mutex_unlock(&g.lock);
-    _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
-    return fail(err, SD_E_INVALID_PARAM, "usage", detail);
+    *code = "usage";
+    _snprintf_s(detail, 200, _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
+    return SD_E_INVALID_PARAM;
   }
   for (i = 0; i < SVC_MAX_MOUNTS; i++)
     if (g.mounts[i] && strcmp(g.mounts[i]->prof->p.id, src->p.id) == 0) {
       sd_mutex_unlock(&g.lock);
-      return fail(err, SD_E_EXISTS, "already_mounted", "this profile is already mounted");
+      *code = "already_mounted";
+      strcpy_s(detail, 200, "this profile is already mounted");
+      return SD_E_EXISTS;
     }
   copy = (svc_prof *)sd_alloc(sizeof(*copy));
   if (copy == NULL) {
     sd_mutex_unlock(&g.lock);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   memcpy(copy, src, sizeof(*copy));
   /* the requested target wins over the profile's; "auto" (or nothing) picks a free letter (3.4.1 mount.target) */
@@ -2563,7 +2566,9 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
       if (letter == 0) {
         sd_mutex_unlock(&g.lock);
         sd_free(copy);
-        return fail(err, SD_E_INVALID_PARAM, "invalid_target", "the target is not a drive letter");
+        *code = "invalid_target";
+        strcpy_s(detail, 200, "the target is not a drive letter");
+        return SD_E_INVALID_PARAM;
       }
     }
   }
@@ -2572,7 +2577,9 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
   if (letter == 0 || letter_taken_locked(letter) || (GetLogicalDrives() & (1ul << (letter - L'A')))) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_EXISTS, "target_in_use", "no free drive letter for this mount");
+    *code = "target_in_use";
+    strcpy_s(detail, 200, "no free drive letter for this mount");
+    return SD_E_EXISTS;
   }
   for (i = 0; i < SVC_MAX_MOUNTS; i++)
     if (g.mounts[i] == NULL) {
@@ -2582,13 +2589,17 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
   if (slot == SVC_MAX_MOUNTS) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_BUSY, "busy", "too many global mounts");
+    *code = "busy";
+    strcpy_s(detail, 200, "too many global mounts");
+    return SD_E_BUSY;
   }
   r = (svc_mount *)sd_calloc(1, sizeof(*r));
   if (r == NULL) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   g.next_mount++;
   _snprintf_s(r->id, sizeof(r->id), _TRUNCATE, "g-%u", (unsigned)g.next_mount);
@@ -2601,21 +2612,71 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
     sd_mutex_unlock(&g.lock);
     sd_free(r->prof);
     sd_free(r);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   strcpy_s(job->id, sizeof(job->id), r->id);
+  strcpy_s(out_id, 16, r->id);
+  target_of(letter, out_target);
   g.mounts[slot] = r;
   sd_mutex_unlock(&g.lock);
   SD_LOGI("svc", "mount %s queued for %c:", r->id, (char)letter);
   svc_enqueue(job_start, job);
-  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, r->id);
-  {
-    char tgt2[4];
-    target_of(letter, tgt2);
-    sd_jw_key(res, "target"); sd_jw_cstr(res, tgt2);
-  }
+  return SD_OK;
+}
+
+static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *key = sd_json_get_str(params, "profile");
+  const char *tgt = sd_json_get_str(params, "target");
+  sd_err e;
+  char id[16], target[4];
+  const char *code = NULL;
+  char detail[200];
+  e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  if (key == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "mount needs a profile");
+  e = svc_mount_queue(key, tgt, id, target, &code, detail);
+  if (e != SD_OK)
+    return fail(err, e, code, detail);
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, id);
+  sd_jw_key(res, "target"); sd_jw_cstr(res, target);
   sd_jw_key(res, "state"); sd_jw_cstr(res, "connecting");
   return SD_OK;
+}
+
+/* 1.8 Boot: brings up every loaded machine profile whose [mount] autostart is boot (3.4.1) when the profiles
+   were loaded or reloaded. The mounts go through the same queue as a "mount" request, so the SCM start is not
+   blocked: RUNNING is reported first and the control thread starts each mount afterwards, each with its own
+   sd_mount reconnect backoff — a network that is not up yet only delays the mount. A profile that is already
+   mounted is left alone (a reload never double-mounts); every auto-mounted profile is logged at INFO. */
+static void svc_autostart_boot_mounts(void)
+{
+  char ids[SVC_MAX_PROFILES][33], names[SVC_MAX_PROFILES][128];
+  uint32_t n = 0, i;
+  sd_mutex_lock(&g.lock);
+  for (i = 0; i < g.nprofs && n < SVC_MAX_PROFILES; i++) {
+    if (g.profs[i]->p.autostart != SD_PROFILE_AUTOSTART_BOOT)
+      continue;
+    strcpy_s(ids[n], sizeof(ids[n]), g.profs[i]->p.id);
+    strcpy_s(names[n], sizeof(names[n]), g.profs[i]->p.name);
+    n++;
+  }
+  sd_mutex_unlock(&g.lock);
+  for (i = 0; i < n; i++) {
+    sd_err e;
+    const char *code = NULL;
+    char id[16], target[4], detail[200];
+    e = svc_mount_queue(ids[i], NULL, id, target, &code, detail);
+    if (e == SD_OK)
+      SD_LOGI("svc", "autostart boot: profile %s (%s) mounts as %s", ids[i], names[i], target);
+    else if (e != SD_E_EXISTS)             /* already mounted: a reload keeps the one mount */
+      SD_LOGW("svc", "autostart boot: profile %s not mounted: %s (%s)", ids[i], sd_err_name(e),
+              code ? code : detail[0] ? detail : "");
+  }
 }
 
 static sd_err handle_unmount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
@@ -2857,6 +2918,7 @@ static sd_err handle_config_reload(sd_ipc_client *c, sd_json_writer *res, sd_ipc
   if (e != SD_OK)
     return e;
   n = svc_load_profiles();
+  svc_autostart_boot_mounts();
   sd_jw_key(res, "profiles");
   sd_jw_obj_begin(res);
   sd_jw_key(res, "loaded"); sd_jw_int(res, n);
@@ -3176,8 +3238,10 @@ static sd_err handle_service_repair(sd_ipc_client *c, sd_json_writer *res, sd_ip
   healthy = g.idle ? 0 : 1;
   g.repairing = 0;
   sd_mutex_unlock(&g.lock);
-  if (healthy)
+  if (healthy) {
     (void)svc_load_profiles();
+    svc_autostart_boot_mounts();
+  }
   svc_log_info("machine data folder repair: error %u, %u folders, %s, %s", (unsigned)we, (unsigned)r.folders,
                r.moved ? "moved aside" : "kept", healthy ? "trusted" : "still refused");
 
@@ -3343,6 +3407,7 @@ int svc_run(const svc_opts *o)
   svc_setup_secrets(o && o->secret_dir ? o->secret_dir : g.service_dir);
   (void)svc_load_profiles();
   svc_log_info("service starting; %u machine profiles", (unsigned)g.nprofs);
+  svc_autostart_boot_mounts();
 
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size = sizeof(cfg);

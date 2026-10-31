@@ -45,6 +45,8 @@ SD_TEST_DECL(refuse_log_is_once_per_sid_per_window);
 SD_TEST_DECL(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start);
 SD_TEST_DECL(svc_status_names_a_refused_machine_folder_for_admins_only);
 SD_TEST_DECL(svc_repair_moves_the_folder_aside_and_the_service_recovers);
+SD_TEST_DECL(svc_autostart_boot_is_mounted_at_start_and_logon_is_not);
+SD_TEST_DECL(svc_autostart_reload_does_not_double_mount);
 SD_TEST_DECL(scm_install_registers_the_service_in_order);
 SD_TEST_DECL(scm_install_skips_the_sid_type_before_vista);
 SD_TEST_DECL(scm_install_refuses_without_elevation);
@@ -144,6 +146,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start),
   SD_TEST_ENTRY(svc_status_names_a_refused_machine_folder_for_admins_only),
   SD_TEST_ENTRY(svc_repair_moves_the_folder_aside_and_the_service_recovers),
+  SD_TEST_ENTRY(svc_autostart_boot_is_mounted_at_start_and_logon_is_not),
+  SD_TEST_ENTRY(svc_autostart_reload_does_not_double_mount),
   SD_TEST_ENTRY(scm_install_registers_the_service_in_order),
   SD_TEST_ENTRY(scm_install_skips_the_sid_type_before_vista),
   SD_TEST_ENTRY(scm_install_refuses_without_elevation),
