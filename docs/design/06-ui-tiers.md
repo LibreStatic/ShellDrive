@@ -390,6 +390,19 @@ Answers from the user after reviewing the mock-ups:
   every other OS.
 - First slice: §9 plus the tray flyout and the Aero wizard (§6.5).
 
+### 10.2 Implementation status (2026-10-31, branch `feat/ui-modern-tiers`)
+
+All four slices of §6 are implemented: the theme model and platform layer (`ui_theme_model.c`, `ui_theme.c`), the
+Fluent main window with Mica, command bar and "···" overflow, the Aero glass band, the Windows 11 tray flyout, the
+Aero wizard, the Appearance setting with the `UiStyle` and `UiDarkHelpers` policies, the trust prompts with command
+links and main instructions, task dialogs for the other messages (`ui_win_task`), and the themed secondary windows.
+Test modes: `--theme=<tier>[-dark|-light]` with `--test-window`, `--test-prompts`, `--test-editor`,
+`--test-windows`, `--test-wizard`, `--test-flyout`, and `--test-shot=<file.bmp>` for screenshots.
+
+Open items: the lab screenshots of §8.2 (Aero glass is verified on the 11 host only as geometry); the Wizard97 header
+band stays white on dark; error strings that name `{code}` inline keep it there (the details are omitted for them);
+the flyout shows at most 12 profiles without scrolling.
+
 ## 11. Risks
 
 - **Custom draw scope creep.** Each custom-drawn control is code that must handle DPI, focus, disabled state and

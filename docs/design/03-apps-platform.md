@@ -1675,8 +1675,9 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
 
 ## 7. Tray app and main window
 
-A proposal for OS-tiered rendering (Classic, Aero, Fluent) that would amend 7.1, 7.4 and 11 is in
-[`06-ui-tiers.md`](06-ui-tiers.md); until it is accepted, this section stands.
+The UI renders in OS tiers (Classic on XP, Aero on Vista/7, Fluent on 8–11 with Mica and full dark mode):
+[`06-ui-tiers.md`](06-ui-tiers.md), accepted as D47. It amends 7.1 (standard controls may be custom or owner drawn,
+and the main window uses a command bar on Fluent), supersedes 7.4 and amends 11 as noted there.
 
 ### 7.1 Toolkit rules
 
@@ -1734,6 +1735,10 @@ A proposal for OS-tiered rendering (Classic, Aero, Fluent) that would amend 7.1,
   available.
 
 ### 7.4 Dark mode
+
+**Superseded by D47 and 06 §3.5–§3.6:** full dark mode on Windows 11 and on 10 from 1809, including the undocumented
+uxtheme helpers behind an allow-list and a kill switch (`[ui] dark_helpers`, policy `UiDarkHelpers`). The text below
+is the original v1 decision, kept for the record.
 
 - v1 follows the system for what Windows supports documentedly and stays light elsewhere:
   - Title bar: `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE = 20, TRUE)` when apps use dark theme
@@ -2555,8 +2560,9 @@ localized summary, or JSON with English keys under `--json`. `status --stats` pr
 
 ## 11. Accessibility
 
-- Standard controls only (no custom-drawn controls in v1), so MSAA (XP) and UI Automation proxies (Vista+) expose
-  them without extra code. If a custom control is ever added it must answer `WM_GETOBJECT`.
+- Standard controls only, so MSAA (XP) and UI Automation proxies (Vista+) expose them without extra code. They
+  may be custom drawn or owner drawn (06 §7.1, D47): the control, its window text and its proxy stay the system's,
+  and every custom-drawn control draws its own focus ring. If a custom control is ever added it must answer `WM_GETOBJECT`.
 - Every input has a preceding static label with a mnemonic (`&`), so screen readers pick up the name and keyboard
   users can jump; tab order follows visual order (generated from the layout table); dialogs work with
   `IsDialogMessage`; default and cancel buttons are set; Escape closes. Exception: trust decisions (host key
