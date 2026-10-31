@@ -654,6 +654,21 @@ msgctxt "cli.hk.list_truncated"
 msgid "The list was cut short; refine the host name to see the rest."
 msgstr ""
 
+#. Column heading of hostkey list without a host (keep it short).
+msgctxt "cli.hk.col_host"
+msgid "Host"
+msgstr ""
+
+#. hostkey list without a host and no stored key.
+msgctxt "cli.hk.list_all_empty"
+msgid "No host keys are stored."
+msgstr ""
+
+#. hostkey list without a host stopped early because there are very many keys.
+msgctxt "cli.hk.list_all_truncated"
+msgid "The list was cut short; there are more stored keys."
+msgstr ""
+
 #. hostkey remove.
 msgctxt "cli.hk.removed"
 msgid "Removed the stored keys of {host}."

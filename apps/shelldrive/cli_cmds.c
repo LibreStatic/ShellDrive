@@ -877,7 +877,7 @@ void cli_print_help(const wchar_t *topic)
     cli_print(sd_l10n_get(SD_MSG_CLI_HELP_OPTIONS));
     help_line(L"--dry-run", SD_MSG_CLI_HELP_OPT_DRY_RUN);
   } else if (topic && wcscmp(topic, L"hostkey") == 0) {
-    help_line(L"hostkey list <host[:port]> [--announced]", SD_MSG_CLI_HELP_HOSTKEY);
+    help_line(L"hostkey list [host[:port]] [--announced]", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"hostkey import --from putty|openssh [FILE]", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"hostkey remove <host[:port]> [--type T]", SD_MSG_CLI_HELP_HOSTKEY);
     help_line(L"hostkey accept-announced <id> [--add-only] [--machine]", SD_MSG_CLI_HELP_HOSTKEY);

@@ -756,6 +756,129 @@ static int hk_list_cmd(const cli_args *a, const char *lookup)
   return rc;
 }
 
+/* hostkey list without a host (03 §6.1, §5.1): every stored key of the machine and user stores, as
+   the host key manager reads them (sd_known_hosts_list_all). Live sources are not enumerated (5.1);
+   the per-host list above still consults them. */
+static const sd_kh_store_kind k_hk_all_stores[] = { SD_KH_STORE_MACHINE, SD_KH_STORE_USER };
+
+typedef struct hk_all_row {
+  int store;
+  char host[256];   /* the pattern as written (sd_kh_all_entry: at most 255 bytes) */
+  char type[48];
+  char fp[64];
+  uint32_t line;
+} hk_all_row;
+
+typedef struct hk_all_list {
+  hk_all_row row[256];
+  uint32_t n;
+  int truncated;
+} hk_all_list;
+
+static int hk_all_collect(void *ctx, const sd_kh_all_entry *e)
+{
+  hk_all_list *l = (hk_all_list *)ctx;
+  hk_all_row *r;
+  if (l->n >= SD_COUNTOF(l->row)) {
+    l->truncated = 1;
+    return 1;
+  }
+  r = &l->row[l->n++];
+  r->store = 0;   /* filled by the caller (one call per store) */
+  strcpy_s(r->host, sizeof(r->host), e->pattern ? e->pattern : "?");
+  strcpy_s(r->type, sizeof(r->type), e->type ? e->type : "?");
+  if (sd_hostkey_fingerprint_sha256(e->blob, e->len, r->fp) != SD_OK)
+    r->fp[0] = 0;
+  r->line = e->line;
+  return 0;
+}
+
+/* The collected rows (about 90 KB) live on the heap: a stack copy trips C6262 under /analyze. */
+static int hk_list_all_run(const cli_args *a, hk_all_list *l)
+{
+  sd_known_hosts *kh = NULL;
+  size_t i, k;
+  if (!kh_open(0, &kh))
+    return fail_code(a, "io_error", "cannot open the known_hosts stores", NULL);
+  for (k = 0; k < SD_COUNTOF(k_hk_all_stores); k++) {
+    uint32_t before = l->n;
+    if (sd_known_hosts_list_all(kh, k_hk_all_stores[k], hk_all_collect, l) != SD_OK)
+      continue;   /* SD_E_NOT_FOUND: the store has no file yet */
+    for (i = before; i < l->n; i++)
+      l->row[i].store = (int)k_hk_all_stores[k];
+  }
+  sd_known_hosts_close(kh);
+  if (a->json) {
+    sd_wr w;
+    sd_json_writer jw;
+    sd_wr_init(&w, SD_IPC_MAX_MESSAGE);
+    sd_jw_init(&jw, &w);
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "ok"); sd_jw_bool(&jw, 1);
+    sd_jw_key(&jw, "result");
+    sd_jw_obj_begin(&jw);
+    sd_jw_key(&jw, "keys");
+    sd_jw_arr_begin(&jw);
+    for (i = 0; i < l->n; i++) {
+      sd_jw_obj_begin(&jw);
+      sd_jw_key(&jw, "store"); sd_jw_cstr(&jw, kh_store_name((sd_kh_store_kind)l->row[i].store));
+      sd_jw_key(&jw, "host"); sd_jw_cstr(&jw, l->row[i].host);
+      sd_jw_key(&jw, "type"); sd_jw_cstr(&jw, l->row[i].type);
+      sd_jw_key(&jw, "fingerprint"); sd_jw_cstr(&jw, l->row[i].fp);
+      sd_jw_key(&jw, "line"); sd_jw_int(&jw, l->row[i].line);
+      sd_jw_obj_end(&jw);
+    }
+    sd_jw_arr_end(&jw);
+    sd_jw_obj_end(&jw);
+    sd_jw_obj_end(&jw);
+    if (sd_jw_finish(&jw) == SD_OK)
+      cli_print_utf8_line((const char *)w.p, w.len);
+    sd_wr_free(&w);
+    return 0;
+  }
+  if (l->n == 0) {
+    say(SD_MSG_CLI_HK_LIST_ALL_EMPTY, NULL, 0, 0);
+    return 0;
+  }
+  {
+    wchar_t line[1024];
+    size_t len = 0;
+    line[0] = 0;
+    pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(SD_MSG_CLI_HK_COL_HOST), 24);
+    pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(SD_MSG_CLI_HK_COL_STORE), 10);
+    pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(SD_MSG_CLI_HK_COL_TYPE), 18);
+    pad_print(line, SD_COUNTOF(line), &len, sd_l10n_get(SD_MSG_CLI_HK_COL_FP), 0);
+    cli_print(line);
+  }
+  for (i = 0; i < l->n; i++) {
+    wchar_t line[1024];
+    size_t len = 0;
+    wchar_t *wh = wide(l->row[i].host), *ws = wide(kh_store_name((sd_kh_store_kind)l->row[i].store));
+    wchar_t *wt = wide(l->row[i].type), *wf = wide(l->row[i].fp);
+    line[0] = 0;
+    pad_print(line, SD_COUNTOF(line), &len, wh ? wh : L"", 24);
+    pad_print(line, SD_COUNTOF(line), &len, ws ? ws : L"", 10);
+    pad_print(line, SD_COUNTOF(line), &len, wt ? wt : L"", 18);
+    pad_print(line, SD_COUNTOF(line), &len, wf ? wf : L"", 0);
+    cli_print(line);
+    sd_free(wh); sd_free(ws); sd_free(wt); sd_free(wf);
+  }
+  if (l->truncated)
+    say(SD_MSG_CLI_HK_LIST_ALL_TRUNCATED, NULL, 0, 0);
+  return 0;
+}
+
+static int hk_list_all_cmd(const cli_args *a)
+{
+  hk_all_list *l = (hk_all_list *)sd_calloc(1, sizeof(*l));
+  int rc;
+  if (!l)
+    return fail_code(a, "io_error", "out of memory", NULL);
+  rc = hk_list_all_run(a, l);
+  sd_free(l);
+  return rc;
+}
+
 static int hk_import(const cli_args *a)
 {
   sd_kh_store stores[3];
@@ -1249,6 +1372,8 @@ int cli_run_hostkey(const cli_args *a)
       return cli_is_elevated() ? hk_accept(a, 1) : hk_machine_denied(a);
     return hk_accept(a, 0);
   }
+  if (wcscmp(a->positional, L"list") == 0 && a->arg2 == NULL)
+    return hk_list_all_cmd(a);   /* hostkey list without a host (03 §6.1) */
   if (!lookup_name_of(a->arg2, lookup, sizeof(lookup)))
     return fail_code(a, "usage", "invalid host", NULL);
   if (wcscmp(a->positional, L"remove") == 0)
