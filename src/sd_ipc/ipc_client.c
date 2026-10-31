@@ -505,7 +505,7 @@ static sd_err open_pipe(const wchar_t *name, sd_ipc_endpoint ep, int start_if_mi
                         HANDLE *out)
 {
   uint64_t deadline = sd_tick_ms() + timeout_ms;
-  int spawned = 0, missing = 0;
+  int spawned = 0, missing = 0, denied = 0;
   HANDLE ready = NULL;
   *out = INVALID_HANDLE_VALUE;
   for (;;) {
@@ -526,8 +526,10 @@ static sd_err open_pipe(const wchar_t *name, sd_ipc_endpoint ep, int start_if_mi
       WaitNamedPipeW(name, (DWORD)SD_MIN(deadline - now, 1000));
       continue;
     }
-    if (gle != ERROR_FILE_NOT_FOUND)
+    if (gle != ERROR_FILE_NOT_FOUND) {
+      denied = gle == ERROR_ACCESS_DENIED;   /* the pipe is there but its DACL refuses us (2.2) */
       break;
+    }
     if (!start_if_missing || ep != SD_IPC_AGENT) {
       if (++missing < 3) {     /* ride out an instance turnover on the server */
         Sleep(20);
@@ -552,6 +554,8 @@ static sd_err open_pipe(const wchar_t *name, sd_ipc_endpoint ep, int start_if_mi
       Sleep(50);
   }
   if (ready) CloseHandle(ready);
+  if (denied)
+    return SD_E_ACCESS_DENIED;   /* report the refusal as access_denied (03 §6.2, exit 9), not as "not running" */
   return spawned ? SD_E_TIMEOUT : SD_E_NOT_FOUND;
 }
 

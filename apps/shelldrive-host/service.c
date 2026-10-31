@@ -25,6 +25,7 @@
 #include "service.h"
 #include "svc_access.h"
 #include "svc_events.h"
+#include "svc_gw.h"
 #include "svc_repair.h"
 #include "svc_scm.h"
 #include "svc_status.h"
@@ -102,6 +103,9 @@ typedef struct svc_mount {
   const char *refuse_code;          /* IPC code of the refused prompt (prompt_unavailable, host_key_unknown) */
   char err_code[64];
   char err_detail[160];
+  /* 02 §7.7 attach: the hosted WebDAV export, filled on MOUNTED, empty for a Dokany mount */
+  uint16_t wd_port;
+  wchar_t wd_remote[104], wd_remote_xp[104];
 } svc_mount;
 
 typedef struct svc_job {
@@ -263,7 +267,9 @@ static void svc_log_info(const char *fmt, ...)
 
 /* ---- work queue (the control thread runs it) ---- */
 
-static void svc_enqueue(void (*fn)(void *), void *arg)
+/* Appends a job for the control thread; g.lock held (svc_mount_queue detaches a failed record and queues its
+   release in one critical section, so a concurrent mount of the same profile cannot slip in between). */
+static void svc_enqueue_locked(void (*fn)(void *), void *arg)
 {
   svc_work *w = (svc_work *)sd_alloc(sizeof(*w));
   if (w == NULL)
@@ -271,11 +277,16 @@ static void svc_enqueue(void (*fn)(void *), void *arg)
   w->next = NULL;
   w->fn = fn;
   w->arg = arg;
-  sd_mutex_lock(&g.lock);
   if (g.qt) g.qt->next = w; else g.qh = w;
   g.qt = w;
-  sd_mutex_unlock(&g.lock);
   SetEvent(g.wake.h);
+}
+
+static void svc_enqueue(void (*fn)(void *), void *arg)
+{
+  sd_mutex_lock(&g.lock);
+  svc_enqueue_locked(fn, arg);
+  sd_mutex_unlock(&g.lock);
 }
 
 static void svc_post(void *ctx, void (*fn)(void *), void *arg)
@@ -837,11 +848,25 @@ static void svc_on_state(void *ctx, sd_mount *m, sd_mount_state st, sd_err why)
   wchar_t letter = 0;
   svc_mount *r;
   const char *code = NULL;
+  sd_mount_attach at;
+  int have_at = 0;
   (void)ctx;
+  /* 02 §7.7: the hosted export exists as soon as the mount is up; read it before taking g.lock (the mount's
+     own lock must never be held while g.lock is asked for the other way round). */
+  memset(&at, 0, sizeof(at));
+  if (st == SD_MOUNT_MOUNTED && m != NULL) {
+    sd_mount_get_attach(m, &at);
+    have_at = at.webdav_remote[0] != 0;
+  }
   sd_mutex_lock(&g.lock);
   r = find_by_m_locked(m);
   if (r) {
     r->st = st;
+    if (have_at) {
+      r->wd_port = at.webdav_port;
+      wcscpy_s(r->wd_remote, SD_COUNTOF(r->wd_remote), at.webdav_remote);
+      wcscpy_s(r->wd_remote_xp, SD_COUNTOF(r->wd_remote_xp), at.webdav_remote_xp);
+    }
     strcpy_s(id, sizeof(id), r->id);
     letter = r->letter;
     if (r->prof != NULL)
@@ -1936,6 +1961,45 @@ static void svc_hk_release(svc_hk *hk)
 
 /* ---- control-thread jobs ---- */
 
+static svc_gw_client svc_gw_client_of(sd_webdav_client_state s)
+{
+  switch (s) {
+  case SD_WD_CLIENT_RUNNING: return SVC_GW_CLIENT_RUNNING;
+  case SD_WD_CLIENT_STOPPED: return SVC_GW_CLIENT_STOPPED;
+  case SD_WD_CLIENT_DISABLED: return SVC_GW_CLIENT_DISABLED;
+  case SD_WD_CLIENT_MISSING: return SVC_GW_CLIENT_MISSING;
+  default: return SVC_GW_CLIENT_UNKNOWN;
+  }
+}
+
+/* 02 §7.7, the M5 spike: the mechanism of a global WebDAV mount. Only attach is built; it is what auto resolves to
+   while the compiled table has no GO cell. A system or link verdict (a lab-flipped cell) is refused here until that
+   mechanism exists, never served as attach. The mode is always auto: the service does not read settings.ini
+   (webdav_global_mode needs the checked read of TM-R27 first). NULL = attach, else an English reason (log, usage). */
+static const char *svc_webdav_mechanism(void)
+{
+  svc_gw_input in;
+  svc_gw_verdict v;
+  sd_webdav_client_info ci;
+  const sd_os_version *ov = sd_os_version_get();
+  memset(&in, 0, sizeof(in));
+  memset(&ci, 0, sizeof(ci));
+  in.family = ov ? svc_gw_family_of(ov->major, ov->minor) : SVC_GW_OS_UNKNOWN;
+  in.mode = SVC_GW_MODE_AUTO;
+  in.service_running = 1;
+  in.client = g.be->webdav_query_client ? svc_gw_client_of(g.be->webdav_query_client(&ci)) : SVC_GW_CLIENT_MISSING;
+  in.token_only = 0;
+  svc_gw_decide(&in, &v);
+  if (v.mech == SVC_GW_ATTACH)
+    return NULL;
+  if (v.mech == SVC_GW_REFUSE) {
+    SD_LOGW("svc", "global WebDAV refused: %s", svc_gw_reason_name(v.reason));
+    return svc_gw_reason_name(v.reason);
+  }
+  SD_LOGW("svc", "global WebDAV mechanism %s is not built (attach only)", svc_gw_mech_name(v.mech));
+  return "this global WebDAV mechanism is not in this build (attach only, 02 7.7)";
+}
+
 static void job_start(void *arg)
 {
   svc_job *j = (svc_job *)arg;
@@ -2007,7 +2071,11 @@ static void job_start(void *arg)
     pr.volume_label = labelw;
     wide_from_utf8(p->name, namew, SD_COUNTOF(namew));
     pr.profile_name = namew;
-    pr.backend = SD_MOUNT_BACKEND_DOKANY;          /* global drives are Dokany in this build (1.3, D11) */
+    /* D11, 02 §7.7: Dokany is the global path; a profile forced to WebDAV is hosted by the service and
+       attached per user at logon (attach), never mapped by LocalSystem (mechanism A is a no-go). */
+    pr.backend = p->backend == SD_PROFILE_BACKEND_WEBDAV ? SD_MOUNT_BACKEND_WEBDAV : SD_MOUNT_BACKEND_DOKANY;
+    if (why == NULL && pr.backend == SD_MOUNT_BACKEND_WEBDAV)
+      why = svc_webdav_mechanism();
     pr.global_mount = 1;
     pr.legacy_policy = p->legacy_algorithms;
     pr.refuse_terrapin_exposed = p->refuse_terrapin_exposed;
@@ -2180,6 +2248,14 @@ static void reap_mount(svc_mount *r)
   SD_LOGI("svc", "mount %s removed", r->id);
   sd_free(r->prof);
   sd_free(r);
+}
+
+/* Control thread, from svc_mount_queue: releases a final failed record that a new mount of the same profile
+   detached from the table. The teardown is the tick's own reap after an unmount: the sd_mount already ended
+   (or was never created), and prompts of the record, if any, are dropped with it. */
+static void job_reap_failed(void *arg)
+{
+  reap_mount((svc_mount *)arg);
 }
 
 /* Control-thread timer: reaps finished mounts, expires open prompts (2.5). */
@@ -2383,6 +2459,51 @@ static sd_err handle_list(sd_ipc_client *c, sd_json_writer *res)
   return SD_OK;
 }
 
+/* mount.attach_info {mount_id | target | profile} (02 §7.7, 03 §2.4): the export a member's agent maps in its own
+   logon session. Only a caller in that profile's service_access gets it (D35); the reply carries the UNC with the
+   path token, never a credential. A Dokany global mount has nothing to attach. Read-only, no administrator needed. */
+static sd_err handle_attach_info(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  svc_mount *r;
+  svc_member mb;
+  svc_rights rt;
+  char unc[256] = "", xp[256] = "", tgt[4], id[16];
+  int webdav;
+  sd_mutex_lock(&g.lock);
+  r = find_mount_locked(params);
+  if (r == NULL) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_NOT_FOUND, "mount_not_found", "no matching mount");
+  }
+  member_of(c, &r->prof->acl, &mb);
+  svc_decide(&mb, &rt);
+  if (!rt.use) {
+    sd_mutex_unlock(&g.lock);
+    return fail(err, SD_E_ACCESS_DENIED, "access_denied", "the caller is not in service_access for this drive");
+  }
+  webdav = r->prof->p.backend == SD_PROFILE_BACKEND_WEBDAV;
+  if (webdav) {
+    utf8_from_wide(r->wd_remote, unc, sizeof(unc));
+    utf8_from_wide(r->wd_remote_xp, xp, sizeof(xp));
+  }
+  strcpy_s(id, sizeof(id), r->id);
+  target_of(r->letter, tgt);
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, id);
+  sd_jw_key(res, "target"); sd_jw_cstr(res, tgt);
+  sd_jw_key(res, "label"); sd_jw_cstr(res, r->prof->p.label[0] ? r->prof->p.label : r->prof->p.name);
+  sd_jw_key(res, "backend");
+  sd_jw_cstr(res, sd_mount_backend_kind_name(webdav ? SD_MOUNT_BACKEND_WEBDAV : SD_MOUNT_BACKEND_DOKANY));
+  sd_jw_key(res, "state"); sd_jw_cstr(res, sd_mount_state_name(r->st));
+  sd_jw_key(res, "attach"); sd_jw_bool(res, unc[0] != 0);
+  if (unc[0]) {
+    sd_jw_key(res, "unc"); sd_jw_cstr(res, unc);
+    sd_jw_key(res, "xp_url"); sd_jw_cstr(res, xp);
+    sd_jw_key(res, "port"); sd_jw_int(res, r->wd_port);
+  }
+  sd_mutex_unlock(&g.lock);
+  return SD_OK;
+}
+
 static sd_err handle_status(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
 {
   svc_mount *r;
@@ -2407,44 +2528,71 @@ static sd_err handle_status(sd_ipc_client *c, const sd_json *params, sd_json_wri
   return SD_OK;
 }
 
-static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+/* The one code path that brings a global mount up (2.4 "mount"; 1.8 and 3.4.1 boot autostart): finds the loaded
+   service profile `key`, refuses a duplicate of a live mount, picks the drive letter and publishes the record,
+   then queues the start job for the control thread. A final failed record of the profile is no duplicate: `failed`
+   is the terminal state of a mount (03 1.11), so it holds no live drive and the record is detached and released,
+   its letter going to the new mount (03 1.11 keeps a failed record only until it is unmounted or replaced). Takes
+   g.lock. Returns SD_OK and fills out_id and out_target; on failure returns the sd_err of the reply, with *code
+   set (NULL for the plain errors) and detail filled. */
+static sd_err svc_mount_queue(const char *key, const char *tgt, char out_id[16], char out_target[4],
+                              const char **code, char detail[200])
 {
-  const char *key = sd_json_get_str(params, "profile");
-  const char *tgt = sd_json_get_str(params, "target");
   svc_prof *src;
   svc_prof *copy = NULL;
   svc_mount *r = NULL;
-  sd_err e;
   wchar_t letter = 0;
   svc_job *job;
   uint32_t i, slot = SVC_MAX_MOUNTS;
   const char *bad = NULL, *why = NULL;
-  char detail[200];
-  e = need_admin(c, err);
-  if (e != SD_OK)
-    return e;
-  if (key == NULL)
-    return fail(err, SD_E_INVALID_PARAM, "usage", "mount needs a profile");
   sd_mutex_lock(&g.lock);
   src = find_profile_locked(key);
   if (src == NULL) {
     sd_mutex_unlock(&g.lock);
-    return fail(err, SD_E_NOT_FOUND, "profile_not_found", "no machine profile of scope service with that id or name");
+    *code = "profile_not_found";
+    strcpy_s(detail, 200, "no machine profile of scope service with that id or name");
+    return SD_E_NOT_FOUND;
   }
   if (svc_validate_profile(&src->p, &bad, &why) != SD_OK) {
     sd_mutex_unlock(&g.lock);
-    _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
-    return fail(err, SD_E_INVALID_PARAM, "usage", detail);
+    *code = "usage";
+    _snprintf_s(detail, 200, _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
+    return SD_E_INVALID_PARAM;
   }
-  for (i = 0; i < SVC_MAX_MOUNTS; i++)
-    if (g.mounts[i] && strcmp(g.mounts[i]->prof->p.id, src->p.id) == 0) {
+  {
+    svc_mount *failed = NULL;         /* a final failed record of this profile, detached for release */
+    for (i = 0; i < SVC_MAX_MOUNTS; i++) {
+      svc_mount *old = g.mounts[i];
+      if (old == NULL || strcmp(old->prof->p.id, src->p.id) != 0)
+        continue;
+      /* `already_mounted` protects a live mount (03 6.2 conflict, exit 10); a failed record of the profile never
+         blocks a new mount (03 1.11: failed is terminal, the offline state is the one that keeps the drive). The
+         record goes the way the tick releases an unmounted record, only now: detached here under g.lock, released
+         by the control thread. A live record, or a failed one whose sd_mount has not ended yet, still answers
+         already_mounted. */
+      if (failed == NULL && old->final && old->st == SD_MOUNT_FAILED && !old->stop_req &&
+          (old->m == NULL || sd_mount_is_final(old->m))) {
+        failed = old;
+        g.mounts[i] = NULL;
+        old->stop_req = 1;
+        continue;
+      }
       sd_mutex_unlock(&g.lock);
-      return fail(err, SD_E_EXISTS, "already_mounted", "this profile is already mounted");
+      *code = "already_mounted";
+      strcpy_s(detail, 200, "this profile is already mounted");
+      return SD_E_EXISTS;
     }
+    if (failed != NULL) {
+      SD_LOGI("svc", "mount %s replaced by a new mount of the same profile", failed->id);
+      svc_enqueue_locked(job_reap_failed, failed);   /* control thread: destroy r->m, drop the record */
+    }
+  }
   copy = (svc_prof *)sd_alloc(sizeof(*copy));
   if (copy == NULL) {
     sd_mutex_unlock(&g.lock);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   memcpy(copy, src, sizeof(*copy));
   /* the requested target wins over the profile's; "auto" (or nothing) picks a free letter (3.4.1 mount.target) */
@@ -2457,7 +2605,9 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
       if (letter == 0) {
         sd_mutex_unlock(&g.lock);
         sd_free(copy);
-        return fail(err, SD_E_INVALID_PARAM, "invalid_target", "the target is not a drive letter");
+        *code = "invalid_target";
+        strcpy_s(detail, 200, "the target is not a drive letter");
+        return SD_E_INVALID_PARAM;
       }
     }
   }
@@ -2466,7 +2616,9 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
   if (letter == 0 || letter_taken_locked(letter) || (GetLogicalDrives() & (1ul << (letter - L'A')))) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_EXISTS, "target_in_use", "no free drive letter for this mount");
+    *code = "target_in_use";
+    strcpy_s(detail, 200, "no free drive letter for this mount");
+    return SD_E_EXISTS;
   }
   for (i = 0; i < SVC_MAX_MOUNTS; i++)
     if (g.mounts[i] == NULL) {
@@ -2476,13 +2628,17 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
   if (slot == SVC_MAX_MOUNTS) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_BUSY, "busy", "too many global mounts");
+    *code = "busy";
+    strcpy_s(detail, 200, "too many global mounts");
+    return SD_E_BUSY;
   }
   r = (svc_mount *)sd_calloc(1, sizeof(*r));
   if (r == NULL) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   g.next_mount++;
   _snprintf_s(r->id, sizeof(r->id), _TRUNCATE, "g-%u", (unsigned)g.next_mount);
@@ -2495,21 +2651,71 @@ static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writ
     sd_mutex_unlock(&g.lock);
     sd_free(r->prof);
     sd_free(r);
-    return fail(err, SD_E_NO_MEMORY, NULL, "out of memory");
+    *code = NULL;
+    strcpy_s(detail, 200, "out of memory");
+    return SD_E_NO_MEMORY;
   }
   strcpy_s(job->id, sizeof(job->id), r->id);
+  strcpy_s(out_id, 16, r->id);
+  target_of(letter, out_target);
   g.mounts[slot] = r;
   sd_mutex_unlock(&g.lock);
   SD_LOGI("svc", "mount %s queued for %c:", r->id, (char)letter);
   svc_enqueue(job_start, job);
-  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, r->id);
-  {
-    char tgt2[4];
-    target_of(letter, tgt2);
-    sd_jw_key(res, "target"); sd_jw_cstr(res, tgt2);
-  }
+  return SD_OK;
+}
+
+static sd_err handle_mount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  const char *key = sd_json_get_str(params, "profile");
+  const char *tgt = sd_json_get_str(params, "target");
+  sd_err e;
+  char id[16], target[4];
+  const char *code = NULL;
+  char detail[200];
+  e = need_admin(c, err);
+  if (e != SD_OK)
+    return e;
+  if (key == NULL)
+    return fail(err, SD_E_INVALID_PARAM, "usage", "mount needs a profile");
+  e = svc_mount_queue(key, tgt, id, target, &code, detail);
+  if (e != SD_OK)
+    return fail(err, e, code, detail);
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, id);
+  sd_jw_key(res, "target"); sd_jw_cstr(res, target);
   sd_jw_key(res, "state"); sd_jw_cstr(res, "connecting");
   return SD_OK;
+}
+
+/* 1.8 Boot: brings up every loaded machine profile whose [mount] autostart is boot (3.4.1) when the profiles
+   were loaded or reloaded. The mounts go through the same queue as a "mount" request, so the SCM start is not
+   blocked: RUNNING is reported first and the control thread starts each mount afterwards, each with its own
+   sd_mount reconnect backoff — a network that is not up yet only delays the mount. A profile that is already
+   mounted is left alone (a reload never double-mounts); every auto-mounted profile is logged at INFO. */
+static void svc_autostart_boot_mounts(void)
+{
+  char ids[SVC_MAX_PROFILES][33], names[SVC_MAX_PROFILES][128];
+  uint32_t n = 0, i;
+  sd_mutex_lock(&g.lock);
+  for (i = 0; i < g.nprofs && n < SVC_MAX_PROFILES; i++) {
+    if (g.profs[i]->p.autostart != SD_PROFILE_AUTOSTART_BOOT)
+      continue;
+    strcpy_s(ids[n], sizeof(ids[n]), g.profs[i]->p.id);
+    strcpy_s(names[n], sizeof(names[n]), g.profs[i]->p.name);
+    n++;
+  }
+  sd_mutex_unlock(&g.lock);
+  for (i = 0; i < n; i++) {
+    sd_err e;
+    const char *code = NULL;
+    char id[16], target[4], detail[200];
+    e = svc_mount_queue(ids[i], NULL, id, target, &code, detail);
+    if (e == SD_OK)
+      SD_LOGI("svc", "autostart boot: profile %s (%s) mounts as %s", ids[i], names[i], target);
+    else if (e != SD_E_EXISTS)             /* already mounted: a reload keeps the one mount */
+      SD_LOGW("svc", "autostart boot: profile %s not mounted: %s (%s)", ids[i], sd_err_name(e),
+              code ? code : detail[0] ? detail : "");
+  }
 }
 
 static sd_err handle_unmount(sd_ipc_client *c, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
@@ -2751,6 +2957,7 @@ static sd_err handle_config_reload(sd_ipc_client *c, sd_json_writer *res, sd_ipc
   if (e != SD_OK)
     return e;
   n = svc_load_profiles();
+  svc_autostart_boot_mounts();
   sd_jw_key(res, "profiles");
   sd_jw_obj_begin(res);
   sd_jw_key(res, "loaded"); sd_jw_int(res, n);
@@ -3070,8 +3277,10 @@ static sd_err handle_service_repair(sd_ipc_client *c, sd_json_writer *res, sd_ip
   healthy = g.idle ? 0 : 1;
   g.repairing = 0;
   sd_mutex_unlock(&g.lock);
-  if (healthy)
+  if (healthy) {
     (void)svc_load_profiles();
+    svc_autostart_boot_mounts();
+  }
   svc_log_info("machine data folder repair: error %u, %u folders, %s, %s", (unsigned)we, (unsigned)r.folders,
                r.moved ? "moved aside" : "kept", healthy ? "trusted" : "still refused");
 
@@ -3097,6 +3306,7 @@ static sd_err svc_ipc_handler(void *ctx, sd_ipc_client *client, const char *meth
   if (strcmp(method, "status") == 0) return handle_status(client, params, res, err);
   if (strcmp(method, "mount") == 0) return handle_mount(client, params, res, err);
   if (strcmp(method, "unmount") == 0) return handle_unmount(client, params, res, err);
+  if (strcmp(method, "mount.attach_info") == 0) return handle_attach_info(client, params, res, err);
   if (strcmp(method, "selftest") == 0) return handle_selftest(res);
   if (strcmp(method, "service.status") == 0) return handle_service_status(client, res, err);
   if (strcmp(method, "service.repair_data") == 0) return handle_service_repair(client, res, err);
@@ -3171,7 +3381,8 @@ static void svc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
 static const char *const k_service_features[] = {
   "list", "status", "mount", "unmount", "selftest", "secret.set", "secret.delete", "prompt.list",
   "prompt.answer", "config.reload", "prompt.routing", "hostkey.add", "hostkey.announced.list",
-  "hostkey.announced.accept", "hostkey.announced.reject", "service.status", "service.repair_data", NULL
+  "hostkey.announced.accept", "hostkey.announced.reject", "service.status", "service.repair_data",
+  "mount.attach_info", NULL
 };
 
 /* ---- the core ---- */
@@ -3235,6 +3446,7 @@ int svc_run(const svc_opts *o)
   svc_setup_secrets(o && o->secret_dir ? o->secret_dir : g.service_dir);
   (void)svc_load_profiles();
   svc_log_info("service starting; %u machine profiles", (unsigned)g.nprofs);
+  svc_autostart_boot_mounts();
 
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size = sizeof(cfg);

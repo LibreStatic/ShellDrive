@@ -111,6 +111,10 @@ typedef struct sd_mount_attach {
   wchar_t letter;
   int mounted;
   uint16_t webdav_port;                 /* 0 unless the backend is WebDAV and the export exists */
+  /* 02 §7.7 attach: the export's remote name (\\localhost@PORT\DavWWWRoot\s-<token>, or the XP http form),
+     empty when there is none. A service mount is hosted and not mapped; this is what a user's agent maps. */
+  wchar_t webdav_remote[104];
+  wchar_t webdav_remote_xp[104];        /* the XP form (http://localhost:PORT/s-<token>), empty when none */
 } sd_mount_attach;
 
 /* A host key as the host keeps it (UpdateHostKeys announcements and hostkey add). */
@@ -182,6 +186,12 @@ typedef struct sd_mount_backend {
   sd_err (*hk_conn_fetch)(sd_ssh_conn *c, uint32_t hop_index, const char *const *types, uint32_t ntypes,
                           sd_ssh_hostkeys_cb done, void *ctx);
   void   (*hk_conn_destroy)(sd_ssh_conn *c);
+  /* 02 §7.7 attach (M5, added last, NULL in older fakes): the remote name of a hosted WebDAV export, which the
+     service hands to a user's agent over mount.attach_info. */
+  sd_err (*webdav_remote)(const sd_webdav_mount *m, BOOL xp_form, wchar_t *out, size_t cap);
+  /* 02 §7.7 attach, agent side (NULL in fakes: nothing is preserved): keep the service's port out of the
+     mount-start cleanup of this process (sd_webdav_preserve_port). */
+  void   (*webdav_preserve_port)(uint16_t port, BOOL on);
 } sd_mount_backend;
 
 const char *sd_mount_backend_kind_name(sd_mount_backend_kind k);         /* "auto", "dokany", "webdav" */

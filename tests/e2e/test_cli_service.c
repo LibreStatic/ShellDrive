@@ -119,6 +119,16 @@ SD_TEST(e2e_secret_set_and_delete_machine_proxy_through_the_service)
   SD_CHECK(!found);
 }
 
+SD_TEST(e2e_service_mount_error_names_the_profile)
+{
+  e2e_cli_result r;
+  SD_REQUIRE(e2e_core_start());
+  /* a profile the service does not have: the error names it (exit 3) */
+  SD_REQUIRE(e2e_run_cli(L"service mount nosuch", L"1", NULL, NULL, &r));
+  SD_CHECK_EQ_INT(r.exit_code, 3);
+  SD_CHECK(has(r.out, "no profile named nosuch"));
+}
+
 SD_TEST(e2e_core_stops_and_the_cli_no_longer_reaches_the_pipe)
 {
   e2e_cli_result r;

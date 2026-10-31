@@ -660,6 +660,39 @@ SD_TEST(smoke_hostkey_add_machine)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
 }
 
+/* service list (03 §6.2, TM): without the service the CLI reports "not running or not installed" (exit 8); a service
+   pipe that exists but refuses this logon session (the DACL admits interactive sessions only, 03 §2.2) must come back
+   as access denied (exit 9), never as "not running" — a batch logon of a service_access member used to read exactly
+   that way. */
+SD_TEST(smoke_service_list_denied_vs_unavailable)
+{
+  static run_result r;
+  wchar_t sid[192], name[512];
+  DWORD session = 0;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  SECURITY_ATTRIBUTES sa;
+  HANDLE squat = INVALID_HANDLE_VALUE;
+  SD_REQUIRE(setup());
+  EXPECT(RUN(L"service list", NULL) == 8 && strstr(r.err, "not running or not installed") != NULL,
+         "service list without the service is unavailable");
+  SD_REQUIRE(sd_ipc_current_identity(sid, SD_COUNTOF(sid), &session) == SD_OK);
+  SD_REQUIRE(sd_ipc_pipe_name(SD_IPC_SERVICE, sid, session, name, SD_COUNTOF(name)) == SD_OK);
+  SD_REQUIRE(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)", SDDL_REVISION_1, &sd, NULL));
+  sa.nLength = sizeof(sa);
+  sa.lpSecurityDescriptor = sd;
+  sa.bInheritHandle = FALSE;
+  squat = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,
+                           4, 4096, 4096, 0, &sa);
+  LocalFree(sd);
+  if (squat == INVALID_HANDLE_VALUE)
+    return;   /* the name could not be claimed (a leftover server): the unit suite covers the mapping */
+  EXPECT(RUN(L"service list", NULL) == 9 && strstr(r.err, "denied") != NULL,
+         "a refused service connect is access denied");
+  EXPECT(RUN(L"--json service list", NULL) == 9 && strstr(r.out, "\"code\":\"access_denied\"") != NULL &&
+         strstr(r.out, "\"exit_code\":9") != NULL, "refused service connect json is access_denied/9");
+  CloseHandle(squat);
+}
+
 /* diag bench (03 §6.1, 02 §11) through the real CLI: usage errors, a drive that is not there, and short runs into a
    folder of the test (SHELLDRIVE_TEST_BENCH_ROOT, test builds only). Timings are never asserted: the reports must carry
    the structure and the numbers, and the folder must be empty again afterwards. */
@@ -1185,4 +1218,29 @@ SD_TEST(smoke_location_verbs)
          "without a NetHood folder the repair fails with exit 1");
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", NULL);
   DeleteFileW(other);
+}
+
+/* service install | uninstall | start | stop with the SCM seam forced to deny (SHELLDRIVE_TEST_SCM=denied): the
+   rules functions deny a caller that is not elevated with the elevation message (exit 9), while an elevated console
+   whose SCM call is refused gets the SCM message with the Win32 code (exit 1). No real service is touched. */
+SD_TEST(smoke_service_scm_denials)
+{
+  static run_result r;   /* 32 KiB: off the stack */
+  SD_REQUIRE(setup());
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", L"denied");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"0");
+  EXPECT(RUN(L"service start", NULL) == 9 && strstr(r.err, "Managing the ShellDrive service") != NULL,
+         "a non-elevated start is denied by the rules with exit 9 and the elevation message");
+  EXPECT(RUN(L"service uninstall", NULL) == 9, "a non-elevated uninstall is denied with exit 9");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"1");
+  EXPECT(RUN(L"service start", NULL) == 1 && strstr(r.err, "refused the request (error 5)") != NULL,
+         "an elevated start whose SCM call is denied names the Win32 code with exit 1");
+  EXPECT(RUN(L"service install", NULL) == 1 && strstr(r.err, "refused the request (error 5)") != NULL,
+         "an elevated install whose SCM call is denied names the Win32 code with exit 1");
+  EXPECT(RUN(L"service stop", NULL) == 1, "an elevated stop whose SCM call is denied exits 1");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", NULL);
 }

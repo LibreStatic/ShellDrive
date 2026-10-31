@@ -947,8 +947,165 @@ All are accepted (D39); "adjusted" names the decision that changed the recommend
 | TM-R38 | 04 §10, §12.3 | with D38 release gates |
 | TM-R39 | 04 §11.2, §12.2, §12.3 | |
 
+## 12. M5 implementation review (2026-10-30)
+
+Status: review, not design. The header of this document asks for a second look at the M5 threat-model review
+(00 §6) together with the external crypto review; this section is that review of the **implemented** code. It
+checks, per surface, the property sections 3-5 claim, the code that is supposed to carry it, and whether it does.
+It adds no normative requirement: every gap below is either an open item already recorded in `docs/dev/m5-notes.md`
+or a proposed `TM-R40`-`TM-R45` (section 12.9), and a `TM-R` binds only once the owning document accepts it.
+
+Scope of this pass: what M5 builds and what the next milestone will lean on — the two pipes, the loopback WebDAV
+server, the Dokany requestor check, the global-drive access lists, the update signature path, the secret stores and
+the Event Log. It is a code review on one machine (Windows 11 10.0.26100, x64-modern and x64-xp builds); nothing
+here replaces the lab criteria of section 7. The one thing that did *not* happen is a run with a real elevated
+administrator token or a second logon session, so every verdict below is "the code does this", never "the lab saw it".
+
+Verdicts: **carried** (code does what the design says, in the path a release build takes), **partial** (code exists
+but a stated part is missing or only reachable in tests), **absent** (no code).
+
+### 12.1 Named pipes (TB-07; T-44, T-45, T-46)
+
+| Property claimed (03 §2.2) | Code | Verdict |
+|---|---|---|
+| The service pipe is owned by SYSTEM; interactive users get read/write; `NU` is denied | `src/sd_ipc/ipc_server.c:1119-1127` (SDDL `O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`) | carried |
+| The first instance cannot be squatted, and remote clients cannot connect | `ipc_server.c:128` (`FILE_FLAG_FIRST_PIPE_INSTANCE`), `:131` (`PIPE_REJECT_REMOTE_CLIENTS`, Vista+) | carried |
+| The agent pipe accepts only its own SID | `ipc_server.c:430` | carried |
+| The client token is read by impersonating the client, then the thread reverts; a failed revert ends the process | `ipc_server.c:445-462` (`classify_at_connect`) | carried |
+| Below-medium integrity and AppContainer clients are refused (T-45) | `ipc_server.c:422-441` (`token_checks`) | carried |
+| Per-SID quota 4, 32 instances, two reserved for elevated administrators; a non-admin is refused at connect once 30 exist | `apps/shelldrive-host/service.c:3351-3359`, `ipc_server.c:238-251` | carried |
+| A non-admin that does not say hello in time is closed | `ipc_server.c:1064-1066`, `service.c:3358` (5 s, this build's value) | carried |
+| Request cap 64 KiB for non-admins, 1 MiB for admins; 10 requests/s for non-admins | `service.c:3353-3356`, `ipc_server.c:663-671` | carried |
+| Mutating methods need an elevated administrator | `service.c:724-728` (`need_admin`), called by every mutating handler | carried |
+
+Residual unchanged: the DACL admits every interactive user to a LocalSystem JSON parser (T-46, residual M). The
+review finds the TM-R25 mitigations implemented as written; it does not lower the residual.
+
+### 12.2 Loopback WebDAV server (TB-05; T-31 to T-39)
+
+| Property claimed (02 §7.3-§7.4) | Code | Verdict |
+|---|---|---|
+| Loopback only, exclusive bind | `src/sd_webdav/wd_server.c:940-946` (a refused `SO_EXCLUSIVEADDRUSE` aborts the start) | carried |
+| Unknown path prefixes answer 404 **before** any authentication challenge | `wd_server.c:565-578` | carried |
+| `Host` is checked against the server's port; anything else is 400 | `wd_server.c:543` | carried |
+| Browser-origin requests (`Origin`, `Sec-Fetch-*`) are 403 before the token check | `wd_server.c:551-554` | carried |
+| SSPI Negotiate/NTLM; `secur32` is never a static import (XP floor) | `wd_server.h:52-57`, `wd_auth.c` (interface resolved at run time) | carried |
+| The authenticated user must be the mount owner (per-user), or a member of `service_access` (service) | `wd_server.c` `authenticate()` and `handle()` | **partial at review, fixed in the same round** — the review found one owner SID per server and no token groups passed to `sd_vfs`, so a service server could not express `service_access` (users **and groups**). `m5-notes.md` Part 14 adds a service mode: the owner check yields to `sd_vfs`, the token's enabled groups are passed, anonymous/Guest are refused and LOCAL/NETWORK SERVICE match only by an explicit SID. Unit-tested with real SSPI; the two-user lab test (G2) is still open. |
+| Body, `If:`, `Destination`, `Lock-Token` and XML are parsed only after authentication | `wd_server.c:591-605`: `authenticate()` runs before `wd_dispatch()` | carried |
+| Token-only is never used for a global mount (TM-R19) | `sd_webdav_token_only_decide` (global → `SD_WD_TOK_FORBIDDEN_GLOBAL`), `wd_tokenonly.c` | carried |
+| Crash and start-up cleanup of this session's WebDAV mappings (TM-R17 b/d) | `src/sd_webdav/wd_client.c:259` (`sd_webdav_emergency_unmap`), `:337` (`sd_webdav_cleanup_mappings`), `:484` (start, keeps a preserved attach port); the agent's filter calls the emergency unmap at `apps/shelldrive-host/agent.c:3636-3647` | carried for `\\localhost@PORT` mappings; TM-R17(e) (elevated view) has no code (12.8) |
+
+### 12.3 Dokany requestor check (TB-06; T-41, T-43)
+
+| Property claimed (02 §6.7) | Code | Verdict |
+|---|---|---|
+| A global mount decides from the requestor's token user and enabled, non-deny-only groups; a request with no token is refused | `src/sd_dokan/dokan_mount.c:99-155` (`requestor_identity`), `:483-489` (`cb_create`, global branch) | carried |
+| The identity cache is keyed by `TOKEN_STATISTICS` (TokenId, ModifiedId) and the user SID, TTL 60 s | `dokan_mount.c:140-151`, `src/sd_dokan/dokan_cache.h:17` | carried |
+| A per-user mount admits its owner, and SYSTEM only with `allow_system` | `dokan_mount.c:60-78` (`requestor_allowed`) | carried |
+| Read needs membership in `service_access`; write additionally needs `service_access_write` or an enabled Administrators group | `src/sd_vfs/vfs_access.c:145-167` | carried |
+| An empty `service_access` list refuses the mount (D35) | `vfs_access.c:95-97` | carried |
+| Mutating operations on a global mount raise Event 1200 with the caller's SID | `vfs_access.c:216-273` (coalesced 60 s per SID/op/path), `service.c:1078-1116` | carried |
+| The volume security descriptor encodes the same lists | `service.c:2107-2111`, `svc_access.c` (`svc_volume_sddl`), `dokan_mount.c:462-464` (refuses a global mount without one) | carried |
+
+Residual unchanged: a real global mount opened by a second session was never observed (lab item in `m5-notes.md`);
+TST-19 is not run.
+
+### 12.4 Update signatures (TB-13, TB-14; T-66 to T-72)
+
+| Property claimed (04 §9.2-§9.4) | Code | Verdict |
+|---|---|---|
+| The manifest is signed with ed25519 over `domain‖bytes` at its exact parsed length | `src/sd_update/update_verify.c:305-322`, applied at `:788`; the `sig ed25519` block is mandatory at `:345` | carried in `sd_update` |
+| `keyset` rotations need the current roots, and a rotation signed by only one root is refused | `update_verify.c:560-583`, `:677-681`, `:707-737` | carried in `sd_update` |
+| Per-channel anti-rollback and an `expires` check (+ 30/14-day freshness) | `update_verify.c:793-801`, `update_state.c:240-256` (a write below the stored serial is refused), constants in `sd_update.h:39` | carried in `sd_update` |
+| Downloads only from the manifest bases and the GitHub asset hosts; redirects are followed by hand | `update_winhttp.c:96-114`, allow-list built at `update_engine.c:571-590` | carried in `sd_update` |
+| Size and SHA-256/SHA-512 are checked before a staged file is used | `update_engine.c:166-181`, `:596-645` | carried in `sd_update` |
+| **The shipping host knows the release roots** | `apps/shelldrive-host/update_ipc.c:30-31`: `k_trust = { NULL, 0, NULL, 0 }`, "No release roots in this build" | **absent** |
+
+This is the one place where a security property this document relies on has code behind it that the product never
+reaches: the verifier is complete, but with an empty root set nothing can be verified, and 04 §9 assumes a
+compiled-in release key. Until the roots are compiled in, the update path has *no* signature property at all — it is
+not "weak", it is unused. Recorded as a proposed `TM-R40` (12.9), because it is a release blocker for M4 rather than
+a defect of the verifier.
+
+### 12.5 DPAPI and the secret stores (TB-09, TB-15; T-53)
+
+| Property claimed (03 §4.2-§4.5) | Code | Verdict |
+|---|---|---|
+| DPAPI with per-target entropy and no UI | `src/sd_secret/secret.c:371-383` (`CryptProtectData`), `:385-414` (unprotect), `:416-421` (entropy = `com.librestatic.shelldrive/secret/v1/` + target) | carried |
+| Credential Manager for the user store: `CRED_TYPE_GENERIC`, persistence floor `LOCAL_MACHINE`, `ENTERPRISE` only when roaming is enabled | `secret.c:484-508`, `:536-570` | carried |
+| The service never uses Credential Manager; SYSTEM DPAPI only; a user store is redirected | `apps/shelldrive-host/service.c:3287-3299` (`svc_setup_secrets`) | carried |
+| `service\keys\` and `service\secrets\` carry a SYSTEM-only DACL | `service.c:331-333` (SDDL `D:PAI(A;OICI;FA;;;SY)`), applied at `:452-455` | carried |
+| Secret buffers are wiped | `src/sd_platform/secbuf.c:53` (`SecureZeroMemory` on free), DPAPI outputs and Cred blobs wiped at `secret.c:411`, `:562` | carried |
+| Crash dumps drop the stacks of threads that may hold secrets (TM-R30, TST-28) | none: no `MiniDumpWriteDump` and no `sd_dump_mark_sensitive` anywhere in the tree; `agent.c:3643` says "Crash dumps (03 §10.4) come later" | **absent** |
+
+### 12.6 Event Log (TB-08; T-43, T-46)
+
+| Property claimed (03 §10.3) | Code | Verdict |
+|---|---|---|
+| The source and message file are registered in order, and the message file is the host executable | `apps/shelldrive-host/svc_scm.c:360-366`, `service.c:820-831` | carried |
+| Entries are written through `ReportEventW` on the service's own source | `service.c:820-836` | carried |
+| Event 1200 (mutating op) carries profile, requestor SID, account, operation and remote path | `service.c:1078-1116` | carried |
+| Event 2300 (host-key announcement) carries host, new and dropped fingerprints | `service.c:1488-1498` | carried |
+| Event 3101 (pipe refusal) carries the SID and the reason, throttled to once per SID per 10 minutes | `service.c:3247-3263`, throttle table `service.c:188` | carried |
+| Events 3102 (folder/key refused) carry the path and the reason | `service.c:800-816` | carried |
+| Event 3100 (refusal counts) | no occurrence in code, headers or `l10n/svc` | **absent** |
+| All text comes from the six-locale catalog compiled into the binary | `l10n/svc/*.po` (six), generated header included at `service.c:39`, message table built in `apps/shelldrive-host/CMakeLists.txt` | carried |
+
+### 12.7 Service inputs (T-51, TM-R27)
+
+The checked-read rule is implemented and tested for the paths the service actually reads: identity files
+(`svc_folder.c`, `svc_file_read_trusted`), machine profiles (`service.c`, `svc_profile_read`) and the machine
+`known_hosts` (`svc_kh_read_check`). Every folder and the file are opened with `FILE_FLAG_OPEN_REPARSE_POINT` and
+checked on the handle (owner, DACL, size). Three gaps stay open and are recorded in `m5-notes.md`:
+
+- `settings.ini` is never read by the service, so there is nothing to check (`m5-notes.md:889-891`). A check on a
+  read that does not exist would be a fake; the check belongs to the change that introduces the read.
+- Between `svc_kh_read_check` and the mount's own open of the machine `known_hosts` the file can change
+  (`m5-notes.md:916-917`). Closing it needs the mount to take the bytes or keep the checked handle.
+- `AllowSystemProxySspi` cannot tell an explicitly configured proxy from a WPAD/PAC-discovered one in the system
+  configuration the service reads (`m5-notes.md:1077-1080`).
+
+### 12.8 Claims with no code behind them
+
+Collecting the "absent" verdicts and the open items that no code addresses:
+
+| # | Claim | Where it is claimed | State |
+|---|---|---|---|
+| 1 | Update artifacts are verified against a release key | 04 §9.2; T-66, T-67 | verifier complete, **no roots compiled in** (`update_ipc.c:30-31`) |
+| 2 | Crash dumps drop secret-bearing stacks and WER is not invoked after ours | 03 §10.4; TM-R30, TST-28 | no dump code at all |
+| 3 | Event 3100 reports refusal counts | 03 §10.3 | no code |
+| 4 | A global WebDAV export authorizes each member of `service_access`, groups included | 02 §7.7; T-52, G2/G7 | found absent (one owner SID, no groups, no service attach path); built in the same round (`m5-notes.md` Part 14), lab criteria G1–G3, G5 and the timing half of G7 still open |
+| 5 | Fast user switching and RDP sessions are tracked for the attention flow, with an admin session list | 03 §2.6 | session changes are only logged (`service.c:3485-3486`); no list is kept |
+| 6 | An elevated `cmd` reaches a WebDAV drive after `--elevated-view` | 03 §1.7.2; TM-R17(e) | the flag has no implementation (only a UI test names it) |
+| 7 | `settings.ini`, machine `known_hosts` and machine profile paths are checked as the service reads them | 03 §2.6 rule 1; TM-R27 | profiles and identity files yes; `settings.ini` never read; `known_hosts` has a check-to-use window |
+| 8 | `AllowSystemProxySspi` does not apply to a discovered proxy | 01 §5.2; TM-R10 | cannot distinguish discovered from configured proxies |
+| 9 | TST-23, TST-25 and TST-26 were executed | section 7 | not run; unit tests cover the rules, not a real admin token, XP, or a second session |
+
+### 12.9 Proposed additions (need acceptance)
+
+- **TM-R40** — 04 §9.2, §12.3; compile the release roots into the host (`update_ipc.c`), and fail the build when
+  the root table is empty in a release configuration. *Rationale:* 12.4; without it the updater has no signature
+  property.
+- **TM-R41** — 02 §7.7; give the WebDAV server a service mode: the server-level owner check yields to the
+  per-request `sd_vfs` check, and the authenticated connection carries the token's enabled, non-deny-only groups
+  so that `service_access` group entries match. *Rationale:* 12.2, 12.8 #4; it is the prerequisite of the attach
+  mechanism the M5 notes call for. *Implemented* in the same round (`m5-notes.md` Part 14); 02 §7.7 already
+  describes the behaviour, so only the acceptance of this note is needed.
+- **TM-R42** — 03 §10.3; either implement Event 3100 or drop it from the table and the catalog. *Rationale:* 12.6.
+- **TM-R43** — 03 §2.6; keep the admin session list (logon/logoff, RDP, FUS) for the attention flow, and say what
+  a global-drive prompt does when no administrator is logged on. *Rationale:* 12.8 #5.
+- **TM-R44** — 03 §2.6 rule 1; extend the checked read to `settings.ini` in the change that makes the service read
+  it, and close the `known_hosts` check-to-use window by passing the checked bytes to the mount. *Rationale:* 12.7.
+- **TM-R45** — 01 §5.2; teach the system-proxy resolver to report whether a proxy came from a PAC/WPAD discovery or
+  from a configured value, so `AllowSystemProxySspi` can be applied to the configured case only. *Rationale:* 12.7.
+
+---
+
 ## Changelog
 
+- M5 implementation review 2026-10-30: section 12 (pipes, loopback WebDAV, Dokany requestor check, update
+  signatures, DPAPI, Event Log, service inputs); eight "no code" findings and six proposed `TM-R40`-`TM-R45`.
+  The most serious are the empty update root table and the missing crash-dump filtering.
 - Final reconciliation (threat model) 2026-10-24: outcome note in the header; TST-05 says "never decoded" instead of
   "rejected"; TST-07, TST-13, TST-20 and TST-23 (per-SID quota, reserved instances, 64 KiB cap) follow D33, D40,
   D41 and 03 §2.2; decision notes on TM-R04, R13, R14, R24, R30; A-09 per-channel state; new section 11 (Q

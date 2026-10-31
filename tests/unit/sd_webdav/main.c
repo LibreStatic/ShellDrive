@@ -14,6 +14,8 @@ SD_TEST_DECL(webdav_values);
 SD_TEST_DECL(webdav_server_gate_before_auth);
 SD_TEST_DECL(webdav_server_auth_and_methods);
 SD_TEST_DECL(webdav_server_rejects_other_sid);
+SD_TEST_DECL(webdav_service_server_admits_a_member);
+SD_TEST_DECL(webdav_service_server_refuses_a_non_member);
 SD_TEST_DECL(webdav_server_read_only_export);
 SD_TEST_DECL(webdav_server_slowloris_and_quotas);
 SD_TEST_DECL(webdav_token_only_decision_matrix);
@@ -42,6 +44,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(webdav_server_gate_before_auth),
   SD_TEST_ENTRY(webdav_server_auth_and_methods),
   SD_TEST_ENTRY(webdav_server_rejects_other_sid),
+  SD_TEST_ENTRY(webdav_service_server_admits_a_member),
+  SD_TEST_ENTRY(webdav_service_server_refuses_a_non_member),
   SD_TEST_ENTRY(webdav_server_read_only_export),
   SD_TEST_ENTRY(webdav_server_slowloris_and_quotas),
   SD_TEST_ENTRY(webdav_server_ipv6_loopback),

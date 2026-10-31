@@ -737,6 +737,9 @@ static sd_err webdav_start(sd_mount *m)
   wc.label = m->label ? m->label : m->host;
   wc.owner_sid = m->owner_sid;
   wc.global = m->global_mount ? TRUE : FALSE;     /* TM-R19: token-only is always refused for global mounts */
+  /* 02 §7.7 attach: the service hosts the export and maps no drive of its own; each user's agent maps the UNC
+     that mount.attach_info returns. Dokany stays the pre-logon path (D11). */
+  wc.no_map = m->global_mount ? TRUE : FALSE;
   wc.token_only = m->token_only ? TRUE : FALSE;
   wc.token_only_confirmed = m->token_only_confirmed ? TRUE : FALSE;
   e = m->be->webdav_mount_start(m->vfs, &wc, &m->wm);
@@ -2435,6 +2438,10 @@ void sd_mount_get_attach(const sd_mount *cm, sd_mount_attach *out)
   out->letter = m->letter;
   out->mounted = m->state == SD_MOUNT_MOUNTED;
   out->webdav_port = m->wport;
+  if (m->wm && m->be->webdav_remote) {
+    (void)m->be->webdav_remote(m->wm, FALSE, out->webdav_remote, SD_COUNTOF(out->webdav_remote));
+    (void)m->be->webdav_remote(m->wm, TRUE, out->webdav_remote_xp, SD_COUNTOF(out->webdav_remote_xp));
+  }
   sd_mutex_unlock(&m->lock);
 }
 
