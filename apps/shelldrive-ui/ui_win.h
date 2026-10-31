@@ -50,6 +50,9 @@ void   ui_win_error(HWND owner, sd_msg_id msg, sd_err err);
 int    ui_win_copy_text(HWND owner, const wchar_t *text, size_t len);
 /* Sets the font of every child of wnd. */
 void   ui_win_apply_font(HWND wnd, HFONT font);
+/* PROPSHEETHEADER pfnCallback (with PSH_USECALLBACK): gives the sheet's own buttons (OK, Cancel, Back, Next,
+   Finish) the catalog texts. comctl32 takes them from its resources, in the language of Windows, not ours. */
+int CALLBACK ui_win_sheet_callback(HWND sheet, UINT msg, LPARAM lp);
 
 /* ---- ui_win.c: glue used by the main window and the control window ---- */
 void   ui_windows_command(UINT cmd);

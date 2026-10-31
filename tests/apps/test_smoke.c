@@ -513,7 +513,11 @@ SD_TEST(smoke_hostkey_commands)
   EXPECT(RUN(L"hostkey list smokehk.test", NULL) == 0 && strstr(r.out, "ssh-ed25519") != NULL, "hostkey list text");
   EXPECT(RUN(L"hostkey list nokey.test", NULL) == 0 && strstr(r.out, "No host key is stored") != NULL,
          "hostkey list empty");
-  EXPECT(RUN(L"hostkey list", NULL) == 2, "hostkey list needs a host");
+  /* hostkey list without a host (03 §6.1): every stored key of the user and machine stores */
+  EXPECT(RUN(L"hostkey list --json", NULL) == 0 && strstr(r.out, "\"host\":\"smokehk.test\"") != NULL &&
+         strstr(r.out, "\"store\":\"user\"") != NULL, "hostkey list all json");
+  EXPECT(RUN(L"hostkey list", NULL) == 0 && strstr(r.out, "smokehk.test") != NULL &&
+         strstr(r.out, "ssh-ed25519") != NULL, "hostkey list all text");
 
   wcscpy_s(p, MAX_PATH, g_root);
   wcscat_s(p, MAX_PATH, L"\\hkimp\\known_hosts");
@@ -524,6 +528,8 @@ SD_TEST(smoke_hostkey_commands)
   EXPECT(RUN(L"hostkey list imp.test --json", NULL) == 0 && strstr(r.out, "\"store\":\"user\"") != NULL,
          "imported key is listed");
   EXPECT(RUN(args, NULL) == 0 && strstr(r.out, "\"already_present\":1") != NULL, "import again keeps");
+  EXPECT(RUN(L"hostkey list --json", NULL) == 0 && strstr(r.out, "\"host\":\"imp.test\"") != NULL &&
+         strstr(r.out, "\"host\":\"smokehk.test\"") != NULL, "hostkey list all covers every host");
 
   EXPECT(RUN(L"hostkey remove smokehk.test --json", NULL) == 0, "hostkey remove");
   EXPECT(RUN(L"hostkey remove smokehk.test", NULL) == 3 && strstr(r.err, "No host key of") != NULL,
