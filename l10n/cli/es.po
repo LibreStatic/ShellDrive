@@ -839,6 +839,11 @@ msgctxt "cli.service.unavailable"
 msgid "The ShellDrive service is not running or not installed."
 msgstr "El servicio de ShellDrive no está en ejecución o no está instalado."
 
+#. Printed when the service pipe refuses this logon session, e.g. a batch logon of a service_access member (exit 9).
+msgctxt "cli.service.access_denied"
+msgid "Access to the ShellDrive service is denied."
+msgstr "El acceso al servicio de ShellDrive está denegado."
+
 msgctxt "cli.service.none"
 msgid "No global drives are mounted."
 msgstr "No hay unidades globales montadas."

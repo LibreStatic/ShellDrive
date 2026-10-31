@@ -47,7 +47,7 @@ static void utf8_of(const wchar_t *w, char *out, size_t cch)
 }
 
 
-int connect_service(sd_ipc_conn **c)
+sd_err connect_service(sd_ipc_conn **c)
 {
   sd_ipc_hello h;
   memset(&h, 0, sizeof(h));
@@ -55,7 +55,7 @@ int connect_service(sd_ipc_conn **c)
   h.client_version = SD_VERSION_STRING;
   h.lang = sd_l10n_lang_code(sd_l10n_lang());
   h.caps = 0;
-  return sd_ipc_connect(SD_IPC_SERVICE, &h, 0, CALL_TIMEOUT, c) == SD_OK;
+  return sd_ipc_connect(SD_IPC_SERVICE, &h, 0, CALL_TIMEOUT, c);
 }
 
 /* Request body naming a drive ("X:" or "X:\") or a profile (built with the JSON writer: names may hold any text). */
@@ -406,7 +406,7 @@ static void query_pipe(svc_pipe_report *p)
   sd_json *res = NULL, *ev = NULL;
   int healthy = 0;
   memset(p, 0, sizeof(*p));
-  if (!connect_service(&c))
+  if (connect_service(&c) != SD_OK)
     return;
   p->reachable = 1;
   if (sd_ipc_call_raw(c, "selftest", NULL, 0, CALL_TIMEOUT, &res, &err) == SD_OK) {
@@ -659,6 +659,7 @@ int cli_run_secret(const cli_args *a)
   char spec[400], pw[1024];
   int set = a->positional != NULL && wcscmp(a->positional, L"set") == 0;
   int rc;
+  sd_err e_connect;
   pw[0] = 0;
   if (!cli_is_elevated()) {
     say(SD_MSG_CLI_SECRET_NEED_ADMIN, NULL, 0, 1);
@@ -676,10 +677,10 @@ int cli_run_secret(const cli_args *a)
       return secret_fail(a, "usage", "the password is empty", SD_MSG_CLI_SECRET_EMPTY, 2);
     }
   }
-  if (!connect_service(&c)) {
+  e_connect = connect_service(&c);
+  if (e_connect != SD_OK) {
     SecureZeroMemory(pw, sizeof(pw));
-    say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-    return 8;
+    return service_connect_fail(a, e_connect);
   }
   sd_wr_init_secret(&w, 1024);
   {
@@ -721,6 +722,7 @@ int cli_run_service(const cli_args *a)
 {
   sd_ipc_conn *c = NULL;
   int rc;
+  sd_err ce;
   const wchar_t *verb = a->positional;
   if (verb == NULL)
     return 2;
@@ -735,10 +737,9 @@ int cli_run_service(const cli_args *a)
     say(SD_MSG_CLI_SERVICE_NEED_ADMIN, NULL, 0, 1);
     return 9;
   }
-  if (!connect_service(&c)) {
-    say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-    return 8;
-  }
+  ce = connect_service(&c);
+  if (ce != SD_OK)
+    return service_connect_fail(a, ce);
   if (is_verb(verb, L"list"))
     rc = run_list(a, c);
   else if (is_verb(verb, L"mount"))

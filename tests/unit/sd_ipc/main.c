@@ -19,6 +19,8 @@ SD_TEST_DECL(ipc_instance_quota_and_rate_limit);
 SD_TEST_DECL(ipc_first_instance_detects_squatting);
 SD_TEST_DECL(ipc_client_rejects_foreign_owner);
 SD_TEST_DECL(ipc_client_rejects_squatted_pipe);
+SD_TEST_DECL(ipc_connect_denied_is_access_denied);
+SD_TEST_DECL(service_pipe_sd_matches_design);
 SD_TEST_DECL(ipc_connect_without_server);
 SD_TEST_DECL(ipc_instance_turnover_under_load);
 SD_TEST_DECL(m3_topic_validation);
@@ -47,6 +49,8 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(ipc_first_instance_detects_squatting),
   SD_TEST_ENTRY(ipc_client_rejects_foreign_owner),
   SD_TEST_ENTRY(ipc_client_rejects_squatted_pipe),
+  SD_TEST_ENTRY(ipc_connect_denied_is_access_denied),
+  SD_TEST_ENTRY(service_pipe_sd_matches_design),
   SD_TEST_ENTRY(ipc_connect_without_server),
   SD_TEST_ENTRY(ipc_instance_turnover_under_load),
   SD_TEST_ENTRY(m3_topic_validation),

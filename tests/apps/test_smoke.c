@@ -660,6 +660,39 @@ SD_TEST(smoke_hostkey_add_machine)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
 }
 
+/* service list (03 §6.2, TM): without the service the CLI reports "not running or not installed" (exit 8); a service
+   pipe that exists but refuses this logon session (the DACL admits interactive sessions only, 03 §2.2) must come back
+   as access denied (exit 9), never as "not running" — a batch logon of a service_access member used to read exactly
+   that way. */
+SD_TEST(smoke_service_list_denied_vs_unavailable)
+{
+  static run_result r;
+  wchar_t sid[192], name[512];
+  DWORD session = 0;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  SECURITY_ATTRIBUTES sa;
+  HANDLE squat = INVALID_HANDLE_VALUE;
+  SD_REQUIRE(setup());
+  EXPECT(RUN(L"service list", NULL) == 8 && strstr(r.err, "not running or not installed") != NULL,
+         "service list without the service is unavailable");
+  SD_REQUIRE(sd_ipc_current_identity(sid, SD_COUNTOF(sid), &session) == SD_OK);
+  SD_REQUIRE(sd_ipc_pipe_name(SD_IPC_SERVICE, sid, session, name, SD_COUNTOF(name)) == SD_OK);
+  SD_REQUIRE(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)", SDDL_REVISION_1, &sd, NULL));
+  sa.nLength = sizeof(sa);
+  sa.lpSecurityDescriptor = sd;
+  sa.bInheritHandle = FALSE;
+  squat = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,
+                           4, 4096, 4096, 0, &sa);
+  LocalFree(sd);
+  if (squat == INVALID_HANDLE_VALUE)
+    return;   /* the name could not be claimed (a leftover server): the unit suite covers the mapping */
+  EXPECT(RUN(L"service list", NULL) == 9 && strstr(r.err, "denied") != NULL,
+         "a refused service connect is access denied");
+  EXPECT(RUN(L"--json service list", NULL) == 9 && strstr(r.out, "\"code\":\"access_denied\"") != NULL &&
+         strstr(r.out, "\"exit_code\":9") != NULL, "refused service connect json is access_denied/9");
+  CloseHandle(squat);
+}
+
 /* diag bench (03 §6.1, 02 §11) through the real CLI: usage errors, a drive that is not there, and short runs into a
    folder of the test (SHELLDRIVE_TEST_BENCH_ROOT, test builds only). Timings are never asserted: the reports must carry
    the structure and the numbers, and the folder must be empty again afterwards. */
