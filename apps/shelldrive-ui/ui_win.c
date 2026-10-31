@@ -195,6 +195,20 @@ void ui_win_message(HWND owner, const wchar_t *text, UINT flags)
   (void)ui_win_task(owner, text, NULL, NULL, flags);
 }
 
+/* 1 when needle occurs in s. Not the CRT wcsstr: its x86 version dispatches to SSE4.2 code that the x86-ia32 ISA
+   audit has not reviewed (tools/sd-isacheck). */
+static int text_contains(const wchar_t *s, const wchar_t *needle)
+{
+  size_t n = wcslen(needle);
+  if (n == 0)
+    return 1;
+  for (; *s != L'\0'; s++) {
+    if (wcsncmp(s, needle, n) == 0)
+      return 1;
+  }
+  return 0;
+}
+
 void ui_win_error(HWND owner, sd_msg_id msg, sd_err err)
 {
   wchar_t code[64];
@@ -203,7 +217,7 @@ void ui_win_error(HWND owner, sd_msg_id msg, sd_err err)
   t = ui_format1(msg, "code", code);
   if (t != NULL) {
     /* the code goes in the expandable details, unless the catalog message already names it inline */
-    details = wcsstr(t, code) != NULL ? NULL : ui_format1(SD_MSG_UI_WIN_ERROR_DETAILS, "code", code);
+    details = text_contains(t, code) ? NULL : ui_format1(SD_MSG_UI_WIN_ERROR_DETAILS, "code", code);
     (void)ui_win_task(owner, t, NULL, details, MB_OK | MB_ICONERROR);
     sd_free(details);
     sd_free(t);

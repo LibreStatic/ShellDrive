@@ -15,6 +15,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_platform.h"
+#include "sd_platform/sd_time.h"
 #include "ui_dpi.h"
 #include "ui_flyout.h"
 #include "ui_int.h"
@@ -78,7 +79,7 @@ typedef struct fly_state {
 
 static fly_state g_fl;
 static int g_closing;
-static DWORD g_closed_tick;
+static uint64_t g_closed_tick;
 static int g_class_ok;
 
 #define S(v) ui_dpi_scale((v), g_fl.dpi)
@@ -314,7 +315,7 @@ static void close_flyout(int by_deactivation)
     return;
   g_closing = 1;
   if (by_deactivation)
-    g_closed_tick = GetTickCount();
+    g_closed_tick = sd_tick_ms();
   DestroyWindow(w);
   g_closing = 0;
 }
@@ -555,12 +556,13 @@ void ui_flyout_open(void)
   HMONITOR mon;
   int have_rect, client_h, x, y, w, gap;
   RECT wr;
+  HWND hwnd;
 
   if (g_fl.hwnd != NULL) {
     close_flyout(0);                      /* a second click on the icon closes it */
     return;
   }
-  if (g_closed_tick != 0 && GetTickCount() - g_closed_tick < FLY_REOPEN_MS)
+  if (g_closed_tick != 0 && sd_tick_ms() - g_closed_tick < FLY_REOPEN_MS)
     return;                               /* this click is what deactivated and closed it */
   icon_anchor(&anchor, &have_rect);
   GetCursorPos(&cur);
@@ -570,13 +572,14 @@ void ui_flyout_open(void)
   if (mon == NULL || !GetMonitorInfoW(mon, &mi)) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
   }
-  if (create_flyout(mi.rcWork.right - 10, mi.rcWork.bottom - 10) == NULL)
+  hwnd = create_flyout(mi.rcWork.right - 10, mi.rcWork.bottom - 10);
+  if (hwnd == NULL)
     return;
   client_h = layout();
   gap = S(FLY_SCREEN_GAP);
   /* bottom right of the work area; centered on the icon when the shell tells where it is */
   fit_window(client_h);
-  GetWindowRect(g_fl.hwnd, &wr);
+  GetWindowRect(hwnd, &wr);
   w = wr.right - wr.left;
   x = have_rect ? anchor.x - w / 2 : mi.rcWork.right - w - gap;
   if (x + w > mi.rcWork.right - gap)
@@ -586,9 +589,9 @@ void ui_flyout_open(void)
   y = mi.rcWork.bottom - (wr.bottom - wr.top) - gap;
   if (y < mi.rcWork.top)
     y = mi.rcWork.top;
-  SetWindowPos(g_fl.hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-  ShowWindow(g_fl.hwnd, SW_SHOW);
-  SetForegroundWindow(g_fl.hwnd);
+  SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+  ShowWindow(hwnd, SW_SHOW);
+  SetForegroundWindow(hwnd);
   SetFocus(g_fl.rows > 0 ? g_fl.row[0].check : g_fl.open);
 }
 

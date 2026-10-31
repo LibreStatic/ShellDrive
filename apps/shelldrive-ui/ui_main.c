@@ -24,6 +24,7 @@
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
+#include "sd_platform/sd_time.h"
 #include "ui_theme.h"
 #include "ui_dpi.h"
 #include "ui_int.h"
@@ -1942,9 +1943,9 @@ static const ui_shot_row k_shot_rows[4] = {
 
 static void pump_for(DWORD ms)
 {
-  DWORD t0 = GetTickCount();
+  uint64_t t0 = sd_tick_ms();
   MSG msg;
-  while (GetTickCount() - t0 < ms) {
+  while (sd_tick_ms() - t0 < ms) {
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
