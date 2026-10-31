@@ -15,9 +15,10 @@ extension (`apps/shelldrive-shellext`) draws nothing of its own beyond menu bitm
 ## 1. Where the UI stands (survey, 2026-10-31)
 
 - Toolkit (03 §7.1): pure Win32 and comctl32 v6 from the manifest, dialogs generated in memory from C tables with a
-  measuring layout pass (`ui_dlg.c`), property sheets for the profile editor (`ui_editor.c`) and a `PSH_WIZARD97`
-  wizard (`ui_wizard.c`). Main window (`ui_main.c`): menu bar, flat text-only toolbar, report ListView with groups,
-  status bar; `COLOR_BTNFACE` class brush.
+  measuring layout pass (`ui_dlg.c`), property sheets for the profile editor (`ui_editor.c`, capped to the work area
+  with scrolling pages) and a `PSH_WIZARD97` wizard (`ui_wizard.c`); both sheets get localized buttons through
+  `ui_win_sheet_callback`. Main window (`ui_main.c`): menu bar, flat text-only toolbar, report ListView with groups,
+  status bar with the mounted-drive count; `COLOR_BTNFACE` class brush.
 - Font: the `SPI_GETNONCLIENTMETRICS` message font, rescaled to the window DPI (`ui_win_font`): Tahoma on XP, Segoe
   UI on Vista and later. No theme fonts (`TEXT_MAININSTRUCTION`), no Segoe UI Variable.
 - DPI (03 §7.3, `ui_dpi.c`): PerMonitorV2 on 10 1703+, system DPI elsewhere, `WM_DPICHANGED` re-runs the layout.
