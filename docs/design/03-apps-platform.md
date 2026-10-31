@@ -1675,6 +1675,9 @@ usage synopsis (option names and syntax are not translated). Help wraps at the c
 
 ## 7. Tray app and main window
 
+A proposal for OS-tiered rendering (Classic, Aero, Fluent) that would amend 7.1, 7.4 and 11 is in
+[`06-ui-tiers.md`](06-ui-tiers.md); until it is accepted, this section stands.
+
 ### 7.1 Toolkit rules
 
 - Pure Win32 + common controls v6 (ListView, TreeView, Toolbar, Tab, PropertySheet, Link control `SysLink` (v6,
