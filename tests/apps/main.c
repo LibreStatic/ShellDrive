@@ -24,6 +24,7 @@ SD_TEST_DECL(m3_prompt_deadline_timeout);
 SD_TEST_DECL(m3_queue_evicts_and_drains_to_ui);
 SD_TEST_DECL(m3_initiator_gone_keeps_prompts_for_ui);
 SD_TEST_DECL(m3_initiator_gone_without_ui_cancels);
+SD_TEST_DECL(m3_prompt_list_offers_delivered_prompt_again);
 SD_TEST_DECL(m3_new_methods_and_list_warnings);
 SD_TEST_DECL(m4_events_recent_history_and_limits);
 SD_TEST_DECL(m4_update_consent_and_disabled_check);
@@ -84,6 +85,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(m3_queue_evicts_and_drains_to_ui),
   SD_TEST_ENTRY(m3_initiator_gone_keeps_prompts_for_ui),
   SD_TEST_ENTRY(m3_initiator_gone_without_ui_cancels),
+  SD_TEST_ENTRY(m3_prompt_list_offers_delivered_prompt_again),
   SD_TEST_ENTRY(m3_new_methods_and_list_warnings),
   SD_TEST_ENTRY(m4_events_recent_history_and_limits),
   SD_TEST_ENTRY(m4_update_consent_and_disabled_check),

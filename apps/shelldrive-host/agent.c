@@ -1194,18 +1194,26 @@ static void wr_u64(sd_wr *w, uint64_t v)
   }
 }
 
-/* prompt.request: the stored data object (without its closing brace) plus queued and the remaining
-   deadline in ms at send time (03 §2.5, 1.7.4). `out` must be initialized by the caller. */
+/* The data object of prompt.request: the stored fields plus queued and the remaining deadline in ms at
+   send time (03 §2.5, 1.7.4). prompt.list emits the same object for every prompt it still holds
+   (03 §2.1 row 11), so a UI that (re)connects late can show the dialogs it was not sent. `out` must be
+   initialized. */
+static void prompt_request_data(const host_prompt *r, int queued, uint64_t now, sd_wr *out)
+{
+  uint64_t remain = r->deadline > now ? r->deadline - now : 0;
+  sd_wr_bytes(out, r->body, r->body_len);
+  wr_raw(out, queued ? ",\"queued\":true,\"deadline_ms\":" : ",\"queued\":false,\"deadline_ms\":");
+  wr_u64(out, remain);
+  wr_raw(out, "}");
+}
+
+/* prompt.request: the data object above as one event frame. `out` must be initialized by the caller. */
 static sd_err prompt_request_event(const host_prompt *r, int queued, uint64_t now, sd_wr *out)
 {
   sd_wr d;
   sd_err e;
-  uint64_t remain = r->deadline > now ? r->deadline - now : 0;
   sd_wr_init(&d, r->body_len + 128);
-  sd_wr_bytes(&d, r->body, r->body_len);
-  wr_raw(&d, queued ? ",\"queued\":true,\"deadline_ms\":" : ",\"queued\":false,\"deadline_ms\":");
-  wr_u64(&d, remain);
-  wr_raw(&d, "}");
+  prompt_request_data(r, queued, now, &d);
   e = sd_ipc_build_event("prompt.request", (const char *)d.p, d.len, out);
   sd_wr_free(&d);
   return e;
@@ -1578,6 +1586,7 @@ static void ipc_on_subscribe(void *ctx, sd_ipc_client *client, const char *topic
   if (strcmp(topic, "prompt") != 0 || !(sd_ipc_client_caps(client) & SD_IPC_CAP_PROMPTS_UI))
     return;
   cid = sd_ipc_client_id(client);
+  SD_LOGI("agent", "client %llu subscribed to prompt", (unsigned long long)cid);
   sd_mutex_lock(&g.lock);
   for (;;) {
     host_prompt *r = NULL, *o;
@@ -3044,7 +3053,8 @@ static sd_err handle_prompt_answer(sd_ipc_client *client, const sd_json *params,
   return SD_OK;
 }
 
-/* prompt.list {}: the open and queued prompts (03 §2.1 row 11). */
+/* prompt.list {}: the open and queued prompts, each with the fields of prompt.request (03 §2.1 row 11),
+   so a UI that (re)connects late shows the dialogs of prompts it was not sent. */
 static sd_err handle_prompt_list(sd_json_writer *res)
 {
   host_prompt *r;
@@ -3055,14 +3065,13 @@ static sd_err handle_prompt_list(sd_json_writer *res)
   for (r = g.prompts; r; r = r->next) {
     if (r->expire)
       continue;
-    sd_jw_obj_begin(res);
-    sd_jw_key(res, "prompt_id"); sd_jw_cstr(res, r->pid);
-    sd_jw_key(res, "mount_id"); sd_jw_cstr(res, r->mount_id);
-    sd_jw_key(res, "profile_id"); sd_jw_cstr(res, r->profile_id);
-    sd_jw_key(res, "kind"); sd_jw_cstr(res, r->kind);
-    sd_jw_key(res, "queued"); sd_jw_bool(res, r->queued);
-    sd_jw_key(res, "deadline_ms"); sd_jw_int(res, (int64_t)(r->deadline > now ? r->deadline - now : 0));
-    sd_jw_obj_end(res);
+    {
+      sd_wr d;
+      sd_wr_init(&d, r->body_len + 128);
+      prompt_request_data(r, r->queued, now, &d);
+      sd_jw_raw(res, (const char *)d.p, d.len);
+      sd_wr_free(&d);
+    }
   }
   sd_jw_arr_end(res);
   sd_mutex_unlock(&g.lock);
@@ -3491,6 +3500,7 @@ static void ipc_on_disconnect(void *ctx, uint64_t client_id)
 {
   uint64_t *p = (uint64_t *)sd_alloc(sizeof(uint64_t));
   SD_UNUSED(ctx);
+  SD_LOGI("agent", "client %llu disconnected", (unsigned long long)client_id);
   if (p == NULL) return;
   *p = client_id;
   post(NULL, work_cancel_client, p);

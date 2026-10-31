@@ -261,7 +261,7 @@ static DWORD WINAPI ipc_thread(void *arg)
       } else {
         sd_json_free(res);
       }
-      /* the open prompts of the agent: dialogs for prompts it no longer holds are closed (ui_prompt.c) */
+      /* the open prompts of the agent: dialogs it no longer holds are closed, ones it still holds are shown again (ui_prompt.c) */
       if (sd_ipc_conn_has_feature(c, "prompt.list")) {
         res = NULL;
         memset(&err, 0, sizeof(err));

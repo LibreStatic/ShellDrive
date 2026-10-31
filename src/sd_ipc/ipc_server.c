@@ -224,7 +224,7 @@ static void on_connected(sd_ipc_server *s)
   c->next = s->clients;
   s->clients = c;
   sd_mutex_unlock(&s->lock);
-  SD_LOGD("ipc", "client %llu connected", (unsigned long long)c->id);
+  SD_LOGI("ipc", "client %llu connected", (unsigned long long)c->id);
   /* 2.2 (TM-R25): the class of the instance is decided here, from the token, not at hello. The reserved instances and
      the hello deadline of the service depend on it, so a connection that never says hello is counted correctly. */
   c->connect_ms = sd_tick_ms();

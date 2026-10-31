@@ -527,7 +527,7 @@ implemented in M3 and are not listed in `hello` `features` (2.8).
 | `cache.clear {profile_id \| mount_id \| target \| all, force?}` | x | x (admin, M5) | M3 (agent): drops the memory blocks and the disk-tier files of the matching mounts. While write-behind data is queued on one of them the whole request is refused with `write_behind_pending` (busy, exit 8) unless `force`; queued data is never dropped by a clear |
 | `config.reload {scope?}` | x (user) | x (admin, M5) | reloads `settings.ini` and counts the profiles. Reply `{profiles:{loaded, errors:[]}, settings: "reloaded"\|"unchanged", restart_required:[]}`. `scope: "machine"` on the agent is `unsupported`. `restart_required` is empty in M3 |
 | `prompt.answer {prompt_id, action, responses?, save?, save_comment?}` | x | x (admin, elevated, M5) | `action` accept, once, answer, reject or cancel. The first accepted answer wins; a second answer, or one for a prompt that is not open, is `not_found` (2.5) |
-| `prompt.list` | x | x (admin, M5) | `{prompts:[{prompt_id, mount_id, profile_id, kind, queued, deadline_ms}]}`, `deadline_ms` is the time left |
+| `prompt.list` | x | x (admin, M5) | `{prompts:[...]}`, one entry per prompt the agent or service still holds, with the fields of `prompt.request` plus `queued` and `deadline_ms`, the time left. A UI that (re)connects builds the dialogs of the entries it is not already showing |
 | `log.tail {lines?, cursor?, level?, component?, follow?}` | x | x (admin, M5) | the ring of 4096 records (2.4.1). `follow: true` is `unsupported` in M3 (the `log` topic is M4) |
 | `selftest` | x | x | `{healthy, checks:[{name, result: pass\|fail\|skip, code?, detail}]}`; the CLI maps `healthy: false` to exit 17 |
 | `diag.collect` | x | x (admin, M5) | M4 (10.5) |
