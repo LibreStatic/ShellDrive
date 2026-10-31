@@ -14,6 +14,8 @@
 #include "ui_dlg.h"
 #include "ui_int.h"
 #include "ui_measure.h"
+#include "ui_theme.h"
+#include "ui_win.h"
 
 #define IMP_WIDTH      340
 #define IMP_LIST       1600            /* the list view (created over the placeholder edit) */
@@ -138,8 +140,8 @@ static void load_source(imp_ctx *c, int putty)
   else
     e = sd_import_ssh_config_file(NULL, &env, &c->res);
   if (e != SD_OK && c->res.count == 0 && c->res.nskipped == 0) {
-    MessageBoxW(c->dlg, sd_l10n_get(putty ? SD_MSG_UI_IMPORT_ERROR_PUTTY : SD_MSG_UI_IMPORT_ERROR_OPENSSH),
-                L"ShellDrive", MB_OK | MB_ICONWARNING);
+    ui_win_task(c->dlg, sd_l10n_get(putty ? SD_MSG_UI_IMPORT_ERROR_PUTTY : SD_MSG_UI_IMPORT_ERROR_OPENSSH), NULL,
+                NULL, MB_OK | MB_ICONWARNING);
     c->loaded = 0;
     SendMessageW(c->list, LVM_DELETEALLITEMS, 0, 0);
     return;
@@ -168,7 +170,7 @@ static int import_checked(imp_ctx *c)
   }
   e = sd_import_write(&c->res, &written);
   if (e != SD_OK && written == 0) {
-    MessageBoxW(c->dlg, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), L"ShellDrive", MB_OK | MB_ICONERROR);
+    ui_win_task(c->dlg, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), NULL, NULL, MB_OK | MB_ICONERROR);
     return 0;
   }
   if (written > 0) {
@@ -202,6 +204,7 @@ static INT_PTR CALLBACK import_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     SendMessageW(c->list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_LABELTIP);
     set_list_columns(c->list);
     SendMessageW(c->list, WM_SETFONT, SendMessageW(hwnd, WM_GETFONT, 0, 0), MAKELPARAM(TRUE, 0));
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   }
   case WM_COMMAND:

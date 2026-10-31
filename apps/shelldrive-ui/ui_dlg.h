@@ -15,6 +15,12 @@
 #include "sd/base.h"
 #include "sd_base/sd_err.h"
 
+/* Vista and later (commctrl.h declares them only for those targets). */
+#ifndef BS_COMMANDLINK
+#define BS_COMMANDLINK    0x0000000EL
+#define BS_DEFCOMMANDLINK 0x0000000FL
+#endif
+
 #define UI_DLG_MAX_ITEMS  40
 #define UI_DLG_TEXT_MAX   512           /* UTF-16 units of one control text, no terminator */
 #define UI_DLG_TITLE_MAX  256
@@ -48,6 +54,9 @@ typedef struct ui_dlg {
   int cursor;                           /* next free y, dialog units */
   int margin;                           /* left, right and bottom margin */
   int min_height;                       /* dialog units: the height is at least this (pages of one sheet) */
+  int heading_pct;                      /* size of the main instruction font relative to the dialog font, percent (0 = 100) */
+  int command_links;                    /* 1: ui_dlg_commands builds BS_COMMANDLINK buttons, 0: plain push buttons */
+  int icon_left, icon_bottom;           /* the icon column of ui_dlg_icon: content above icon_bottom is indented to icon_left */
   DWORD style;                          /* dialog style, DS_SETFONT is added by ui_dlg_build */
   ui_dlg_measure_fn measure;
   void *measure_ctx;
@@ -61,6 +70,22 @@ sd_err ui_dlg_init(ui_dlg *d, const wchar_t *title, int width_dlu, const wchar_t
 
 /* Static text, full width, wrapped, measured. extra: SS_* style bits. */
 sd_err ui_dlg_text(ui_dlg *d, WORD id, const wchar_t *text, DWORD extra);
+
+/* The main instruction: static text like ui_dlg_text, laid out for a font heading_pct percent of the dialog font
+   (the page sets the font and color at run time: ui_prompt.c). The measuring is scaled, so a larger font still
+   fits its lines. */
+sd_err ui_dlg_heading(ui_dlg *d, WORD id, const wchar_t *text, DWORD extra);
+
+/* A 32 x 32 pixel icon static (SS_ICON) at the left of the next content; the page sets the icon with STM_SETICON.
+   The text controls added while the cursor is above the icon's bottom are indented to its right. */
+sd_err ui_dlg_icon(ui_dlg *d, WORD id);
+
+/* Command links (Vista and later, command_links = 1): one BS_COMMANDLINK push button per choice, full width,
+   stacked, each tall enough for its text and its note (notes[i] may be NULL; the page sets it with BCM_SETNOTE and
+   re-measures with BCM_GETIDEALSIZE). With command_links = 0 these are the plain buttons of ui_dlg_buttons with
+   the same texts and the notes are not shown. def_id: the default button (0 = none: trust decisions, TM-R03). */
+sd_err ui_dlg_commands(ui_dlg *d, const WORD *ids, const wchar_t *const *texts, const wchar_t *const *notes,
+                       size_t n, WORD def_id);
 
 /* Single-line edit, full width. extra: ES_* bits (ES_PASSWORD, ES_READONLY). */
 sd_err ui_dlg_edit(ui_dlg *d, WORD id, DWORD extra);
@@ -95,5 +120,10 @@ sd_err ui_dlg_parse_check(const unsigned char *blob, size_t bytes, size_t *count
 #define UI_DLG_CHECK_HEIGHT 10
 #define UI_DLG_BUTTON_HEIGHT 14
 #define UI_DLG_GAP          4
+#define UI_DLG_ICON_CX      22             /* 32 pixels at 96 DPI with a 9 pt font, in dialog units (x) */
+#define UI_DLG_ICON_CY      18
+#define UI_DLG_ICON_GAP     6
+#define UI_DLG_LINK_PAD     8              /* top and bottom padding of a command link, dialog units */
+#define UI_DLG_LINK_INDENT  14             /* left of a command link text (the arrow), dialog units */
 
 #endif /* SD_UI_DLG_H */

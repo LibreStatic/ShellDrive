@@ -322,17 +322,23 @@ static sd_err build_type_dialog(const ui_hki *h, unsigned char **blob, size_t *l
 static void stop_source(HWND owner, ui_hki_source src)
 {
   sd_settings s;
-  wchar_t *text;
+  wchar_t *text, *title;
   const wchar_t *name = src == UI_HKI_SRC_PUTTY ? L"PuTTY" : L"OpenSSH";
   sd_err e;
+  int answer;
   text = ui_format1(SD_MSG_UI_HKI_STOP_CONFIRM, "source", name);
-  if (text == NULL)
-    return;
-  if (MessageBoxW(owner, text, L"ShellDrive", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+  title = ui_format1(SD_MSG_UI_HKI_STOP_TITLE, "source", name);
+  if (text == NULL || title == NULL) {
     sd_free(text);
+    sd_free(title);
     return;
   }
+  /* No is the default button: Enter never turns a source off */
+  answer = ui_win_task(owner, title, text, NULL, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
   sd_free(text);
+  sd_free(title);
+  if (answer != IDYES)
+    return;
   sd_settings_defaults(&s);
   (void)sd_settings_load(&s);
   if (src == UI_HKI_SRC_PUTTY)

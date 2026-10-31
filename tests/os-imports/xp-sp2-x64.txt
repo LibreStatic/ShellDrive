@@ -373,6 +373,7 @@ user32.dll!DispatchMessageW
 user32.dll!FindWindowW
 user32.dll!GetDlgItemTextW   # NT 3.1+ (host key manager dialogs)
 user32.dll!GetSysColor
+user32.dll!GetSysColorBrush   # NT 3.1+ (dark dialog brushes)
 user32.dll!GetMessageW
 user32.dll!GetProcessWindowStation
 user32.dll!GetUserObjectInformationW
@@ -501,6 +502,7 @@ user32.dll!InsertMenuItemW
 gdi32.dll!CreateCompatibleDC
 gdi32.dll!DeleteDC
 gdi32.dll!GetTextExtentPoint32W
+gdi32.dll!GetTextFaceW   # NT 3.1+ (dialog font probing)
 gdi32.dll!GetTextMetricsW
 gdi32.dll!SelectObject
 kernel32.dll!MulDiv
@@ -530,6 +532,7 @@ user32.dll!EndDialog
 user32.dll!GetParent
 user32.dll!GetPropW
 user32.dll!ScreenToClient
+user32.dll!RemovePropW      # NT 3.1+ (theme window properties)
 user32.dll!SetPropW
 user32.dll!wsprintfW
 user32.dll!MapWindowPoints

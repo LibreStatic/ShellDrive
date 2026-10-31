@@ -969,6 +969,7 @@ static LRESULT CALLBACK st_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_st.dpi = ui_dpi_window(hwnd);
     g_st.font = ui_win_font(g_st.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     return 0;
   case WM_SIZE:

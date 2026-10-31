@@ -169,7 +169,7 @@ static void handle_mount_file(const wchar_t *path)
   if (e == SD_OK && ui_profiles_load() == SD_OK)
     p = ui_profiles_find_id(id);
   if (e != SD_OK || p == NULL) {
-    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_MOUNT_FILE_INVALID), L"ShellDrive", MB_OK | MB_ICONWARNING);
+    (void)ui_win_task(g_app.main, sd_l10n_get(SD_MSG_UI_MOUNT_FILE_INVALID), NULL, NULL, MB_OK | MB_ICONWARNING);
     return;
   }
   if (ui_file_has_mark(path)) {
@@ -593,11 +593,11 @@ void ui_app_on_reply(ui_ipc_reply *r)
       SD_LOGI("ui", "prompt answer not accepted by the agent (%s)", sd_err_name(r->err));
   } else if (r->kind == UI_IPC_MOUNT && r->err != SD_OK) {
     /* a refused or failed mount: the mount state events say what happened; this says the request did not start */
-    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_ERROR_MOUNT), L"ShellDrive", MB_OK | MB_ICONERROR);
+    (void)ui_win_task(g_app.main, sd_l10n_get(SD_MSG_UI_ERROR_MOUNT), NULL, NULL, MB_OK | MB_ICONERROR);
   } else if (r->kind == UI_IPC_UNMOUNT && r->err != SD_OK) {
     wchar_t *t = ui_format1(SD_MSG_UI_ERROR_UNMOUNT, "drive", r->drive);
     if (t != NULL) {
-      MessageBoxW(g_app.main, t, L"ShellDrive", MB_OK | MB_ICONERROR);
+      (void)ui_win_task(g_app.main, t, NULL, NULL, MB_OK | MB_ICONERROR);
       sd_free(t);
     }
   }
@@ -909,15 +909,21 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-prompts") == 0) {
+    ui_theme_init();                    /* --theme=<...> picks the main instruction style and the command links */
     rc = ui_prompt_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-editor") == 0) {
+    ui_theme_init();
     rc = ui_editor_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-windows") == 0) {
+    ui_theme_init();
     rc = ui_windows_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-wizard") == 0) {

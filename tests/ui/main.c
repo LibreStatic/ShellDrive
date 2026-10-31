@@ -157,6 +157,14 @@ SD_TEST_DECL(theme_dark_follows_the_app_theme_and_the_helpers);
 SD_TEST_DECL(theme_titlebar_attr_19_20_or_none);
 SD_TEST_DECL(theme_helpers_allow_list);
 SD_TEST_DECL(theme_forced_tier_overrides_the_os);
+SD_TEST_DECL(taskdlg_map_buttons_and_default);
+SD_TEST_DECL(taskdlg_map_icons);
+SD_TEST_DECL(taskdlg_map_rejects_what_a_task_dialog_lacks);
+SD_TEST_DECL(taskdlg_plain_text_joins_the_parts);
+SD_TEST_DECL(dlg_heading_is_taller_with_a_larger_font);
+SD_TEST_DECL(dlg_icon_indents_the_text_beside_it);
+SD_TEST_DECL(dlg_commands_are_links_or_plain_buttons);
+SD_TEST_DECL(dlg_commands_mark_only_the_requested_default);
 SD_TEST_DECL(theme_palette_meets_the_contrast_floors);
 SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
 SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
@@ -301,6 +309,14 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(theme_titlebar_attr_19_20_or_none),
   SD_TEST_ENTRY(theme_helpers_allow_list),
   SD_TEST_ENTRY(theme_forced_tier_overrides_the_os),
+  SD_TEST_ENTRY(taskdlg_map_buttons_and_default),
+  SD_TEST_ENTRY(taskdlg_map_icons),
+  SD_TEST_ENTRY(taskdlg_map_rejects_what_a_task_dialog_lacks),
+  SD_TEST_ENTRY(taskdlg_plain_text_joins_the_parts),
+  SD_TEST_ENTRY(dlg_heading_is_taller_with_a_larger_font),
+  SD_TEST_ENTRY(dlg_icon_indents_the_text_beside_it),
+  SD_TEST_ENTRY(dlg_commands_are_links_or_plain_buttons),
+  SD_TEST_ENTRY(dlg_commands_mark_only_the_requested_default),
   SD_TEST_ENTRY(theme_palette_meets_the_contrast_floors),
   SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
   SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),

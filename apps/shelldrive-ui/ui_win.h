@@ -43,9 +43,19 @@ int    ui_win_text_width(HFONT font, const wchar_t *text);
 void   ui_win_class_name(const wchar_t *suffix, wchar_t out[320]);
 /* Registers a window class once; true when it exists afterwards. */
 int    ui_win_register(HINSTANCE inst, const wchar_t *name, WNDPROC proc);
-/* Message box titled ShellDrive. */
+/* A message titled ShellDrive in the style of the OS tier (06 6.2). On Vista and later (the theme's task_dialogs)
+   it is a task dialog (TaskDialogIndirect, resolved from comctl32 at run time): main is the main instruction,
+   content the text under it (NULL for none), details the expandable area (NULL for none, collapsed by default),
+   and mb_flags map as for MessageBoxW: MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MB_RETRYCANCEL, the MB_ICON*
+   icons (MB_ICONQUESTION shows none) and MB_DEFBUTTON2 / 3 for the focused button. Returns IDOK, IDCANCEL, IDYES,
+   IDNO or IDRETRY like MessageBoxW. On XP, with Classic forced on a system without task dialogs, for a button set
+   a task dialog lacks, or when TaskDialogIndirect is missing or fails, it is MessageBoxW with "main", "content" and
+   "details" as paragraphs of one text. */
+int    ui_win_task(HWND owner, const wchar_t *main_text, const wchar_t *content, const wchar_t *details,
+                   UINT mb_flags);
+/* Message box titled ShellDrive: ui_win_task with the text as the main instruction. */
 void   ui_win_message(HWND owner, const wchar_t *text, UINT flags);
-/* Error message box: the catalog message msg with {code} = the sd_err name. */
+/* Error message box: the catalog message msg with {code} = the sd_err name; the code is repeated in the details. */
 void   ui_win_error(HWND owner, sd_msg_id msg, sd_err err);
 /* Copies text to the clipboard as CF_UNICODETEXT. */
 int    ui_win_copy_text(HWND owner, const wchar_t *text, size_t len);

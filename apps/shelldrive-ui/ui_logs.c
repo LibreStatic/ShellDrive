@@ -21,6 +21,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_logs_model.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #define LG_ID_LEVEL     4301
@@ -352,6 +353,7 @@ static LRESULT CALLBACK lg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_lg.font = ui_win_font(g_lg.dpi);
     g_lg.mono = make_mono(g_lg.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     SetTimer(hwnd, LG_TIMER, LG_POLL_MS, NULL);
     status_msg(g_app.agent_up ? SD_MSG_UI_LOGS_LOADING : SD_MSG_UI_LOGS_AGENT_DOWN);

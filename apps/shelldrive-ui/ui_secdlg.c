@@ -199,10 +199,11 @@ static void do_refuse(HWND owner, const sec_dlg *c)
   if (!save_profile(owner, &p))
     return;
   /* the setting applies to the next connection: offer to reconnect now */
-  text = ui_format1(SD_MSG_UI_SECDLG_REFUSE_ASK, "drive", c->drive);
+  text = ui_format1(SD_MSG_UI_SECDLG_REFUSE_TITLE, "drive", c->drive);
   if (text == NULL)
     return;
-  if (MessageBoxW(owner, text, L"ShellDrive", MB_YESNO | MB_ICONQUESTION) == IDYES && g_app.agent_up) {
+  if (ui_win_task(owner, text, sd_l10n_get(SD_MSG_UI_SECDLG_REFUSE_ASK), NULL, MB_YESNO | MB_ICONQUESTION) == IDYES &&
+      g_app.agent_up) {
     strcpy_s(g_reconnect_profile, sizeof(g_reconnect_profile), c->profile_id);
     ui_ipc_unmount(c->drive);
   }

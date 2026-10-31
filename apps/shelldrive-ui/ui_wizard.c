@@ -339,7 +339,7 @@ static void do_create(wiz_ctx *ctx, HWND page)
   if (!ui_editor_run(ctx->sheet, UI_EDIT_NEW, &p))
     return;
   if (sd_profile_save(&p) != SD_OK) {
-    MessageBoxW(ctx->sheet, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), L"ShellDrive", MB_OK | MB_ICONERROR);
+    ui_win_task(ctx->sheet, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), NULL, NULL, MB_OK | MB_ICONERROR);
     return;
   }
   /* the agent reads the store again, as after any profile change (03 §2.4) */
@@ -357,13 +357,6 @@ static void do_create(wiz_ctx *ctx, HWND page)
     EnableWindow(GetDlgItem(ctx->pages[PG_FINISH].hwnd, WIZ_ID_MOUNT), TRUE);
 }
 
-static BOOL CALLBACK theme_child_cb(HWND child, LPARAM lp)
-{
-  (void)lp;
-  ui_theme_apply_control(child);
-  return TRUE;
-}
-
 static INT_PTR CALLBACK wiz_page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
   switch (msg) {
@@ -377,9 +370,8 @@ static INT_PTR CALLBACK wiz_page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     pg->ctx->sheet = GetParent(hwnd);
     if (pg->index == PG_FINISH)
       EnableWindow(GetDlgItem(hwnd, WIZ_ID_MOUNT), FALSE);   /* on once a profile exists */
-    /* dark palette (06 §3.6): the CBT hook darkens the title bar, the page controls are themed here */
-    if (ui_theme_current() != NULL && ui_theme_current()->dark)
-      EnumChildWindows(hwnd, theme_child_cb, 0);
+    /* the page background, its controls and the dark palette (06 §3.6) */
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   }
   case WM_NOTIFY: {
@@ -461,7 +453,7 @@ void ui_wizard_run(HWND owner)
   hdr.dwSize = sizeof(hdr);
   /* PSH_HEADER, PSH_WATERMARK and their bitmaps are Wizard97 only: never set with PSH_AEROWIZARD */
   hdr.dwFlags = (aero ? PSH_AEROWIZARD : PSH_WIZARD97) | PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-  hdr.pfnCallback = ui_win_sheet_callback;
+  hdr.pfnCallback = ui_theme_sheet_callback;
   hdr.hwndParent = owner;
   hdr.hInstance = g_app.inst;
   hdr.pszCaption = sd_l10n_get(SD_MSG_UI_WIZARD_CAPTION);

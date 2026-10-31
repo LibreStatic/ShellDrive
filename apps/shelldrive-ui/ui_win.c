@@ -14,6 +14,8 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_res.h"
+#include "ui_taskdlg_model.h"
+#include "ui_theme.h"
 #include "ui_update.h"
 #include "ui_win.h"
 
@@ -93,19 +95,117 @@ int ui_win_register(HINSTANCE inst, const wchar_t *name, WNDPROC proc)
   return 1;
 }
 
+/* ---- task dialogs (06 §6.2) ----
+   TaskDialogIndirect lives in comctl32 v6 (Vista and later) and is resolved from the already loaded module, never
+   imported: the XP import floor stays empty. The struct is a private copy of TASKDIALOGCONFIG with the documented
+   layout (packed like commctrl.h), because the XP flavours compile against headers that do not declare it. */
+#include <pshpack1.h>
+typedef struct sd_task_button {
+  int id;
+  PCWSTR text;
+} sd_task_button;
+
+typedef struct sd_task_config {
+  UINT cbSize;
+  HWND hwndParent;
+  HINSTANCE hInstance;
+  DWORD dwFlags;
+  DWORD dwCommonButtons;
+  PCWSTR pszWindowTitle;
+  PCWSTR pszMainIcon;                  /* union with HICON: MAKEINTRESOURCE(-1..-4) here */
+  PCWSTR pszMainInstruction;
+  PCWSTR pszContent;
+  UINT cButtons;
+  const sd_task_button *pButtons;
+  int nDefaultButton;
+  UINT cRadioButtons;
+  const sd_task_button *pRadioButtons;
+  int nDefaultRadioButton;
+  PCWSTR pszVerificationText;
+  PCWSTR pszExpandedInformation;
+  PCWSTR pszExpandedControlText;
+  PCWSTR pszCollapsedControlText;
+  PCWSTR pszFooterIcon;                /* union with HICON */
+  PCWSTR pszFooter;
+  void *pfCallback;
+  LONG_PTR lpCallbackData;
+  UINT cxWidth;
+} sd_task_config;
+#include <poppack.h>
+
+#define SD_TDF_ALLOW_DIALOG_CANCELLATION 0x0008u
+#define SD_TDF_POSITION_RELATIVE_TO_WINDOW 0x1000u
+
+typedef HRESULT (WINAPI *ui_pfn_TaskDialogIndirect)(const sd_task_config *cfg, int *button, int *radio, BOOL *verify);
+
+static ui_pfn_TaskDialogIndirect task_dialog_fn(void)
+{
+  static ui_pfn_TaskDialogIndirect fn;
+  static int resolved;
+  HMODULE cc;
+  if (!resolved) {
+    resolved = 1;
+    cc = GetModuleHandleW(L"comctl32.dll");
+    if (cc != NULL)
+      fn = (ui_pfn_TaskDialogIndirect)GetProcAddress(cc, "TaskDialogIndirect");
+  }
+  return fn;
+}
+
+int ui_win_task(HWND owner, const wchar_t *main_text, const wchar_t *content, const wchar_t *details,
+                UINT mb_flags)
+{
+  const ui_theme *t = ui_theme_current();
+  ui_pfn_TaskDialogIndirect fn;
+  ui_task_map map;
+  wchar_t plain[2048 + 1536];
+  const wchar_t *text;
+
+  if (main_text == NULL)
+    main_text = L"";
+  if (t != NULL && t->task_dialogs && (fn = task_dialog_fn()) != NULL && main_text[0] != L'\0' &&
+      ui_task_map_flags(mb_flags, &map)) {
+    sd_task_config cfg;
+    int button = 0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = owner;
+    cfg.dwFlags = SD_TDF_POSITION_RELATIVE_TO_WINDOW | (map.allow_cancel ? SD_TDF_ALLOW_DIALOG_CANCELLATION : 0u);
+    cfg.dwCommonButtons = map.buttons;
+    cfg.pszWindowTitle = L"ShellDrive";
+    cfg.pszMainIcon = map.icon != UI_TASK_ICON_NONE ? MAKEINTRESOURCEW(map.icon) : NULL;
+    cfg.pszMainInstruction = main_text;
+    cfg.pszContent = (content != NULL && content[0] != L'\0') ? content : NULL;
+    if (details != NULL && details[0] != L'\0') {
+      /* expandable, collapsed by default; the control texts are the system's own (Windows localizes them) */
+      cfg.pszExpandedInformation = details;
+    }
+    cfg.nDefaultButton = map.default_id;
+    if (SUCCEEDED(fn(&cfg, &button, NULL, NULL)) && button != 0)
+      return button;
+  }
+  text = main_text;
+  if (ui_task_plain_text(main_text, content, details, plain, SD_COUNTOF(plain)) > 0)
+    text = plain;
+  return MessageBoxW(owner, text, L"ShellDrive", mb_flags | MB_SETFOREGROUND);
+}
+
 void ui_win_message(HWND owner, const wchar_t *text, UINT flags)
 {
-  MessageBoxW(owner, text, L"ShellDrive", flags | MB_SETFOREGROUND);
+  (void)ui_win_task(owner, text, NULL, NULL, flags);
 }
 
 void ui_win_error(HWND owner, sd_msg_id msg, sd_err err)
 {
   wchar_t code[64];
-  wchar_t *t;
+  wchar_t *t, *details;
   ui_text_utf8(sd_err_name(err), code, SD_COUNTOF(code));
   t = ui_format1(msg, "code", code);
   if (t != NULL) {
-    ui_win_message(owner, t, MB_OK | MB_ICONERROR);
+    /* the code goes in the expandable details, unless the catalog message already names it inline */
+    details = wcsstr(t, code) != NULL ? NULL : ui_format1(SD_MSG_UI_WIN_ERROR_DETAILS, "code", code);
+    (void)ui_win_task(owner, t, NULL, details, MB_OK | MB_ICONERROR);
+    sd_free(details);
     sd_free(t);
   }
 }

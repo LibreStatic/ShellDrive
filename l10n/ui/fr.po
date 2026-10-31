@@ -1910,8 +1910,8 @@ msgstr "ShellDrive n'a pas pu ouvrir sa fenêtre d'administration. Réessayez de
 
 #. Prompt dialog text for token-only WebDAV (03 7.5, TM-R19). Shown when Windows cannot sign in, every time it is enabled.
 msgctxt "ui.webdav.token_only_ask"
-msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
-msgstr "Windows n'a pas pu vous connecter au serveur de fichiers local de ShellDrive. Continuer avec une connexion moins protégée ? D'autres programmes qui connaissent l'adresse du lecteur peuvent alors lire vos fichiers."
+msgid "Windows could not sign in to ShellDrive's local file server. If you continue, other programs that learn the drive's address can read your files."
+msgstr "Windows n'a pas pu vous connecter au serveur de fichiers local de ShellDrive. Si vous continuez, d'autres programmes qui connaissent l'adresse du lecteur peuvent lire vos fichiers."
 
 #. Prompt dialog title for the token-only WebDAV question (03 7.5).
 msgctxt "ui.prompt.title_token_only"
@@ -2437,8 +2437,8 @@ msgstr "&Fermer"
 
 #. Question before host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
 msgctxt "ui.hki.stop_confirm"
-msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again. Stop using this source?"
-msgstr "ShellDrive ne lira plus les clés d'hôte enregistrées par {source}. Les serveurs connus uniquement là vous demanderont de confirmer à nouveau leur clé. Cesser d'utiliser cette source ?"
+msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again."
+msgstr "ShellDrive ne lira plus les clés d'hôte enregistrées par {source}. Les serveurs connus uniquement là vous demanderont de confirmer à nouveau leur clé."
 
 #. Message after host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
 msgctxt "ui.hki.stop_done"
@@ -2547,8 +2547,8 @@ msgstr "ShellDrive n'avertira plus pour ces algorithmes sur ce serveur. Un autre
 
 #. Security details: question after the setting was saved. {drive} is the drive letter.
 msgctxt "ui.secdlg.refuse_ask"
-msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
-msgstr "Les algorithmes obsolètes sont désormais refusés pour ce serveur. Reconnecter {drive} maintenant ?"
+msgid "Outdated algorithms are refused for this server from now on."
+msgstr "Les algorithmes obsolètes sont désormais refusés pour ce serveur."
 
 #. Host key manager button: copies the SHA256 fingerprint of the selected key.
 msgctxt "ui.hostkeys.btn_copy_fp"
@@ -3028,3 +3028,39 @@ msgstr "Plus d'options"
 msgctxt "ui.flyout.row_label"
 msgid "{name} ({drive})"
 msgstr "{name} ({drive})"
+
+msgctxt "ui.prompt.note.trust"
+msgid "ShellDrive saves this key and warns you if it changes."
+msgstr "ShellDrive enregistre cette clé et vous avertit si elle change."
+
+msgctxt "ui.prompt.note.once"
+msgid "Connects now without saving the key. ShellDrive asks again next time."
+msgstr "Se connecte maintenant sans enregistrer la clé. ShellDrive redemande la prochaine fois."
+
+msgctxt "ui.prompt.note.cancel"
+msgid "Does not connect. Nothing is saved."
+msgstr "Aucune connexion n'est établie. Rien n'est enregistré."
+
+msgctxt "ui.prompt.note.anyway"
+msgid "Connects using these algorithms."
+msgstr "Se connecte avec ces algorithmes."
+
+msgctxt "ui.prompt.note.token_continue"
+msgid "Mounts the drive without Windows signing in. ShellDrive asks again every time."
+msgstr "Monte le lecteur sans que Windows se connecte. ShellDrive redemande à chaque fois."
+
+msgctxt "ui.prompt.token_only_head"
+msgid "Continue with a less protected connection?"
+msgstr "Continuer avec une connexion moins protégée ?"
+
+msgctxt "ui.win.error_details"
+msgid "Error code: {code}"
+msgstr "Code d'erreur : {code}"
+
+msgctxt "ui.hki.stop_title"
+msgid "Stop using the host keys from {source}?"
+msgstr "Ne plus utiliser les clés d'hôte de {source} ?"
+
+msgctxt "ui.secdlg.refuse_title"
+msgid "Reconnect {drive} now?"
+msgstr "Reconnecter {drive} maintenant ?"

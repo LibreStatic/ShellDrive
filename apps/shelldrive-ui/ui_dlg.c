@@ -121,42 +121,99 @@ static void set_text(ui_dlg_item *it, const wchar_t *text)
   wcsncpy_s(it->text, SD_COUNTOF(it->text), text ? text : L"", _TRUNCATE);
 }
 
+/* The horizontal span of the next content: indented to the right of the icon while the cursor is above its bottom. */
+static void span(const ui_dlg *d, int *x, int *w)
+{
+  int left = (d->icon_bottom > 0 && d->cursor < d->icon_bottom) ? d->icon_left : d->margin;
+  *x = left;
+  *w = d->width - left - d->margin;
+}
+
 static int text_height(const ui_dlg *d, const wchar_t *text)
 {
-  int h = d->measure(d->measure_ctx, text ? text : L"", d->width - 2 * d->margin, NULL);
+  int x, w, h;
+  span(d, &x, &w);
+  h = d->measure(d->measure_ctx, text ? text : L"", w, NULL);
   return h < DLG_MIN_TEXT_DLU ? DLG_MIN_TEXT_DLU : h;
 }
 
 sd_err ui_dlg_text(ui_dlg *d, WORD id, const wchar_t *text, DWORD extra)
 {
   ui_dlg_item *it;
-  int h;
+  int h, sx, sw;
   if (d == NULL || (it = next_item(d)) == NULL)
     return SD_E_INVALID_PARAM;
   h = text_height(d, text) + DLG_TEXT_PAD;
   it->cls = UI_DLG_STATIC;
   it->id = id;
   it->style = WS_CHILD | WS_VISIBLE | SS_LEFT | extra;
-  it->x = (short)d->margin;
+  span(d, &sx, &sw);
+  it->x = (short)sx;
   it->y = (short)d->cursor;
-  it->cx = (short)(d->width - 2 * d->margin);
+  it->cx = (short)sw;
   it->cy = (short)h;
   set_text(it, text);
   d->cursor += h + UI_DLG_GAP;
   return SD_OK;
 }
 
+sd_err ui_dlg_heading(ui_dlg *d, WORD id, const wchar_t *text, DWORD extra)
+{
+  ui_dlg_item *it;
+  int sx, sw, pct, h, min_h;
+  if (d == NULL || (it = next_item(d)) == NULL)
+    return SD_E_INVALID_PARAM;
+  pct = d->heading_pct > 100 ? d->heading_pct : 100;
+  span(d, &sx, &sw);
+  /* a font pct percent larger wraps as the dialog font does in a column pct percent narrower */
+  h = d->measure(d->measure_ctx, text ? text : L"", sw * 100 / pct, NULL);
+  h = (h * pct + 99) / 100;
+  min_h = DLG_MIN_TEXT_DLU * pct / 100;
+  if (h < min_h)
+    h = min_h;
+  h += DLG_TEXT_PAD;
+  it->cls = UI_DLG_STATIC;
+  it->id = id;
+  it->style = WS_CHILD | WS_VISIBLE | SS_LEFT | extra;
+  it->x = (short)sx;
+  it->y = (short)d->cursor;
+  it->cx = (short)sw;
+  it->cy = (short)h;
+  set_text(it, text);
+  d->cursor += h + UI_DLG_GAP;
+  return SD_OK;
+}
+
+sd_err ui_dlg_icon(ui_dlg *d, WORD id)
+{
+  ui_dlg_item *it;
+  if (d == NULL || (it = next_item(d)) == NULL)
+    return SD_E_INVALID_PARAM;
+  it->cls = UI_DLG_STATIC;
+  it->id = id;
+  it->style = WS_CHILD | WS_VISIBLE | SS_ICON | SS_CENTERIMAGE;
+  it->x = (short)d->margin;
+  it->y = (short)d->cursor;
+  it->cx = UI_DLG_ICON_CX;
+  it->cy = UI_DLG_ICON_CY;
+  d->icon_left = d->margin + UI_DLG_ICON_CX + UI_DLG_ICON_GAP;
+  d->icon_bottom = d->cursor + UI_DLG_ICON_CY;
+  return SD_OK;
+}
+
 sd_err ui_dlg_edit(ui_dlg *d, WORD id, DWORD extra)
 {
   ui_dlg_item *it;
+  int sx, sw;
   if (d == NULL || (it = next_item(d)) == NULL)
     return SD_E_INVALID_PARAM;
   it->cls = UI_DLG_EDIT;
   it->id = id;
   it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_LEFT | extra;
-  it->x = (short)d->margin;
+  span(d, &sx, &sw);
+  it->x = (short)sx;
   it->y = (short)d->cursor;
-  it->cx = (short)(d->width - 2 * d->margin);
+  it->cx = (short)sw;
   it->cy = UI_DLG_EDIT_HEIGHT;
   d->cursor += UI_DLG_EDIT_HEIGHT + UI_DLG_GAP;
   return SD_OK;
@@ -165,7 +222,7 @@ sd_err ui_dlg_edit(ui_dlg *d, WORD id, DWORD extra)
 sd_err ui_dlg_multiline(ui_dlg *d, WORD id, const wchar_t *text, int max_lines)
 {
   ui_dlg_item *it;
-  int h;
+  int h, sx, sw;
   if (d == NULL || max_lines < 1 || (it = next_item(d)) == NULL)
     return SD_E_INVALID_PARAM;
   h = text_height(d, text) + DLG_TEXT_PAD;
@@ -177,9 +234,10 @@ sd_err ui_dlg_multiline(ui_dlg *d, WORD id, const wchar_t *text, int max_lines)
   it->id = id;
   it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE |
               ES_AUTOVSCROLL | ES_READONLY | ES_LEFT;
-  it->x = (short)d->margin;
+  span(d, &sx, &sw);
+  it->x = (short)sx;
   it->y = (short)d->cursor;
-  it->cx = (short)(d->width - 2 * d->margin);
+  it->cx = (short)sw;
   it->cy = (short)h;
   set_text(it, text);
   d->cursor += h + UI_DLG_GAP;
@@ -189,14 +247,16 @@ sd_err ui_dlg_multiline(ui_dlg *d, WORD id, const wchar_t *text, int max_lines)
 sd_err ui_dlg_combo(ui_dlg *d, WORD id)
 {
   ui_dlg_item *it;
+  int sx, sw;
   if (d == NULL || (it = next_item(d)) == NULL)
     return SD_E_INVALID_PARAM;
   it->cls = UI_DLG_COMBO;
   it->id = id;
   it->style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_HASSTRINGS | CBS_AUTOHSCROLL;
-  it->x = (short)d->margin;
+  span(d, &sx, &sw);
+  it->x = (short)sx;
   it->y = (short)d->cursor;
-  it->cx = (short)(d->width - 2 * d->margin);
+  it->cx = (short)sw;
   it->cy = UI_DLG_EDIT_HEIGHT;
   d->cursor += UI_DLG_EDIT_HEIGHT + UI_DLG_GAP;
   return SD_OK;
@@ -205,7 +265,7 @@ sd_err ui_dlg_combo(ui_dlg *d, WORD id)
 sd_err ui_dlg_check(ui_dlg *d, WORD id, const wchar_t *text)
 {
   ui_dlg_item *it;
-  int h;
+  int h, sx, sw;
   if (d == NULL || (it = next_item(d)) == NULL)
     return SD_E_INVALID_PARAM;
   h = text_height(d, text);
@@ -214,9 +274,10 @@ sd_err ui_dlg_check(ui_dlg *d, WORD id, const wchar_t *text)
   it->cls = UI_DLG_CHECK;
   it->id = id;
   it->style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE | BS_LEFT;
-  it->x = (short)d->margin;
+  span(d, &sx, &sw);
+  it->x = (short)sx;
   it->y = (short)d->cursor;
-  it->cx = (short)(d->width - 2 * d->margin);
+  it->cx = (short)sw;
   it->cy = (short)h;
   set_text(it, text);
   d->cursor += h + UI_DLG_GAP;
@@ -274,6 +335,47 @@ sd_err ui_dlg_buttons(ui_dlg *d, const WORD *ids, const wchar_t *const *texts, s
     }
     d->cursor += UI_DLG_BUTTON_HEIGHT + UI_DLG_GAP;
     start = end;
+  }
+  return SD_OK;
+}
+
+sd_err ui_dlg_commands(ui_dlg *d, const WORD *ids, const wchar_t *const *texts, const wchar_t *const *notes,
+                       size_t n, WORD def_id)
+{
+  size_t i;
+  int sx, sw;
+  if (d == NULL || ids == NULL || texts == NULL || n == 0 || n > UI_DLG_MAX_ITEMS)
+    return SD_E_INVALID_PARAM;
+  if (!d->command_links)
+    return ui_dlg_buttons(d, ids, texts, n, def_id);
+  if (d->count + n > UI_DLG_MAX_ITEMS)
+    return SD_E_INVALID_PARAM;
+  for (i = 0; i < n; i++) {
+    ui_dlg_item *it = next_item(d);
+    int th, nh = 0, h;
+    if (it == NULL)
+      return SD_E_INVALID_PARAM;
+    span(d, &sx, &sw);
+    th = d->measure(d->measure_ctx, texts[i], sw - UI_DLG_LINK_INDENT, NULL);
+    if (th < DLG_MIN_TEXT_DLU)
+      th = DLG_MIN_TEXT_DLU;
+    th = th * 12 / 10;                              /* the main text of a command link is one size larger */
+    if (notes != NULL && notes[i] != NULL && notes[i][0] != L'\0') {
+      nh = d->measure(d->measure_ctx, notes[i], sw - UI_DLG_LINK_INDENT, NULL);
+      if (nh < DLG_MIN_TEXT_DLU)
+        nh = DLG_MIN_TEXT_DLU;
+    }
+    h = th + nh + UI_DLG_LINK_PAD;
+    it->cls = UI_DLG_BUTTON;
+    it->id = ids[i];
+    it->style = WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                ((def_id != 0 && ids[i] == def_id) ? BS_DEFCOMMANDLINK : BS_COMMANDLINK);
+    it->x = (short)sx;
+    it->y = (short)d->cursor;
+    it->cx = (short)sw;
+    it->cy = (short)h;
+    set_text(it, texts[i]);
+    d->cursor += h + UI_DLG_GAP;
   }
   return SD_OK;
 }

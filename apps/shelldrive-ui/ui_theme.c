@@ -6,12 +6,28 @@
  * 06 §3.6, by ordinal; there is no static import of dwmapi.dll or uxtheme.dll in any flavour, so the XP
  * import floor (tests/os-imports) stays empty. */
 #include <windows.h>
+#include <commctrl.h>
 
 #include <string.h>
 
 #include "sd/base.h"
 #include "sd_platform/sd_platform.h"
+#include "ui_dpi.h"
 #include "ui_theme.h"
+#include "ui_win.h"
+
+/* Window properties of the dialog helpers: the original window procedure of a themed window, the marker of a
+   window ui_theme_apply_dialog handled (a refresh re-applies it), and the controls that were switched to a dark
+   class or a dark list palette (so a switch back to a light theme can undo it). */
+#define UI_PROP_OLDPROC  L"sd.theme.oldproc"
+#define UI_PROP_DIALOG   L"sd.theme.dialog"
+#define UI_PROP_CTLDARK  L"sd.theme.ctldark"
+#define UI_PROP_LISTDARK L"sd.theme.listdark"
+#define UI_PROP_LISTPROC L"sd.theme.listproc"
+
+#ifndef TMT_FONT
+#define TMT_FONT 210
+#endif
 
 /* DWM attributes and values the XP SDK 7.1A headers lack (06 §12); DwmSetWindowAttribute itself is resolved
    at run time, and an attribute the OS does not know fails harmlessly. */
@@ -250,6 +266,10 @@ static BOOL CALLBACK enum_cb(HWND hwnd, LPARAM lp)
   (void)lp;
   if (is_captioned(hwnd))
     apply_dark(hwnd, &g_theme);
+  /* a window ui_theme_apply_dialog handled gets its controls re-themed, then every window repaints */
+  if (GetPropW(hwnd, UI_PROP_DIALOG) != NULL)
+    ui_theme_apply_dialog(hwnd);
+  RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
   return TRUE;
 }
 
@@ -360,17 +380,183 @@ void ui_theme_apply_control(HWND ctl)
                           class_is(ctl, L"ComboBoxEx32") ? L"DarkMode_CFD" : L"DarkMode_Explorer");
     if (g_allow_window != NULL)
       g_allow_window(ctl, TRUE);
-  } else if ((t->tier == UI_TIER_FLUENT || t->tier == UI_TIER_AERO) && class_is(ctl, L"SysListView32")) {
+    SetPropW(ctl, UI_PROP_CTLDARK, (HANDLE)1);
+    return;
+  }
+  if (GetPropW(ctl, UI_PROP_CTLDARK) != NULL) {
+    /* the theme switched from dark to light while the control lives: back to the default class */
+    set_window_theme(ctl, NULL);
+    if (g_allow_window != NULL)
+      g_allow_window(ctl, FALSE);
+    RemovePropW(ctl, UI_PROP_CTLDARK);
+  }
+  if ((t->tier == UI_TIER_FLUENT || t->tier == UI_TIER_AERO) && class_is(ctl, L"SysListView32")) {
     /* the Explorer theme of the list on light Fluent and Aero (06 §6.1) */
     set_window_theme(ctl, L"Explorer");
   }
   /* Classic: nothing (06 §3.1) */
 }
 
+int ui_theme_header_customdraw(NMCUSTOMDRAW *cd, LRESULT *result)
+{
+  HDITEMW hi;
+  wchar_t text[96];
+  RECT rc, line;
+  HFONT font, old;
+  HWND hdr;
+  unsigned dpi;
+
+  if (cd == NULL || result == NULL || ui_theme_brush(UI_TOK_LAYER) == NULL)
+    return 0;
+  hdr = cd->hdr.hwndFrom;
+  if (cd->dwDrawStage == CDDS_PREPAINT) {
+    FillRect(cd->hdc, &cd->rc, ui_theme_brush(UI_TOK_LAYER));
+    *result = CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
+    return 1;
+  }
+  if (cd->dwDrawStage == CDDS_POSTPAINT) {
+    /* the filler to the right of the last item is painted by the theme after the items: cover it */
+    int n = (int)SendMessageW(hdr, HDM_GETITEMCOUNT, 0, 0);
+    GetClientRect(hdr, &rc);
+    if (n > 0 && SendMessageW(hdr, HDM_GETITEMRECT, (WPARAM)(n - 1), (LPARAM)&line))
+      rc.left = line.right;
+    if (rc.left < rc.right) {
+      FillRect(cd->hdc, &rc, ui_theme_brush(UI_TOK_LAYER));
+      line = rc;
+      line.top = line.bottom - 1;
+      FillRect(cd->hdc, &line, ui_theme_brush(UI_TOK_STROKE));
+    }
+    *result = CDRF_DODEFAULT;
+    return 1;
+  }
+  if (cd->dwDrawStage != CDDS_ITEMPREPAINT) {
+    *result = CDRF_DODEFAULT;
+    return 1;
+  }
+  rc = cd->rc;
+  text[0] = 0;
+  memset(&hi, 0, sizeof(hi));
+  hi.mask = HDI_TEXT;
+  hi.pszText = text;
+  hi.cchTextMax = SD_COUNTOF(text);
+  SendMessageW(hdr, HDM_GETITEMW, (WPARAM)cd->dwItemSpec, (LPARAM)&hi);
+  FillRect(cd->hdc, &rc, ui_theme_brush(UI_TOK_LAYER));
+  line = rc;
+  line.top = line.bottom - 1;
+  FillRect(cd->hdc, &line, ui_theme_brush(UI_TOK_STROKE));
+  font = (HFONT)SendMessageW(hdr, WM_GETFONT, 0, 0);
+  if (font == NULL)
+    font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+  old = (HFONT)SelectObject(cd->hdc, font);
+  SetBkMode(cd->hdc, TRANSPARENT);
+  SetTextColor(cd->hdc, ui_theme_color(UI_TOK_TEXT_SECONDARY));
+  dpi = ui_dpi_window(hdr);
+  rc.left += ui_dpi_scale(8, dpi);
+  rc.right -= ui_dpi_scale(4, dpi);
+  DrawTextW(cd->hdc, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+  SelectObject(cd->hdc, old);
+  *result = CDRF_SKIPDEFAULT;
+  return 1;
+}
+
+/* The list subclass: the header NM_CUSTOMDRAW reaches the ListView, not its parent. Only the dark palette
+   draws the header; otherwise the default handling runs. */
+static LRESULT CALLBACK list_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+  WNDPROC old = (WNDPROC)GetPropW(h, UI_PROP_LISTPROC);
+  const ui_theme *t = ui_theme_current();
+
+  if (old == NULL)
+    return DefWindowProcW(h, msg, wp, lp);
+  if (msg == WM_NOTIFY && t != NULL && t->dark) {
+    NMHDR *nm = (NMHDR *)lp;
+    LRESULT r = 0;
+    if (nm->code == NM_CUSTOMDRAW && nm->hwndFrom == (HWND)SendMessageW(h, LVM_GETHEADER, 0, 0) &&
+        ui_theme_header_customdraw((NMCUSTOMDRAW *)nm, &r))
+      return r;
+  }
+  if (msg == WM_NCDESTROY) {
+    SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)old);
+    RemovePropW(h, UI_PROP_LISTPROC);
+    RemovePropW(h, UI_PROP_LISTDARK);
+    RemovePropW(h, UI_PROP_CTLDARK);
+  }
+  return CallWindowProcW(old, h, msg, wp, lp);
+}
+
+void ui_theme_style_list(HWND list)
+{
+  const ui_theme *t = ui_theme_current();
+  HWND hdr;
+
+  if (list == NULL || t == NULL)
+    return;
+  hdr = (HWND)SendMessageW(list, LVM_GETHEADER, 0, 0);
+  if (GetPropW(list, UI_PROP_LISTPROC) == NULL) {
+    WNDPROC old = (WNDPROC)SetWindowLongPtrW(list, GWLP_WNDPROC, (LONG_PTR)list_proc);
+    if (old != NULL)
+      SetPropW(list, UI_PROP_LISTPROC, (HANDLE)old);
+  }
+  ui_theme_apply_control(list);
+  if (t->dark) {
+    SendMessageW(list, LVM_SETBKCOLOR, 0, (LPARAM)ui_theme_color(UI_TOK_LAYER));
+    SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, (LPARAM)ui_theme_color(UI_TOK_LAYER));
+    SendMessageW(list, LVM_SETTEXTCOLOR, 0, (LPARAM)ui_theme_color(UI_TOK_TEXT));
+    /* a themed header continues its column dividers through the list on Windows 11: the classic (empty)
+       theme and the custom draw above paint it */
+    if (hdr != NULL)
+      set_window_theme(hdr, L"");
+    SetPropW(list, UI_PROP_LISTDARK, (HANDLE)1);
+  } else if (GetPropW(list, UI_PROP_LISTDARK) != NULL) {
+    SendMessageW(list, LVM_SETBKCOLOR, 0, (LPARAM)GetSysColor(COLOR_WINDOW));
+    SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, (LPARAM)GetSysColor(COLOR_WINDOW));
+    SendMessageW(list, LVM_SETTEXTCOLOR, 0, (LPARAM)GetSysColor(COLOR_WINDOWTEXT));
+    if (hdr != NULL)
+      set_window_theme(hdr, NULL);
+    RemovePropW(list, UI_PROP_LISTDARK);
+  }
+  InvalidateRect(list, NULL, TRUE);
+  if (hdr != NULL)
+    InvalidateRect(hdr, NULL, TRUE);
+}
+
+/* The subclass of a themed dialog or plain window: on the dark palette it answers WM_CTLCOLOR* and erases the
+   background with the surface brush, so the owner's own window procedure needs no theme code. */
+static LRESULT CALLBACK themed_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+  WNDPROC old = (WNDPROC)GetPropW(h, UI_PROP_OLDPROC);
+  const ui_theme *t = ui_theme_current();
+  LRESULT r = 0;
+
+  if (old == NULL)
+    return DefWindowProcW(h, msg, wp, lp);
+  if (t != NULL && t->dark) {
+    if (msg == WM_ERASEBKGND) {
+      RECT rc;
+      GetClientRect(h, &rc);
+      FillRect((HDC)wp, &rc, ui_theme_brush(UI_TOK_SURFACE));
+      return 1;
+    }
+    if (ui_theme_ctlcolor(msg, wp, lp, &r))
+      return r;
+  }
+  if (msg == WM_NCDESTROY) {
+    SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)old);
+    RemovePropW(h, UI_PROP_OLDPROC);
+    RemovePropW(h, UI_PROP_DIALOG);
+  }
+  return CallWindowProcW(old, h, msg, wp, lp);
+}
+
 static BOOL CALLBACK apply_child_cb(HWND child, LPARAM lp)
 {
   (void)lp;
-  ui_theme_apply_control(child);
+  if (class_is(child, L"SysHeader32"))
+    return TRUE;                             /* the list owns its header (ui_theme_style_list) */
+  if (class_is(child, L"SysListView32"))
+    ui_theme_style_list(child);
+  else
+    ui_theme_apply_control(child);
   return TRUE;
 }
 
@@ -381,8 +567,21 @@ void ui_theme_apply_dialog(HWND dlg)
   if (dlg == NULL || t == NULL)
     return;
   ui_theme_apply_window(dlg, UI_THEME_WND_DIALOG);
-  if (t->dark)
-    EnumChildWindows(dlg, apply_child_cb, 0);
+  if (GetPropW(dlg, UI_PROP_OLDPROC) == NULL) {
+    WNDPROC old = (WNDPROC)SetWindowLongPtrW(dlg, GWLP_WNDPROC, (LONG_PTR)themed_proc);
+    if (old != NULL)
+      SetPropW(dlg, UI_PROP_OLDPROC, (HANDLE)old);
+  }
+  SetPropW(dlg, UI_PROP_DIALOG, (HANDLE)1);
+  EnumChildWindows(dlg, apply_child_cb, 0);
+}
+
+int CALLBACK ui_theme_sheet_callback(HWND sheet, UINT msg, LPARAM lp)
+{
+  ui_win_sheet_callback(sheet, msg, lp);
+  if (msg == PSCB_INITIALIZED)
+    ui_theme_apply_dialog(sheet);              /* the frame, the tab control and OK / Cancel / Apply */
+  return 0;
 }
 
 int ui_theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *result)
@@ -409,4 +608,109 @@ int ui_theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *result)
   default:
     return 0;
   }
+}
+
+/* ---- fonts (06 §5.2) ---- */
+
+static int CALLBACK font_exists_cb(const LOGFONTW *lf, const TEXTMETRICW *tm, DWORD type, LPARAM lp)
+{
+  (void)lf;
+  (void)tm;
+  (void)type;
+  *(int *)lp = 1;
+  return 0;
+}
+
+static int font_exists(const wchar_t *face)
+{
+  LOGFONTW lf;
+  HDC dc = GetDC(NULL);
+  int found = 0;
+
+  memset(&lf, 0, sizeof(lf));
+  lf.lfCharSet = DEFAULT_CHARSET;
+  wcsncpy_s(lf.lfFaceName, LF_FACESIZE, face, _TRUNCATE);
+  EnumFontFamiliesExW(dc, &lf, (FONTENUMPROCW)font_exists_cb, (LPARAM)&found, 0);
+  ReleaseDC(NULL, dc);
+  return found;
+}
+
+typedef void *(WINAPI *ui_pfn_OpenThemeData)(HWND hwnd, const wchar_t *classes);
+typedef HRESULT (WINAPI *ui_pfn_GetThemeFont)(void *theme, HDC dc, int part, int state, int prop, LOGFONTW *lf);
+typedef HRESULT (WINAPI *ui_pfn_CloseThemeData)(void *theme);
+
+/* TEXT_MAININSTRUCTION of the TEXTSTYLE class, the font of the Aero wizard and task dialog headings; 0 when the
+   theme does not have it (the caller falls back to the bold message font). */
+static int aero_instruction_font(LOGFONTW *lf, unsigned dpi)
+{
+  ui_pfn_OpenThemeData open_theme = (ui_pfn_OpenThemeData)sd_platform_resolve_by_name(L"uxtheme.dll",
+                                                                                      "OpenThemeData");
+  ui_pfn_GetThemeFont get_font = (ui_pfn_GetThemeFont)sd_platform_resolve_by_name(L"uxtheme.dll",
+                                                                                  "GetThemeFont");
+  ui_pfn_CloseThemeData close_theme = (ui_pfn_CloseThemeData)sd_platform_resolve_by_name(L"uxtheme.dll",
+                                                                                         "CloseThemeData");
+  void *theme;
+  LOGFONTW tf;
+  int ok = 0;
+  long long h;
+  unsigned sys = ui_dpi_system();
+
+  if (open_theme == NULL || get_font == NULL || close_theme == NULL)
+    return 0;
+  theme = open_theme(NULL, L"TEXTSTYLE");
+  if (theme == NULL)
+    return 0;
+  memset(&tf, 0, sizeof(tf));
+  if (SUCCEEDED(get_font(theme, NULL, 1 /* TEXT_MAININSTRUCTION */, 0, TMT_FONT, &tf)) && tf.lfFaceName[0] != 0) {
+    h = tf.lfHeight < 0 ? -(long long)tf.lfHeight : (long long)tf.lfHeight;
+    if (h != 0) {
+      if (sys == 0)
+        sys = UI_DPI_BASE;
+      if (dpi == 0)
+        dpi = UI_DPI_BASE;
+      h = (h * (long long)dpi + (long long)sys / 2) / (long long)sys;
+      *lf = tf;
+      lf->lfHeight = (LONG)-h;
+      ok = 1;
+    }
+  }
+  close_theme(theme);
+  return ok;
+}
+
+HFONT ui_theme_font(int role, unsigned dpi)
+{
+  const ui_theme *t = ui_theme_current();
+  HFONT base = ui_win_font(dpi);
+  LOGFONTW lf;
+
+  if (base == NULL || role == UI_FONT_BODY || t == NULL)
+    return base;
+  memset(&lf, 0, sizeof(lf));
+  GetObjectW(base, sizeof(lf), &lf);
+  DeleteObject(base);
+  lf.lfWeight = FW_BOLD;                       /* Classic and XP: the message font in bold */
+  if (t->tier == UI_TIER_FLUENT) {
+    if (role == UI_FONT_HEADER) {
+      lf.lfHeight = lf.lfHeight * 3 / 2;       /* a page title: one and a half times the body */
+      if (font_exists(L"Segoe UI Variable Display")) {
+        wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Segoe UI Variable Display");
+      } else if (font_exists(L"Segoe UI Semibold")) {
+        wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Segoe UI Semibold");
+        lf.lfWeight = FW_NORMAL;
+      }
+    } else if (font_exists(L"Segoe UI Variable Text")) {
+      wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Segoe UI Variable Text");
+    } else if (font_exists(L"Segoe UI Semibold")) {
+      wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Segoe UI Semibold");
+      lf.lfWeight = FW_NORMAL;
+    }
+    if (lf.lfWeight == FW_BOLD)
+      lf.lfWeight = FW_SEMIBOLD;
+  } else if (t->tier == UI_TIER_AERO && role == UI_FONT_HEADER) {
+    LOGFONTW tf;
+    if (aero_instruction_font(&tf, dpi))
+      lf = tf;
+  }
+  return CreateFontIndirectW(&lf);
 }

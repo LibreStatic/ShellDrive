@@ -1273,7 +1273,7 @@ void ui_main_reload_profiles(void)
 
 static void message(sd_msg_id id, UINT flags)
 {
-  MessageBoxW(g_app.main, sd_l10n_get(id), k_title, flags);
+  (void)ui_win_task(g_app.main, sd_l10n_get(id), NULL, NULL, flags);
 }
 
 /* Saves a profile (sd_profile_save), then has the agent read the store again (03 §2.4). */
@@ -1681,7 +1681,7 @@ void ui_main_agent_start_done(sd_err err)
     ui_text_utf8(sd_err_name(err), code, SD_COUNTOF(code));
     t = ui_format1(SD_MSG_UI_STATUS_AGENT_START_FAILED, "code", code);
     if (t != NULL) {
-      MessageBoxW(g_app.main, t, L"ShellDrive", MB_OK | MB_ICONERROR);
+      (void)ui_win_task(g_app.main, t, NULL, NULL, MB_OK | MB_ICONERROR);
       sd_free(t);
     }
   }
