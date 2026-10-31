@@ -1186,3 +1186,28 @@ SD_TEST(smoke_location_verbs)
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_NETHOOD", NULL);
   DeleteFileW(other);
 }
+
+/* service install | uninstall | start | stop with the SCM seam forced to deny (SHELLDRIVE_TEST_SCM=denied): the
+   rules functions deny a caller that is not elevated with the elevation message (exit 9), while an elevated console
+   whose SCM call is refused gets the SCM message with the Win32 code (exit 1). No real service is touched. */
+SD_TEST(smoke_service_scm_denials)
+{
+  run_result r;
+  SD_REQUIRE(setup());
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", L"denied");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"0");
+  EXPECT(RUN(L"service start", NULL) == 9 && strstr(r.err, "Managing the ShellDrive service") != NULL,
+         "a non-elevated start is denied by the rules with exit 9 and the elevation message");
+  EXPECT(RUN(L"service uninstall", NULL) == 9, "a non-elevated uninstall is denied with exit 9");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", L"1");
+  EXPECT(RUN(L"service start", NULL) == 1 && strstr(r.err, "refused the request (error 5)") != NULL,
+         "an elevated start whose SCM call is denied names the Win32 code with exit 1");
+  EXPECT(RUN(L"service install", NULL) == 1 && strstr(r.err, "refused the request (error 5)") != NULL,
+         "an elevated install whose SCM call is denied names the Win32 code with exit 1");
+  EXPECT(RUN(L"service stop", NULL) == 1, "an elevated stop whose SCM call is denied exits 1");
+
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_ELEVATED", NULL);
+  SetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", NULL);
+}

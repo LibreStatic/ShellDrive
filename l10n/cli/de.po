@@ -821,6 +821,11 @@ msgctxt "cli.service.need_admin"
 msgid "Changing global drives needs an elevated console. Run it as administrator."
 msgstr "Zum Ändern globaler Laufwerke ist eine erhöhte Konsole nötig. Starte das Programm als Administrator."
 
+#. Printed by "shelldrive service install, uninstall, start or stop" from a console that is not elevated (exit 9).
+msgctxt "cli.service.manage_need_admin"
+msgid "Managing the ShellDrive service needs an elevated console. Run it as administrator."
+msgstr "Zum Verwalten des ShellDrive-Dienstes ist eine erhöhte Konsole nötig. Starte das Programm als Administrator."
+
 msgctxt "cli.service.unavailable"
 msgid "The ShellDrive service is not running or not installed."
 msgstr "Der ShellDrive-Dienst läuft nicht oder ist nicht installiert."

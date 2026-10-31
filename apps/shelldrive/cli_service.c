@@ -145,7 +145,10 @@ static int run_status(const cli_args *a, sd_ipc_conn *c)
   sd_wr w;
   sd_ipc_error err;
   sd_json *res = NULL;
+  err_ctx ec;
   int rc;
+  memset(&ec, 0, sizeof(ec));
+  ec.name = a->arg2;
   if (key_request(a, 0, &w) != SD_OK) {
     sd_wr_free(&w);
     return fail_code(a, "internal", "request", NULL);
@@ -153,7 +156,7 @@ static int run_status(const cli_args *a, sd_ipc_conn *c)
   rc = sd_ipc_call_raw(c, "status", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err) == SD_OK ? 0 : -1;
   sd_wr_free(&w);
   if (rc != 0)
-    return fail_ipc(a, &err, NULL);
+    return fail_ipc(a, &err, &ec);
   if (a->json)
     json_ok(res);
   else
@@ -167,7 +170,10 @@ static int run_unmount(const cli_args *a, sd_ipc_conn *c)
   sd_wr w;
   sd_ipc_error err;
   sd_json *res = NULL;
+  err_ctx ec;
   int rc;
+  memset(&ec, 0, sizeof(ec));
+  ec.name = a->arg2;
   if (key_request(a, a->force, &w) != SD_OK) {
     sd_wr_free(&w);
     return fail_code(a, "internal", "request", NULL);
@@ -175,7 +181,7 @@ static int run_unmount(const cli_args *a, sd_ipc_conn *c)
   rc = sd_ipc_call_raw(c, "unmount", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err) == SD_OK ? 0 : -1;
   sd_wr_free(&w);
   if (rc != 0)
-    return fail_ipc(a, &err, NULL);
+    return fail_ipc(a, &err, &ec);
   if (a->json) {
     json_ok(res);
   } else {
@@ -197,8 +203,11 @@ static int run_mount(const cli_args *a, sd_ipc_conn *c)
   sd_ipc_error err;
   sd_json *res = NULL, *st = NULL;
   const char *mid, *tgt;
+  err_ctx ec;
   DWORD waited = 0;
   utf8_of(a->arg2, profile, sizeof(profile));
+  memset(&ec, 0, sizeof(ec));
+  ec.name = a->arg2;
   sd_wr_init(&w, 1024);
   sd_jw_init(&jw, &w);
   sd_jw_obj_begin(&jw);
@@ -211,7 +220,7 @@ static int run_mount(const cli_args *a, sd_ipc_conn *c)
   }
   if (sd_ipc_call_raw(c, "mount", (const char *)w.p, w.len, CALL_TIMEOUT, &res, &err) != SD_OK) {
     sd_wr_free(&w);
-    return fail_ipc(a, &err, NULL);
+    return fail_ipc(a, &err, &ec);
   }
   sd_wr_free(&w);
   mid = sd_json_get_str(res, "mount_id");
@@ -232,7 +241,7 @@ static int run_mount(const cli_args *a, sd_ipc_conn *c)
     const char *state;
     int rc = 0;
     if (sd_ipc_call_raw(c, "status", params, strlen(params), CALL_TIMEOUT, &st, &err) != SD_OK) {
-      rc = fail_ipc(a, &err, NULL);
+      rc = fail_ipc(a, &err, &ec);
       sd_json_free(res);
       return rc;
     }
@@ -272,14 +281,21 @@ static int is_verb(const wchar_t *v, const wchar_t *name)
   return v && wcscmp(v, name) == 0;
 }
 
-/* Maps a Win32 error of the Service Control Manager to a message and exit code (non-zero result). */
+/* Maps a Win32 error of the Service Control Manager to a message and exit code (non-zero result). ERROR_ACCESS_DENIED
+   is split by cli_is_elevated: the svc_scm_* rules deny a caller that is not elevated before any SCM call (exit 9,
+   elevation message), while an elevated console whose SCM call was refused gets the SCM message with the code (exit 1). */
 static int scm_error(DWORD e)
 {
   sd_arg arg;
   switch (e) {
   case ERROR_ACCESS_DENIED:
-    say(SD_MSG_CLI_SERVICE_NEED_ADMIN, NULL, 0, 1);
-    return 9;
+    if (!cli_is_elevated()) {
+      say(SD_MSG_CLI_SERVICE_MANAGE_NEED_ADMIN, NULL, 0, 1);
+      return 9;
+    }
+    arg.name = "code"; arg.type = SD_ARG_INT; arg.v.i = (long long)e;
+    say(SD_MSG_CLI_SERVICE_SCM_FAILED, &arg, 1, 1);
+    return 1;
   case ERROR_SERVICE_EXISTS:
     say(SD_MSG_CLI_SERVICE_ALREADY_INSTALLED, NULL, 0, 1);
     return 1;
@@ -299,6 +315,11 @@ static int scm_error(DWORD e)
   }
 }
 
+#ifdef SD_CLI_TEST_HOOKS
+/* Test seam, defined with the status report below: SHELLDRIVE_TEST_SCM applies to the service verbs too. */
+static void test_scm_seam(svc_scm_ops *ops);
+#endif
+
 /* install, uninstall, start and stop (M5, 03 §1.3, §6.1). The rules and the SCM calls are in svc_scm.c; this only
    prints. The description is the localized text of this process (the cli domain). */
 static int scm_verb(const wchar_t *verb)
@@ -308,6 +329,9 @@ static int scm_verb(const wchar_t *verb)
   sd_msg_id done;
   DWORD e;
   svc_scm_real_ops(&ops);
+#ifdef SD_CLI_TEST_HOOKS
+  test_scm_seam(&ops);
+#endif
   if (is_verb(verb, L"install")) {
     e = svc_scm_host_spec(&spec, sd_l10n_get(SD_MSG_CLI_SERVICE_DESCRIPTION));
     if (e == 0)
@@ -454,8 +478,9 @@ static void print_report_json(const svc_status_report *r, const svc_pipe_report 
 
 #ifdef SD_CLI_TEST_HOOKS
 /* Test seam (test builds only): SHELLDRIVE_TEST_SCM=running (installed and running) or absent (not installed) replaces
-   the two read-only SCM queries, so the pipe path of service status runs on a machine without ShellDriveSvc. Any other
-   value, or no value, leaves the real SCM. */
+   the two read-only SCM queries, so the pipe path of service status runs on a machine without ShellDriveSvc;
+   =denied replaces the install, uninstall, start and stop calls with refusals (scm_verb). Any other value, or no
+   value, leaves the real SCM. */
 static DWORD test_query_service(void *ctx, svc_status_report *out)
 {
   wchar_t v[16];
@@ -479,11 +504,40 @@ static DWORD test_query_source(void *ctx, const wchar_t *source, wchar_t *messag
   return ERROR_FILE_NOT_FOUND;
 }
 
+static DWORD test_scm_refused(void *ctx)
+{
+  (void)ctx;
+  return ERROR_ACCESS_DENIED;
+}
+
+static DWORD test_create_refused(void *ctx, const svc_install_spec *s)
+{
+  (void)ctx;
+  (void)s;
+  return ERROR_ACCESS_DENIED;
+}
+
+/* Follows SHELLDRIVE_TEST_ELEVATED, so scm_error sees both callers: the rules functions deny the one that is not
+   elevated, the fake SCM calls deny the elevated one. No real service is created, started, stopped or removed. */
+static int test_scm_elevated(void *ctx)
+{
+  (void)ctx;
+  return cli_is_elevated();
+}
+
 static void test_scm_seam(svc_scm_ops *ops)
 {
   wchar_t v[16];
   if (GetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", v, SD_COUNTOF(v)) == 0)
     return;
+  if (wcscmp(v, L"denied") == 0) {
+    ops->create_service = test_create_refused;
+    ops->delete_service = test_scm_refused;
+    ops->start_service = test_scm_refused;
+    ops->stop_service = test_scm_refused;
+    ops->is_elevated = test_scm_elevated;
+    return;
+  }
   if (wcscmp(v, L"running") != 0 && wcscmp(v, L"absent") != 0)
     return;
   ops->query_service = test_query_service;

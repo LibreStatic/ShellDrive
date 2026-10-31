@@ -59,6 +59,7 @@ SD_TEST_DECL(diag_deny_parse_truncates_at_the_capacity);
 SD_TEST_DECL(diag_netloc_compare_token_lists);
 SD_TEST_DECL(cli_parse_location_verbs);
 SD_TEST_DECL(smoke_location_verbs);
+SD_TEST_DECL(smoke_service_scm_denials);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -120,6 +121,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(diag_netloc_compare_token_lists),
   SD_TEST_ENTRY(cli_parse_location_verbs),
   SD_TEST_ENTRY(smoke_location_verbs),
+  SD_TEST_ENTRY(smoke_service_scm_denials),
 };
 
 int main(int argc, char **argv)
