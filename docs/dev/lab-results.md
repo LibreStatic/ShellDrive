@@ -319,11 +319,56 @@ Notes for the record:
 - New-LabVM.ps1 still does not set AutomaticStartAction; it was set manually on the
   recreated VM.
 
-## Appendix: procedure for the live global Dokany mount (M5, not yet run)
+## 2026-10-30: first live run — M5 global Dokany mount on Win10 LTSC (attempt 13)
 
-Written 2026-10-30 because `sd-win10-ltsc21-x64` was held by the M3 acceptance run. Nothing here has been executed;
-it is the exact sequence to run as soon as the VM is free, so that the first live global mount is a measurement and
-not an exploration. It closes the "a real global mount seen by a second session" item of `docs/dev/m5-notes.md`
+Attempt 13, log `D:\sdlab\logs\m5-20261030-233947.log` (2026-10-30, 23:39 local). Guest `sd-win10-ltsc21-x64`
+(Windows 10 IoT Enterprise LTSC 2021, build 19044, generation 1), now on the NVMe SSD (`C:\sdlab-vms`) — boots
+in about 1 min instead of about 8. Payload: x64-modern Release built from this branch with the svc_scm fix
+`58d6b68` (the banner reports b413bf0), Dokany 2.1 (`dokan2` RUNNING). Machine profile `global10.ini`:
+`scope = service`, `backend = dokany`, `letter = Z`, `label = GlobalDokan`, `autostart = boot`,
+`service_access = sduser1, sduser2`, `service_access_write = sduser1`; fixture sshd at `[172.20.128.1]:2222`.
+The harness lives in `D:\sdlab\m5` (host-only, not in the repo). Phases: A (install, batch logons), B1/B2
+(reboot + console logon, B2 with a concurrent batch session), final (G7 mutation, G3, uninstall). Results per
+acceptance item, step names as the run log prints them:
+
+- Service install/start as SYSTEM: OK — `service-install-start OK ShellDriveSvc RUNNING`. Before `58d6b68` (the
+  service is opened with SERVICE_START so its restart actions can be set) every install rolled back with
+  ACCESS_DENIED surfaced as "needs an elevated console", exit 9.
+- Machine profile load and machine host key add (`--from-server --expect`): OK — the service log shows
+  `service starting; 1 machine profiles`; `hostkey-add OK [172.20.128.1]:2222 ssh-ed25519 …`.
+- Global Dokany mount Z: — `service status` (admin) answers `Z:  GlobalDokan  mounted`; Event 1100 `Global drive
+  for profile 9e1a0c5d3b7f4e2a8c6d1f0b2a4c6e81 is mounted at Z:.`.
+- G1, batch logon of `sduser1` (standard, not elevated): `dir Z:` rc=0 with no mount command run ("Volume in
+  drive Z is GlobalDokan"); write, rename and delete all rc=0; one Event 1200 audit entry per change carrying
+  the user SID: `… by SD-10-X64\sduser1 (SID S-1-5-21-159632063-432193879-889666275-1002): write_open \big.bin.`.
+- G5, 1 GiB through Z:: write 74.6 s, read 17.6 s, `hash_match=True` (attempt 13's own values; attempt 12,
+  `m5-20261030-230247.log`, measured 79.9 s / 17.7 s).
+- G7, read-only member: `sduser2`'s write is denied (`write_rc=1 (want nonzero) [cmd : Access is denied. …]`) and
+  it cannot read `sduser1`'s file. G7 mutation: profile edited to drop `sduser2`, service restart to reload —
+  `g7-u2-denied OK` (`dir Z:` now `Access is denied.`) and `g7-u1-still-ok OK`; profile restored, remount rc=0.
+- Console logons: B1 — the `sduser1` console session sees Z: (`dirZ_rc=0`). B2 — the `sduser2` console session
+  plus a concurrent `sduser1` batch session (two live sessions) both see and use Z:, 1 GiB round trip OK
+  (write 69.7 s, read 18 s, hash match).
+- G3: service stop removes Z: cleanly (`dirZ-after-stop=[The system cannot find the path specified.]`), start +
+  remount OK; VM save/resume (sleep proxy) keeps the mount.
+- Uninstall: `uninstall OK … ShellDrive service removed.`; `sc query` answers 1060 (no such service) and Z: is
+  gone (`dirZ-after-uninstall=[The system cannot find the path specified.]`).
+- Expected by design: SYSTEM itself gets Access denied on Z: (it is not in `service_access`) — the run log marks
+  this probe `service-mount FAIL Z: not readable: Access is denied.`.
+
+Defects and gaps found by the run are listed under the M5 "Left" items of `docs/dev/m5-notes.md` (Part 14 §5):
+the service does not apply `autostart = boot`, a standard user's `shelldrive service list` exits 8 while the
+service runs, `service mount` for an unknown profile prints an empty name placeholder, `scm_error` maps every
+ACCESS_DENIED to "needs an elevated console", and Get-Volume does not list the Dokany Z: (`dir`/Explorer work).
+Not covered: RDP/FUS second interactive session (G2 proper), Server 2022 + Secure Boot (the Gen2 media problem
+of the 2026-10-29 night section), pre-logon mount at boot (blocked by the `autostart` gap).
+
+## Appendix: procedure for the live global Dokany mount (M5; first run 2026-10-30, see above)
+
+Written 2026-10-30 while `sd-win10-ltsc21-x64` was still held by the M3 acceptance run; executed the same day
+(attempt 13, results in the 2026-10-30 section above, which supersedes this appendix wherever they differ —
+step 8's pre-logon mount is exactly the `autostart = boot` gap recorded there). The sequence is kept as written
+for future runs. It closes the "a real global mount seen by a second session" item of `docs/dev/m5-notes.md`
 (M5 rows 2 and "Left") and the M5 demo (a) of `docs/design/00-integration-review.md` §6 for Windows 10 (Server 2022
 needs a Gen2 guest, still blocked by the host DVD defect of this file's 2026-10-29 night section; Gen1 validates the
 code but not Secure Boot).

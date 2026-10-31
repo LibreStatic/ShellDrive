@@ -1329,8 +1329,31 @@ And in `unit.webdav`, against a real loopback server with real SSPI (the test us
 
 ### 5. Left after this round
 
-- The live global Dokany mount on `sd-win10-ltsc21-x64` (the VM is `m3-lab`'s); the procedure is in
-  `docs/dev/lab-results.md` (appendix) so it can run as soon as the VM is free.
+- The live global Dokany mount on `sd-win10-ltsc21-x64` ran on 2026-10-30, attempt 13, log
+  `D:\sdlab\logs\m5-20261030-233947.log` (the procedure is the appendix of `docs/dev/lab-results.md`): PASS on
+  install/start as SYSTEM (after `58d6b68`), machine profile load and host key, the global mount (Event 1100),
+  G1 batch and B1/B2 console logons (two live sessions), G5 (1 GiB write 74.6 s, read 17.6 s, SHA-256 match),
+  G7 including the drop-member mutation, G3 stop/start and VM save/resume, and uninstall. Per-item results with
+  the quoted log lines are in the 2026-10-30 section of `docs/dev/lab-results.md`. The run left these product
+  gaps, to triage:
+  - `autostart = boot` is not applied by the service. After every reboot `shelldrive service list` was empty
+    until a manual `service mount` (03 §3.4.1 says the service applies it); both phase-B reboots log
+    `pre-logon-state OK … list=[No global drives are mounted.]` and `remount OK remounted by hand (boot
+    autostart absent)`. Product gap; it blocks the pre-logon (G6) claim for Dokany.
+  - A standard user's `shelldrive service list` exits 8, "The ShellDrive service is not running or not
+    installed.", while the service runs: the same user gets rc=0 and `Z:  GlobalDokan  mounted` from its console
+    session but rc=8 from a batch session. Pipe access for non-admin members, or the CLI mis-mapping access
+    denied — triage.
+  - `service mount <name>` for an unknown profile prints "There is no profile named ." — the name placeholder
+    is empty.
+  - `scm_error` (`apps/shelldrive/cli_service.c:280`) maps every ERROR_ACCESS_DENIED to "needs an elevated
+    console" — misleading when the caller is elevated; that message is what the pre-`58d6b68` install attempts
+    reported as they rolled back (exit 9).
+  - Note only: Get-Volume (MSFT_Volume) does not list the Dokany Z: ("No MSFT_Volume objects found with
+    property 'DriveLetter' equal to 'Z'."); `dir` and Explorer work.
+  - Not covered by the run: RDP/FUS second interactive session (G2 proper), Server 2022 + Secure Boot (the Gen2
+    media problem of lab-results' 2026-10-29 night section), pre-logon mount at boot (blocked by the
+    `autostart` gap above).
 - Everything in 05 §12.8 that has no code: release roots, crash dumps, Event 3100, the FUS/RDP session list,
   `--elevated-view`, `settings.ini` checks, discovered-proxy detection.
 - The per-user identity test (two users, each mapping the other's UNC) and the rest of G1-G7.
