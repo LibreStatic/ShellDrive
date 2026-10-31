@@ -1225,7 +1225,7 @@ SD_TEST(smoke_location_verbs)
    whose SCM call is refused gets the SCM message with the Win32 code (exit 1). No real service is touched. */
 SD_TEST(smoke_service_scm_denials)
 {
-  run_result r;
+  static run_result r;   /* 32 KiB: off the stack */
   SD_REQUIRE(setup());
   SetEnvironmentVariableW(L"SHELLDRIVE_TEST_SCM", L"denied");
 
