@@ -399,7 +399,11 @@ links and main instructions, task dialogs for the other messages (`ui_win_task`)
 Test modes: `--theme=<tier>[-dark|-light]` with `--test-window`, `--test-prompts`, `--test-editor`,
 `--test-windows`, `--test-wizard`, `--test-flyout`, and `--test-shot=<file.bmp>` for screenshots.
 
-Open items: the lab screenshots of §8.2 (Aero glass is verified on the 11 host only as geometry); the Wizard97 header
+Host screenshots (Windows 11 24H2, `--test-shot`): Fluent 2c dark and light, Fluent 2a light, Classic and forced Aero
+checked. They found the list group titles centered over the rows of their group (`nmcd.rc` of an `LVCDI_GROUP` item
+spans header and rows); the custom draw now takes the header band from `LVM_GETGROUPRECT`.
+
+Open items: the lab screenshots of §8.2 on 7 and 10 (Aero glass is verified on the 11 host only as geometry); the Wizard97 header
 band stays white on dark; error strings that name `{code}` inline keep it there (the details are omitted for them);
 the flyout shows at most 12 profiles without scrolling.
 
