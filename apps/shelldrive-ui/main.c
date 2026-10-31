@@ -740,24 +740,29 @@ static int forward_to_running(int argc, wchar_t **argv)
   return ok;
 }
 
-/* --theme=<classic|aero|fluent-a|fluent-b|fluent-c>[-dark] (06 §8.1): the UI_FORCE_TIER override of the
+/* --theme=<classic|aero|fluent-a|fluent-b|fluent-c>[-dark|-light] (06 §8.1): the UI_FORCE_TIER override of the
    smoke modes, -1 when the value is not recognized. */
 static int theme_option_forced(const wchar_t *v)
 {
   size_t n = wcslen(v);
-  int dark = 0;
+  int dark = 0, light = 0, f;
 
   if (n > 5 && wcscmp(v + n - 5, L"-dark") == 0) {
     dark = 1;
     n -= 5;
+  } else if (n > 6 && wcscmp(v + n - 6, L"-light") == 0) {
+    light = 1;
+    n -= 6;
   }
   if (n == 7 && wcsncmp(v, L"classic", 7) == 0)
-    return UI_FORCE_TIER(UI_TIER_CLASSIC, 0, dark);
-  if (n == 4 && wcsncmp(v, L"aero", 4) == 0)
-    return UI_FORCE_TIER(UI_TIER_AERO, 0, dark);
-  if (n == 8 && wcsncmp(v, L"fluent-", 7) == 0 && v[7] >= L'a' && v[7] <= L'c')
-    return UI_FORCE_TIER(UI_TIER_FLUENT, (int)v[7], dark);
-  return -1;
+    f = UI_FORCE_TIER(UI_TIER_CLASSIC, 0, dark);
+  else if (n == 4 && wcsncmp(v, L"aero", 4) == 0)
+    f = UI_FORCE_TIER(UI_TIER_AERO, 0, dark);
+  else if (n == 8 && wcsncmp(v, L"fluent-", 7) == 0 && v[7] >= L'a' && v[7] <= L'c')
+    f = UI_FORCE_TIER(UI_TIER_FLUENT, (int)v[7], dark);
+  else
+    return -1;
+  return light ? (f | UI_FORCE_LIGHT_BIT) : f;
 }
 
 /* Smoke test (--test-window): the main window class is registered, the window and its controls exist,
@@ -881,7 +886,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
       goto done;
     }
   }
-  ui_theme_set_options(UI_THEME_STYLE_AUTO, 1, theme_forced);
+  ui_settings_theme_options(&g_app.settings, theme_forced);   /* [ui] style, dark_helpers and their policies */
 
   if (test_mode) {
     /* the smoke tests never read or write the user's profiles: the store is a temporary folder that only

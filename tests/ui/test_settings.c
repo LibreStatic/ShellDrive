@@ -464,3 +464,58 @@ SD_TEST(settings_r17_values_survive_a_save_load_round_trip)
   sd_config_set_root_override(NULL);
   remove_tree(root);
 }
+
+SD_TEST(settings_ui_tier_policy)
+{
+  sd_settings s;
+  ui_settings_model m, a;
+  ui_set_policy pol;
+  unsigned locked;
+  int style, dark;
+  sd_settings_defaults(&s);
+  ui_settings_from_sd(&s, &m);
+  SD_CHECK_EQ_INT(m.ui_style, SD_SETTINGS_STYLE_AUTO);
+  SD_CHECK_EQ_INT(m.dark_helpers, 1);
+  a = m;
+  a.ui_style = SD_SETTINGS_STYLE_CLASSIC;
+  a.dark_helpers = 0;
+  SD_CHECK((ui_settings_changed(&m, &a) & (UI_SET_F_STYLE | UI_SET_F_DARK)) == (UI_SET_F_STYLE | UI_SET_F_DARK));
+  ui_settings_to_sd(&a, &s);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_CLASSIC);
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 0);
+
+  /* no policy: the settings decide */
+  memset(&pol, 0, sizeof(pol));
+  ui_settings_theme_effective(&s, &pol, &style, &dark);
+  SD_CHECK_EQ_INT(style, SD_SETTINGS_STYLE_CLASSIC);
+  SD_CHECK_EQ_INT(dark, 0);
+
+  /* UiStyle = 0 forces auto and UiDarkHelpers = 0 forces the helpers off; both lock their controls */
+  sd_settings_defaults(&s);
+  s.ui_style = SD_SETTINGS_STYLE_CLASSIC;
+  pol.style_set = 1;
+  pol.style_classic = 0;
+  pol.dark_off = 1;
+  ui_settings_theme_effective(&s, &pol, &style, &dark);
+  SD_CHECK_EQ_INT(style, SD_SETTINGS_STYLE_AUTO);
+  SD_CHECK_EQ_INT(dark, 0);
+  ui_settings_from_sd(&s, &m);
+  locked = ui_settings_apply_policy(&m, &pol);
+  SD_CHECK(locked == (UI_SET_F_STYLE | UI_SET_F_DARK));
+  SD_CHECK_EQ_INT(m.ui_style, SD_SETTINGS_STYLE_AUTO);
+  SD_CHECK_EQ_INT(m.dark_helpers, 0);
+  /* a locked field is never written back */
+  m.ui_style = SD_SETTINGS_STYLE_AUTO;
+  ui_settings_to_sd_masked(&m, locked, &s);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_CLASSIC);
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 1);
+
+  /* UiStyle = 1 forces classic */
+  memset(&pol, 0, sizeof(pol));
+  pol.style_set = 1;
+  pol.style_classic = 1;
+  sd_settings_defaults(&s);
+  ui_settings_theme_effective(&s, &pol, &style, &dark);
+  SD_CHECK_EQ_INT(style, SD_SETTINGS_STYLE_CLASSIC);
+  SD_CHECK_EQ_INT(dark, 1);
+}

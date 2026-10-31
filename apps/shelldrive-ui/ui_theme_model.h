@@ -40,12 +40,14 @@
 
 /* forced_tier packs the test override of 06 §8.1 (--theme=...): bits 0-7 the tier (UI_TIER_*), bits 8-15
    the forced Fluent sub-level ('a'..'c', 0 = the level of this OS), bit 16 forces the dark palette (the
-   -dark suffix). -1 means no override. */
+   -dark suffix), bit 17 forces the light palette (the -light suffix; wins over -dark). -1 means no override. */
 #define UI_FORCE_TIER(tier, level, dark) \
   ((tier) | ((int)(unsigned char)(level) << 8) | ((dark) ? 0x10000 : 0))
 #define UI_FORCE_TIER_OF(f)  ((f) & 0xFF)
 #define UI_FORCE_LEVEL_OF(f) (((f) >> 8) & 0xFF)
 #define UI_FORCE_DARK_OF(f)  (((f) >> 16) & 0x01)
+#define UI_FORCE_LIGHT_BIT   0x20000
+#define UI_FORCE_LIGHT_OF(f) (((f) >> 17) & 0x01)
 
 typedef struct ui_theme_inputs {
   unsigned os_major, os_minor, os_build;

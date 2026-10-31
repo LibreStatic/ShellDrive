@@ -103,7 +103,7 @@ static const ui_mount *mount_of(const char *profile_id)
   return NULL;
 }
 
-/* The text of one row: "<name> (<drive>)", the drive of the mount or the one the profile asks for. */
+/* The text of one row: the name, or ui.flyout.row_label ("<name> (<drive>)") with the drive of the mount or the one the profile asks for. */
 static void row_text(const sd_profile *p, const ui_mount *m, wchar_t *out, size_t cch)
 {
   wchar_t name[160], drive[4];
@@ -117,11 +117,17 @@ static void row_text(const sd_profile *p, const ui_mount *m, wchar_t *out, size_
     drive[1] = L':';
     drive[2] = 0;
   }
-  wcsncpy_s(out, cch, name, _TRUNCATE);
   if (drive[0] != 0) {
-    wcscat_s(out, cch, L" (");
-    wcscat_s(out, cch, drive);
-    wcscat_s(out, cch, L")");
+    sd_arg a[2];
+    a[0].name = "name";
+    a[0].type = SD_ARG_STR;
+    a[0].v.s = name;
+    a[1].name = "drive";
+    a[1].type = SD_ARG_STR;
+    a[1].v.s = drive;
+    (void)sd_l10n_format(out, cch, SD_MSG_UI_FLYOUT_ROW_LABEL, a, 2);
+  } else {
+    wcsncpy_s(out, cch, name, _TRUNCATE);
   }
 }
 

@@ -33,6 +33,7 @@ SD_TEST_DECL(menu_format_caps);
 SD_TEST_DECL(menu_writer_through_profile_store);
 SD_TEST_DECL(settings_m4_defaults);
 SD_TEST_DECL(settings_m4_parse_values);
+SD_TEST_DECL(settings_ui_tier_keys);
 SD_TEST_DECL(settings_m4_notify_kinds_and_codes);
 SD_TEST_DECL(settings_m4_write_mode_resolution);
 SD_TEST_DECL(profile_m4_write_mode_key_round_trip);
@@ -72,6 +73,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(menu_writer_through_profile_store),
   SD_TEST_ENTRY(settings_m4_defaults),
   SD_TEST_ENTRY(settings_m4_parse_values),
+  SD_TEST_ENTRY(settings_ui_tier_keys),
   SD_TEST_ENTRY(settings_m4_notify_kinds_and_codes),
   SD_TEST_ENTRY(settings_m4_write_mode_resolution),
   SD_TEST_ENTRY(profile_m4_write_mode_key_round_trip),

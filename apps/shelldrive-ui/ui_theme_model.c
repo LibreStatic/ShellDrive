@@ -75,6 +75,8 @@ void ui_theme_select(const ui_theme_inputs *in, ui_theme *out)
   apps_light = in->apps_use_light;
   if (in->forced_tier != -1 && UI_FORCE_DARK_OF(in->forced_tier))
     apps_light = 0;                          /* the -dark suffix of --theme (06 §8.1) */
+  if (in->forced_tier != -1 && UI_FORCE_LIGHT_OF(in->forced_tier))
+    apps_light = 1;                          /* the -light suffix of --theme */
   if (tier == UI_TIER_FLUENT && apps_light == 0 && in->dwm_present &&
       (in->os_build >= UI_THEME_BUILD_WIN11 || helpers))
     out->dark = 1;

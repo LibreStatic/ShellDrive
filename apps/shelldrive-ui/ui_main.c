@@ -52,6 +52,12 @@
 #ifndef LVIF_GROUPID
 #define LVIF_GROUPID        0x0100
 #endif
+#ifndef LVCDI_GROUP
+#define LVCDI_GROUP         1
+#endif
+#ifndef LVM_GETGROUPINFO
+#define LVM_GETGROUPINFO    (LVM_FIRST + 149)
+#endif
 #define UI_LVGF_HEADER      0x00000001u
 #define UI_LVGF_GROUPID     0x00000010u
 #ifndef LVS_EX_DOUBLEBUFFER
@@ -114,6 +120,9 @@ static int dpx(int v)
 #define UI_BPPF_ERASE      1
 #define UI_DTT_TEXTCOLOR   0x00000001u
 #define UI_DTT_COMPOSITED  0x00002000u
+#define UI_DTT_GLOWSIZE    0x00000800u
+#define UI_TMT_TEXTGLOWSIZE 2425
+#define UI_AERO_GLOW_DEFAULT 10
 #define UI_DWMWA_EXTENDED_FRAME_BOUNDS 9
 #define UI_CB_COUNT        (UI_TB_BUTTONS + 1)
 
@@ -142,6 +151,8 @@ typedef HRESULT (WINAPI *ui_pfn_closetheme)(HANDLE theme);
 typedef HRESULT (WINAPI *ui_pfn_themetext)(HANDLE theme, HDC dc, int part, int state, LPCWSTR text, int cch,
                                            DWORD flags, LPRECT rc, const ui_dttopts *opts);
 typedef HRESULT (WINAPI *ui_pfn_settheme)(HWND hwnd, LPCWSTR subapp, LPCWSTR sublist);
+typedef HRESULT (WINAPI *ui_pfn_themebg)(HANDLE theme, HDC dc, int part, int state, const RECT *rc, const RECT *clip);
+typedef HRESULT (WINAPI *ui_pfn_themeint)(HANDLE theme, int part, int state, int prop, int *value);
 
 static ui_pfn_extend g_fx_extend;
 static ui_pfn_getattr g_fx_getattr;
@@ -153,10 +164,13 @@ static ui_pfn_opentheme g_fx_open;
 static ui_pfn_closetheme g_fx_close;
 static ui_pfn_themetext g_fx_text;
 static ui_pfn_settheme g_fx_settheme;
+static ui_pfn_themebg g_fx_bg;
+static ui_pfn_themeint g_fx_int;
 static int g_fx_resolved;
 static int g_bp_inited;           /* BufferedPaintInit succeeded on this thread */
 
 static int g_fluent;              /* the window was created with the Fluent controls */
+static int g_aero;                /* the window was created on the Aero tier (glass band while composition is on) */
 static HWND g_cb[UI_TB_BUTTONS];  /* the command bar buttons, in k_cb order */
 static HWND g_overflow;           /* the "..." button */
 static HWND g_hot;                /* the command bar button under the mouse */
@@ -189,6 +203,8 @@ static void fx_resolve(void)
   g_fx_close = (ui_pfn_closetheme)sd_platform_resolve_by_name(L"uxtheme.dll", "CloseThemeData");
   g_fx_text = (ui_pfn_themetext)sd_platform_resolve_by_name(L"uxtheme.dll", "DrawThemeTextEx");
   g_fx_settheme = (ui_pfn_settheme)sd_platform_resolve_by_name(L"uxtheme.dll", "SetWindowTheme");
+  g_fx_bg = (ui_pfn_themebg)sd_platform_resolve_by_name(L"uxtheme.dll", "DrawThemeBackground");
+  g_fx_int = (ui_pfn_themeint)sd_platform_resolve_by_name(L"uxtheme.dll", "GetThemeInt");
 }
 
 /* 1 when the band can be Mica: level 'c' and every function of the extended-frame and buffered-paint path
@@ -198,6 +214,17 @@ static int mica_active(void)
   const ui_theme *t = ui_theme_current();
   return g_fluent && t != NULL && t->backdrop && g_fx_extend != NULL && g_bp_inited && g_fx_bpbegin != NULL &&
          g_fx_bpend != NULL && g_fx_bpalpha != NULL && g_fx_open != NULL && g_fx_close != NULL && g_fx_text != NULL;
+}
+
+/* 1 while the Aero glass band is shown: the window was created on Aero, the theme still reports glass (composition
+   on) and every function of the extended-frame and buffered-paint path resolved. Turns 0 when composition is
+   switched off (WM_DWMCOMPOSITIONCHANGED), and the toolbar then paints normally. */
+static int aero_glass(void)
+{
+  const ui_theme *t = ui_theme_current();
+  return g_aero && !g_fluent && t != NULL && t->tier == UI_TIER_AERO && t->glass && g_app.toolbar != NULL &&
+         g_fx_extend != NULL && g_bp_inited && g_fx_bpbegin != NULL && g_fx_bpend != NULL && g_fx_open != NULL &&
+         g_fx_close != NULL && g_fx_text != NULL && g_fx_bg != NULL;
 }
 
 /* a moved toward b by pct percent, per channel */
@@ -241,14 +268,14 @@ static void set_alpha_clipped(HANDLE buf, const RECT *rc, HRGN clip)
   }
 }
 
-/* The extended frame covers the command bar band on Mica, nothing otherwise. */
+/* The extended frame covers the command bar band on Mica and the toolbar band on Aero glass, nothing otherwise. */
 static void update_frame(HWND hwnd)
 {
   ui_margins m;
   memset(&m, 0, sizeof(m));
   if (g_fx_extend == NULL)
     return;
-  if (mica_active())
+  if (mica_active() || aero_glass())
     m.top = g_band_h;
   if (m.top == g_frame_cy)
     return;
@@ -277,14 +304,19 @@ static void draw_cmd_button(const DRAWITEMSTRUCT *d)
   HBRUSH br;
   HRGN clip = NULL;
 
-  GetWindowTextW(d->hwndItem, text, SD_COUNTOF(text));
+  /* the overflow button's window text is its accessible name ("More options"); it shows three dots */
+  if (d->CtlID == UI_CTL_OVERFLOW)
+    wcscpy_s(text, SD_COUNTOF(text), L"\x00B7\x00B7\x00B7");
+  else
+    GetWindowTextW(d->hwndItem, text, SD_COUNTOF(text));
   if (accent) {
     fg = ui_theme_color(UI_TOK_ACCENT_TEXT);
     fill = ui_theme_color(UI_TOK_ACCENT);
+    /* the palette accent as is; hover lightens it a little, pressed darkens it (whichever the text color) */
     if (pressed)
-      fill = blend(fill, fg, 22);
+      fill = blend(fill, RGB(0, 0, 0), 14);
     else if (hot)
-      fill = blend(fill, fg, 10);
+      fill = blend(fill, RGB(255, 255, 255), 12);
   } else {
     fg = disabled ? blend(ui_theme_color(UI_TOK_TEXT_SECONDARY), surface, 45) : ui_theme_color(UI_TOK_TEXT);
     fill = pressed ? blend(surface, ui_theme_color(UI_TOK_TEXT), 16)
@@ -351,6 +383,83 @@ static void draw_cmd_button(const DRAWITEMSTRUCT *d)
     DeleteObject(clip);
   if (theme != NULL)
     g_fx_close(theme);
+}
+
+/* NM_CUSTOMDRAW of the toolbar on the glass band (06 §3.2): a transparent toolbar over black (glass) whose buttons
+   are painted into a buffered-paint DIB: the hot/pressed background of the toolbar theme and the text through
+   DrawThemeTextEx with the composited glow of the Windows 7 caption. GDI text alone would write alpha 0. */
+static LRESULT aero_toolbar_draw(NMTBCUSTOMDRAW *cd)
+{
+  HANDLE buf, bt, ct;
+  HDC mdc = NULL;
+  RECT rc = cd->nmcd.rc, tr;
+  ui_bp_params bpp;
+  ui_dttopts o;
+  wchar_t text[96];
+  int state = cd->nmcd.uItemState, glow = UI_AERO_GLOW_DEFAULT, id = (int)cd->nmcd.dwItemSpec;
+  int disabled = (state & CDIS_DISABLED) != 0;
+  HFONT old;
+
+  if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+    return CDRF_NOTIFYITEMDRAW;
+  if (cd->nmcd.dwDrawStage != CDDS_ITEMPREPAINT)
+    return CDRF_DODEFAULT;
+  text[0] = 0;
+  if (id != 0)
+    SendMessageW(g_app.toolbar, TB_GETBUTTONTEXTW, (WPARAM)id, (LPARAM)text);
+  if (text[0] == 0)
+    return CDRF_SKIPDEFAULT;            /* separators: the black band shows through */
+  ct = g_fx_open(g_app.toolbar, L"CompositedWindow::Window");
+  if (ct == NULL)
+    return CDRF_DODEFAULT;
+  memset(&bpp, 0, sizeof(bpp));
+  bpp.cbSize = sizeof(bpp);
+  bpp.dwFlags = UI_BPPF_ERASE;
+  buf = g_fx_bpbegin(cd->nmcd.hdc, &rc, UI_BPBF_TOPDOWNDIB, &bpp, &mdc);
+  if (buf == NULL) {
+    g_fx_close(ct);
+    return CDRF_DODEFAULT;
+  }
+  if ((state & (CDIS_HOT | CDIS_SELECTED)) != 0 && !disabled) {
+    bt = g_fx_open(g_app.toolbar, L"Toolbar");
+    if (bt != NULL) {
+      g_fx_bg(bt, mdc, 1 /* TP_BUTTON */, (state & CDIS_SELECTED) != 0 ? 3 /* TS_PRESSED */ : 2 /* TS_HOT */, &rc,
+              NULL);
+      g_fx_close(bt);
+    }
+  }
+  if (g_fx_int != NULL)
+    g_fx_int(ct, 1 /* WP_CAPTION */, 1 /* CS_ACTIVE */, UI_TMT_TEXTGLOWSIZE, &glow);
+  if (glow <= 0)
+    glow = UI_AERO_GLOW_DEFAULT;
+  memset(&o, 0, sizeof(o));
+  o.dwSize = sizeof(o);
+  o.dwFlags = UI_DTT_COMPOSITED | UI_DTT_GLOWSIZE;
+  if (disabled) {
+    o.dwFlags |= UI_DTT_TEXTCOLOR;
+    o.crText = GetSysColor(COLOR_GRAYTEXT);
+  } else {
+    o.dwFlags |= UI_DTT_TEXTCOLOR;
+    o.crText = RGB(0, 0, 0);
+  }
+  o.glow_size = glow;
+  old = (HFONT)SelectObject(mdc, g_app.font);
+  tr = rc;
+  g_fx_text(ct, mdc, 1, 1, text, -1, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX, &tr, &o);
+  SelectObject(mdc, old);
+  g_fx_bpend(buf, TRUE);
+  g_fx_close(ct);
+  return CDRF_SKIPDEFAULT;
+}
+
+/* The glass band: black in the client area (alpha 0 shows the glass). */
+static void aero_fill_band(HDC dc, HWND hwnd)
+{
+  RECT rc;
+  GetClientRect(hwnd, &rc);
+  if (g_band_h < rc.bottom)
+    rc.bottom = g_band_h;
+  FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
 }
 
 /* Focus order of the command bar: the buttons, the overflow button, then the list. */
@@ -476,7 +585,7 @@ static int make_command_bar(HWND parent)
     if (g_cb[i] == NULL)
       return 0;
   }
-  g_overflow = make_cb_button(parent, L"\x00B7\x00B7\x00B7", UI_CTL_OVERFLOW);
+  g_overflow = make_cb_button(parent, sd_l10n_get(SD_MSG_UI_MAIN_MORE_OPTIONS), UI_CTL_OVERFLOW);
   return g_overflow != NULL;
 }
 
@@ -494,10 +603,11 @@ static void apply_list_theme(void)
   ui_theme_apply_control(g_app.list);
   hdr = (HWND)SendMessageW(g_app.list, LVM_GETHEADER, 0, 0);
   if (g_fx_settheme != NULL) {
-    if (t->dark && t->dark_helpers)
-      g_fx_settheme(g_app.list, L"DarkMode_ItemsView", NULL);
+    /* the list keeps DarkMode_Explorer from ui_theme_apply_control (DarkMode_ItemsView drew column lines through
+       the empty area). The header is painted by fluent_header_draw, so it takes the classic (empty) theme: any
+       themed header continues its column dividers as lines through the list area on Windows 11. */
     if (hdr != NULL)
-      g_fx_settheme(hdr, NULL, NULL);     /* the header is painted by fluent_header_draw; the default theme */
+      g_fx_settheme(hdr, L"", L"");
   }
   InvalidateRect(g_app.list, NULL, TRUE);
   if (hdr != NULL)
@@ -549,6 +659,56 @@ static LRESULT fluent_header_draw(NMCUSTOMDRAW *cd)
   rc.right -= dpx(4);
   DrawTextW(cd->hdc, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
   SelectObject(cd->hdc, old);
+  return CDRF_SKIPDEFAULT;
+}
+
+/* NM_CUSTOMDRAW of the list on Fluent: the group headers (Vista+) are drawn here in UI_TOK_TEXT with a semibold
+   font, because the dark ListView theme leaves them dark blue on the dark layer. Rows keep the default drawing
+   (selection and focus stay the control's own). */
+static LRESULT fluent_list_draw(NMLVCUSTOMDRAW *cd)
+{
+  ui_lvgroup grp;
+  wchar_t text[128];
+  LOGFONTW lf;
+  HFONT font, old;
+  RECT rc = cd->nmcd.rc, tr;
+  SIZE sz;
+  int id;
+
+  /* a group header is one CDDS_PREPAINT with dwItemType LVCDI_GROUP (the list itself and the rows have other types) */
+  if (cd->nmcd.dwDrawStage != CDDS_PREPAINT || cd->dwItemType != LVCDI_GROUP)
+    return CDRF_DODEFAULT;
+  id = (int)cd->nmcd.dwItemSpec;
+  text[0] = 0;
+  memset(&grp, 0, sizeof(grp));
+  grp.cbSize = sizeof(grp);
+  grp.mask = UI_LVGF_HEADER;
+  grp.pszHeader = text;
+  grp.cchHeader = SD_COUNTOF(text);
+  if (SendMessageW(g_app.list, LVM_GETGROUPINFO, (WPARAM)id, (LPARAM)&grp) < 0 || text[0] == 0)
+    return CDRF_DODEFAULT;
+  memset(&lf, 0, sizeof(lf));
+  GetObjectW(g_app.font, sizeof(lf), &lf);
+  lf.lfWeight = FW_SEMIBOLD;
+  font = CreateFontIndirectW(&lf);
+  old = (HFONT)SelectObject(cd->nmcd.hdc, font != NULL ? font : g_app.font);
+  SetBkMode(cd->nmcd.hdc, TRANSPARENT);
+  SetTextColor(cd->nmcd.hdc, ui_theme_color(UI_TOK_TEXT));
+  tr = rc;
+  tr.left += dpx(6);
+  DrawTextW(cd->nmcd.hdc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+  if (GetTextExtentPoint32W(cd->nmcd.hdc, text, (int)wcslen(text), &sz)) {
+    RECT line = rc;
+    line.left = tr.left + sz.cx + dpx(8);
+    line.right -= dpx(4);
+    line.top = (rc.top + rc.bottom) / 2;
+    line.bottom = line.top + 1;
+    if (line.left < line.right)
+      FillRect(cd->nmcd.hdc, &line, ui_theme_brush(UI_TOK_STROKE));
+  }
+  SelectObject(cd->nmcd.hdc, old);
+  if (font != NULL)
+    DeleteObject(font);
   return CDRF_SKIPDEFAULT;
 }
 
@@ -806,6 +966,8 @@ static void layout(HWND hwnd)
   th = toolbar_height(w - 2 * m > 0 ? w - 2 * m : 0);
   MoveWindow(g_app.toolbar, m, m / 2, w - 2 * m > 0 ? w - 2 * m : 0, th, TRUE);
   y = m / 2 + th + m / 2;
+  g_band_h = g_aero ? y : 0;               /* the toolbar band: glass on Aero (06 §3.2) */
+  update_frame(hwnd);
   lh = h - y - sbh - m;
   if (lh < 0)
     lh = 0;
@@ -1333,6 +1495,13 @@ static void on_dpi(HWND hwnd, unsigned dpi, const RECT *suggested)
 static void on_theme_changed(HWND hwnd)
 {
   ui_theme_refresh();
+  if (g_aero) {
+    /* composition on or off: the glass band follows live (margins 0 and normal toolbar painting without it) */
+    update_frame(hwnd);
+    layout(hwnd);
+    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+    return;
+  }
   if (!g_fluent)
     return;
   ui_theme_apply_window(hwnd, UI_THEME_WND_MAIN);
@@ -1391,7 +1560,7 @@ static HWND make_toolbar(HWND parent)
   size_t i;
 
   tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"",
-                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBSTYLE_FLAT | TBSTYLE_LIST | TBSTYLE_WRAPABLE |
+                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBSTYLE_FLAT | TBSTYLE_LIST | TBSTYLE_WRAPABLE | (g_aero ? TBSTYLE_TRANSPARENT : 0) |
                            CCS_NODIVIDER | CCS_NOPARENTALIGN | CCS_NORESIZE,
                        0, 0, 10, 10, parent, (HMENU)(UINT_PTR)UI_CTL_TOOLBAR, g_app.inst, NULL);
   if (tb == NULL)
@@ -1422,7 +1591,8 @@ static int on_create(HWND hwnd)
 
   /* Fluent: command bar, layer card and status strip instead of the menu bar, toolbar and status bar (06 §6.1) */
   g_fluent = theme != NULL && theme->tier == UI_TIER_FLUENT;
-  if (g_fluent) {
+  g_aero = theme != NULL && theme->tier == UI_TIER_AERO;
+  if (g_fluent || g_aero) {
     fx_resolve();
     if (!g_bp_inited && g_fx_bpinit != NULL && g_fx_bpinit() >= 0)
       g_bp_inited = 1;
@@ -1455,6 +1625,8 @@ static int on_create(HWND hwnd)
   if (g_fluent) {
     g_list_proc = (WNDPROC)SetWindowLongPtrW(g_app.list, GWLP_WNDPROC, (LONG_PTR)list_proc);
     apply_list_theme();
+  } else if (g_aero) {
+    ui_theme_apply_control(g_app.list);     /* the Explorer theme of the white list under the glass band */
   }
 
   SendMessageW(g_app.list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
@@ -1524,8 +1696,12 @@ static LRESULT on_notify(NMHDR *nm)
       ui_main_start_agent();
     return 0;
   }
+  if (nm->idFrom == UI_CTL_TOOLBAR && nm->code == NM_CUSTOMDRAW)
+    return aero_glass() ? aero_toolbar_draw((NMTBCUSTOMDRAW *)nm) : CDRF_DODEFAULT;
   if (nm->idFrom != UI_CTL_LIST)
     return 0;
+  if (nm->code == NM_CUSTOMDRAW && g_fluent)
+    return fluent_list_draw((NMLVCUSTOMDRAW *)nm);
   if (nm->code == LVN_ITEMCHANGED) {
     update_buttons();
   } else if (nm->code == NM_DBLCLK) {
@@ -1583,10 +1759,24 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       fluent_erase(hwnd, (HDC)wp);
       return 1;
     }
+    if (aero_glass()) {
+      RECT rc;
+      GetClientRect(hwnd, &rc);
+      FillRect((HDC)wp, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
+      aero_fill_band((HDC)wp, hwnd);
+      return 1;
+    }
     break;
   case WM_PAINT:
     if (g_fluent) {
       fluent_paint(hwnd);
+      return 0;
+    }
+    if (aero_glass()) {
+      PAINTSTRUCT ps;
+      HDC dc = BeginPaint(hwnd, &ps);
+      aero_fill_band(dc, hwnd);
+      EndPaint(hwnd, &ps);
       return 0;
     }
     break;
@@ -1619,6 +1809,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       g_fx_bpuninit();
     g_bp_inited = 0;
     g_fluent = 0;
+    g_aero = 0;
+    g_band_h = 0;
     memset(g_cb, 0, sizeof(g_cb));
     g_overflow = NULL;
     g_hot = NULL;

@@ -287,6 +287,16 @@ SD_TEST(theme_forced_tier_overrides_the_os)
   SD_CHECK_EQ_INT(t.corners, 0);
   SD_CHECK_EQ_INT(t.task_dialogs, 0);
 
+  in = mk_inputs();                          /* -light shows the light palette on a dark host */
+  in.apps_use_light = 0;
+  in.forced_tier = UI_FORCE_TIER(UI_TIER_FLUENT, UI_LEVEL_C, 0) | UI_FORCE_LIGHT_BIT;
+  t = select_with(&in);
+  SD_CHECK_EQ_INT(t.tier, UI_TIER_FLUENT);
+  SD_CHECK_EQ_INT(t.dark, 0);
+  in.forced_tier = UI_FORCE_TIER(UI_TIER_FLUENT, UI_LEVEL_C, 1) | UI_FORCE_LIGHT_BIT;
+  t = select_with(&in);
+  SD_CHECK_EQ_INT(t.dark, 0);                /* light wins over dark */
+
   in = mk_inputs();                          /* -1 follows the OS */
   in.forced_tier = -1;
   t = select_with(&in);

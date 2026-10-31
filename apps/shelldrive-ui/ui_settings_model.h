@@ -35,6 +35,8 @@ typedef struct ui_settings_model {
   int log_strict;                    /* [log] privacy = strict (keep host names and paths out of the log, 10.1) */
   int agent_logon;                   /* [agent] start_at_logon (the agent's Run value, 3.2 Start) */
   unsigned notify_kinds;             /* [ui] notify_<kind>: bit k is sd_notify_kind k (7.7); under the notify master */
+  int ui_style;                      /* [ui] style: SD_SETTINGS_STYLE_AUTO or _CLASSIC (06 5.3) */
+  int dark_helpers;                  /* [ui] dark_helpers: the dark-mode helpers are allowed (06 3.6) */
 } ui_settings_model;
 
 /* Fields of the model, as bits of the masks below. */
@@ -50,6 +52,8 @@ typedef struct ui_settings_model {
 #define UI_SET_F_PRIVACY  0x4000u    /* locked by policy LogPrivacy */
 #define UI_SET_F_KINDS    0x8000u    /* any [ui] notify_<kind> switch */
 #define UI_SET_F_AGENT    0x10000u   /* [agent] start_at_logon */
+#define UI_SET_F_STYLE    0x20000u   /* [ui] style; locked by policy UiStyle */
+#define UI_SET_F_DARK     0x40000u   /* [ui] dark_helpers; locked by policy UiDarkHelpers = 0 */
 
 /* The policy values the window reads (03 §3.5). The view fills it from sd_policy; the tests fill it by hand. A
    locked field is shown read-only with the value the policy enforces and is never written back to settings.ini. */
@@ -60,6 +64,9 @@ typedef struct ui_set_policy {
   int  force_through;                /* ForceWriteThrough = 1: the default write mode is through */
   int  privacy_set;                  /* LogPrivacy has a value (0 or 1) */
   int  privacy_strict;               /* LogPrivacy = 1 */
+  int  style_set;                    /* UiStyle has a value (0 auto or 1 classic) */
+  int  style_classic;                /* UiStyle = 1 */
+  int  dark_off;                     /* UiDarkHelpers = 0: the dark-mode helpers are off */
 } ui_set_policy;
 
 /* Number of notification kinds with a switch, and the mask with all of them on. */
@@ -72,6 +79,10 @@ unsigned ui_settings_locked(const ui_set_policy *p);
 /* Forces the displayed value of every locked field to what the policy enforces (language: the policy language;
    host key sources: off, because nothing is read from them). Returns the locked mask. */
 unsigned ui_settings_apply_policy(ui_settings_model *m, const ui_set_policy *p);
+
+/* The [ui] style and dark_helpers values the theme runs with: the settings, overridden by the policies UiStyle and
+   UiDarkHelpers (06 5.3, 3.6). style is SD_SETTINGS_STYLE_*; dark_helpers is 1 when the helpers are allowed. */
+void ui_settings_theme_effective(const sd_settings *s, const ui_set_policy *p, int *style, int *dark_helpers);
 
 /* Mask of the fields that differ between two models (the write diff: nothing changed, nothing is written). */
 unsigned ui_settings_changed(const ui_settings_model *before, const ui_settings_model *after);

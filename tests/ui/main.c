@@ -140,6 +140,7 @@ SD_TEST_DECL(settings_security_fields_survive_a_save_load_round_trip);
 SD_TEST_DECL(settings_r17_mapping_and_defaults);
 SD_TEST_DECL(settings_r17_policy_locks_are_never_written);
 SD_TEST_DECL(settings_r17_diff_writes_only_changed_keys);
+SD_TEST_DECL(settings_ui_tier_policy);
 SD_TEST_DECL(settings_r17_values_survive_a_save_load_round_trip);
 SD_TEST_DECL(profile_editor_write_mode_shows_the_effective_default);
 
@@ -286,6 +287,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(settings_r17_mapping_and_defaults),
   SD_TEST_ENTRY(settings_r17_policy_locks_are_never_written),
   SD_TEST_ENTRY(settings_r17_diff_writes_only_changed_keys),
+  SD_TEST_ENTRY(settings_ui_tier_policy),
   SD_TEST_ENTRY(settings_r17_values_survive_a_save_load_round_trip),
   SD_TEST_ENTRY(profile_editor_write_mode_shows_the_effective_default),
   SD_TEST_ENTRY(notify_limit_one_per_subject_and_kind),

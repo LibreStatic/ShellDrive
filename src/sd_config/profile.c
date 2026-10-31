@@ -705,6 +705,8 @@ void sd_settings_defaults(sd_settings *s)
   strcpy_s(s->update_channel, sizeof(s->update_channel), "stable");
   s->default_write_mode = SD_PROFILE_WRITE_THROUGH;
   s->log_privacy = SD_SETTINGS_PRIVACY_STANDARD;
+  s->ui_style = SD_SETTINGS_STYLE_AUTO;
+  s->ui_dark_helpers = 1;
   memcpy(s->notify_kind, k_notify_defaults, sizeof(s->notify_kind));
 }
 
@@ -773,6 +775,16 @@ sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s)
     else if (strcmp(v, "strict") == 0) s->log_privacy = SD_SETTINGS_PRIVACY_STRICT;
     else { SD_LOGW("config", "settings.ini: invalid [log] privacy"); e = SD_E_INVALID_PARAM; }
   }
+  if ((v = sd_ini_get(ini, "ui", "style")) != NULL) {
+    if (strcmp(v, "auto") == 0) s->ui_style = SD_SETTINGS_STYLE_AUTO;
+    else if (strcmp(v, "classic") == 0) s->ui_style = SD_SETTINGS_STYLE_CLASSIC;
+    else { SD_LOGW("config", "settings.ini: invalid [ui] style"); e = SD_E_INVALID_PARAM; }
+  }
+  if ((v = sd_ini_get(ini, "ui", "dark_helpers")) != NULL) {
+    int b;
+    if (sd_ini_parse_bool(v, &b)) s->ui_dark_helpers = b ? 1 : 0;
+    else { SD_LOGW("config", "settings.ini: invalid [ui] dark_helpers"); e = SD_E_INVALID_PARAM; }
+  }
   if ((v = sd_ini_get(ini, "agent", "start_at_logon")) != NULL) {
     int b;
     if (sd_ini_parse_bool(v, &b)) s->agent_start_at_logon = b ? 1 : 0;
@@ -829,7 +841,8 @@ sd_err sd_settings_save(const sd_settings *s)
   sd_err e;
   int lvl;
   if (s == NULL || s->default_backend < 0 || s->default_backend > 2 || s->default_write_mode < 0 ||
-      s->default_write_mode > 1 || s->log_privacy < 0 || s->log_privacy > 1)
+      s->default_write_mode > 1 || s->log_privacy < 0 || s->log_privacy > 1 ||
+      s->ui_style < 0 || s->ui_style > 1)
     return SD_E_INVALID_PARAM;
   if ((e = sd_config_ensure_dirs()) != SD_OK)
     return e;
@@ -867,6 +880,8 @@ sd_err sd_settings_save(const sd_settings *s)
   /* M4: every key is written, so the file says what is in effect */
   if (e == SD_OK) e = sd_ini_set(ini, "defaults", "write_mode", s->default_write_mode ? "behind" : "through");
   if (e == SD_OK) e = sd_ini_set(ini, "log", "privacy", s->log_privacy ? "strict" : "standard");
+  if (e == SD_OK) e = sd_ini_set(ini, "ui", "style", s->ui_style ? "classic" : "auto");
+  if (e == SD_OK) e = sd_ini_set(ini, "ui", "dark_helpers", s->ui_dark_helpers ? "on" : "off");
   if (e == SD_OK) e = sd_ini_set(ini, "agent", "start_at_logon", s->agent_start_at_logon ? "yes" : "no");
   {
     unsigned i;

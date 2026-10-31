@@ -13,6 +13,7 @@
 #include "sd/base.h"
 #include "sd_base/sd_err.h"
 #include "sd_base/sd_json.h"
+#include "sd_config/sd_config.h"
 #include "sd_l10n/sd_l10n.h"
 
 #ifndef WM_DPICHANGED
@@ -86,6 +87,10 @@ HWND   ui_logs_create_hidden(void);
 void   ui_settings_open(void);
 void   ui_settings_open_security(void);      /* opens Settings on the Security page (balloon of hostkey_source_insecure) */
 void   ui_settings_close(void);
+/* Reads the effective [ui] style and dark_helpers (settings overridden by the UiStyle and UiDarkHelpers policies) and
+   passes them to ui_theme_set_options with the --theme override (-1 none). Called before ui_theme_init, and again by
+   Settings when it saves a change (06 5.3, 3.6). */
+void   ui_settings_theme_options(const sd_settings *s, int forced_tier);
 void   ui_settings_on_reply(int kind, sd_err err, const sd_json *result);
 void   ui_settings_update_refresh(void);     /* the update group: status, enabled controls (ui_update.c) */
 int    ui_settings_update_controls_ok(void); /* --test-windows: the update group controls exist */

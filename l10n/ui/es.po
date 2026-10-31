@@ -2993,3 +2993,38 @@ msgstr "Copiada de OpenSSH"
 msgctxt "ui.hostkeys.origin_server"
 msgid "Updated by server"
 msgstr "Actualizada por el servidor"
+
+#. Settings: label of the list that picks the look of the windows (06 §5.3).
+msgctxt "ui.settings.appearance"
+msgid "Appearance"
+msgstr "Apariencia"
+
+#. Settings: Appearance choice, follow the Windows version and its light or dark mode.
+msgctxt "ui.settings.appearance_auto"
+msgid "Match Windows (recommended)"
+msgstr "Seguir a Windows (recomendado)"
+
+#. Settings: Appearance choice, the classic look on every Windows version.
+msgctxt "ui.settings.appearance_classic"
+msgid "Classic"
+msgstr "Clásico"
+
+#. Settings: checkbox, the dark-mode helpers (06 §3.6). Disabled before Windows 10 version 1809.
+msgctxt "ui.settings.dark_helpers"
+msgid "Use dark mode in menus, scroll bars and lists"
+msgstr "Usar el modo oscuro en menús, barras de desplazamiento y listas"
+
+#. Settings: shown after the Appearance setting changes; the main window builds its controls only when it is created.
+msgctxt "ui.settings.appearance_restart"
+msgid "The main window switches between the Classic and the modern look when you restart ShellDrive. Other windows update right away."
+msgstr "La ventana principal cambia entre el aspecto clásico y el moderno al reiniciar ShellDrive. Las demás ventanas se actualizan enseguida."
+
+#. Main window: accessible name and tooltip of the "..." overflow button that holds the menu commands.
+msgctxt "ui.main.more_options"
+msgid "More options"
+msgstr "Más opciones"
+
+#. Tray flyout: one row of a connection. {name} is the profile name, {drive} is a drive letter such as E:.
+msgctxt "ui.flyout.row_label"
+msgid "{name} ({drive})"
+msgstr "{name} ({drive})"
