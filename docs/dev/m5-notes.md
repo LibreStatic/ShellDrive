@@ -1334,26 +1334,33 @@ And in `unit.webdav`, against a real loopback server with real SSPI (the test us
   install/start as SYSTEM (after `58d6b68`), machine profile load and host key, the global mount (Event 1100),
   G1 batch and B1/B2 console logons (two live sessions), G5 (1 GiB write 74.6 s, read 17.6 s, SHA-256 match),
   G7 including the drop-member mutation, G3 stop/start and VM save/resume, and uninstall. Per-item results with
-  the quoted log lines are in the 2026-10-30 section of `docs/dev/lab-results.md`. The run left these product
-  gaps, to triage:
-  - `autostart = boot` is not applied by the service. After every reboot `shelldrive service list` was empty
-    until a manual `service mount` (03 §3.4.1 says the service applies it); both phase-B reboots log
-    `pre-logon-state OK … list=[No global drives are mounted.]` and `remount OK remounted by hand (boot
-    autostart absent)`. Product gap; it blocks the pre-logon (G6) claim for Dokany.
-  - A standard user's `shelldrive service list` exits 8, "The ShellDrive service is not running or not
-    installed.", while the service runs: the same user gets rc=0 and `Z:  GlobalDokan  mounted` from its console
-    session but rc=8 from a batch session. Pipe access for non-admin members, or the CLI mis-mapping access
-    denied — triage.
-  - `service mount <name>` for an unknown profile prints "There is no profile named ." — the name placeholder
-    is empty.
-  - `scm_error` (`apps/shelldrive/cli_service.c:280`) maps every ERROR_ACCESS_DENIED to "needs an elevated
-    console" — misleading when the caller is elevated; that message is what the pre-`58d6b68` install attempts
-    reported as they rolled back (exit 9).
+  the quoted log lines are in the 2026-10-30 section of `docs/dev/lab-results.md`. The run left four product
+  gaps; all four are fixed on this branch and the fixes were checked by a second live run (2026-10-31, log
+  `D:\sdlab\logs\m5-20261031-025507.log`):
+  - Fixed (`5780848`): `autostart = boot` was not applied by the service (03 §3.4.1). The service now mounts
+    those profiles after loading them (start, config reload, data-folder repair) through the same queue as a
+    `mount` request. Live: both phase-B reboots log `pre-logon-state OK … list=[Z:  GlobalDokan  mounted]` and
+    `boot-autostart OK mounted by the service at boot, 33 s after boot` (35 s on the second), so the pre-logon
+    (G6) claim now holds for Dokany; a service stop unmounts Z: cleanly and the restart brings it back.
+  - Fixed (`b478b45`): a standard user's `shelldrive service list` exited 8 "not running or not installed"
+    from a batch session. 03 §2.2 grants the service pipe to interactive users only
+    (`O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`), so a batch logon is refused by design; the
+    defect was the report. The CLI now says "Access to the ShellDrive service is denied." with exit 9, and
+    exit 8 only when the service is really absent. Live: `service_list_rc=9` from the batch session,
+    `list-after-uninstall rc=8`.
+  - Fixed (`7f4538c`): `service mount|unmount|status <name>` errors now name the profile ("There is no profile
+    named nosuch.").
+  - Fixed (`7f4538c`): `scm_error` tells a caller that is not elevated (exit 9, "Managing the ShellDrive service
+    needs an elevated console") from an elevated console whose SCM call was refused (exit 1, with the Win32
+    code).
+  - Found by the second run and fixed (`9b26bfc`): the first autostart mount after install fails until the
+    machine host key is added, and its final `failed` record then made `service mount` answer already_mounted
+    (exit 10). A new mount of the profile now replaces a final failed record (03 §1.11: failed is terminal);
+    a live mount is still refused. Live: phase A `service-mount` brings Z: up after the key is added.
   - Note only: Get-Volume (MSFT_Volume) does not list the Dokany Z: ("No MSFT_Volume objects found with
     property 'DriveLetter' equal to 'Z'."); `dir` and Explorer work.
-  - Not covered by the run: RDP/FUS second interactive session (G2 proper), Server 2022 + Secure Boot (the Gen2
-    media problem of lab-results' 2026-10-29 night section), pre-logon mount at boot (blocked by the
-    `autostart` gap above).
+  - Not covered by the runs: RDP/FUS second interactive session (G2 proper), Server 2022 + Secure Boot (the
+    Gen2 media problem of lab-results' 2026-10-29 night section).
 - Everything in 05 §12.8 that has no code: release roots, crash dumps, Event 3100, the FUS/RDP session list,
   `--elevated-view`, `settings.ini` checks, discovered-proxy detection.
 - The per-user identity test (two users, each mapping the other's UNC) and the rest of G1-G7.
