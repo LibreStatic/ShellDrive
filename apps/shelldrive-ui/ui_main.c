@@ -681,9 +681,27 @@ static LRESULT fluent_list_draw(NMLVCUSTOMDRAW *cd)
   RECT rc = cd->nmcd.rc, tr;
   SIZE sz;
   int id;
+  const ui_theme *t = ui_theme_current();
+  int dark = t != NULL && t->dark;
 
   /* a group header is one CDDS_PREPAINT with dwItemType LVCDI_GROUP (the list itself and the rows have other types) */
-  if (cd->nmcd.dwDrawStage != CDDS_PREPAINT || cd->dwItemType != LVCDI_GROUP)
+  if (cd->nmcd.dwDrawStage == CDDS_PREPAINT && cd->dwItemType != LVCDI_GROUP)
+    return dark ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
+  if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+    /* the dark selection: Windows 10's DarkMode_Explorer list draws the selected row with the classic light
+       highlight behind the text, so the row is filled with UI_TOK_SELECTION here and drawn as not selected */
+    int item = (int)cd->nmcd.dwItemSpec;
+    if (!dark || !(SendMessageW(g_app.list, LVM_GETITEMSTATE, (WPARAM)item, LVIS_SELECTED) & LVIS_SELECTED))
+      return CDRF_DODEFAULT;
+    rc.left = LVIR_BOUNDS;
+    if (SendMessageW(g_app.list, LVM_GETITEMRECT, (WPARAM)item, (LPARAM)&rc))
+      FillRect(cd->nmcd.hdc, &rc, ui_theme_brush(UI_TOK_SELECTION));
+    cd->nmcd.uItemState &= ~(UINT)(CDIS_SELECTED | CDIS_FOCUS);
+    cd->clrTextBk = ui_theme_color(UI_TOK_SELECTION);
+    cd->clrText = ui_theme_color(UI_TOK_TEXT);
+    return CDRF_NEWFONT;
+  }
+  if (cd->nmcd.dwDrawStage != CDDS_PREPAINT)
     return CDRF_DODEFAULT;
   id = (int)cd->nmcd.dwItemSpec;
   text[0] = 0;
