@@ -32,6 +32,9 @@ set_tests_properties(ui.windows PROPERTIES LABELS ui TIMEOUT 120)
 add_test(NAME ui.wizard COMMAND $<TARGET_FILE:shelldrive-ui> --test-wizard)
 set_tests_properties(ui.wizard PROPERTIES LABELS ui TIMEOUT 120)
 
+add_test(NAME ui.flyout COMMAND $<TARGET_FILE:shelldrive-ui> --test-flyout --theme=fluent-c-dark)
+set_tests_properties(ui.flyout PROPERTIES LABELS ui TIMEOUT 120)
+
 # The smoke modes (apps/shelldrive-ui/main.c) take a config root unique to each process and remove it at exit, so
 # they need no RESOURCE_LOCK (ui_test_store was for the old fixed %TEMP%\shelldrive-ui-test folder).
 

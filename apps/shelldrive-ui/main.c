@@ -12,7 +12,8 @@
  * "Repair data..." button, and exits when the page is closed;
  * --test-window is the smoke test of tests/ui: it
  * creates the main window hidden, checks the window class and its controls, and exits 0; --test-prompts
- * creates every prompt dialog hidden and destroys it (exit 0 when all were created).
+ * creates every prompt dialog hidden and destroys it (exit 0 when all were created); --test-shot=<file.bmp>
+ * shows the main window with fixture rows and writes a screen capture of it (06 §8.2).
  *
  * --prompt-host (03 §1.4, §2.5 step 3): the agent starts this process when a prompt has nobody to answer it.
  * It shows the tray icon and the prompt dialogs only, never starts an agent, leaves when the agent goes away
@@ -35,6 +36,7 @@
 #include "sd_platform/sd_time.h"
 #include "ui_dpi.h"
 #include "ui_evhist_model.h"
+#include "ui_flyout.h"
 #include "ui_wizard.h"
 #include "sd_config/sd_config.h"
 #include "ui_admin_model.h"
@@ -791,6 +793,26 @@ static int run_smoke_test(void)
   return ok ? 0 : 1;
 }
 
+/* --test-shot=<file.bmp> (06 §8.2): the visible main window with fixture rows, captured from the screen. */
+static int run_shot_test(const wchar_t *path)
+{
+  HWND w;
+  int ok;
+
+  if (!ui_main_register_class(g_app.inst, g_app.class_main))
+    return 1;
+  ui_theme_init();
+  w = ui_main_create(g_app.inst, g_app.class_main, 1);
+  if (w == NULL || !IsWindow(w)) {
+    ui_theme_shutdown();
+    return 1;
+  }
+  ok = ui_main_test_shot(w, path);
+  DestroyWindow(w);
+  ui_theme_shutdown();
+  return ok ? 0 : 1;
+}
+
 int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cmd, _In_ int show)
 {
   wchar_t **argv = NULL;
@@ -837,7 +859,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
 
   test_mode = argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
                            wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
-                           wcscmp(argv[1], L"--test-wizard") == 0);
+                           wcscmp(argv[1], L"--test-wizard") == 0 || wcscmp(argv[1], L"--test-flyout") == 0 ||
+                           wcsncmp(argv[1], L"--test-shot=", 12) == 0);
 
   /* --theme=<...> (06 §8.1) forces a tier for the smoke runs; it is refused outside the test modes. */
   theme_forced = -1;
@@ -876,6 +899,10 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     rc = run_smoke_test();
     goto done;
   }
+  if (argc > 1 && wcsncmp(argv[1], L"--test-shot=", 12) == 0) {
+    rc = argv[1][12] != 0 ? run_shot_test(argv[1] + 12) : 2;
+    goto done;
+  }
   if (argc > 1 && wcscmp(argv[1], L"--test-prompts") == 0) {
     rc = ui_prompt_smoke_test() ? 0 : 1;
     goto done;
@@ -889,7 +916,16 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-wizard") == 0) {
+    ui_theme_init();                    /* --theme=<...> picks the Wizard97 or Aero path and the dark controls */
     rc = ui_wizard_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
+    goto done;
+  }
+  if (argc > 1 && wcscmp(argv[1], L"--test-flyout") == 0) {
+    /* the tray flyout of Windows 11 (06 §6.3): created hidden, header and both buttons checked, destroyed */
+    ui_theme_init();
+    rc = ui_flyout_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
 
@@ -954,6 +990,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   while (GetMessageW(&msg, NULL, 0, 0) > 0) {
     if (ui_prompt_filter(&msg))
       continue;                        /* IsDialogMessage: keyboard handling of the prompt dialogs */
+    if (ui_flyout_filter(&msg))
+      continue;                        /* the tray flyout of Windows 11 (06 §6.3): Tab, Escape, Enter */
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }

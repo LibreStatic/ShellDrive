@@ -48,6 +48,7 @@ sd_add_app(shelldrive-ui
     ui_editor.c
     ui_hostkeys.c
     ui_events.c
+    ui_flyout.c
     ui_hkissue.c
     ui_icon.c
     ui_import.c
@@ -67,6 +68,7 @@ sd_add_app(shelldrive-ui
     ui_win.c
     ui_theme.c
     ui_wizard.c
+    ui_flyout.h
     ui_int.h
     ui_res.h
     ui_theme.h

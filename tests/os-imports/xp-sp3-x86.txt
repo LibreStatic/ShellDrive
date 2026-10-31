@@ -473,6 +473,12 @@ user32.dll!IsWindowEnabled
 user32.dll!MessageBeep
 user32.dll!LoadCursorW
 user32.dll!MonitorFromWindow
+user32.dll!MonitorFromPoint   # Windows 98 / 2000+ (tray flyout work area, ui_flyout.c)
+user32.dll!GetMonitorInfoW
+user32.dll!GetFocus
+user32.dll!DrawFocusRect
+user32.dll!InflateRect
+user32.dll!PtInRect
 user32.dll!MoveWindow
 user32.dll!PostQuitMessage
 user32.dll!RegisterWindowMessageW
@@ -582,3 +588,25 @@ version.dll!VerQueryValueW
 user32.dll!GetWindow
 user32.dll!ScrollWindowEx
 user32.dll!SetScrollInfo
+
+# Fluent main window (apps/shelldrive-ui/ui_main.c, 06 section 6.1): owner-drawn command bar, hover tracking, card and
+# header painting, screen capture of --test-shot. All documented from Windows 2000, so present on XP SP2/SP3.
+user32.dll!GetDlgCtrlID
+user32.dll!GetKeyState
+user32.dll!SetWindowRgn
+user32.dll!RedrawWindow
+user32.dll!FrameRect
+user32.dll!GetClassNameW
+user32.dll!CallWindowProcW
+user32.dll!TrackMouseEvent
+gdi32.dll!CreatePen
+gdi32.dll!EnumFontFamiliesExW
+gdi32.dll!Rectangle
+gdi32.dll!RoundRect
+gdi32.dll!SetBkColor
+gdi32.dll!SetBkMode
+gdi32.dll!SetTextColor
+gdi32.dll!CreateRoundRectRgn
+gdi32.dll!BitBlt
+gdi32.dll!PtInRegion
+gdi32.dll!SelectClipRgn

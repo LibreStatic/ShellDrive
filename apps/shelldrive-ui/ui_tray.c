@@ -21,6 +21,7 @@
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_time.h"
+#include "ui_flyout.h"
 #include "ui_int.h"
 #include "ui_mainview_model.h"
 #include "ui_notice_model.h"
@@ -169,6 +170,7 @@ void ui_tray_update(void)
     return;
   fill_nid(&nid);
   Shell_NotifyIconW(NIM_MODIFY, (NOTIFYICONDATAW *)&nid);
+  ui_flyout_refresh();               /* an open flyout (06 §6.3) follows the mounts */
 }
 
 void ui_tray_remove(void)
@@ -645,6 +647,20 @@ void ui_tray_callback(LPARAM mouse_message)
   /* NOTIFYICON_VERSION_4 packs the icon id into HIWORD and the mouse message into LOWORD; version 0 sends the message
      itself. Mouse messages are below 0x10000, so LOWORD serves both. */
   UINT m = LOWORD(mouse_message);
+  if (ui_flyout_wanted()) {
+    /* Windows 11 (06 §6.3): a click or Enter opens the flyout, a double click the main window; the menu stays */
+    if (m == NIN_SELECT || m == NIN_KEYSELECT) {
+      ui_flyout_open();
+      return;
+    }
+    if (m == WM_LBUTTONDBLCLK) {
+      ui_flyout_close();
+      ui_main_show();
+      return;
+    }
+    if (m == WM_LBUTTONUP)
+      return;
+  }
   if (m == WM_LBUTTONUP || m == NIN_SELECT || m == NIN_KEYSELECT)
     ui_main_show();
   else if (m == WM_RBUTTONUP || m == WM_CONTEXTMENU)
