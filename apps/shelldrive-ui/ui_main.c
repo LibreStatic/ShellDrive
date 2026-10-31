@@ -59,6 +59,12 @@
 #ifndef LVM_GETGROUPINFO
 #define LVM_GETGROUPINFO    (LVM_FIRST + 149)
 #endif
+#ifndef LVM_GETGROUPRECT
+#define LVM_GETGROUPRECT    (LVM_FIRST + 98)
+#endif
+#ifndef LVGGR_HEADER
+#define LVGGR_HEADER        1
+#endif
 #define UI_LVGF_HEADER      0x00000001u
 #define UI_LVGF_GROUPID     0x00000010u
 #ifndef LVS_EX_DOUBLEBUFFER
@@ -687,6 +693,10 @@ static LRESULT fluent_list_draw(NMLVCUSTOMDRAW *cd)
   grp.pszHeader = text;
   grp.cchHeader = SD_COUNTOF(text);
   if (SendMessageW(g_app.list, LVM_GETGROUPINFO, (WPARAM)id, (LPARAM)&grp) < 0 || text[0] == 0)
+    return CDRF_DODEFAULT;
+  /* nmcd.rc of a group spans its header and its rows: draw in the header band only (LVM_GETGROUPRECT, Vista+) */
+  rc.top = LVGGR_HEADER;
+  if (!SendMessageW(g_app.list, LVM_GETGROUPRECT, (WPARAM)id, (LPARAM)&rc))
     return CDRF_DODEFAULT;
   memset(&lf, 0, sizeof(lf));
   GetObjectW(g_app.font, sizeof(lf), &lf);
