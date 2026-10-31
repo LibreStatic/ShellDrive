@@ -20,9 +20,18 @@
 #include "ui_dlg.h"
 #include "ui_int.h"
 #include "ui_measure.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 #include "ui_wizard.h"
 #include "ui_wizard_model.h"
+
+/* The Vista SDK constants the XP SDK 7.1A headers lack (06 §6.5). */
+#ifndef PSH_AEROWIZARD
+#define PSH_AEROWIZARD 0x00004000
+#endif
+#ifndef PSP_USEHEADERTITLE
+#define PSP_USEHEADERTITLE 0x00002000
+#endif
 
 #define WIZ_WIDTH          280
 #define WIZ_TEXT           0             /* static texts have no id */
@@ -330,7 +339,7 @@ static void do_create(wiz_ctx *ctx, HWND page)
   if (!ui_editor_run(ctx->sheet, UI_EDIT_NEW, &p))
     return;
   if (sd_profile_save(&p) != SD_OK) {
-    MessageBoxW(ctx->sheet, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), L"ShellDrive", MB_OK | MB_ICONERROR);
+    ui_win_task(ctx->sheet, sd_l10n_get(SD_MSG_UI_ERROR_SAVE), NULL, NULL, MB_OK | MB_ICONERROR);
     return;
   }
   /* the agent reads the store again, as after any profile change (03 §2.4) */
@@ -361,6 +370,8 @@ static INT_PTR CALLBACK wiz_page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     pg->ctx->sheet = GetParent(hwnd);
     if (pg->index == PG_FINISH)
       EnableWindow(GetDlgItem(hwnd, WIZ_ID_MOUNT), FALSE);   /* on once a profile exists */
+    /* the page background, its controls and the dark palette (06 §3.6) */
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   }
   case WM_NOTIFY: {
@@ -413,6 +424,8 @@ void ui_wizard_run(HWND owner)
   PROPSHEETPAGEW psp[WIZ_PAGES];
   PROPSHEETHEADERW hdr;
   int pg;
+  /* Vista and later: the Aero wizard (06 §6.5); XP keeps Wizard97 */
+  int aero = ui_theme_current() != NULL && ui_theme_current()->aero_wizard;
 
   memset(&ctx, 0, sizeof(ctx));
   for (pg = 0; pg < WIZ_PAGES; pg++) {
@@ -429,12 +442,18 @@ void ui_wizard_run(HWND owner)
     psp[pg].pResource = (LPCDLGTEMPLATEW)blob[pg];
     psp[pg].pfnDlgProc = wiz_page_proc;
     psp[pg].pszTitle = sd_l10n_get(page_title(pg));
+    if (aero) {
+      /* the page title goes in the header of the Aero wizard */
+      psp[pg].dwFlags |= PSP_USEHEADERTITLE;
+      psp[pg].pszHeaderTitle = sd_l10n_get(page_title(pg));
+    }
     psp[pg].lParam = (LPARAM)&ctx.pages[pg];
   }
   memset(&hdr, 0, sizeof(hdr));
   hdr.dwSize = sizeof(hdr);
-  hdr.dwFlags = PSH_WIZARD97 | PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-  hdr.pfnCallback = ui_win_sheet_callback;
+  /* PSH_HEADER, PSH_WATERMARK and their bitmaps are Wizard97 only: never set with PSH_AEROWIZARD */
+  hdr.dwFlags = (aero ? PSH_AEROWIZARD : PSH_WIZARD97) | PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+  hdr.pfnCallback = ui_theme_sheet_callback;
   hdr.hwndParent = owner;
   hdr.hInstance = g_app.inst;
   hdr.pszCaption = sd_l10n_get(SD_MSG_UI_WIZARD_CAPTION);

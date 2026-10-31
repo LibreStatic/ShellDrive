@@ -215,7 +215,7 @@ static void test_real_inputs(void)
   sdg_parse_table_text(&t, text, SD_ADMXGEN_TABLE);
   free(text);
   CHECK(sdg_nerrors == 0);
-  CHECK(t.npolicies == 21);
+  CHECK(t.npolicies == 23);
 
   for (i = 0; i < SDG_NLOCALES; i++) {
     sprintf(file, "%s/%s.po", SD_ADMXGEN_PO_DIR, sdg_locales[i].code);
@@ -248,7 +248,7 @@ static void test_real_inputs(void)
       count++;
       p++;
     }
-    CHECK(count == 21);
+    CHECK(count == 23);
   }
   sdg_sb_free(&admx);
   sdg_sb_free(&adml);

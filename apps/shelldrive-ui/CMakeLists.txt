@@ -19,7 +19,7 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_update_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_notify_model.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_dark_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_theme_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_wizard_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_admin_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_service_model.c
@@ -27,7 +27,8 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_events_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_mainview_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_notice_model.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_evhist_model.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_evhist_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_taskdlg_model.c)
 set(SD_UI_PURE_SOURCES ${SD_UI_PURE_SOURCES} PARENT_SCOPE)
 
 # Icon resources (res/icons): the template gets the absolute icon directory (rc.exe does not search the
@@ -48,6 +49,7 @@ sd_add_app(shelldrive-ui
     ui_editor.c
     ui_hostkeys.c
     ui_events.c
+    ui_flyout.c
     ui_hkissue.c
     ui_icon.c
     ui_import.c
@@ -65,14 +67,15 @@ sd_add_app(shelldrive-ui
     ui_update.c
     ui_tray.c
     ui_win.c
-    ui_dark.c
+    ui_theme.c
     ui_wizard.c
+    ui_flyout.h
     ui_int.h
     ui_res.h
-    ui_dark.h
+    ui_theme.h
     ui_wizard.h
     ui_notify_model.h
-    ui_dark_model.h
+    ui_theme_model.h
     ui_wizard_model.h
     ui_win.h
     ui_wire.h
@@ -80,6 +83,7 @@ sd_add_app(shelldrive-ui
     ui_dlg.h
     ui_measure.h
     ui_prompt_model.h
+    ui_taskdlg_model.h
     ui_profile_model.h
     ui_sdmount.h
     ui_hostkeys_model.h

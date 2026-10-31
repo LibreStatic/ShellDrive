@@ -140,19 +140,32 @@ SD_TEST_DECL(settings_security_fields_survive_a_save_load_round_trip);
 SD_TEST_DECL(settings_r17_mapping_and_defaults);
 SD_TEST_DECL(settings_r17_policy_locks_are_never_written);
 SD_TEST_DECL(settings_r17_diff_writes_only_changed_keys);
+SD_TEST_DECL(settings_ui_tier_policy);
 SD_TEST_DECL(settings_r17_values_survive_a_save_load_round_trip);
 SD_TEST_DECL(profile_editor_write_mode_shows_the_effective_default);
 
-/* test_notify.c, test_dark.c and test_wizard.c: the balloon rate limit, the dark mode decision and the wizard's
+/* test_notify.c, test_theme.c and test_wizard.c: the balloon rate limit, the theme decision and the wizard's
    should-show logic. */
 SD_TEST_DECL(notify_limit_one_per_subject_and_kind);
 SD_TEST_DECL(notify_limit_is_per_subject_and_kind);
 SD_TEST_DECL(notify_clock_going_back_is_not_a_burst);
 SD_TEST_DECL(notify_table_is_bounded_and_keeps_recent_pairs);
 SD_TEST_DECL(notify_interval_is_one_minute);
-SD_TEST_DECL(dark_needs_build_22000_and_the_api);
-SD_TEST_DECL(dark_follows_the_app_theme_value);
-SD_TEST_DECL(dark_stays_light_on_older_systems);
+SD_TEST_DECL(theme_tiers_follow_the_os);
+SD_TEST_DECL(theme_high_contrast_and_the_classic_setting_force_classic);
+SD_TEST_DECL(theme_dark_follows_the_app_theme_and_the_helpers);
+SD_TEST_DECL(theme_titlebar_attr_19_20_or_none);
+SD_TEST_DECL(theme_helpers_allow_list);
+SD_TEST_DECL(theme_forced_tier_overrides_the_os);
+SD_TEST_DECL(taskdlg_map_buttons_and_default);
+SD_TEST_DECL(taskdlg_map_icons);
+SD_TEST_DECL(taskdlg_map_rejects_what_a_task_dialog_lacks);
+SD_TEST_DECL(taskdlg_plain_text_joins_the_parts);
+SD_TEST_DECL(dlg_heading_is_taller_with_a_larger_font);
+SD_TEST_DECL(dlg_icon_indents_the_text_beside_it);
+SD_TEST_DECL(dlg_commands_are_links_or_plain_buttons);
+SD_TEST_DECL(dlg_commands_mark_only_the_requested_default);
+SD_TEST_DECL(theme_palette_meets_the_contrast_floors);
 SD_TEST_DECL(wizard_opens_for_an_empty_store_only_once);
 SD_TEST_DECL(wizard_never_opens_for_tray_or_prompt_host);
 
@@ -282,6 +295,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(settings_r17_mapping_and_defaults),
   SD_TEST_ENTRY(settings_r17_policy_locks_are_never_written),
   SD_TEST_ENTRY(settings_r17_diff_writes_only_changed_keys),
+  SD_TEST_ENTRY(settings_ui_tier_policy),
   SD_TEST_ENTRY(settings_r17_values_survive_a_save_load_round_trip),
   SD_TEST_ENTRY(profile_editor_write_mode_shows_the_effective_default),
   SD_TEST_ENTRY(notify_limit_one_per_subject_and_kind),
@@ -289,9 +303,21 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(notify_clock_going_back_is_not_a_burst),
   SD_TEST_ENTRY(notify_table_is_bounded_and_keeps_recent_pairs),
   SD_TEST_ENTRY(notify_interval_is_one_minute),
-  SD_TEST_ENTRY(dark_needs_build_22000_and_the_api),
-  SD_TEST_ENTRY(dark_follows_the_app_theme_value),
-  SD_TEST_ENTRY(dark_stays_light_on_older_systems),
+  SD_TEST_ENTRY(theme_tiers_follow_the_os),
+  SD_TEST_ENTRY(theme_high_contrast_and_the_classic_setting_force_classic),
+  SD_TEST_ENTRY(theme_dark_follows_the_app_theme_and_the_helpers),
+  SD_TEST_ENTRY(theme_titlebar_attr_19_20_or_none),
+  SD_TEST_ENTRY(theme_helpers_allow_list),
+  SD_TEST_ENTRY(theme_forced_tier_overrides_the_os),
+  SD_TEST_ENTRY(taskdlg_map_buttons_and_default),
+  SD_TEST_ENTRY(taskdlg_map_icons),
+  SD_TEST_ENTRY(taskdlg_map_rejects_what_a_task_dialog_lacks),
+  SD_TEST_ENTRY(taskdlg_plain_text_joins_the_parts),
+  SD_TEST_ENTRY(dlg_heading_is_taller_with_a_larger_font),
+  SD_TEST_ENTRY(dlg_icon_indents_the_text_beside_it),
+  SD_TEST_ENTRY(dlg_commands_are_links_or_plain_buttons),
+  SD_TEST_ENTRY(dlg_commands_mark_only_the_requested_default),
+  SD_TEST_ENTRY(theme_palette_meets_the_contrast_floors),
   SD_TEST_ENTRY(wizard_opens_for_an_empty_store_only_once),
   SD_TEST_ENTRY(wizard_never_opens_for_tray_or_prompt_host),
   SD_TEST_ENTRY(service_view_reads_the_status_reply),

@@ -16,12 +16,14 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
+#include "sd_platform/sd_platform.h"
 #include "sd_policy/sd_policy.h"
 #include "sd_ssh/sd_known_hosts.h"
 #include "sd_webdav/sd_webdav.h"
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_settings_model.h"
+#include "ui_theme.h"
 #include "ui_update.h"
 #include "ui_win.h"
 
@@ -67,6 +69,11 @@
 #define ST_ID_CHK_PRIVACY 4440
 #define ST_ID_NOTE_PRIVACY 4441
 #define ST_ID_HINT_KINDS 4442
+#define ST_ID_LBL_STYLE  4443
+#define ST_ID_STYLE      4444
+#define ST_ID_NOTE_STYLE 4445
+#define ST_ID_CHK_DARK   4446
+#define ST_ID_NOTE_DARK  4447
 #define ST_ID_KIND_BASE  4450       /* + sd_notify_kind */
 #define ST_CLIENT_H      800
 
@@ -95,6 +102,7 @@ static struct {
   HWND tab, chk_openssh, chk_putty, note_openssh, note_putty, chk_roam, hint_roam, lbl_wc, val_wc;
   HWND note_lang;
   HWND agent_logon, lbl_write, write, note_write, chk_privacy, note_privacy, hint_kinds;
+  HWND lbl_style, style, note_style, chk_dark, note_dark;     /* Appearance (06 5.3, 3.6) */
   HWND kind[SD_NOTIFY_COUNT];         /* [ui] notify_<kind> switches (Notifications page) */
   ui_set_policy policy;               /* the Group Policy values read when the window opened (03 §3.5) */
   unsigned locked;                    /* UI_SET_F_* fields the policies lock */
@@ -216,6 +224,32 @@ static void policy_read(ui_set_policy *p)
     p->privacy_set = 1;
     p->privacy_strict = dw == 1 ? 1 : 0;
   }
+  if (sd_policy_get_dword(SD_POLICY_UISTYLE, &dw) && (dw == 0 || dw == 1)) {
+    p->style_set = 1;
+    p->style_classic = dw == 1 ? 1 : 0;
+  }
+  if (sd_policy_get_dword(SD_POLICY_UIDARKHELPERS, &dw) && dw == 0)
+    p->dark_off = 1;
+}
+
+/* The windows the dark-mode helpers can theme need Windows 10 1809 (build 17763) or later (06 3.6). */
+static int dark_supported(void)
+{
+  const sd_os_version *v = sd_os_version_get();
+  return v != NULL && v->build >= UI_THEME_BUILD_HELPERS_MIN;
+}
+
+static int g_forced_tier = -1;     /* the --theme override of the test modes; it wins over settings and policy */
+
+void ui_settings_theme_options(const sd_settings *s, int forced_tier)
+{
+  ui_set_policy pol;
+  int style, dark;
+  g_forced_tier = forced_tier;
+  policy_read(&pol);
+  ui_settings_theme_effective(s, &pol, &style, &dark);
+  ui_theme_set_options(style == SD_SETTINGS_STYLE_CLASSIC ? UI_THEME_STYLE_CLASSIC : UI_THEME_STYLE_AUTO, dark,
+                       forced_tier);
 }
 
 /* State of a live host key source (TM-R06), read-only: a file that other users can write reads as INSECURE. */
@@ -285,6 +319,12 @@ static void show_model(const ui_settings_model *m, unsigned locked, int openssh_
   SendMessageW(g_st.chk_privacy, BM_SETCHECK, m->log_strict ? BST_CHECKED : BST_UNCHECKED, 0);
   EnableWindow(g_st.chk_privacy, (locked & UI_SET_F_PRIVACY) ? FALSE : TRUE);
   SetWindowTextW(g_st.note_privacy, (locked & UI_SET_F_PRIVACY) ? note_text(UI_SET_NOTE_MANAGED) : L"");
+  SendMessageW(g_st.style, CB_SETCURSEL, m->ui_style == SD_SETTINGS_STYLE_CLASSIC ? 1 : 0, 0);
+  EnableWindow(g_st.style, (locked & UI_SET_F_STYLE) ? FALSE : TRUE);
+  SetWindowTextW(g_st.note_style, (locked & UI_SET_F_STYLE) ? note_text(UI_SET_NOTE_MANAGED) : L"");
+  SendMessageW(g_st.chk_dark, BM_SETCHECK, m->dark_helpers ? BST_CHECKED : BST_UNCHECKED, 0);
+  EnableWindow(g_st.chk_dark, (!(locked & UI_SET_F_DARK) && dark_supported()) ? TRUE : FALSE);
+  SetWindowTextW(g_st.note_dark, (locked & UI_SET_F_DARK) ? note_text(UI_SET_NOTE_MANAGED) : L"");
   SendMessageW(g_st.notify, BM_SETCHECK, m->notify ? BST_CHECKED : BST_UNCHECKED, 0);
   for (k = 0; k < SD_NOTIFY_COUNT; k++) {
     SendMessageW(g_st.kind[k], BM_SETCHECK, (m->notify_kinds & (1u << k)) ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -318,10 +358,18 @@ static void populate_write(void)
   SendMessageW(g_st.write, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_BEHIND));
 }
 
+static void populate_style(void)
+{
+  SendMessageW(g_st.style, CB_RESETCONTENT, 0, 0);
+  SendMessageW(g_st.style, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_APPEARANCE_AUTO));
+  SendMessageW(g_st.style, CB_ADDSTRING, 0, (LPARAM)sd_l10n_get(SD_MSG_UI_SETTINGS_APPEARANCE_CLASSIC));
+}
+
 static void populate(void)
 {
   fill_lang();
   populate_write();
+  populate_style();
 
   SendMessageW(g_st.notify, BM_SETCHECK, g_st.model.notify ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_st.logon, BM_SETCHECK, g_st.model.start_at_logon ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -402,6 +450,8 @@ static void on_save(void)
   m.agent_logon = SendMessageW(g_st.agent_logon, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
   m.write_mode = SendMessageW(g_st.write, CB_GETCURSEL, 0, 0) == 1 ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
   m.log_strict = SendMessageW(g_st.chk_privacy, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+  m.ui_style = SendMessageW(g_st.style, CB_GETCURSEL, 0, 0) == 1 ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  m.dark_helpers = SendMessageW(g_st.chk_dark, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
   for (k = 0; k < SD_NOTIFY_COUNT; k++)
     if (SendMessageW(g_st.kind[k], BM_GETCHECK, 0, 0) == BST_CHECKED)
       m.notify_kinds |= 1u << k;
@@ -445,10 +495,18 @@ static void on_save(void)
   if ((changed != 0 || chan_changed) && g_app.agent_up && (g_app.agent_features & UI_FEAT_RELOAD))
     (void)ui_ipc_call(UI_IPC_RELOAD, "config.reload", NULL);
 
+  /* the theme follows [ui] style and dark_helpers live: Settings, the flyout and the dialogs re-theme now; the main
+     window builds its controls only when it is created, so it changes with the next start (06 5.3) */
+  if (changed & (UI_SET_F_STYLE | UI_SET_F_DARK)) {
+    ui_settings_theme_options(&s, g_forced_tier);
+    ui_theme_refresh();
+  }
   g_st.model = m;
   g_st.loaded = s;
   if (changed & UI_SET_F_LANGUAGE)
     ui_win_message(g_st.wnd, sd_l10n_get(SD_MSG_UI_SETTINGS_RESTART_NOTE), MB_OK | MB_ICONINFORMATION);
+  if (changed & UI_SET_F_STYLE)
+    ui_win_message(g_st.wnd, sd_l10n_get(SD_MSG_UI_SETTINGS_APPEARANCE_RESTART), MB_OK | MB_ICONINFORMATION);
   DestroyWindow(g_st.wnd);
 }
 
@@ -601,7 +659,7 @@ enum { ST_PAGE_GENERAL = 0, ST_PAGE_SECURITY, ST_PAGE_NOTIFY, ST_PAGE_UPDATES, S
 
 static void show_page(int page)
 {
-  HWND general[16], security[8], notify[1 + SD_NOTIFY_COUNT], updates[10];
+  HWND general[21], security[8], notify[1 + SD_NOTIFY_COUNT], updates[10];
   const size_t ng = SD_COUNTOF(general), ns = SD_COUNTOF(security), nn = SD_COUNTOF(notify),
                nu = SD_COUNTOF(updates);
   size_t i;
@@ -614,6 +672,8 @@ static void show_page(int page)
   security[6] = g_st.chk_privacy; security[7] = g_st.note_privacy;
   general[12] = g_st.agent_logon; general[13] = g_st.lbl_write;    general[14] = g_st.write;
   general[15] = g_st.note_write;
+  general[16] = g_st.lbl_style;   general[17] = g_st.style;        general[18] = g_st.note_style;
+  general[19] = g_st.chk_dark;    general[20] = g_st.note_dark;
   notify[0] = g_st.hint_kinds;
   for (i = 0; i < SD_NOTIFY_COUNT; i++)
     notify[1 + i] = g_st.kind[i];
@@ -657,6 +717,8 @@ static void layout(HWND hwnd)
   if (lw_d > lw) lw = lw_d;
   lw_e = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_DEFAULT));
   if (lw_e > lw) lw = lw_e;
+  lw_e = ui_win_text_width(g_st.font, sd_l10n_get(SD_MSG_UI_SETTINGS_APPEARANCE));
+  if (lw_e > lw) lw = lw_e;
   lw += dpx(12);
   cw = dpx(260);
 
@@ -692,6 +754,16 @@ static void layout(HWND hwnd)
   xp = x0 + lw + cw + gap;
   place(g_st.note_write, xp, y + dpx(4), x0 + pw - xp, rh);
   y += rh + gap;
+  place(g_st.lbl_style, x0, y + dpx(4), lw, rh);
+  place(g_st.style, x0 + lw, y, cw, dpx(200));
+  SendMessageW(g_st.style, CB_SETDROPPEDWIDTH, (WPARAM)(pw - lw > cw ? pw - lw : cw), 0);
+  xp = x0 + lw + cw + gap;
+  place(g_st.note_style, xp, y + dpx(4), x0 + pw - xp, rh);
+  y += rh + gap / 2;
+  place(g_st.chk_dark, x0, y, pw, rh);
+  y += rh;
+  place(g_st.note_dark, x0 + dpx(20), y, pw - dpx(20), sh);
+  y += sh + gap;
   place(g_st.lbl_cache, x0, y + dpx(4), lw, rh);
   place(g_st.cache, x0 + lw, y, dpx(100), rh);
   x = x0 + lw + dpx(100) + gap;
@@ -805,6 +877,13 @@ static void create_children(HWND hwnd)
                              ST_ID_CHK_ROAM, hwnd);
   g_st.hint_roam = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_ROAM_HINT), SS_LEFT | SS_NOPREFIX,
                               ST_ID_HINT_ROAM, hwnd);
+  g_st.lbl_style = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_APPEARANCE), SS_LEFT | SS_NOPREFIX,
+                              ST_ID_LBL_STYLE, hwnd);
+  g_st.style = make_child(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, ST_ID_STYLE, hwnd);
+  g_st.note_style = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_STYLE, hwnd);
+  g_st.chk_dark = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_DARK_HELPERS), WS_TABSTOP | BS_AUTOCHECKBOX,
+                             ST_ID_CHK_DARK, hwnd);
+  g_st.note_dark = make_child(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ST_ID_NOTE_DARK, hwnd);
   g_st.agent_logon = make_child(L"BUTTON", sd_l10n_get(SD_MSG_UI_SETTINGS_AGENT_LOGON),
                                 WS_TABSTOP | BS_AUTOCHECKBOX, ST_ID_AGENT_LOGON, hwnd);
   g_st.lbl_write = make_child(L"STATIC", sd_l10n_get(SD_MSG_UI_SETTINGS_WRITE_DEFAULT), SS_LEFT | SS_NOPREFIX,
@@ -890,6 +969,7 @@ static LRESULT CALLBACK st_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_st.dpi = ui_dpi_window(hwnd);
     g_st.font = ui_win_font(g_st.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     return 0;
   case WM_SIZE:

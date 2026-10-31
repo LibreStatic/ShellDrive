@@ -5,7 +5,7 @@
  * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c), the import wizard
  * (ui_import.c), the .sdmount verb, the secondary windows of M3 (ui_win.h: host keys, Logs, Settings, About) and
  * the prompt host (prompts.ui, ui_prompt.c), the first-run wizard (ui_wizard.c), the balloon rate limit and queue
- * (ui_tray.c, ui_notify_model.c) and dark title bars (ui_dark.c) are in. Not yet: reconnect. */
+ * (ui_tray.c, ui_notify_model.c) and the OS-tiered theme (ui_theme.c) are in. Not yet: reconnect. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 
@@ -55,6 +55,7 @@
 #define UI_CTL_TOOLBAR       4003
 #define UI_CTL_LIST          4001
 #define UI_CTL_STATUS        4002
+#define UI_CTL_OVERFLOW      4004       /* the "..." overflow button of the Fluent command bar (06 §6.1) */
 
 #define UI_MAX_MOUNTS 64
 
@@ -261,6 +262,10 @@ HWND   ui_main_create(HINSTANCE inst, const wchar_t *class_name, int visible);
 void   ui_main_show(void);
 void   ui_main_refresh(void);
 int    ui_main_test_controls(void);
+/* --test-shot=<file.bmp> (06 §8.2): hwnd is the visible main window; it is sized to 880x560 (96-DPI
+   units), filled with four fixture rows (no agent), the first row selected, and after ~1.5 s the window
+   rectangle is captured from the screen DC into the .bmp. */
+int    ui_main_test_shot(HWND hwnd, const wchar_t *path);
 /* The selected profile of the list (NULL when none), and its mount (NULL when not mounted). */
 const sd_profile *ui_main_selected_profile(void);
 ui_mount         *ui_main_selected_mount(void);

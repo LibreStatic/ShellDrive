@@ -15,6 +15,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_res.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #define AB_ID_ICON     4501
@@ -124,15 +125,8 @@ static void on_command(WORD id, WORD code)
 
 static void make_fonts(unsigned dpi)
 {
-  LOGFONTW lf;
-  HFONT base = ui_win_font(dpi);
-  if (base == NULL)
-    return;
-  memset(&lf, 0, sizeof(lf));
-  GetObjectW(base, sizeof(lf), &lf);
-  lf.lfWeight = FW_BOLD;
-  g_ab.font = base;
-  g_ab.bold = CreateFontIndirectW(&lf);
+  g_ab.font = ui_win_font(dpi);
+  g_ab.bold = ui_theme_font(UI_FONT_HEADER, dpi);   /* the product name: the header role of the tier */
 }
 
 static void on_dpi(HWND hwnd, unsigned dpi, const RECT *suggested)
@@ -164,6 +158,7 @@ static LRESULT CALLBACK ab_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_ab.dpi = ui_dpi_window(hwnd);
     make_fonts(g_ab.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     return 0;
   case WM_SIZE:

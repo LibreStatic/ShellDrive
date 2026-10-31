@@ -17,6 +17,7 @@
 #include "ui_dpi.h"
 #include "ui_events_model.h"
 #include "ui_int.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #define EV_ID_LIST     4401
@@ -294,6 +295,7 @@ static LRESULT CALLBACK ev_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_ev.dpi = ui_dpi_window(hwnd);
     g_ev.font = ui_win_font(g_ev.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     refresh_view();
     return 0;

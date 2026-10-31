@@ -35,6 +35,7 @@
 #include "ui_int.h"
 #include "ui_measure.h"
 #include "ui_profile_model.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #define ED_WIDTH      300                 /* dialog units; every page of the sheet has this width */
@@ -648,6 +649,7 @@ static INT_PTR CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     pg->hwnd = hwnd;
     write_page(pg->ed, pg->index, hwnd);
     page_scroll_setup(pg, hwnd);
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   }
   case WM_NOTIFY: {
@@ -980,7 +982,7 @@ int ui_editor_run(HWND owner, ui_edit_mode mode, sd_profile *p)
   memset(&hdr, 0, sizeof(hdr));
   hdr.dwSize = sizeof(hdr);
   hdr.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-  hdr.pfnCallback = ui_win_sheet_callback;
+  hdr.pfnCallback = ui_theme_sheet_callback;
   hdr.hwndParent = owner;
   hdr.hInstance = g_app.inst;
   hdr.pszCaption = sd_l10n_get(mode == UI_EDIT_NEW ? SD_MSG_UI_EDITOR_CAPTION_NEW
@@ -1007,6 +1009,7 @@ static INT_PTR CALLBACK confirm_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   (void)lp;
   switch (msg) {
   case WM_INITDIALOG:
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   case WM_COMMAND:
     if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {

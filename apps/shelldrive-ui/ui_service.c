@@ -28,6 +28,7 @@
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_service_model.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #ifndef BCM_SETSHIELD
@@ -537,6 +538,7 @@ static LRESULT CALLBACK sv_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_sv.font = ui_win_font(g_sv.dpi);
     ui_svc_view_init(&g_sv.view);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     update_controls();
     return 0;

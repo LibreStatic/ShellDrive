@@ -15,6 +15,7 @@ section). Remaining items are lab verifications.
 | [`03-apps-platform.md`](03-apps-platform.md) | Processes, IPC, profiles and policies, credentials, CLI, tray/main window, Explorer integration, localization, logging |
 | [`04-build-install-update.md`](04-build-install-update.md) | Toolchains, flavours, CRT, CI, test lab, setup EXE, MSI, Dokany redistribution, updater, signing, releases |
 | [`05-threat-model.md`](05-threat-model.md) | Assets, trust boundaries, STRIDE threats T-01..T-73, security tests per milestone, recommended changes TM-R01..R39 and decisions TM-Q01..Q09 (decided in D33–D43; status in §11) |
+| [`06-ui-tiers.md`](06-ui-tiers.md) | Proposal (not accepted): OS-tiered UI rendering (Classic on XP, Aero on Vista/7, Fluent with dark mode and Mica on 10/11), mechanisms, screens per tier, tests and options |
 
 Precedence when documents disagree: `decisions.md`, then the resolutions in `00-integration-review.md`, then the
 document that owns the topic (01: SSH/SFTP/crypto/known_hosts I/O; 02: VFS/WebDAV/Dokany; 03: processes, IPC,
