@@ -1,8 +1,8 @@
 # 06 — OS-tiered UI rendering (proposal)
 
-Status: **proposal, not accepted.** It extends 03 §7 (tray and main window) and §11 (accessibility) and, once the
-user accepts an option of §10, its decisions are folded into 03 §7.1, §7.4 and §11 and recorded in `decisions.md`.
-Until then 03 stays authoritative. Conventions are 03's: "XP" means Windows XP SP3, every API newer than XP is
+Status: **accepted 2026-10-31 as option B with the choices of §10.1 (D47).** It extends 03 §7 (tray and main
+window) and §11 (accessibility) and supersedes 03 §7.4 (dark mode) where the two differ. The user chose from the
+visual mock-ups of each tier (main window, tray, wizard); §10.1 records the answers. Conventions are 03's: "XP" means Windows XP SP3, every API newer than XP is
 resolved at run time (`sd_platform_resolve`, `sd_platform_resolve_by_name`), and facts not confirmed against a primary
 source are marked **[verify]** and listed in the lab plan (§8).
 
@@ -91,7 +91,7 @@ Sub-levels by documented capability, not by marketing version:
 
 | Level | Build | Adds |
 |---|---|---|
-| 2a | 8 – 10 (9200 – 19045) | Flat light look: white content surface, accent color from `DwmGetColorizationColor`, Segoe UI with the theme text sizes, command bar instead of the menu bar (§6.1), no backdrop. |
+| 2a | 8 – 10 (9200 – 19045) | Flat look: white content surface, accent color from `DwmGetColorizationColor`, Segoe UI with the theme text sizes, command bar instead of the menu bar (§6.1), no backdrop, square corners. Dark on 10 1809+ (17763) through the helpers of §3.6 when apps use the dark theme. |
 | 2b | 11 21H2 (22000+) | Dark title bar (already shipped), client-area dark palette (§3.5), `DWMWA_WINDOW_CORNER_PREFERENCE` (33) for our popups, `DWMWA_BORDER_COLOR` (34) to match the accent. |
 | 2c | 11 22H2 (22621+) | Mica backdrop: `DWMWA_SYSTEMBACKDROP_TYPE` (38) = `DWMSBT_MAINWINDOW` (2) on the main window, `DWMSBT_TRANSIENTWINDOW` (3, Acrylic) on the tray flyout if built (§6.3). |
 
@@ -146,6 +146,26 @@ Conclusion: with documented APIs, the **main window** (and the tray flyout) can 
 dialogs with combo boxes, tabs and spin boxes (profile editor, Settings) cannot. Those keep the light body with a
 dark title bar, as today, unless option B (§10) is chosen. The pure decision function `ui_dark_wanted` grows into the
 theme model of §5.
+
+### 3.6 Undocumented dark-mode helpers (chosen, D47)
+
+The user chose full dark mode (option B), including Windows 10 from 1809. On top of §3.5:
+
+| Helper | Where | Builds |
+|---|---|---|
+| `uxtheme` ordinal 135: `AllowDarkModeForApp(BOOL)` on 17763, `SetPreferredAppMode(AllowDark)` on 18362+ | process start | 17763+ |
+| ordinal 133 `AllowDarkModeForWindow(HWND, BOOL)` | each top-level window and the controls that need it | 17763+ |
+| ordinal 104 `RefreshImmersiveColorPolicyState`, 136 `FlushMenuThemes` | after a theme change | 17763+ |
+| `SetWindowTheme(hwnd, L"DarkMode_Explorer", NULL)` (ListView, TreeView, scroll bars, buttons), `L"DarkMode_CFD"` (combo, edit) | per control | 17763+ |
+| title bar: `DwmSetWindowAttribute` 19 before 18985, 20 from 18985 (20 is documented from 22000) | top-level windows | 17763+ |
+
+Rules: the helpers are resolved by ordinal from System32 `uxtheme.dll` only for builds on an allow-list kept in
+`ui_theme_model.c` (17763 up to the newest build tested in the lab); an unknown newer build uses them only when the
+ordinal's export exists and the build is newer than the newest allow-listed one (Windows has kept them stable since
+1809), and a kill switch turns them off: `[ui] dark_helpers = off` in the user settings and the policy value
+`UiDarkHelpers = 0`. With the helpers off, the documented subset of §3.5 still applies. Popup menus, scroll bars,
+tabs and combo drop-downs become dark only through the helpers; every custom-drawn part of §3.5 is still ours.
+Each lab run per Windows release checks them (§8.2).
 
 ## 4. Tier selection
 
@@ -248,9 +268,10 @@ The "More" overflow keeps every menu command reachable with the keyboard (03 §1
 
 - Icon: unchanged (light/dark variants already follow `SystemUsesLightTheme`).
 - Menu: standard popup menu on every tier (it stays light on Windows 11 dark; see option B).
-- Optional, later: a Windows 11 flyout (a small popup window with Acrylic, rounded small corners, one row per
+- Windows 11 (in the first slice, D47): a flyout (a small popup window with Acrylic, rounded small corners, one row per
   profile with a mount toggle, "Open ShellDrive", "Settings") opened by left click on 2c; the popup menu stays on
-  right click / Apps key. Not in the first slice.
+  right click / Apps key. Keyboard: the flyout opens with Enter on the tray icon too, closes with Escape and on
+  deactivation, and its rows are standard buttons and check boxes (accessible names from their text).
 
 ### 6.4 Profile editor, Settings, host key manager, Logs, Events, About
 
@@ -342,10 +363,11 @@ Main window and theme plumbing only:
 4. Tests of §8.1, gate `tools/ci-local.ps1` green, screenshots: host (11: light, dark, Mica on/off), Win10 VM,
    Win7 VM (composition off), XP when the VM exists.
 
-The tray, prompts, task dialogs, the Aero wizard and the other windows follow in later slices in the order §6 lists
-them.
+5. The tray flyout of §6.3 on Windows 11 (2b/2c) and the Aero wizard of §6.5 on Vista+ (D47).
 
-## 10. Options for the user
+The prompts, task dialogs and the other windows follow in later slices in the order §6 lists them.
+
+## 10. Options considered
 
 | Option | What | Cost | Risk |
 |---|---|---|---|
@@ -354,8 +376,19 @@ them.
 | C | Minimal: only what needs no custom drawing — task dialogs, command links, Aero wizard, theme fonts, Mica title bar (`DWMSBT_MAINWINDOW` without frame extension), corner preference | small | the client area still looks like today on 10/11; no dark body |
 | D | Separate modern UI (WinUI 3 or Direct2D) for x64-modern/arm64 only | large; two UIs | rejected in §3.4 |
 
-Decisions asked: the option (A, B or C); whether the first slice is §9 as written; whether Win10 should get the dark
-palette with the undocumented title-bar attribute (only meaningful with B).
+### 10.1 Decisions (2026-10-31, D47)
+
+Answers from the user after reviewing the mock-ups:
+
+- Windows 10/11 main window: the Fluent direction with Mica on 11 (command bar with an accent "New connection"
+  button, the list on a layer card, Windows 11 corners); Windows 10 keeps the flat variant without Mica.
+- Dark mode: **option B**, full dark through the helpers of §3.6, on Windows 11 and on Windows 10 from 1809.
+- Menu bar: replaced on 10/11 by the "···" overflow button at the end of the command bar (Alt opens it).
+- Windows 7: the glass band of mock-up D, falling back to the normal frame without composition.
+- Windows XP: classic with tidied spacing (mock-up E), nothing that needs post-XP APIs.
+- Tray: the Windows 11 flyout on left click is **in the first slice**; the popup menu stays on right click and on
+  every other OS.
+- First slice: §9 plus the tray flyout and the Aero wizard (§6.5).
 
 ## 11. Risks
 
