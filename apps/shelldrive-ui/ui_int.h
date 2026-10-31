@@ -5,7 +5,7 @@
  * The profile editor and the mount dialog (ui_editor.c), the profile list (ui_profiles.c), the import wizard
  * (ui_import.c), the .sdmount verb, the secondary windows of M3 (ui_win.h: host keys, Logs, Settings, About) and
  * the prompt host (prompts.ui, ui_prompt.c), the first-run wizard (ui_wizard.c), the balloon rate limit and queue
- * (ui_tray.c, ui_notify_model.c) and dark title bars (ui_dark.c) are in. Not yet: reconnect. */
+ * (ui_tray.c, ui_notify_model.c) and the OS-tiered theme (ui_theme.c) are in. Not yet: reconnect. */
 #ifndef SD_UI_INT_H
 #define SD_UI_INT_H
 

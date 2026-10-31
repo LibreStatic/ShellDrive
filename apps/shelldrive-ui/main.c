@@ -19,6 +19,7 @@
  * and after 60 s with no open prompt. A prompt-host process that finds a running UI forwards and exits. */
 #include <windows.h>
 #include <shellapi.h>
+#include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 #include <commctrl.h>
@@ -30,7 +31,7 @@
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
-#include "ui_dark.h"
+#include "ui_theme.h"
 #include "sd_platform/sd_time.h"
 #include "ui_dpi.h"
 #include "ui_evhist_model.h"
@@ -737,25 +738,56 @@ static int forward_to_running(int argc, wchar_t **argv)
   return ok;
 }
 
+/* --theme=<classic|aero|fluent-a|fluent-b|fluent-c>[-dark] (06 §8.1): the UI_FORCE_TIER override of the
+   smoke modes, -1 when the value is not recognized. */
+static int theme_option_forced(const wchar_t *v)
+{
+  size_t n = wcslen(v);
+  int dark = 0;
+
+  if (n > 5 && wcscmp(v + n - 5, L"-dark") == 0) {
+    dark = 1;
+    n -= 5;
+  }
+  if (n == 7 && wcsncmp(v, L"classic", 7) == 0)
+    return UI_FORCE_TIER(UI_TIER_CLASSIC, 0, dark);
+  if (n == 4 && wcsncmp(v, L"aero", 4) == 0)
+    return UI_FORCE_TIER(UI_TIER_AERO, 0, dark);
+  if (n == 8 && wcsncmp(v, L"fluent-", 7) == 0 && v[7] >= L'a' && v[7] <= L'c')
+    return UI_FORCE_TIER(UI_TIER_FLUENT, (int)v[7], dark);
+  return -1;
+}
+
 /* Smoke test (--test-window): the main window class is registered, the window and its controls exist,
-   and the window stays hidden. */
+   and the window stays hidden. It prints the theme the model selected (06 §8.1). */
 static int run_smoke_test(void)
 {
   WNDCLASSEXW wc;
   HWND w;
   int ok;
+  const ui_theme *theme;
 
   if (!ui_main_register_class(g_app.inst, g_app.class_main))
     return 1;
+  ui_theme_init();
   memset(&wc, 0, sizeof(wc));
   wc.cbSize = sizeof(wc);
-  if (GetClassInfoExW(g_app.inst, g_app.class_main, &wc) == 0)
+  if (GetClassInfoExW(g_app.inst, g_app.class_main, &wc) == 0) {
+    ui_theme_shutdown();
     return 1;
+  }
   w = ui_main_create(g_app.inst, g_app.class_main, 0);
-  if (w == NULL || !IsWindow(w))
+  if (w == NULL || !IsWindow(w)) {
+    ui_theme_shutdown();
     return 1;
+  }
   ok = ui_main_test_controls() && !IsWindowVisible(w);
+  theme = ui_theme_current();
+  if (theme != NULL)
+    printf("theme tier=%d level=%c dark=%d backdrop=%d\n", theme->tier,
+           theme->level != 0 ? theme->level : '0', theme->dark, theme->backdrop);
   DestroyWindow(w);
+  ui_theme_shutdown();
   return ok ? 0 : 1;
 }
 
@@ -770,6 +802,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   INITCOMMONCONTROLSEX icc;
   HANDLE mutex = NULL;
   int existed = 0;
+  int i, test_mode, theme_forced;
   sd_err e;
   MSG msg;
 
@@ -802,9 +835,32 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   build_class_names();
 
-  if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
-                   wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
-                   wcscmp(argv[1], L"--test-wizard") == 0)) {
+  test_mode = argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
+                           wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
+                           wcscmp(argv[1], L"--test-wizard") == 0);
+
+  /* --theme=<...> (06 §8.1) forces a tier for the smoke runs; it is refused outside the test modes. */
+  theme_forced = -1;
+  for (i = 2; i < argc; i++) {
+    if (wcsncmp(argv[i], L"--theme=", 8) == 0)
+      break;
+  }
+  if (i < argc && !test_mode) {
+    SD_LOGW("ui", "--theme is only valid together with the --test-* smoke modes");
+    rc = 2;
+    goto done;
+  }
+  if (i < argc) {
+    theme_forced = theme_option_forced(argv[i] + 8);
+    if (theme_forced < 0) {
+      SD_LOGW("ui", "--theme value not recognized");
+      rc = 2;
+      goto done;
+    }
+  }
+  ui_theme_set_options(UI_THEME_STYLE_AUTO, 1, theme_forced);
+
+  if (test_mode) {
     /* the smoke tests never read or write the user's profiles: the store is a temporary folder that only
        this process uses (PID and stamp in the name, removed at exit), so concurrent runs never share it */
     wchar_t tmp[MAX_PATH];
@@ -860,8 +916,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     }
   }
 
-  /* dark title bars (7.4): the hook is installed before the first window of this process exists */
-  ui_dark_init();
+  /* the theme (06 §4): the hook is installed before the first window of this process exists */
+  ui_theme_init();
   if (!register_ctrl_class(inst) || !ui_main_register_class(inst, g_app.class_main))
     goto done;
   g_app.ctrl = CreateWindowExW(0, g_app.class_ctrl, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
@@ -911,7 +967,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     DestroyWindow(g_app.main);
   if (g_app.ctrl != NULL && IsWindow(g_app.ctrl))
     DestroyWindow(g_app.ctrl);
-  ui_dark_shutdown();
+  ui_theme_shutdown();
   ui_icon_free_all();
 
 done:

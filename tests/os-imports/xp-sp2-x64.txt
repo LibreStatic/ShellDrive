@@ -372,6 +372,7 @@ user32.dll!DestroyWindow
 user32.dll!DispatchMessageW
 user32.dll!FindWindowW
 user32.dll!GetDlgItemTextW   # NT 3.1+ (host key manager dialogs)
+user32.dll!GetSysColor
 user32.dll!GetMessageW
 user32.dll!GetProcessWindowStation
 user32.dll!GetUserObjectInformationW
@@ -428,6 +429,7 @@ comdlg32.dll!GetOpenFileNameW
 # gdi32: fonts, the DIB icon bitmaps and the device caps of the system DPI (documentation: Windows 2000). Pending capture.
 gdi32.dll!CreateBitmap
 gdi32.dll!CreateDIBSection
+gdi32.dll!CreateSolidBrush
 gdi32.dll!CreateFontIndirectW
 gdi32.dll!DeleteObject
 gdi32.dll!GetDeviceCaps

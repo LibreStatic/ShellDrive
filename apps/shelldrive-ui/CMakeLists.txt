@@ -19,7 +19,7 @@ set(SD_UI_PURE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_settings_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_update_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_notify_model.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/ui_dark_model.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/ui_theme_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_wizard_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_admin_model.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ui_service_model.c
@@ -65,14 +65,14 @@ sd_add_app(shelldrive-ui
     ui_update.c
     ui_tray.c
     ui_win.c
-    ui_dark.c
+    ui_theme.c
     ui_wizard.c
     ui_int.h
     ui_res.h
-    ui_dark.h
+    ui_theme.h
     ui_wizard.h
     ui_notify_model.h
-    ui_dark_model.h
+    ui_theme_model.h
     ui_wizard_model.h
     ui_win.h
     ui_wire.h

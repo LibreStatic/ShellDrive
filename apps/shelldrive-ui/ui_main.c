@@ -23,7 +23,7 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
-#include "ui_dark.h"
+#include "ui_theme.h"
 #include "ui_dpi.h"
 #include "ui_int.h"
 #include "ui_mainview_model.h"
@@ -32,6 +32,9 @@
 
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
+#endif
+#ifndef WM_DWMCOMPOSITIONCHANGED
+#define WM_DWMCOMPOSITIONCHANGED 0x031E
 #endif
 
 /* ListView groups are comctl32 v6 (XP and later). The group structure is spelled out in its XP layout: the Vista
@@ -892,9 +895,15 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     on_dpi(hwnd, (unsigned)LOWORD(wp), (const RECT *)lp);
     return 0;
   case WM_SETTINGCHANGE:
-    /* the app theme changed (7.4): dark title bars follow it; the broadcast reaches every top-level window */
+    /* the app theme changed (06 §4): the dark decision follows it; the broadcast reaches every window */
     if (lp != 0 && wcscmp((const wchar_t *)lp, L"ImmersiveColorSet") == 0)
-      ui_dark_refresh();
+      ui_theme_refresh();
+    break;
+  case WM_THEMECHANGED:
+  case WM_SYSCOLORCHANGE:
+  case WM_DWMCOMPOSITIONCHANGED:
+    /* the system theme, the system colors or DWM composition changed: re-select the tier (06 §4) */
+    ui_theme_refresh();
     break;
   case WM_DESTROY:
     if (g_app.font)
