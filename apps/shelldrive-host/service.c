@@ -267,7 +267,9 @@ static void svc_log_info(const char *fmt, ...)
 
 /* ---- work queue (the control thread runs it) ---- */
 
-static void svc_enqueue(void (*fn)(void *), void *arg)
+/* Appends a job for the control thread; g.lock held (svc_mount_queue detaches a failed record and queues its
+   release in one critical section, so a concurrent mount of the same profile cannot slip in between). */
+static void svc_enqueue_locked(void (*fn)(void *), void *arg)
 {
   svc_work *w = (svc_work *)sd_alloc(sizeof(*w));
   if (w == NULL)
@@ -275,11 +277,16 @@ static void svc_enqueue(void (*fn)(void *), void *arg)
   w->next = NULL;
   w->fn = fn;
   w->arg = arg;
-  sd_mutex_lock(&g.lock);
   if (g.qt) g.qt->next = w; else g.qh = w;
   g.qt = w;
-  sd_mutex_unlock(&g.lock);
   SetEvent(g.wake.h);
+}
+
+static void svc_enqueue(void (*fn)(void *), void *arg)
+{
+  sd_mutex_lock(&g.lock);
+  svc_enqueue_locked(fn, arg);
+  sd_mutex_unlock(&g.lock);
 }
 
 static void svc_post(void *ctx, void (*fn)(void *), void *arg)
@@ -2243,6 +2250,14 @@ static void reap_mount(svc_mount *r)
   sd_free(r);
 }
 
+/* Control thread, from svc_mount_queue: releases a final failed record that a new mount of the same profile
+   detached from the table. The teardown is the tick's own reap after an unmount: the sd_mount already ended
+   (or was never created), and prompts of the record, if any, are dropped with it. */
+static void job_reap_failed(void *arg)
+{
+  reap_mount((svc_mount *)arg);
+}
+
 /* Control-thread timer: reaps finished mounts, expires open prompts (2.5). */
 static void svc_tick(void)
 {
@@ -2514,9 +2529,12 @@ static sd_err handle_status(sd_ipc_client *c, const sd_json *params, sd_json_wri
 }
 
 /* The one code path that brings a global mount up (2.4 "mount"; 1.8 and 3.4.1 boot autostart): finds the loaded
-   service profile `key`, refuses a duplicate, picks the drive letter and publishes the record, then queues the
-   start job for the control thread. Takes g.lock. Returns SD_OK and fills out_id and out_target; on failure
-   returns the sd_err of the reply, with *code set (NULL for the plain errors) and detail filled. */
+   service profile `key`, refuses a duplicate of a live mount, picks the drive letter and publishes the record,
+   then queues the start job for the control thread. A final failed record of the profile is no duplicate: `failed`
+   is the terminal state of a mount (03 1.11), so it holds no live drive and the record is detached and released,
+   its letter going to the new mount (03 1.11 keeps a failed record only until it is unmounted or replaced). Takes
+   g.lock. Returns SD_OK and fills out_id and out_target; on failure returns the sd_err of the reply, with *code
+   set (NULL for the plain errors) and detail filled. */
 static sd_err svc_mount_queue(const char *key, const char *tgt, char out_id[16], char out_target[4],
                               const char **code, char detail[200])
 {
@@ -2541,13 +2559,34 @@ static sd_err svc_mount_queue(const char *key, const char *tgt, char out_id[16],
     _snprintf_s(detail, 200, _TRUNCATE, "%s: %s", bad ? bad : "profile", why ? why : "refused");
     return SD_E_INVALID_PARAM;
   }
-  for (i = 0; i < SVC_MAX_MOUNTS; i++)
-    if (g.mounts[i] && strcmp(g.mounts[i]->prof->p.id, src->p.id) == 0) {
+  {
+    svc_mount *failed = NULL;         /* a final failed record of this profile, detached for release */
+    for (i = 0; i < SVC_MAX_MOUNTS; i++) {
+      svc_mount *old = g.mounts[i];
+      if (old == NULL || strcmp(old->prof->p.id, src->p.id) != 0)
+        continue;
+      /* `already_mounted` protects a live mount (03 6.2 conflict, exit 10); a failed record of the profile never
+         blocks a new mount (03 1.11: failed is terminal, the offline state is the one that keeps the drive). The
+         record goes the way the tick releases an unmounted record, only now: detached here under g.lock, released
+         by the control thread. A live record, or a failed one whose sd_mount has not ended yet, still answers
+         already_mounted. */
+      if (failed == NULL && old->final && old->st == SD_MOUNT_FAILED && !old->stop_req &&
+          (old->m == NULL || sd_mount_is_final(old->m))) {
+        failed = old;
+        g.mounts[i] = NULL;
+        old->stop_req = 1;
+        continue;
+      }
       sd_mutex_unlock(&g.lock);
       *code = "already_mounted";
       strcpy_s(detail, 200, "this profile is already mounted");
       return SD_E_EXISTS;
     }
+    if (failed != NULL) {
+      SD_LOGI("svc", "mount %s replaced by a new mount of the same profile", failed->id);
+      svc_enqueue_locked(job_reap_failed, failed);   /* control thread: destroy r->m, drop the record */
+    }
+  }
   copy = (svc_prof *)sd_alloc(sizeof(*copy));
   if (copy == NULL) {
     sd_mutex_unlock(&g.lock);

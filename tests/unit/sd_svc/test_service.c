@@ -488,13 +488,14 @@ static int wait_state(sd_ipc_conn *c, const char *mount_id, const char *want, ui
     sd_json *res = call(c, "status", params, &err, &e);
     if (res) {
       const char *st = sd_json_get_str(res, "state");
+      int hit = st != NULL && strcmp(st, want) == 0;   /* compared before res is freed: st points into it */
       if (last) {
         if (*last) sd_json_free(*last);
         *last = res;
       } else {
         sd_json_free(res);
       }
-      if (st && strcmp(st, want) == 0)
+      if (hit)
         return 1;
     } else if (strcmp(err.code, "not_mounted") == 0 && strcmp(want, "gone") == 0) {
       return 1;
@@ -2098,7 +2099,6 @@ static int start_boot_core(svc_opts *o, const wchar_t *root)
   memset(o, 0, sizeof(*o));
   o->backend = fake_backend_hostkeys();
   o->machine_root = root;
-  o->open_log = 0;
   o->owner_trusted = owner_trust_all;
   o->test_all_admin = 1;
   o->dacl_extra_ace = L"(A;OICI;FA;;;OW)";
@@ -2210,12 +2210,12 @@ static int make_boot_root(const wchar_t *root, wchar_t *key, size_t key_cch)
   return write_file(key, "fixture-key", 11);
 }
 
-/* A service profile of the boot fixture: the shared base, the identity under root's own service folder and the
-   [mount] autostart value. */
+/* A service profile of the boot fixture: the shared base on `host`, the identity under root's own service folder
+   and the [mount] autostart value. */
 static int write_boot_profile(const wchar_t *root, const wchar_t *file, const char *id, const char *name,
-                              const char *autostart)
+                              const char *host, const char *autostart)
 {
-  sd_profile p = base_profile(id, name, "trusted.example");
+  sd_profile p = base_profile(id, name, host);
   char utf8[MAX_PATH * 3];
   wchar_t key[MAX_PATH];
   _snwprintf_s(key, MAX_PATH, _TRUNCATE, L"%s\\service\\keys\\key1.ppk", root);
@@ -2235,8 +2235,9 @@ SD_TEST(svc_autostart_boot_is_mounted_at_start_and_logon_is_not)
   int n_boot = -1, n_logon = -1;
   char mid[16] = "";
   SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
-  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "boot"));
-  SD_REQUIRE(write_boot_profile(root, L"b-bootlogon.ini", T_ID_BOOTLOGON, "bootlogon", "logon"));
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "trusted.example", "boot"));
+  SD_REQUIRE(write_boot_profile(root, L"b-bootlogon.ini", T_ID_BOOTLOGON, "bootlogon", "trusted.example", "logon"));
+  fake_backend_pre_trust("trusted.example");   /* own trust: the test also runs alone (--filter) */
   SD_REQUIRE(start_boot_core(&o, root));
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
   /* the service mounts the boot profile by itself; autostart = logon is the agent's business (3.4.1) */
@@ -2264,7 +2265,8 @@ SD_TEST(svc_autostart_reload_does_not_double_mount)
   int n_boot = -1, n_logon = -1;
   char mid[16] = "", mid2[16] = "";
   SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
-  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "boot"));
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "trusted.example", "boot"));
+  fake_backend_pre_trust("trusted.example");   /* own trust: the test also runs alone (--filter) */
   SD_REQUIRE(start_boot_core(&o, root));
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
   SD_REQUIRE(wait_boot_list(c, &n_boot, &n_logon, mid, sizeof(mid)));
@@ -2282,6 +2284,68 @@ SD_TEST(svc_autostart_reload_does_not_double_mount)
   res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
   SD_CHECK(res == NULL);
   SD_CHECK_STR(err.code, "already_mounted");
+  sd_ipc_close(c);
+  stop_boot_core();
+  SD_CHECK_EQ_INT(g_boot_rc, 0);
+  RemoveDirectoryW(root);
+}
+
+/* The live lab defect of the boot autostart: the start mount runs before the machine host key exists and ends
+   failed; its record stays for list and status (03 1.11). When the key is added, a mount of the same profile must
+   replace the failed record (a new mount id, the same letter) instead of answering already_mounted, while a live
+   mount of the profile still answers already_mounted. */
+SD_TEST(svc_autostart_failed_mount_is_replaced_by_a_new_mount)
+{
+  static svc_opts o;
+  wchar_t root[MAX_PATH], key[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  int n_boot = -1, n_logon = -1;
+  uint32_t waited = 0;
+  char mid[16] = "", mid2[16] = "", tgt1[4] = "", tgt2[4] = "";
+  SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
+  /* no key for late.example in the machine store yet: the autostart mount fails (TOFU refused, 2.6 rule 2) */
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "late.example", "boot"));
+  SD_REQUIRE(start_boot_core(&o, root));
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  for (;;) {
+    res = call(c, "list", NULL, &err, &e);
+    if (res != NULL) {
+      boot_list_scan(res, &n_boot, &n_logon, mid, sizeof(mid));
+      sd_json_free(res);
+      if (mid[0] != 0)
+        break;
+    }
+    SD_REQUIRE(waited < 10000);
+    Sleep(100);
+    waited += 100;
+  }
+  SD_CHECK(wait_state(c, mid, "failed", 10000, &st));
+  if (st) {
+    copy_str(tgt1, sizeof(tgt1), sd_json_get_str(st, "target"));
+    json_drop(&st);
+  }
+  /* the admin adds the host key and mounts again: the failed record does not answer already_mounted */
+  fake_backend_pre_trust("late.example");
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res != NULL);
+  if (res != NULL) {
+    copy_str(mid2, sizeof(mid2), sd_json_get_str(res, "mount_id"));
+    copy_str(tgt2, sizeof(tgt2), sd_json_get_str(res, "target"));
+    sd_json_free(res);
+  }
+  SD_CHECK(mid2[0] != 0 && strcmp(mid2, mid) != 0);        /* a new mount id */
+  SD_CHECK_STR(tgt2, tgt1);                                /* the same letter comes back */
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));       /* the failed record was released */
+  SD_CHECK(wait_state(c, mid2, "mounted", 20000, NULL));   /* the drive is up without an unmount */
+  /* a live mount of the profile is still refused */
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "already_mounted");
+  SD_CHECK(unmount_id(c, mid2));
+  SD_CHECK(wait_state(c, mid2, "gone", 10000, NULL));
   sd_ipc_close(c);
   stop_boot_core();
   SD_CHECK_EQ_INT(g_boot_rc, 0);
