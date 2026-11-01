@@ -31,6 +31,7 @@
 #include "ui_hostkeys_model.h"
 #include "ui_int.h"
 #include "ui_measure.h"
+#include "ui_theme.h"
 #include "ui_win.h"
 
 #define HK_ID_TAB          4201
@@ -591,7 +592,7 @@ static void remove_selected(void)
   text = sd_l10n_format_alloc(SD_MSG_UI_HOSTKEYS_CONFIRM_REMOVE, args, 2);
   if (text == NULL)
     return;
-  if (MessageBoxW(g_hk.wnd, text, L"ShellDrive", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+  if (ui_win_task(g_hk.wnd, text, NULL, NULL, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
     sd_free(text);
     return;
   }
@@ -788,7 +789,7 @@ static void accept_selected(int add_only)
     return;
   a = &g_hk.anns[p];
   if (!add_only && ann_has_removals(a->id)) {
-    if (MessageBoxW(g_hk.wnd, sd_l10n_get(SD_MSG_UI_HOSTKEYS_CONFIRM_ACCEPT_REMOVALS), L"ShellDrive",
+    if (ui_win_task(g_hk.wnd, sd_l10n_get(SD_MSG_UI_HOSTKEYS_CONFIRM_ACCEPT_REMOVALS), NULL, NULL,
                     MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
       return;
   }
@@ -844,6 +845,7 @@ static INT_PTR CALLBACK ask_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       SetDlgItemTextW(hwnd, HK_DLG_HOST, g_ask_prefill);
       g_ask_prefill[0] = 0;
     }
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   case WM_COMMAND:
     if (c == NULL)
@@ -923,6 +925,7 @@ static INT_PTR CALLBACK review_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   (void)lp;
   switch (msg) {
   case WM_INITDIALOG:
+    ui_theme_apply_dialog(hwnd);
     return TRUE;
   case WM_COMMAND:
     if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
@@ -1355,6 +1358,7 @@ static LRESULT CALLBACK hk_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     g_hk.dpi = ui_dpi_window(hwnd);
     g_hk.font = ui_win_font(g_hk.dpi);
     create_children(hwnd);
+    ui_theme_apply_dialog(hwnd);
     layout(hwnd);
     update_buttons();
     return 0;

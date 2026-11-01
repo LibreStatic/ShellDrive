@@ -12,7 +12,7 @@ SD_TEST(policy_table_is_complete)
 {
   sd_policy_id id;
   int i, j;
-  const int want_count = 21;
+  const int want_count = 23;
   SD_CHECK((int)SD_POLICY_ID_COUNT == want_count);
   SD_CHECK(wcscmp(sd_policy_key(), k_key) == 0);
   for (i = 0; i < (int)SD_POLICY_ID_COUNT; i++) {

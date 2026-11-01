@@ -1900,7 +1900,7 @@ msgstr ""
 
 #. Prompt dialog text for token-only WebDAV (03 7.5, TM-R19). Shown when Windows cannot sign in, every time it is enabled.
 msgctxt "ui.webdav.token_only_ask"
-msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
+msgid "Windows could not sign in to ShellDrive's local file server. If you continue, other programs that learn the drive's address can read your files."
 msgstr ""
 
 #. Prompt dialog title for the token-only WebDAV question (03 7.5).
@@ -2423,7 +2423,7 @@ msgstr ""
 
 #. Question before host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
 msgctxt "ui.hki.stop_confirm"
-msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again. Stop using this source?"
+msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again."
 msgstr ""
 
 #. Message after host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
@@ -2533,7 +2533,7 @@ msgstr ""
 
 #. Security details: question after the setting was saved. {drive} is the drive letter.
 msgctxt "ui.secdlg.refuse_ask"
-msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
+msgid "Outdated algorithms are refused for this server from now on."
 msgstr ""
 
 #. Host key manager button: copies the SHA256 fingerprint of the selected key.
@@ -2976,4 +2976,84 @@ msgstr ""
 #. Host key source: the server announced the key and the user accepted it (UpdateHostKeys).
 msgctxt "ui.hostkeys.origin_server"
 msgid "Updated by server"
+msgstr ""
+
+#. Settings: label of the list that picks the look of the windows (06 §5.3).
+msgctxt "ui.settings.appearance"
+msgid "Appearance"
+msgstr ""
+
+#. Settings: Appearance choice, follow the Windows version and its light or dark mode.
+msgctxt "ui.settings.appearance_auto"
+msgid "Match Windows (recommended)"
+msgstr ""
+
+#. Settings: Appearance choice, the classic look on every Windows version.
+msgctxt "ui.settings.appearance_classic"
+msgid "Classic"
+msgstr ""
+
+#. Settings: checkbox, the dark-mode helpers (06 §3.6). Disabled before Windows 10 version 1809.
+msgctxt "ui.settings.dark_helpers"
+msgid "Use dark mode in menus, scroll bars and lists"
+msgstr ""
+
+#. Settings: shown after the Appearance setting changes; the main window builds its controls only when it is created.
+msgctxt "ui.settings.appearance_restart"
+msgid "The main window switches between the Classic and the modern look when you restart ShellDrive. Other windows update right away."
+msgstr ""
+
+#. Main window: accessible name and tooltip of the "..." overflow button that holds the menu commands.
+msgctxt "ui.main.more_options"
+msgid "More options"
+msgstr ""
+
+#. Tray flyout: one row of a connection. {name} is the profile name, {drive} is a drive letter such as E:.
+msgctxt "ui.flyout.row_label"
+msgid "{name} ({drive})"
+msgstr ""
+
+#. Prompt dialog: the note under the "Trust and connect" command link (Windows Vista and later).
+msgctxt "ui.prompt.note.trust"
+msgid "ShellDrive saves this key and warns you if it changes."
+msgstr ""
+
+#. Prompt dialog: the note under the "Connect once" command link.
+msgctxt "ui.prompt.note.once"
+msgid "Connects now without saving the key. ShellDrive asks again next time."
+msgstr ""
+
+#. Prompt dialog: the note under the "Cancel" command link of the host key, outdated algorithms and less protected connection questions.
+msgctxt "ui.prompt.note.cancel"
+msgid "Does not connect. Nothing is saved."
+msgstr ""
+
+#. Prompt dialog: the note under the "Continue anyway" command link of the outdated algorithms question.
+msgctxt "ui.prompt.note.anyway"
+msgid "Connects using these algorithms."
+msgstr ""
+
+#. Prompt dialog: the note under the "Continue" command link of the less protected WebDAV connection question (03 7.5).
+msgctxt "ui.prompt.note.token_continue"
+msgid "Mounts the drive without Windows signing in. ShellDrive asks again every time."
+msgstr ""
+
+#. Prompt dialog: the main instruction (first line) of the less protected WebDAV connection question (03 7.5).
+msgctxt "ui.prompt.token_only_head"
+msgid "Continue with a less protected connection?"
+msgstr ""
+
+#. Error message: the expandable details of a task dialog. {code} is the error code name.
+msgctxt "ui.win.error_details"
+msgid "Error code: {code}"
+msgstr ""
+
+#. Question: the main instruction of the confirmation to stop reading the host keys of another SSH program. {source} is the program name (PuTTY or OpenSSH).
+msgctxt "ui.hki.stop_title"
+msgid "Stop using the host keys from {source}?"
+msgstr ""
+
+#. Question: the main instruction of the offer to reconnect after outdated algorithms are refused. {drive} is a drive letter such as E:.
+msgctxt "ui.secdlg.refuse_title"
+msgid "Reconnect {drive} now?"
 msgstr ""

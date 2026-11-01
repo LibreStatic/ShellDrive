@@ -378,6 +378,8 @@ user32.dll!DestroyWindow
 user32.dll!DispatchMessageW
 user32.dll!FindWindowW
 user32.dll!GetDlgItemTextW   # NT 3.1+ (host key manager dialogs)
+user32.dll!GetSysColor
+user32.dll!GetSysColorBrush   # NT 3.1+ (dark dialog brushes)
 user32.dll!GetMessageW
 user32.dll!GetProcessWindowStation
 user32.dll!GetUserObjectInformationW
@@ -434,6 +436,7 @@ comdlg32.dll!GetOpenFileNameW
 # gdi32: fonts, the DIB icon bitmaps and the device caps of the system DPI (documentation: Windows 2000). Pending capture.
 gdi32.dll!CreateBitmap
 gdi32.dll!CreateDIBSection
+gdi32.dll!CreateSolidBrush
 gdi32.dll!CreateFontIndirectW
 gdi32.dll!DeleteObject
 gdi32.dll!GetDeviceCaps
@@ -471,6 +474,12 @@ user32.dll!IsWindowEnabled
 user32.dll!MessageBeep
 user32.dll!LoadCursorW
 user32.dll!MonitorFromWindow
+user32.dll!MonitorFromPoint   # Windows 98 / 2000+ (tray flyout work area, ui_flyout.c)
+user32.dll!GetMonitorInfoW
+user32.dll!GetFocus
+user32.dll!DrawFocusRect
+user32.dll!InflateRect
+user32.dll!PtInRect
 user32.dll!MoveWindow
 user32.dll!PostQuitMessage
 user32.dll!RegisterWindowMessageW
@@ -498,6 +507,7 @@ user32.dll!InsertMenuItemW
 gdi32.dll!CreateCompatibleDC
 gdi32.dll!DeleteDC
 gdi32.dll!GetTextExtentPoint32W
+gdi32.dll!GetTextFaceW   # NT 3.1+ (dialog font probing)
 gdi32.dll!GetTextMetricsW
 gdi32.dll!SelectObject
 kernel32.dll!MulDiv
@@ -527,6 +537,7 @@ user32.dll!EndDialog
 user32.dll!GetParent
 user32.dll!GetPropW
 user32.dll!ScreenToClient
+user32.dll!RemovePropW      # NT 3.1+ (theme window properties)
 user32.dll!SetPropW
 user32.dll!wsprintfW
 user32.dll!MapWindowPoints
@@ -580,3 +591,25 @@ version.dll!VerQueryValueW
 user32.dll!GetWindow
 user32.dll!ScrollWindowEx
 user32.dll!SetScrollInfo
+
+# Fluent main window (apps/shelldrive-ui/ui_main.c, 06 section 6.1): owner-drawn command bar, hover tracking, card and
+# header painting, screen capture of --test-shot. All documented from Windows 2000, so present on XP SP2/SP3.
+user32.dll!GetDlgCtrlID
+user32.dll!GetKeyState
+user32.dll!SetWindowRgn
+user32.dll!RedrawWindow
+user32.dll!FrameRect
+user32.dll!GetClassNameW
+user32.dll!CallWindowProcW
+user32.dll!TrackMouseEvent
+gdi32.dll!CreatePen
+gdi32.dll!EnumFontFamiliesExW
+gdi32.dll!Rectangle
+gdi32.dll!RoundRect
+gdi32.dll!SetBkColor
+gdi32.dll!SetBkMode
+gdi32.dll!SetTextColor
+gdi32.dll!CreateRoundRectRgn
+gdi32.dll!BitBlt
+gdi32.dll!PtInRegion
+gdi32.dll!SelectClipRgn

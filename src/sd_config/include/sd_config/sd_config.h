@@ -249,6 +249,7 @@ sd_err sd_config_identity_store(const wchar_t *dir, const char *hostkey_fp, uint
 /* Notification kinds with a [ui] notify_<kind> switch (03 §7.7). Always-on kinds (host key changed, write failed,
    agent stopped unexpectedly, session objects interference) have no switch. */
 enum { SD_SETTINGS_PRIVACY_STANDARD = 0, SD_SETTINGS_PRIVACY_STRICT = 1 };
+enum { SD_SETTINGS_STYLE_AUTO = 0, SD_SETTINGS_STYLE_CLASSIC = 1 };
 typedef enum sd_notify_kind {
   SD_NOTIFY_CONNECTION_LOST = 0, SD_NOTIFY_RECONNECTED, SD_NOTIFY_MOUNT_FAILED, SD_NOTIFY_MOUNTED,
   SD_NOTIFY_LEGACY_ALGORITHMS, SD_NOTIFY_HOSTKEYS_OFFERED, SD_NOTIFY_HOSTKEYS_SAVED, SD_NOTIFY_PROXY_PASSWORD,
@@ -276,6 +277,9 @@ typedef struct sd_settings {
   int    log_privacy;            /* [log] privacy = standard (default) | strict: SD_SETTINGS_PRIVACY_* (10.1, TM-R31) */
   int    agent_start_at_logon;   /* [agent] start_at_logon = yes | no (default): the agent's HKCU Run value (3.2 Start) */
   unsigned char notify_kind[SD_NOTIFY_COUNT];   /* [ui] notify_<kind> = yes | no, each under the notify master (7.7) */
+  /* UI tiers (06 §3.6, §5.3) */
+  int    ui_style;               /* [ui] style = auto (default) | classic: SD_SETTINGS_STYLE_* */
+  int    ui_dark_helpers;        /* [ui] dark_helpers = on (default) | off: the kill switch of the dark-mode helpers */
 } sd_settings;
 void   sd_settings_defaults(sd_settings *s);
 sd_err sd_settings_from_ini(const sd_ini *ini, sd_settings *s);   /* SD_E_INVALID_PARAM if a value was bad */

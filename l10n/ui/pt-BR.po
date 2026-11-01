@@ -1910,8 +1910,8 @@ msgstr "O ShellDrive não conseguiu abrir a janela de administração. Tente de 
 
 #. Prompt dialog text for token-only WebDAV (03 7.5, TM-R19). Shown when Windows cannot sign in, every time it is enabled.
 msgctxt "ui.webdav.token_only_ask"
-msgid "Windows could not sign in to ShellDrive's local file server. Continue with a less protected connection? Other programs that learn the drive's address can then read your files."
-msgstr "O Windows não conseguiu entrar no servidor local de arquivos do ShellDrive. Continuar com uma conexão menos protegida? Outros programas que descobrirem o endereço da unidade podem ler seus arquivos."
+msgid "Windows could not sign in to ShellDrive's local file server. If you continue, other programs that learn the drive's address can read your files."
+msgstr "O Windows não conseguiu entrar no servidor local de arquivos do ShellDrive. Se você continuar, outros programas que descobrirem o endereço da unidade podem ler seus arquivos."
 
 #. Prompt dialog title for the token-only WebDAV question (03 7.5).
 msgctxt "ui.prompt.title_token_only"
@@ -2437,8 +2437,8 @@ msgstr "&Fechar"
 
 #. Question before host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
 msgctxt "ui.hki.stop_confirm"
-msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again. Stop using this source?"
-msgstr "O ShellDrive deixará de ler as chaves de host salvas pelo {source}. Os servidores conhecidos apenas ali pedirão que você confirme a chave novamente. Parar de usar esta origem?"
+msgid "ShellDrive will no longer read the host keys saved by {source}. Servers known only there will ask you to confirm their key again."
+msgstr "O ShellDrive deixará de ler as chaves de host salvas pelo {source}. Os servidores conhecidos apenas ali pedirão que você confirme a chave novamente."
 
 #. Message after host keys of a source are no longer read. {source} is PuTTY or OpenSSH.
 msgctxt "ui.hki.stop_done"
@@ -2547,8 +2547,8 @@ msgstr "O ShellDrive não avisará mais sobre estes algoritmos neste servidor. O
 
 #. Security details: question after the setting was saved. {drive} is the drive letter.
 msgctxt "ui.secdlg.refuse_ask"
-msgid "Outdated algorithms are refused for this server from now on. Reconnect {drive} now?"
-msgstr "A partir de agora, os algoritmos obsoletos são recusados neste servidor. Reconectar {drive} agora?"
+msgid "Outdated algorithms are refused for this server from now on."
+msgstr "A partir de agora, os algoritmos obsoletos são recusados neste servidor."
 
 #. Host key manager button: copies the SHA256 fingerprint of the selected key.
 msgctxt "ui.hostkeys.btn_copy_fp"
@@ -2993,3 +2993,74 @@ msgstr "Copiada do OpenSSH"
 msgctxt "ui.hostkeys.origin_server"
 msgid "Updated by server"
 msgstr "Atualizada pelo servidor"
+
+#. Settings: label of the list that picks the look of the windows (06 §5.3).
+msgctxt "ui.settings.appearance"
+msgid "Appearance"
+msgstr "Aparência"
+
+#. Settings: Appearance choice, follow the Windows version and its light or dark mode.
+msgctxt "ui.settings.appearance_auto"
+msgid "Match Windows (recommended)"
+msgstr "Seguir o Windows (recomendado)"
+
+#. Settings: Appearance choice, the classic look on every Windows version.
+msgctxt "ui.settings.appearance_classic"
+msgid "Classic"
+msgstr "Clássico"
+
+#. Settings: checkbox, the dark-mode helpers (06 §3.6). Disabled before Windows 10 version 1809.
+msgctxt "ui.settings.dark_helpers"
+msgid "Use dark mode in menus, scroll bars and lists"
+msgstr "Usar o modo escuro em menus, barras de rolagem e listas"
+
+#. Settings: shown after the Appearance setting changes; the main window builds its controls only when it is created.
+msgctxt "ui.settings.appearance_restart"
+msgid "The main window switches between the Classic and the modern look when you restart ShellDrive. Other windows update right away."
+msgstr "A janela principal alterna entre o visual clássico e o moderno quando você reiniciar o ShellDrive. As outras janelas são atualizadas na hora."
+
+#. Main window: accessible name and tooltip of the "..." overflow button that holds the menu commands.
+msgctxt "ui.main.more_options"
+msgid "More options"
+msgstr "Mais opções"
+
+#. Tray flyout: one row of a connection. {name} is the profile name, {drive} is a drive letter such as E:.
+msgctxt "ui.flyout.row_label"
+msgid "{name} ({drive})"
+msgstr "{name} ({drive})"
+
+msgctxt "ui.prompt.note.trust"
+msgid "ShellDrive saves this key and warns you if it changes."
+msgstr "O ShellDrive salva esta chave e avisa você se ela mudar."
+
+msgctxt "ui.prompt.note.once"
+msgid "Connects now without saving the key. ShellDrive asks again next time."
+msgstr "Conecta agora sem salvar a chave. O ShellDrive pergunta de novo da próxima vez."
+
+msgctxt "ui.prompt.note.cancel"
+msgid "Does not connect. Nothing is saved."
+msgstr "Não conecta. Nada é salvo."
+
+msgctxt "ui.prompt.note.anyway"
+msgid "Connects using these algorithms."
+msgstr "Conecta usando esses algoritmos."
+
+msgctxt "ui.prompt.note.token_continue"
+msgid "Mounts the drive without Windows signing in. ShellDrive asks again every time."
+msgstr "Monta a unidade sem que o Windows entre. O ShellDrive pergunta de novo a cada vez."
+
+msgctxt "ui.prompt.token_only_head"
+msgid "Continue with a less protected connection?"
+msgstr "Continuar com uma conexão menos protegida?"
+
+msgctxt "ui.win.error_details"
+msgid "Error code: {code}"
+msgstr "Código de erro: {code}"
+
+msgctxt "ui.hki.stop_title"
+msgid "Stop using the host keys from {source}?"
+msgstr "Parar de usar as chaves de host de {source}?"
+
+msgctxt "ui.secdlg.refuse_title"
+msgid "Reconnect {drive} now?"
+msgstr "Reconectar {drive} agora?"

@@ -18,11 +18,28 @@
 #include "sd_l10n/sd_l10n.h"
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
+#include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_time.h"
 #include "ui_dlg.h"
 #include "ui_int.h"
 #include "ui_measure.h"
 #include "ui_prompt_model.h"
+#include "ui_theme.h"
+
+/* Vista and later; not in the SDK 7.1A headers of the XP flavours (resolved or sent at run time only). */
+#ifndef BCM_FIRST
+#define BCM_FIRST 0x1600
+#endif
+#ifndef BCM_GETIDEALSIZE
+#define BCM_GETIDEALSIZE (BCM_FIRST + 0x0001)
+#endif
+#ifndef BCM_SETNOTE
+#define BCM_SETNOTE (BCM_FIRST + 0x0009)
+#endif
+#define UI_LIM_LARGE 1                 /* LoadIconMetric: LIM_LARGE */
+#define UI_TEXT_MAININSTRUCTION 1      /* TEXTSTYLE part */
+#define UI_TMT_FONT      210
+#define UI_TMT_TEXTCOLOR 3803
 
 #define UI_PROMPT_MAX_OPEN   16
 #define UI_PROMPT_WIDTH      300     /* dialog units */
@@ -35,6 +52,12 @@
 #define ID_P_DEADLINE    222
 #define ID_P_FP          223          /* read-only fingerprint of a host key */
 #define ID_P_BTN_ONCE    225
+#define ID_P_HEAD        230          /* the main instruction (first line) */
+#define ID_P_ICON        231          /* the icon of a trust prompt */
+#define UI_HEAD_PCT_BOLD   108        /* the main instruction: bold message font (XP, Classic without a theme) */
+#define UI_HEAD_PCT_AERO   133        /* 12 pt over the 9 pt message font (TEXT_MAININSTRUCTION) */
+#define UI_HEAD_PCT_FLUENT 160        /* about 15 pt semibold */
+#define UI_P_MAX_LINKS   3
 #define ID_P_TEXT_BASE   300         /* 300 + index: static text lines */
 #define TIMER_REFRESH    1
 
@@ -48,7 +71,23 @@ typedef struct ui_pdlg {
   HWND deadline;
   uint64_t deadline_at;              /* sd_tick_ms value when the prompt times out */
   int closing;
+  HWND head;                         /* the main instruction control, NULL when the prompt has none */
+  HFONT head_font;
+  COLORREF head_color;
+  int head_color_set;
+  HICON icon;
+  int icon_owned;                    /* LoadIconMetric icons are destroyed, the shared system icon is not */
+  WORD link_ids[UI_P_MAX_LINKS];     /* the command links (Vista and later) and their notes */
+  const wchar_t *link_notes[UI_P_MAX_LINKS];
+  size_t nlinks;
 } ui_pdlg;
+
+/* Filled by the add_* builders of the dialog being built (single UI thread) and copied to the ui_pdlg. */
+static struct {
+  WORD ids[UI_P_MAX_LINKS];
+  const wchar_t *notes[UI_P_MAX_LINKS];
+  size_t n;
+} g_links;
 
 static ui_pdlg *g_open[UI_PROMPT_MAX_OPEN];
 static size_t g_nopen;
@@ -64,6 +103,71 @@ static void wipe_text(wchar_t *s, size_t units)
 {
   if (s != NULL)
     SecureZeroMemory(s, units * sizeof(wchar_t));
+}
+
+/* ---- main instruction, icon and choices (06 §6.2) ---- */
+
+/* 0: the message font in bold (XP, or Classic without a theme font), 1: the TEXT_MAININSTRUCTION style of the
+   visual styles (Vista and 7, also Classic forced on those), 2: semibold, larger, in the palette text color (8+). */
+static int head_kind(void)
+{
+  const ui_theme *t = ui_theme_current();
+  if (t == NULL)
+    return 0;
+  if (t->tier == UI_TIER_FLUENT)
+    return 2;
+  if (t->tier == UI_TIER_AERO || sd_os_at_least(6, 0, 0))
+    return 1;
+  return 0;
+}
+
+static int head_pct(void)
+{
+  int k = head_kind();
+  return k == 2 ? UI_HEAD_PCT_FLUENT : k == 1 ? UI_HEAD_PCT_AERO : UI_HEAD_PCT_BOLD;
+}
+
+/* The system icon a trust prompt shows, or NULL for the credential prompts. */
+static const wchar_t *prompt_icon_name(ui_prompt_kind kind)
+{
+  switch (kind) {
+  case UI_PK_HOSTKEY:
+    return MAKEINTRESOURCEW(32514);          /* IDI_QUESTION */
+  case UI_PK_HOSTKEY_CHANGED:
+  case UI_PK_LEGACY_ACK:
+  case UI_PK_WEBDAV_TOKEN_ONLY:
+    return MAKEINTRESOURCEW(32515);          /* IDI_WARNING */
+  default:
+    return NULL;
+  }
+}
+
+/* The first line of a prompt: its icon (trust prompts) and the main instruction. */
+static sd_err add_head(ui_dlg *d, const ui_prompt *p, const wchar_t *text)
+{
+  sd_err e = SD_OK;
+  if (prompt_icon_name(p->kind) != NULL)
+    e = ui_dlg_icon(d, ID_P_ICON);
+  if (e == SD_OK)
+    e = ui_dlg_heading(d, ID_P_HEAD, text, SS_NOPREFIX);
+  return e;
+}
+
+/* The choices of a trust prompt: command links with notes on Vista and later, plain buttons otherwise. No
+   default button (TM-R03). */
+static sd_err add_choices(ui_dlg *d, const WORD *ids, const wchar_t *const *texts, const wchar_t *const *notes,
+                          size_t n)
+{
+  size_t i;
+  g_links.n = 0;
+  if (d->command_links && n <= UI_P_MAX_LINKS) {
+    for (i = 0; i < n; i++) {
+      g_links.ids[i] = ids[i];
+      g_links.notes[i] = notes[i];
+    }
+    g_links.n = n;
+  }
+  return ui_dlg_commands(d, ids, texts, notes, n, 0);
 }
 
 /* ---- dialog layout ---- */
@@ -117,7 +221,7 @@ static sd_err add_intro_host(ui_dlg *d, const ui_prompt *p, sd_msg_id id)
   t = fmt(id, a, 2);
   if (t == NULL)
     return SD_E_NO_MEMORY;
-  e = ui_dlg_text(d, ID_P_TEXT_BASE, t, SS_NOPREFIX);
+  e = add_head(d, p, t);
   sd_free(t);
   return e;
 }
@@ -125,7 +229,7 @@ static sd_err add_intro_host(ui_dlg *d, const ui_prompt *p, sd_msg_id id)
 static sd_err add_hostkey_dialog(ui_dlg *d, const ui_prompt *p)
 {
   static const WORD ids[3] = { IDOK, ID_P_BTN_ONCE, IDCANCEL };
-  const wchar_t *texts[3];
+  const wchar_t *texts[3], *notes[3];
   sd_arg a[1];
   wchar_t *t;
   sd_err e;
@@ -142,12 +246,16 @@ static sd_err add_hostkey_dialog(ui_dlg *d, const ui_prompt *p)
   if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 94, sd_l10n_get(SD_MSG_UI_PROMPT_FIELD_FINGERPRINT), 0);
   if (e == SD_OK) e = ui_dlg_multiline(d, ID_P_FP, p->fingerprint, 1);
   if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 95, sd_l10n_get(SD_MSG_UI_PROMPT_HOSTKEY_CHECK), 0);
-  if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 96, sd_l10n_get(SD_MSG_UI_PROMPT_HOSTKEY_CHOICE), 0);
+  if (e == SD_OK && !d->command_links)      /* the notes of the command links say what each choice does */
+    e = ui_dlg_text(d, ID_P_TEXT_BASE + 96, sd_l10n_get(SD_MSG_UI_PROMPT_HOSTKEY_CHOICE), 0);
   if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 97, sd_l10n_get(SD_MSG_UI_PROMPT_CHOOSE_BUTTON), 0);
   texts[0] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_TRUST);
   texts[1] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_ONCE);
   texts[2] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_CANCEL);
-  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 3, 0);
+  notes[0] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_TRUST);
+  notes[1] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_ONCE);
+  notes[2] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_CANCEL);
+  if (e == SD_OK) e = add_choices(d, ids, texts, notes, 3);
   return e;
 }
 
@@ -227,7 +335,7 @@ static sd_err add_password_dialog(ui_dlg *d, const ui_prompt *p, int passphrase)
     t = fmt(SD_MSG_UI_PROMPT_TARGET_LINE, a, 2);
     if (t == NULL)
       return SD_E_NO_MEMORY;
-    e = ui_dlg_text(d, ID_P_TEXT_BASE + 98, t, SS_NOPREFIX);
+    e = add_head(d, p, t);
     sd_free(t);
   }
   if (e == SD_OK) e = add_profile_line(d, p);
@@ -300,7 +408,7 @@ static sd_err add_password_change_dialog(ui_dlg *d, const ui_prompt *p)
   t = fmt(SD_MSG_UI_PROMPT_CHANGE_INTRO, a, 1);
   if (t == NULL)
     return SD_E_NO_MEMORY;
-  e = ui_dlg_text(d, ID_P_TEXT_BASE, t, SS_NOPREFIX);
+  e = add_head(d, p, t);
   sd_free(t);
   if (e == SD_OK) e = add_profile_line(d, p);
   if (e == SD_OK) e = add_field(d, sd_l10n_get(SD_MSG_UI_PROMPT_FIELD_CURRENT), 0, 1);
@@ -317,7 +425,7 @@ static sd_err add_password_change_dialog(ui_dlg *d, const ui_prompt *p)
 static sd_err add_legacy_dialog(ui_dlg *d, const ui_prompt *p)
 {
   static const WORD ids[2] = { IDOK, IDCANCEL };
-  const wchar_t *texts[2];
+  const wchar_t *texts[2], *notes[2];
   sd_arg a[2];
   wchar_t *t;
   sd_err e;
@@ -327,14 +435,16 @@ static sd_err add_legacy_dialog(ui_dlg *d, const ui_prompt *p)
   t = fmt(SD_MSG_UI_PROMPT_LEGACY_INTRO, a, 2);
   if (t == NULL)
     return SD_E_NO_MEMORY;
-  e = ui_dlg_text(d, ID_P_TEXT_BASE, t, SS_NOPREFIX);
+  e = add_head(d, p, t);
   sd_free(t);
   if (e == SD_OK) e = add_profile_line(d, p);
   if (e == SD_OK) e = add_hop_lines(d, p);
   if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 93, sd_l10n_get(SD_MSG_UI_PROMPT_LEGACY_TEXT), 0);
   texts[0] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_ANYWAY);
   texts[1] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_CANCEL);
-  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 2, 0);
+  notes[0] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_ANYWAY);
+  notes[1] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_CANCEL);
+  if (e == SD_OK) e = add_choices(d, ids, texts, notes, 2);
   return e;
 }
 
@@ -343,14 +453,16 @@ static sd_err add_legacy_dialog(ui_dlg *d, const ui_prompt *p)
 static sd_err add_token_only_dialog(ui_dlg *d, const ui_prompt *p)
 {
   static const WORD ids[2] = { IDOK, IDCANCEL };
-  const wchar_t *texts[2];
+  const wchar_t *texts[2], *notes[2];
   sd_err e;
-  SD_UNUSED(p);
-  e = ui_dlg_text(d, ID_P_TEXT_BASE, sd_l10n_get(SD_MSG_UI_WEBDAV_TOKEN_ONLY_ASK), SS_NOPREFIX);
+  e = add_head(d, p, sd_l10n_get(SD_MSG_UI_PROMPT_TOKEN_ONLY_HEAD));
+  if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE, sd_l10n_get(SD_MSG_UI_WEBDAV_TOKEN_ONLY_ASK), SS_NOPREFIX);
   if (e == SD_OK) e = ui_dlg_text(d, ID_P_TEXT_BASE + 93, sd_l10n_get(SD_MSG_UI_PROMPT_CHOOSE_BUTTON), 0);
   texts[0] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_TOKEN_CONTINUE);
   texts[1] = sd_l10n_get(SD_MSG_UI_PROMPT_BTN_CANCEL);
-  if (e == SD_OK) e = ui_dlg_buttons(d, ids, texts, 2, 0);
+  notes[0] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_TOKEN_CONTINUE);
+  notes[1] = sd_l10n_get(SD_MSG_UI_PROMPT_NOTE_CANCEL);
+  if (e == SD_OK) e = add_choices(d, ids, texts, notes, 2);
   return e;
 }
 
@@ -368,7 +480,7 @@ static sd_err add_proxy_dialog(ui_dlg *d, const ui_prompt *p)
   t = fmt(SD_MSG_UI_PROMPT_PROXY_INTRO, a, 3);
   if (t == NULL)
     return SD_E_NO_MEMORY;
-  e = ui_dlg_text(d, ID_P_TEXT_BASE, t, SS_NOPREFIX);
+  e = add_head(d, p, t);
   sd_free(t);
   if (e == SD_OK) {
     a[0].name = "user"; a[0].type = SD_ARG_STR; a[0].v.s = p->user;
@@ -432,7 +544,11 @@ static sd_err build_dialog(const ui_prompt *p, ui_dlg *d, unsigned char **blob, 
   ui_measure_init(&m, face, points, dpi);
   title = dialog_title(p);
   e = ui_dlg_init(d, title ? title : L"ShellDrive", UI_PROMPT_WIDTH, face, points, ui_measure_cb, &m);
+  g_links.n = 0;
   if (e == SD_OK) {
+    const ui_theme *th = ui_theme_current();
+    d->heading_pct = head_pct();
+    d->command_links = th != NULL && th->command_links;
     switch (p->kind) {
     case UI_PK_HOSTKEY:
       e = add_hostkey_dialog(d, p);
@@ -679,6 +795,173 @@ static void place_dialog(ui_pdlg *pd)
   }
 }
 
+typedef HANDLE (WINAPI *pfn_OpenThemeData)(HWND hwnd, LPCWSTR classes);
+typedef HRESULT (WINAPI *pfn_CloseThemeData)(HANDLE theme);
+typedef HRESULT (WINAPI *pfn_GetThemeFont)(HANDLE theme, HDC dc, int part, int state, int prop, LOGFONTW *lf);
+typedef HRESULT (WINAPI *pfn_GetThemeColor)(HANDLE theme, int part, int state, int prop, COLORREF *color);
+typedef HRESULT (WINAPI *pfn_LoadIconMetric)(HINSTANCE inst, PCWSTR name, int lims, HICON *icon);
+
+static int face_installed(const wchar_t *face)
+{
+  LOGFONTW lf;
+  HFONT f;
+  HDC dc;
+  wchar_t got[LF_FACESIZE];
+  int ok = 0;
+  memset(&lf, 0, sizeof(lf));
+  lf.lfHeight = -12;
+  lf.lfCharSet = DEFAULT_CHARSET;
+  wcsncpy_s(lf.lfFaceName, SD_COUNTOF(lf.lfFaceName), face, _TRUNCATE);
+  f = CreateFontIndirectW(&lf);
+  dc = GetDC(NULL);
+  if (f != NULL && dc != NULL) {
+    HGDIOBJ old = SelectObject(dc, f);
+    got[0] = L'\0';
+    GetTextFaceW(dc, SD_COUNTOF(got), got);
+    ok = _wcsicmp(got, face) == 0;
+    SelectObject(dc, old);
+  }
+  if (dc != NULL)
+    ReleaseDC(NULL, dc);
+  if (f != NULL)
+    DeleteObject(f);
+  return ok;
+}
+
+/* The font and color of the main instruction (06 §6.2). The message font of the dialog is the base. */
+static void style_heading(ui_pdlg *pd)
+{
+  HWND hwnd = pd->hwnd;
+  HFONT base = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+  LOGFONTW lf;
+  int kind = head_kind();
+  int have = 0;
+
+  pd->head = GetDlgItem(hwnd, ID_P_HEAD);
+  if (pd->head == NULL)
+    return;
+  memset(&lf, 0, sizeof(lf));
+  if (base == NULL || GetObjectW(base, sizeof(lf), &lf) == 0)
+    GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+  if (kind == 1) {
+    /* TEXTSTYLE / TEXT_MAININSTRUCTION: Segoe UI 12 pt, dark blue on Aero; resolved by name from uxtheme.dll */
+    pfn_OpenThemeData open_t = (pfn_OpenThemeData)sd_platform_resolve_by_name(L"uxtheme.dll", "OpenThemeData");
+    pfn_CloseThemeData close_t = (pfn_CloseThemeData)sd_platform_resolve_by_name(L"uxtheme.dll", "CloseThemeData");
+    pfn_GetThemeFont get_f = (pfn_GetThemeFont)sd_platform_resolve_by_name(L"uxtheme.dll", "GetThemeFont");
+    pfn_GetThemeColor get_c = (pfn_GetThemeColor)sd_platform_resolve_by_name(L"uxtheme.dll", "GetThemeColor");
+    HANDLE th = open_t != NULL ? open_t(hwnd, L"TEXTSTYLE") : NULL;
+    if (th != NULL) {
+      LOGFONTW tf;
+      HDC dc = GetDC(NULL);
+      memset(&tf, 0, sizeof(tf));
+      if (get_f != NULL && dc != NULL &&
+          SUCCEEDED(get_f(th, dc, UI_TEXT_MAININSTRUCTION, 0, UI_TMT_FONT, &tf)) && tf.lfHeight != 0) {
+        /* the style gives the height for the DPI of dc; keep its face and size, and the dialog's charset */
+        tf.lfCharSet = lf.lfCharSet;
+        lf = tf;
+        have = 1;
+      }
+      if (dc != NULL)
+        ReleaseDC(NULL, dc);
+      if (have && ui_theme_current() != NULL && ui_theme_current()->tier == UI_TIER_AERO && get_c != NULL &&
+          SUCCEEDED(get_c(th, UI_TEXT_MAININSTRUCTION, 0, UI_TMT_TEXTCOLOR, &pd->head_color)))
+        pd->head_color_set = 1;
+      if (close_t != NULL)
+        close_t(th);
+    }
+    if (!have) {
+      lf.lfHeight = lf.lfHeight * UI_HEAD_PCT_AERO / 100;
+      lf.lfWeight = FW_NORMAL;
+    }
+  } else if (kind == 2) {
+    lf.lfHeight = lf.lfHeight * UI_HEAD_PCT_FLUENT / 100;
+    lf.lfWeight = FW_SEMIBOLD;
+    wcsncpy_s(lf.lfFaceName, SD_COUNTOF(lf.lfFaceName),
+              face_installed(L"Segoe UI Variable Display") ? L"Segoe UI Variable Display" : L"Segoe UI", _TRUNCATE);
+    pd->head_color = ui_theme_color(UI_TOK_TEXT);
+    pd->head_color_set = 1;
+  } else {
+    lf.lfWeight = FW_BOLD;
+  }
+  pd->head_font = CreateFontIndirectW(&lf);
+  if (pd->head_font != NULL)
+    SendMessageW(pd->head, WM_SETFONT, (WPARAM)pd->head_font, FALSE);
+}
+
+static void load_icon(ui_pdlg *pd)
+{
+  const wchar_t *name = prompt_icon_name(pd->p->kind);
+  HWND ctl = GetDlgItem(pd->hwnd, ID_P_ICON);
+  HMODULE cc = GetModuleHandleW(L"comctl32.dll");
+  pfn_LoadIconMetric lim = cc != NULL ? (pfn_LoadIconMetric)GetProcAddress(cc, "LoadIconMetric") : NULL;
+  HICON icon = NULL;
+  if (name == NULL || ctl == NULL)
+    return;
+  if (lim != NULL && SUCCEEDED(lim(NULL, name, UI_LIM_LARGE, &icon)) && icon != NULL) {
+    pd->icon_owned = 1;
+  } else {
+    icon = LoadIconW(NULL, name);              /* XP: the shared system icon */
+    pd->icon_owned = 0;
+  }
+  pd->icon = icon;
+  if (icon != NULL)
+    SendMessageW(ctl, STM_SETICON, (WPARAM)icon, 0);
+}
+
+/* Command links: the notes, then the ideal height of each for its width (BCM_GETIDEALSIZE). The links are the
+   last controls: they are stacked again at their ideal heights (never shorter than the template estimate) and
+   the dialog grows by the difference. */
+static void fit_links(ui_pdlg *pd)
+{
+  HWND hwnd = pd->hwnd;
+  size_t i;
+  int y = 0, gap = 0, old_bottom = 0, delta;
+  int tops[UI_P_MAX_LINKS], lefts[UI_P_MAX_LINKS], widths[UI_P_MAX_LINKS], heights[UI_P_MAX_LINKS];
+  RECT wr;
+
+  if (pd->nlinks == 0 || pd->nlinks > UI_P_MAX_LINKS)
+    return;
+  for (i = 0; i < pd->nlinks; i++) {
+    HWND b = GetDlgItem(hwnd, pd->link_ids[i]);
+    RECT r;
+    POINT pt;
+    SIZE sz;
+    if (b == NULL)
+      return;
+    if (pd->link_notes[i] != NULL)
+      SendMessageW(b, BCM_SETNOTE, 0, (LPARAM)pd->link_notes[i]);
+    GetWindowRect(b, &r);
+    pt.x = r.left;
+    pt.y = r.top;
+    ScreenToClient(hwnd, &pt);
+    lefts[i] = pt.x;
+    tops[i] = pt.y;
+    widths[i] = r.right - r.left;
+    heights[i] = r.bottom - r.top;
+    old_bottom = pt.y + heights[i];
+    sz.cx = widths[i];
+    sz.cy = 0;
+    if (SendMessageW(b, BCM_GETIDEALSIZE, 0, (LPARAM)&sz) && sz.cy > heights[i])
+      heights[i] = sz.cy;
+  }
+  y = tops[0];
+  {
+    /* the template gap between two links: the distance from the old bottom of the first to the top of the next */
+    RECT r0;
+    GetWindowRect(GetDlgItem(hwnd, pd->link_ids[0]), &r0);
+    gap = pd->nlinks > 1 ? tops[1] - tops[0] - (r0.bottom - r0.top) : 0;
+  }
+  for (i = 0; i < pd->nlinks; i++) {
+    SetWindowPos(GetDlgItem(hwnd, pd->link_ids[i]), NULL, lefts[i], y, widths[i], heights[i],
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    y += heights[i] + gap;
+  }
+  delta = (y - gap) - old_bottom;
+  if (delta != 0 && GetWindowRect(hwnd, &wr))
+    SetWindowPos(hwnd, NULL, 0, 0, wr.right - wr.left, (wr.bottom - wr.top) + delta,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 static INT_PTR CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
   ui_pdlg *pd = (ui_pdlg *)GetWindowLongPtrW(hwnd, DWLP_USER);
@@ -703,6 +986,10 @@ static INT_PTR CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       pd->deadline_at = sd_tick_ms() + (uint64_t)pd->p->deadline_ms;
     if (pd->deadline != NULL)
       SetTimer(hwnd, TIMER_REFRESH, UI_PROMPT_REFRESH_MS, NULL);
+    style_heading(pd);
+    load_icon(pd);
+    fit_links(pd);
+    ui_theme_apply_dialog(hwnd);          /* dark Fluent: title bar, DarkMode_* controls; nothing otherwise */
     place_dialog(pd);
     if (pd->p->kind == UI_PK_HOSTKEY) {
       HWND fp = GetDlgItem(hwnd, ID_P_FP);
@@ -714,6 +1001,23 @@ static INT_PTR CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       SetFocus(GetDlgItem(hwnd, IDCANCEL));
     }
     return FALSE;
+  }
+  case WM_CTLCOLORDLG:
+  case WM_CTLCOLORSTATIC:
+  case WM_CTLCOLORBTN:
+  case WM_CTLCOLOREDIT:
+  case WM_CTLCOLORLISTBOX: {
+    LRESULT res = 0;
+    if (pd != NULL && msg == WM_CTLCOLORSTATIC && pd->head != NULL && (HWND)lp == pd->head && pd->head_color_set &&
+        !ui_theme_ctlcolor(msg, wp, lp, &res)) {
+      /* the main instruction in the color of its style on the light themes (the dark palette sets its own) */
+      SetTextColor((HDC)wp, pd->head_color);
+      SetBkMode((HDC)wp, TRANSPARENT);
+      return (INT_PTR)GetSysColorBrush(COLOR_3DFACE);
+    }
+    if (ui_theme_ctlcolor(msg, wp, lp, &res))
+      return (INT_PTR)res;
+    break;
   }
   case WM_COMMAND:
     if (pd == NULL)
@@ -750,10 +1054,15 @@ static INT_PTR CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       }
       list_remove(pd);
       pd->hwnd = NULL;
+      pd->head = NULL;
     }
     return TRUE;
   case WM_NCDESTROY:
     if (pd != NULL) {
+      if (pd->head_font != NULL)
+        DeleteObject(pd->head_font);
+      if (pd->icon != NULL && pd->icon_owned)
+        DestroyIcon(pd->icon);
       SetWindowLongPtrW(hwnd, DWLP_USER, 0);
       sd_secure_free(pd->p, sizeof(*pd->p));
       sd_free(pd);
@@ -791,6 +1100,14 @@ static sd_err create_dialog(ui_prompt *p, int show, HWND *out)
   if (e != SD_OK) {
     sd_free(pd);
     return e;
+  }
+  {
+    size_t i;
+    pd->nlinks = g_links.n;
+    for (i = 0; i < g_links.n; i++) {
+      pd->link_ids[i] = g_links.ids[i];
+      pd->link_notes[i] = g_links.notes[i];
+    }
   }
   hwnd = CreateDialogIndirectParamW(g_app.inst, (LPCDLGTEMPLATEW)blob, NULL, prompt_proc, (LPARAM)pd);
   sd_free(blob);
@@ -905,7 +1222,29 @@ int ui_prompt_filter(MSG *msg)
   return 0;
 }
 
-/* Smoke test (--test-prompts): every kind is built and its dialog created hidden, then destroyed. */
+/* The trust prompts have no default button (TM-R03) and, with command links, every choice is one. */
+static int trust_buttons_ok(HWND hwnd, const ui_pdlg *pd)
+{
+  static const WORD ids[3] = { IDOK, ID_P_BTN_ONCE, IDCANCEL };
+  const ui_theme *t = ui_theme_current();
+  size_t i;
+  for (i = 0; i < 3; i++) {
+    HWND b = GetDlgItem(hwnd, ids[i]);
+    LONG style;
+    if (b == NULL)
+      continue;                                   /* the legacy and token prompts have two choices */
+    style = GetWindowLongW(b, GWL_STYLE) & 0xF;
+    if (style == BS_DEFPUSHBUTTON || style == 0xF)
+      return 0;
+    if (t != NULL && t->command_links && style != 0xE)
+      return 0;
+  }
+  return pd == NULL || pd->head != NULL;
+}
+
+/* Smoke test (--test-prompts): every kind is built and its dialog created hidden, then destroyed. The theme is
+   the one of --theme=<...> (main.c initializes it): the main instruction exists, the trust prompts keep no
+   default button, and on a tier with command links the choices are command links. */
 int ui_prompt_smoke_test(void)
 {
   static const ui_prompt_kind kinds[] = {
@@ -924,6 +1263,16 @@ int ui_prompt_smoke_test(void)
       ok = 0;
       sd_secure_free(p, sizeof(*p));
       continue;
+    }
+    {
+      ui_pdlg *pd = (ui_pdlg *)GetWindowLongPtrW(hwnd, DWLP_USER);
+      int trust = kinds[k] == UI_PK_HOSTKEY || kinds[k] == UI_PK_LEGACY_ACK || kinds[k] == UI_PK_WEBDAV_TOKEN_ONLY;
+      int has_head = kinds[k] != UI_PK_PASSPHRASE;   /* the passphrase prompt opens with the key fingerprint */
+      if (pd == NULL || (has_head && pd->head == NULL) || (trust && !trust_buttons_ok(hwnd, pd))) {
+        ok = 0;
+      } else if (prompt_icon_name(kinds[k]) != NULL && (pd->icon == NULL || GetDlgItem(hwnd, ID_P_ICON) == NULL)) {
+        ok = 0;
+      }
     }
     DestroyWindow(hwnd);
   }

@@ -318,3 +318,31 @@ msgstr "Standard"
 msgctxt "policy.logprivacy.opt.1"
 msgid "Strict"
 msgstr "Streng"
+
+msgctxt "policy.uistyle.title"
+msgid "User interface style"
+msgstr "Stil der Benutzeroberfläche"
+
+msgctxt "policy.uistyle.explain"
+msgid "Sets the look of the ShellDrive windows. 0 matches the style of Windows, 1 forces the classic look. Use 1 for locked-down or remote desktop machines."
+msgstr "Legt das Aussehen der ShellDrive-Fenster fest. 0 folgt dem Windows-Stil, 1 erzwingt das klassische Aussehen. Verwende 1 auf gesperrten Computern oder Remotedesktop-Rechnern."
+
+msgctxt "policy.uistyle.label"
+msgid "Style:"
+msgstr "Stil:"
+
+msgctxt "policy.uistyle.opt.0"
+msgid "Match Windows"
+msgstr "Windows folgen"
+
+msgctxt "policy.uistyle.opt.1"
+msgid "Classic"
+msgstr "Klassisch"
+
+msgctxt "policy.uidarkhelpers.title"
+msgid "Allow dark mode in menus, scroll bars and lists"
+msgstr "Dunkelmodus in Menüs, Bildlaufleisten und Listen zulassen"
+
+msgctxt "policy.uidarkhelpers.explain"
+msgid "Controls the dark mode of menus, scroll bars and lists, which relies on undocumented Windows functions. Disabled turns it off and locks the setting; Enabled or Not configured lets users choose."
+msgstr "Steuert den Dunkelmodus von Menüs, Bildlaufleisten und Listen, der undokumentierte Windows-Funktionen nutzt. Deaktiviert schaltet ihn ab und sperrt die Option; Aktiviert oder Nicht konfiguriert lässt jeden Benutzer wählen."

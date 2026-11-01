@@ -79,6 +79,35 @@ SD_TEST(settings_m4_defaults)
   SD_CHECK_EQ_INT(s.notify_kind[SD_NOTIFY_DISK_CACHE], 1);
 }
 
+SD_TEST(settings_ui_tier_keys)
+{
+  sd_settings s;
+  sd_ini *ini;
+  sd_settings_defaults(&s);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_AUTO);              /* 06 5.3 */
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 1);                            /* 06 3.6 */
+  ini = parse_text("[ui]\r\nstyle = classic\r\ndark_helpers = off\r\n");
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_settings_from_ini(ini, &s) == SD_OK);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_CLASSIC);
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 0);
+  sd_ini_free(ini);
+  ini = parse_text("[ui]\r\nstyle = auto\r\ndark_helpers = on\r\n");
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_settings_from_ini(ini, &s) == SD_OK);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_AUTO);
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 1);
+  sd_ini_free(ini);
+  /* invalid values are reported and keep the defaults */
+  sd_settings_defaults(&s);
+  ini = parse_text("[ui]\r\nstyle = fancy\r\ndark_helpers = sometimes\r\n");
+  SD_REQUIRE(ini != NULL);
+  SD_CHECK(sd_settings_from_ini(ini, &s) == SD_E_INVALID_PARAM);
+  SD_CHECK_EQ_INT(s.ui_style, SD_SETTINGS_STYLE_AUTO);
+  SD_CHECK_EQ_INT(s.ui_dark_helpers, 1);
+  sd_ini_free(ini);
+}
+
 SD_TEST(settings_m4_parse_values)
 {
   sd_settings s;

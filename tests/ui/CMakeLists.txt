@@ -11,7 +11,7 @@ set(_ui_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-ui")
 
 sd_add_unit_test(ui
   SOURCES main.c test_wire.c test_dpi.c test_dlg.c test_prompt.c test_profile.c test_logs.c test_hostkeys.c
-          test_settings.c test_notify.c test_dark.c test_wizard.c test_update.c test_admin.c test_service.c test_hkissue.c test_mainview.c test_events.c test_notice.c test_evhist.c
+          test_settings.c test_notify.c test_theme.c test_wizard.c test_update.c test_admin.c test_service.c test_hkissue.c test_mainview.c test_events.c test_notice.c test_evhist.c test_taskdlg.c
           ${SD_UI_PURE_SOURCES}
   DEPS sd_config sd_crypto sd_ssh sd_platform sd_base)
 target_include_directories(sd-test-ui PRIVATE "${_ui_dir}")
@@ -23,6 +23,12 @@ set_tests_properties(ui.smoke PROPERTIES LABELS ui TIMEOUT 120)
 add_test(NAME ui.prompts COMMAND $<TARGET_FILE:shelldrive-ui> --test-prompts)
 set_tests_properties(ui.prompts PROPERTIES LABELS ui TIMEOUT 120)
 
+# The prompts under every tier (06 §8.1): command links, the main instruction style, the dark palette.
+foreach(_theme classic aero fluent-c-dark fluent-c-light)
+  add_test(NAME ui.prompts.${_theme} COMMAND $<TARGET_FILE:shelldrive-ui> --test-prompts --theme=${_theme})
+  set_tests_properties(ui.prompts.${_theme} PROPERTIES LABELS ui TIMEOUT 120)
+endforeach()
+
 add_test(NAME ui.editor COMMAND $<TARGET_FILE:shelldrive-ui> --test-editor)
 set_tests_properties(ui.editor PROPERTIES LABELS ui TIMEOUT 120)
 
@@ -31,6 +37,9 @@ set_tests_properties(ui.windows PROPERTIES LABELS ui TIMEOUT 120)
 
 add_test(NAME ui.wizard COMMAND $<TARGET_FILE:shelldrive-ui> --test-wizard)
 set_tests_properties(ui.wizard PROPERTIES LABELS ui TIMEOUT 120)
+
+add_test(NAME ui.flyout COMMAND $<TARGET_FILE:shelldrive-ui> --test-flyout --theme=fluent-c-dark)
+set_tests_properties(ui.flyout PROPERTIES LABELS ui TIMEOUT 120)
 
 # The smoke modes (apps/shelldrive-ui/main.c) take a config root unique to each process and remove it at exit, so
 # they need no RESOURCE_LOCK (ui_test_store was for the old fixed %TEMP%\shelldrive-ui-test folder).

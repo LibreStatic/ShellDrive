@@ -36,6 +36,8 @@ void ui_settings_from_sd(const sd_settings *s, ui_settings_model *m)
   m->write_mode = s->default_write_mode == SD_PROFILE_WRITE_BEHIND ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
   m->log_strict = s->log_privacy == SD_SETTINGS_PRIVACY_STRICT ? 1 : 0;
   m->agent_logon = s->agent_start_at_logon ? 1 : 0;
+  m->ui_style = s->ui_style == SD_SETTINGS_STYLE_CLASSIC ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  m->dark_helpers = s->ui_dark_helpers ? 1 : 0;
   for (k = 0; k < SD_NOTIFY_COUNT; k++)
     if (s->notify_kind[k])
       m->notify_kinds |= 1u << k;
@@ -54,6 +56,8 @@ void ui_settings_to_sd(const ui_settings_model *m, sd_settings *s)
   s->default_write_mode = m->write_mode == SD_PROFILE_WRITE_BEHIND ? SD_PROFILE_WRITE_BEHIND : SD_PROFILE_WRITE_THROUGH;
   s->log_privacy = m->log_strict ? SD_SETTINGS_PRIVACY_STRICT : SD_SETTINGS_PRIVACY_STANDARD;
   s->agent_start_at_logon = m->agent_logon ? 1 : 0;
+  s->ui_style = m->ui_style == SD_SETTINGS_STYLE_CLASSIC ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  s->ui_dark_helpers = m->dark_helpers ? 1 : 0;
   for (k = 0; k < SD_NOTIFY_COUNT; k++)
     s->notify_kind[k] = (m->notify_kinds & (1u << k)) ? 1 : 0;
 }
@@ -71,6 +75,10 @@ unsigned ui_settings_locked(const ui_set_policy *p)
     mask |= UI_SET_F_WRITE;
   if (p->privacy_set)
     mask |= UI_SET_F_PRIVACY;
+  if (p->style_set)
+    mask |= UI_SET_F_STYLE;
+  if (p->dark_off)
+    mask |= UI_SET_F_DARK;
   return mask;
 }
 
@@ -87,6 +95,10 @@ unsigned ui_settings_apply_policy(ui_settings_model *m, const ui_set_policy *p)
     m->write_mode = SD_PROFILE_WRITE_THROUGH;
   if (mask & UI_SET_F_PRIVACY)
     m->log_strict = p->privacy_strict ? 1 : 0;
+  if (mask & UI_SET_F_STYLE)
+    m->ui_style = p->style_classic ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  if (mask & UI_SET_F_DARK)
+    m->dark_helpers = 0;
   return mask;
 }
 
@@ -104,6 +116,8 @@ unsigned ui_settings_changed(const ui_settings_model *a, const ui_settings_model
   if (a->write_mode != b->write_mode) d |= UI_SET_F_WRITE;
   if ((a->log_strict != 0) != (b->log_strict != 0)) d |= UI_SET_F_PRIVACY;
   if ((a->agent_logon != 0) != (b->agent_logon != 0)) d |= UI_SET_F_AGENT;
+  if (a->ui_style != b->ui_style) d |= UI_SET_F_STYLE;
+  if ((a->dark_helpers != 0) != (b->dark_helpers != 0)) d |= UI_SET_F_DARK;
   if ((a->notify_kinds & UI_SET_KINDS_ALL) != (b->notify_kinds & UI_SET_KINDS_ALL)) d |= UI_SET_F_KINDS;
   return d;
 }
@@ -122,6 +136,10 @@ void ui_settings_to_sd_masked(const ui_settings_model *m, unsigned locked, sd_se
     s->default_write_mode = keep.default_write_mode;
   if (locked & UI_SET_F_PRIVACY)
     s->log_privacy = keep.log_privacy;
+  if (locked & UI_SET_F_STYLE)
+    s->ui_style = keep.ui_style;
+  if (locked & UI_SET_F_DARK)
+    s->ui_dark_helpers = keep.ui_dark_helpers;
 }
 
 ui_set_note ui_settings_source_note(int enabled, int locked, int src_state)
@@ -190,4 +208,18 @@ sd_err ui_settings_agent_run_command(const wchar_t *host_exe, wchar_t *out, size
   if (_snwprintf_s(out, cap, _TRUNCATE, L"\"%s\" agent --logon", host_exe) < 0)
     return SD_E_NAME_TOO_LONG;
   return SD_OK;
+}
+
+void ui_settings_theme_effective(const sd_settings *s, const ui_set_policy *p, int *style, int *dark_helpers)
+{
+  int st = s != NULL && s->ui_style == SD_SETTINGS_STYLE_CLASSIC ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  int dk = s == NULL || s->ui_dark_helpers ? 1 : 0;
+  if (p != NULL && p->style_set)
+    st = p->style_classic ? SD_SETTINGS_STYLE_CLASSIC : SD_SETTINGS_STYLE_AUTO;
+  if (p != NULL && p->dark_off)
+    dk = 0;
+  if (style != NULL)
+    *style = st;
+  if (dark_helpers != NULL)
+    *dark_helpers = dk;
 }

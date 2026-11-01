@@ -46,3 +46,5 @@ HideTrayIcon|both|boolean|-|xp|interface
 DisableNetworkLocations|both|boolean|-|xp|network
 DisableModernContextMenu|both|boolean|-|win11|interface
 LogPrivacy|both|enum|0,1|xp|logging
+UiStyle|both|enum|0,1|xp|interface
+UiDarkHelpers|both|boolean|-|xp|interface

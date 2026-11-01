@@ -12,13 +12,15 @@
  * "Repair data..." button, and exits when the page is closed;
  * --test-window is the smoke test of tests/ui: it
  * creates the main window hidden, checks the window class and its controls, and exits 0; --test-prompts
- * creates every prompt dialog hidden and destroys it (exit 0 when all were created).
+ * creates every prompt dialog hidden and destroys it (exit 0 when all were created); --test-shot=<file.bmp>
+ * shows the main window with fixture rows and writes a screen capture of it (06 §8.2).
  *
  * --prompt-host (03 §1.4, §2.5 step 3): the agent starts this process when a prompt has nobody to answer it.
  * It shows the tray icon and the prompt dialogs only, never starts an agent, leaves when the agent goes away
  * and after 60 s with no open prompt. A prompt-host process that finds a running UI forwards and exits. */
 #include <windows.h>
 #include <shellapi.h>
+#include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 #include <commctrl.h>
@@ -30,10 +32,11 @@
 #include "sd_l10n_ui_ids.h"
 #include "sd_platform/sd_log.h"
 #include "sd_platform/sd_platform.h"
-#include "ui_dark.h"
+#include "ui_theme.h"
 #include "sd_platform/sd_time.h"
 #include "ui_dpi.h"
 #include "ui_evhist_model.h"
+#include "ui_flyout.h"
 #include "ui_wizard.h"
 #include "sd_config/sd_config.h"
 #include "ui_admin_model.h"
@@ -166,7 +169,7 @@ static void handle_mount_file(const wchar_t *path)
   if (e == SD_OK && ui_profiles_load() == SD_OK)
     p = ui_profiles_find_id(id);
   if (e != SD_OK || p == NULL) {
-    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_MOUNT_FILE_INVALID), L"ShellDrive", MB_OK | MB_ICONWARNING);
+    (void)ui_win_task(g_app.main, sd_l10n_get(SD_MSG_UI_MOUNT_FILE_INVALID), NULL, NULL, MB_OK | MB_ICONWARNING);
     return;
   }
   if (ui_file_has_mark(path)) {
@@ -590,11 +593,11 @@ void ui_app_on_reply(ui_ipc_reply *r)
       SD_LOGI("ui", "prompt answer not accepted by the agent (%s)", sd_err_name(r->err));
   } else if (r->kind == UI_IPC_MOUNT && r->err != SD_OK) {
     /* a refused or failed mount: the mount state events say what happened; this says the request did not start */
-    MessageBoxW(g_app.main, sd_l10n_get(SD_MSG_UI_ERROR_MOUNT), L"ShellDrive", MB_OK | MB_ICONERROR);
+    (void)ui_win_task(g_app.main, sd_l10n_get(SD_MSG_UI_ERROR_MOUNT), NULL, NULL, MB_OK | MB_ICONERROR);
   } else if (r->kind == UI_IPC_UNMOUNT && r->err != SD_OK) {
     wchar_t *t = ui_format1(SD_MSG_UI_ERROR_UNMOUNT, "drive", r->drive);
     if (t != NULL) {
-      MessageBoxW(g_app.main, t, L"ShellDrive", MB_OK | MB_ICONERROR);
+      (void)ui_win_task(g_app.main, t, NULL, NULL, MB_OK | MB_ICONERROR);
       sd_free(t);
     }
   }
@@ -737,25 +740,81 @@ static int forward_to_running(int argc, wchar_t **argv)
   return ok;
 }
 
+/* --theme=<classic|aero|fluent-a|fluent-b|fluent-c>[-dark|-light] (06 §8.1): the UI_FORCE_TIER override of the
+   smoke modes, -1 when the value is not recognized. */
+static int theme_option_forced(const wchar_t *v)
+{
+  size_t n = wcslen(v);
+  int dark = 0, light = 0, f;
+
+  if (n > 5 && wcscmp(v + n - 5, L"-dark") == 0) {
+    dark = 1;
+    n -= 5;
+  } else if (n > 6 && wcscmp(v + n - 6, L"-light") == 0) {
+    light = 1;
+    n -= 6;
+  }
+  if (n == 7 && wcsncmp(v, L"classic", 7) == 0)
+    f = UI_FORCE_TIER(UI_TIER_CLASSIC, 0, dark);
+  else if (n == 4 && wcsncmp(v, L"aero", 4) == 0)
+    f = UI_FORCE_TIER(UI_TIER_AERO, 0, dark);
+  else if (n == 8 && wcsncmp(v, L"fluent-", 7) == 0 && v[7] >= L'a' && v[7] <= L'c')
+    f = UI_FORCE_TIER(UI_TIER_FLUENT, (int)v[7], dark);
+  else
+    return -1;
+  return light ? (f | UI_FORCE_LIGHT_BIT) : f;
+}
+
 /* Smoke test (--test-window): the main window class is registered, the window and its controls exist,
-   and the window stays hidden. */
+   and the window stays hidden. It prints the theme the model selected (06 §8.1). */
 static int run_smoke_test(void)
 {
   WNDCLASSEXW wc;
   HWND w;
   int ok;
+  const ui_theme *theme;
 
   if (!ui_main_register_class(g_app.inst, g_app.class_main))
     return 1;
+  ui_theme_init();
   memset(&wc, 0, sizeof(wc));
   wc.cbSize = sizeof(wc);
-  if (GetClassInfoExW(g_app.inst, g_app.class_main, &wc) == 0)
+  if (GetClassInfoExW(g_app.inst, g_app.class_main, &wc) == 0) {
+    ui_theme_shutdown();
     return 1;
+  }
   w = ui_main_create(g_app.inst, g_app.class_main, 0);
-  if (w == NULL || !IsWindow(w))
+  if (w == NULL || !IsWindow(w)) {
+    ui_theme_shutdown();
     return 1;
+  }
   ok = ui_main_test_controls() && !IsWindowVisible(w);
+  theme = ui_theme_current();
+  if (theme != NULL)
+    printf("theme tier=%d level=%c dark=%d backdrop=%d\n", theme->tier,
+           theme->level != 0 ? theme->level : '0', theme->dark, theme->backdrop);
   DestroyWindow(w);
+  ui_theme_shutdown();
+  return ok ? 0 : 1;
+}
+
+/* --test-shot=<file.bmp> (06 §8.2): the visible main window with fixture rows, captured from the screen. */
+static int run_shot_test(const wchar_t *path)
+{
+  HWND w;
+  int ok;
+
+  if (!ui_main_register_class(g_app.inst, g_app.class_main))
+    return 1;
+  ui_theme_init();
+  w = ui_main_create(g_app.inst, g_app.class_main, 1);
+  if (w == NULL || !IsWindow(w)) {
+    ui_theme_shutdown();
+    return 1;
+  }
+  ok = ui_main_test_shot(w, path);
+  DestroyWindow(w);
+  ui_theme_shutdown();
   return ok ? 0 : 1;
 }
 
@@ -770,6 +829,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   INITCOMMONCONTROLSEX icc;
   HANDLE mutex = NULL;
   int existed = 0;
+  int i, test_mode, theme_forced;
   sd_err e;
   MSG msg;
 
@@ -802,9 +862,33 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     goto done;
   build_class_names();
 
-  if (argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
-                   wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
-                   wcscmp(argv[1], L"--test-wizard") == 0)) {
+  test_mode = argc > 1 && (wcscmp(argv[1], L"--test-window") == 0 || wcscmp(argv[1], L"--test-prompts") == 0 ||
+                           wcscmp(argv[1], L"--test-editor") == 0 || wcscmp(argv[1], L"--test-windows") == 0 ||
+                           wcscmp(argv[1], L"--test-wizard") == 0 || wcscmp(argv[1], L"--test-flyout") == 0 ||
+                           wcsncmp(argv[1], L"--test-shot=", 12) == 0);
+
+  /* --theme=<...> (06 §8.1) forces a tier for the smoke runs; it is refused outside the test modes. */
+  theme_forced = -1;
+  for (i = 2; i < argc; i++) {
+    if (wcsncmp(argv[i], L"--theme=", 8) == 0)
+      break;
+  }
+  if (i < argc && !test_mode) {
+    SD_LOGW("ui", "--theme is only valid together with the --test-* smoke modes");
+    rc = 2;
+    goto done;
+  }
+  if (i < argc) {
+    theme_forced = theme_option_forced(argv[i] + 8);
+    if (theme_forced < 0) {
+      SD_LOGW("ui", "--theme value not recognized");
+      rc = 2;
+      goto done;
+    }
+  }
+  ui_settings_theme_options(&g_app.settings, theme_forced);   /* [ui] style, dark_helpers and their policies */
+
+  if (test_mode) {
     /* the smoke tests never read or write the user's profiles: the store is a temporary folder that only
        this process uses (PID and stamp in the name, removed at exit), so concurrent runs never share it */
     wchar_t tmp[MAX_PATH];
@@ -820,20 +904,39 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     rc = run_smoke_test();
     goto done;
   }
+  if (argc > 1 && wcsncmp(argv[1], L"--test-shot=", 12) == 0) {
+    rc = argv[1][12] != 0 ? run_shot_test(argv[1] + 12) : 2;
+    goto done;
+  }
   if (argc > 1 && wcscmp(argv[1], L"--test-prompts") == 0) {
+    ui_theme_init();                    /* --theme=<...> picks the main instruction style and the command links */
     rc = ui_prompt_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-editor") == 0) {
+    ui_theme_init();
     rc = ui_editor_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-windows") == 0) {
+    ui_theme_init();
     rc = ui_windows_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
   if (argc > 1 && wcscmp(argv[1], L"--test-wizard") == 0) {
+    ui_theme_init();                    /* --theme=<...> picks the Wizard97 or Aero path and the dark controls */
     rc = ui_wizard_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
+    goto done;
+  }
+  if (argc > 1 && wcscmp(argv[1], L"--test-flyout") == 0) {
+    /* the tray flyout of Windows 11 (06 §6.3): created hidden, header and both buttons checked, destroyed */
+    ui_theme_init();
+    rc = ui_flyout_smoke_test() ? 0 : 1;
+    ui_theme_shutdown();
     goto done;
   }
 
@@ -860,8 +963,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     }
   }
 
-  /* dark title bars (7.4): the hook is installed before the first window of this process exists */
-  ui_dark_init();
+  /* the theme (06 §4): the hook is installed before the first window of this process exists */
+  ui_theme_init();
   if (!register_ctrl_class(inst) || !ui_main_register_class(inst, g_app.class_main))
     goto done;
   g_app.ctrl = CreateWindowExW(0, g_app.class_ctrl, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
@@ -898,6 +1001,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
   while (GetMessageW(&msg, NULL, 0, 0) > 0) {
     if (ui_prompt_filter(&msg))
       continue;                        /* IsDialogMessage: keyboard handling of the prompt dialogs */
+    if (ui_flyout_filter(&msg))
+      continue;                        /* the tray flyout of Windows 11 (06 §6.3): Tab, Escape, Enter */
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
@@ -911,7 +1016,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE prev, _In_ LPWSTR cm
     DestroyWindow(g_app.main);
   if (g_app.ctrl != NULL && IsWindow(g_app.ctrl))
     DestroyWindow(g_app.ctrl);
-  ui_dark_shutdown();
+  ui_theme_shutdown();
   ui_icon_free_all();
 
 done:

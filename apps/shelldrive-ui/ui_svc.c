@@ -415,7 +415,7 @@ static int launch_elevated(HWND owner, HANDLE *child, const wchar_t *args)
   if (!ShellExecuteExW(&sei)) {
     /* the user declining the UAC prompt is not an error to report */
     if (GetLastError() != ERROR_CANCELLED)
-      MessageBoxW(owner, sd_l10n_get(SD_MSG_UI_ADMIN_LAUNCH_FAILED), L"ShellDrive", MB_OK | MB_ICONERROR);
+      ui_win_task(owner, sd_l10n_get(SD_MSG_UI_ADMIN_LAUNCH_FAILED), NULL, NULL, MB_OK | MB_ICONERROR);
     return 0;
   }
   *child = sei.hProcess;
