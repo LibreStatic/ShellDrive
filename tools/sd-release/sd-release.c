@@ -630,7 +630,7 @@ static int cmd_manifest(int argc, char **argv)
 #define RG_STATUS_WAIVED 3
 
 /* One row per gate. beta and stable are 1 when the gate is required on that channel and 0 when a record may not carry
-   it. waive_* is 1 when a waived status is accepted on that channel. */
+   it. waive_* is 1 when a waived status is accepted on that channel (review-pass1 and authenticode on beta: D48). */
 typedef struct rg_def {
   const char *name;
   int beta, stable;
@@ -640,8 +640,8 @@ typedef struct rg_def {
 static const rg_def rg_defs[] = {
   {"ci-local", 1, 1, 0, 0},
   {"lab", 1, 1, 1, 0},
-  {"review-pass1", 1, 1, 0, 0},
-  {"authenticode", 1, 1, 0, 0},
+  {"review-pass1", 1, 1, 1, 0},
+  {"authenticode", 1, 1, 1, 0},
   {"review-pass2", 0, 1, 0, 0},
   {"p3-tests", 0, 1, 0, 0},
   {"rebuild", 0, 1, 0, 0}
