@@ -21,3 +21,10 @@ add_test(NAME release.keyring
                  "-DWORK=${CMAKE_BINARY_DIR}/tests/release/keyring"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/keyring_flow.cmake")
 set_tests_properties(release.keyring PROPERTIES LABELS release TIMEOUT 300)
+
+# dokany.lock verification (04 §7.3, TM-R23): the strict lock parser and the file checks, with fake upstream files.
+add_test(NAME release.dokany
+         COMMAND "${CMAKE_COMMAND}" "-DSD_RELEASE=$<TARGET_FILE:sd-release>"
+                 "-DWORK=${CMAKE_BINARY_DIR}/tests/release/dokany"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/dokany_flow.cmake")
+set_tests_properties(release.dokany PROPERTIES LABELS release TIMEOUT 300)
