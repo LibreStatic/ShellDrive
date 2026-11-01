@@ -901,3 +901,18 @@ Open (lab or later):
   `x64-modern`, `arm64` and `arm32` with the runner's WiX 3.14, runs their `msi.*` checks and uploads the packages.
   The `x64-modern` and `arm64` jobs now also install `v141_xp` for the x86 shell extension, which adds several
   minutes to each.
+
+## Beta pre-release notice on the welcome page (D48, 04 §10)
+
+`SD_SETUP_PRERELEASE_NOTICE` (new CMake option in `apps/shelldrive-setup/CMakeLists.txt`) defaults to ON when
+`SD_SETUP_CHANNEL` is `beta` and OFF otherwise, on a fresh configure; as with every `option()`, a value already
+in the CMake cache (including the default computed for another channel) is kept, so pass `-D` explicitly or use
+a fresh build dir when switching the channel in place. When on, it compiles `SD_SETUP_PRERELEASE_NOTICE=1` into
+`sd_setup_core` (PUBLIC, so the stub's `setup_main.c` and `setup_ui.c` see it too). The welcome page then shows
+`installer.welcome.prerelease` (new string, all six catalogs, appended at the end of each `.po`) as a visible
+warning above the buttons; the pure switch is `sd_flow_welcome_notice` (setup_flow.c, covered by `unit.engine`),
+and `/quiet`, `/passive` and the removal flow log the English text instead (`notice.prerelease` line via the
+new `notice_shown` field of the install and uninstall opts). Stable builds never show it. The setup stub is the
+only surface: the MSI's strings share the catalog (`msi.*`) but its dialogs are unchanged. Tests:
+`setup.l10n.prerelease_notice` (the string exists in all six `.po`, msgstr non-empty outside en) and
+`unit.engine`'s `setup_flow_welcome_notice`.

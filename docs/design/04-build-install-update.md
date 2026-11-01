@@ -1587,7 +1587,9 @@ protected your PC" cannot tell a trojaned look-alike from our build. Until the A
 - The setup stub verifies its own payload table against the compiled-in keyset and refuses on mismatch (§6.1);
   existing installs update only through the signed manifest (§9).
 - Before crypto review pass 1 (end of M2, D38) tester builds show "pre-release, cryptography not yet externally
-  reviewed" on the first setup page, and tester instructions recommend test servers and test keys.
+  reviewed" on the first setup page, and tester instructions recommend test servers and test keys. The setup
+  carries the notice when it is built with the `SD_SETUP_PRERELEASE_NOTICE` CMake option (on by default for the
+  beta channel, off otherwise); a silent run logs the notice in English instead.
 - The gates for wider distribution are in §12.3 ("Release gates").
 
 ### 10.1 Sparse MSIX package for the Windows 11 modern context menu (D27)
