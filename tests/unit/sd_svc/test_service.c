@@ -2080,6 +2080,13 @@ static HANDLE g_boot_running;
 static HANDLE g_boot_thread;
 static int g_boot_rc = -1;
 
+/* The drives the boot cores see in use: only C:. The fake backend maps no letter, so with this fixed mask the letter
+   of an auto mount depends only on the service's own records, not on drives other tests mount meanwhile. */
+static DWORD WINAPI boot_logical_drives(void)
+{
+  return 1ul << (L'C' - L'A');
+}
+
 static void boot_core_running(void *ctx)
 {
   SetEvent((HANDLE)ctx);
@@ -2103,6 +2110,7 @@ static int start_boot_core(svc_opts *o, const wchar_t *root)
   o->test_all_admin = 1;
   o->dacl_extra_ace = L"(A;OICI;FA;;;OW)";
   o->on_running = boot_core_running;
+  o->logical_drives = boot_logical_drives;
   if (sd_ipc_current_identity(sid, SD_COUNTOF(sid), NULL) != SD_OK)
     return 0;
   _snwprintf_s(suffix, SD_COUNTOF(suffix), _TRUNCATE, L"svc%lu", (unsigned long)GetCurrentProcessId());
@@ -2337,7 +2345,10 @@ SD_TEST(svc_autostart_failed_mount_is_replaced_by_a_new_mount)
     sd_json_free(res);
   }
   SD_CHECK(mid2[0] != 0 && strcmp(mid2, mid) != 0);        /* a new mount id */
-  SD_CHECK_STR(tgt2, tgt1);                                /* the same letter comes back */
+  /* the same letter comes back: the boot core sees only C: in use (boot_logical_drives), so the autostart took Z:,
+     and the new mount takes Z: again only if the failed record no longer holds it (it would get Y: otherwise) */
+  SD_CHECK_STR(tgt1, "Z:");
+  SD_CHECK_STR(tgt2, tgt1);
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));       /* the failed record was released */
   SD_CHECK(wait_state(c, mid2, "mounted", 20000, NULL));   /* the drive is up without an unmount */
   /* a live mount of the profile is still refused */

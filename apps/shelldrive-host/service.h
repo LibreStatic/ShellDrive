@@ -57,6 +57,10 @@ typedef struct svc_opts {
   const wchar_t *repair_base;
   /* proxy = system seams of service profiles (svc_sysproxy_ops above). NULL = refused (allow 0) with the real read. */
   const svc_sysproxy_ops *sysproxy_ops;
+  /* The drive letters in use on the machine (GetLogicalDrives bits), read when a mount picks or checks its letter.
+     NULL = GetLogicalDrives. Tests with the fake backend pass a fixed mask, so the letter of an auto mount does not
+     depend on drives other processes mount meanwhile. */
+  DWORD (WINAPI *logical_drives)(void);
 } svc_opts;
 
 /* Blocks until svc_request_stop (or a stop control). Returns 0, or 1 when the core cannot start (no pipe, no folder
