@@ -29,13 +29,26 @@ sd_setup_generate_regtable(SD_SETUP_REGTABLE_C)
 # The TM-R34 folder check is the service's (svc_repair.c, svc_folder.c): the same source files, not a copy.
 set(_sd_setup_host_dir "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
 
-# Payload table signature (TM-R38): pure verifier plus the resource wrapper. Shared with tools/sd-release and its
-# tests; sd_crypto only (sd_ed25519_verify and SHA-256 run on XP and in the stub).
-add_library(sd_payload_sig STATIC setup_payload_sig.c)
-target_include_directories(sd_payload_sig PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(sd_payload_sig PUBLIC sd_crypto sd_headers)
-target_compile_definitions(sd_payload_sig PUBLIC "SD_SETUP_BUILD_CHANNEL=\"${SD_SETUP_CHANNEL}\"")
+# Payload table signature (TM-R38): the pure verifier (sd_payload_sig_text, also linked by tools/sd-release, whose
+# keyring step must not depend back on the keyring library) and the stub's compiled-in keyring wrapper
+# (sd_payload_sig: setup_payload_sig_keyring.c, one call site in setup_main.c). sd_crypto only (sd_ed25519_verify and
+# SHA-256 run on XP and in the stub).
+add_library(sd_payload_sig_text STATIC setup_payload_sig.c)
+target_include_directories(sd_payload_sig_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(sd_payload_sig_text PUBLIC sd_crypto sd_headers)
+target_compile_definitions(sd_payload_sig_text PUBLIC "SD_SETUP_BUILD_CHANNEL=\"${SD_SETUP_CHANNEL}\"")
+set_target_properties(sd_payload_sig_text PROPERTIES FOLDER "apps")
+
+add_library(sd_payload_sig STATIC setup_payload_sig_keyring.c)
+target_link_libraries(sd_payload_sig PUBLIC sd_headers sd_payload_sig_text)
 set_target_properties(sd_payload_sig PROPERTIES FOLDER "apps")
+# Compiled-in keyring (04 §9.3): with installer/keys/ the generated directory goes FIRST on the include path, so the
+# angle include of <setup_keyring.inc> in setup_payload_sig_keyring.c picks the generated keyring; without it the
+# placeholder beside the sources is used (this source dir stays on the path via sd_payload_sig_text).
+if(SD_KEYRING_TARGET)
+  target_include_directories(sd_payload_sig BEFORE PRIVATE "${SD_KEYRING_DIR}")
+  add_dependencies(sd_payload_sig ${SD_KEYRING_TARGET})
+endif()
 
 add_library(sd_setup_core STATIC
   setup_args.c

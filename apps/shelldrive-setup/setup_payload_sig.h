@@ -67,7 +67,7 @@ int sd_setup_psig_b64_decode(const char *s, size_t len, uint8_t *out, size_t cap
 int64_t sd_setup_psig_now(void);
 
 /* Resource wrapper for the stub: loads PAYLOAD_SIG from inst, checks the PAYLOAD_TABLE bytes against the keyring
-   compiled into the stub (setup_payload_sig.c, setup_keyring.inc) for SD_SETUP_BUILD_CHANNEL. 0 = verified. */
+   compiled into the stub (setup_payload_sig_keyring.c, setup_keyring.inc) for SD_SETUP_BUILD_CHANNEL. 0 = verified. */
 sd_setup_psig_res sd_setup_payload_sig_check(HINSTANCE inst, const uint8_t *table, size_t tlen);
 
 #endif /* SD_SETUP_PAYLOAD_SIG_H */

@@ -90,3 +90,12 @@ sd_add_app(shelldrive-host
        sd_l10n sd_l10n_catalog_svc ole32 shell32 user32 advapi32 mpr)
 target_include_directories(shelldrive-host PRIVATE "${SD_SVC_EVENTS_DIR}")
 add_dependencies(shelldrive-host sd_svc_events)
+# Compiled-in update trust (04 §9.3): update_ipc.c angle-includes <update_trust.inc>. This source dir must be on the
+# include path for the placeholder; with installer/keys/ the generated directory (cmake/SdKeyring.cmake) goes first,
+# so the generated trust is the one compiled in. Test binaries that reuse these sources (tests/apps) keep the
+# placeholder: they never verify a real payload.
+target_include_directories(shelldrive-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+if(SD_KEYRING_TARGET)
+  target_include_directories(shelldrive-host BEFORE PRIVATE "${SD_KEYRING_DIR}")
+  add_dependencies(shelldrive-host ${SD_KEYRING_TARGET})
+endif()

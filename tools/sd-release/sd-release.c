@@ -16,6 +16,11 @@
  *                                                           checks the signature: the last line of FILE, or SIGFILE;
  *                                                           a manifest must be whole (with its sig line) and parses
  *   sd-release pubkey     --seed SEED                       public key (hex) and key ID of a seed file
+ *   sd-release keyring    --roots ROOTS --keyset KEYSET --out-setup INC --out-trust INC
+ *                                                           verifies the signed keyset against the two root keys of
+ *                                                           ROOTS and writes the include files compiled into the
+ *                                                           stub (payload keyring) and the host (update trust),
+ *                                                           deterministically (04 §9.3, §12.2)
  *   sd-release session    --kind K --out DIR FILE...        writes DIR\SESSION.txt: the hashes an offline signing
  *                                                           session compares before it signs (D42)
  *   sd-release gates check FILE --version V --commit C      validates the release gates record (04 §12.3): exit 0,
@@ -1147,6 +1152,219 @@ static int cmd_pubkey(int argc, char **argv)
   return RC_OK;
 }
 
+/* ---- compiled-in keyring (04 §9.3) ----
+ * roots.txt: ASCII, '#' comments and blank lines, then exactly two "root <key-id> <pubkey-base64>" lines, with the
+ * encodings of the keyset root lines (16 lowercase hex, 44 canonical base64 characters). The keyset is verified
+ * against those roots (sd_upd_keyset_verify) and the two include files compiled into the shipping binaries are
+ * written: the stub's setup_keyring.inc and the host's update_trust.inc. The output is byte-for-byte deterministic
+ * (04 §12.2). Exit codes: 2 for a malformed roots.txt or keyset, 3 for a keyset that does not verify. */
+
+#define RK_MAX_BYTES     (16u * 1024u)
+
+static int rk_bad(unsigned line, const char *msg)
+{
+  if (line == 0)
+    fprintf(stderr, "sd-release: roots.txt: %s\n", msg);
+  else
+    fprintf(stderr, "sd-release: roots.txt line %u: %s\n", line, msg);
+  return -1;
+}
+
+static int rk_is_lower_hex(const char *s, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) {
+    if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+      return 0;
+  }
+  return 1;
+}
+
+/* One "root <key-id> <pubkey-base64>" line. 0 on success. */
+static int rk_root_line(const char *line, unsigned lineno, sd_upd_root *r)
+{
+  const char *sp = strchr(line, ' '), *b64 = sp != NULL ? strchr(sp + 1, ' ') : NULL;
+  uint8_t want[8];
+  if (sp == NULL || b64 == NULL || strchr(b64 + 1, ' ') != NULL ||
+      (size_t)(sp - line) != 4 || memcmp(line, "root", 4) != 0)
+    return rk_bad(lineno, "a root line is: root <key-id> <pubkey-base64>");
+  if ((size_t)(b64 - sp - 1) != 16 || !rk_is_lower_hex(sp + 1, 16) || from_hex(sp + 1, 8, r->id) != 0)
+    return rk_bad(lineno, "the key id is 16 lowercase hex digits");
+  if (strlen(b64 + 1) != 44 || sd_upd_base64_decode(b64 + 1, 44, r->pub, 32) != 32)
+    return rk_bad(lineno, "the public key is 44 canonical base64 characters (32 bytes)");
+  sd_upd_key_id(r->pub, want);
+  if (memcmp(want, r->id, 8) != 0)
+    return rk_bad(lineno, "the key id is not the id of that public key (first 8 bytes of SHA-256)");
+  return 0;
+}
+
+/* Parses roots.txt into roots (room for SD_UPD_MAX_ROOTS). 0 on success; -1 with a message. */
+static int rk_parse_roots(const char *path, sd_upd_root roots[SD_UPD_MAX_ROOTS], uint32_t *nroots)
+{
+  size_t n = 0, i = 0, j;
+  unsigned lineno = 0, found = 0;
+  unsigned char *buf = read_file(path, RK_MAX_BYTES, &n);
+  if (buf == NULL) {
+    fprintf(stderr, "sd-release: cannot read roots.txt (16 KB max)\n");
+    return -1;
+  }
+  /* A CRLF pair (a Windows editor) is read as LF; any other CR, a tab or a byte outside printable ASCII is refused. */
+  for (i = 0, j = 0; i < n; i++) {
+    unsigned char b = buf[i];
+    if (b == '\r' && i + 1 < n && buf[i + 1] == '\n')
+      continue;
+    if (b != '\n' && (b < 0x20u || b > 0x7eu)) {
+      free(buf);
+      fprintf(stderr, "sd-release: roots.txt takes printable ASCII, LF and CRLF only\n");
+      return -1;
+    }
+    buf[j++] = b;
+  }
+  n = j;
+  if (n == 0 || buf[n - 1] != '\n') {
+    free(buf);
+    return rk_bad(0, "the file must end with LF");
+  }
+  buf[n] = '\0';
+  i = 0;
+  while (i < n) {
+    size_t start = i, len;
+    lineno++;
+    while (i < n && buf[i] != '\n')
+      i++;
+    len = i - start;
+    i++;
+    if (len == 0 || buf[start] == '#')
+      continue;
+    if (found == 2) {
+      free(buf);
+      return rk_bad(lineno, "roots.txt holds exactly two root lines");
+    }
+    buf[start + len] = '\0';    /* the LF of the line, always inside the buffer */
+    if (rk_root_line((const char *)buf + start, lineno, &roots[found]) != 0) {
+      free(buf);
+      return -1;
+    }
+    found++;
+  }
+  free(buf);
+  if (found != 2)
+    return rk_bad(0, "roots.txt holds exactly two root lines");
+  *nroots = found;
+  return 0;
+}
+
+static void rk_put_bytes(FILE *f, const uint8_t *p, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++)
+    fprintf(f, "%s0x%02x", i != 0 ? ", " : "", p[i]);
+}
+
+static int rk_close(FILE *f)
+{
+  int bad = ferror(f) != 0;
+  if (fclose(f) != 0)
+    bad = 1;
+  return bad ? -1 : 0;
+}
+
+/* setup_keyring.inc: one sd_setup_psig_key entry per key line of the keyset (see setup_payload_sig.h). */
+static int rk_write_setup_inc(const char *path, const sd_upd_keyset *ks)
+{
+  FILE *f = fopen(path, "wb");
+  uint32_t i;
+  if (f == NULL)
+    return -1;
+  fprintf(f,
+    "/* setup_keyring.inc: keyring compiled into the stub (see setup_payload_sig.c). Generated by `sd-release keyring` from\n"
+    " * installer/keys/roots.txt and installer/keys/keyset.txt (04 §9.3): one entry per key line of the keyset, the dates\n"
+    " * as unix seconds (from 00:00:00Z, to 23:59:59Z, inclusive), keys named by a revoke line flagged. Do not edit.\n"
+    " * Entry: { { 32 public key bytes }, \"stable\"|\"beta\", valid_from, valid_to, revoked }. */\n");
+  for (i = 0; i < ks->nkeys; i++) {
+    fprintf(f, "{ { ");
+    rk_put_bytes(f, ks->keys[i].pub, 32);
+    fprintf(f, " }, \"%s\", %lld, %lld, %d },\n", ks->keys[i].channel,
+            (long long)ks->keys[i].valid_from, (long long)ks->keys[i].valid_to, ks->keys[i].revoked);
+  }
+  return rk_close(f);
+}
+
+/* update_trust.inc: the roots array and the exact keyset bytes (see update_ipc.c and sd_update.h). */
+static int rk_write_trust_inc(const char *path, const sd_upd_root *roots, uint32_t nroots,
+                              const unsigned char *keyset, size_t kn)
+{
+  FILE *f;
+  uint32_t i;
+  size_t k;
+  if (kn == 0)
+    return -1;
+  f = fopen(path, "wb");
+  if (f == NULL)
+    return -1;
+  fprintf(f,
+    "/* update_trust.inc: the update trust compiled into shelldrive-host (see update_ipc.c). Generated by `sd-release\n"
+    " * keyring` from installer/keys/roots.txt and installer/keys/keyset.txt (04 §9.3). Do not edit. k_keyset holds the\n"
+    " * exact bytes of keyset.txt, its sig lines included (sd_upd_trust in sd_update.h). */\n");
+  fprintf(f, "static const sd_upd_root k_roots[] = {\n");
+  for (i = 0; i < nroots; i++) {
+    fprintf(f, "  { { ");
+    rk_put_bytes(f, roots[i].id, 8);
+    fprintf(f, " }, { ");
+    rk_put_bytes(f, roots[i].pub, 32);
+    fprintf(f, " } },\n");
+  }
+  fprintf(f, "};\n");
+  fprintf(f, "static const uint8_t k_keyset[] = {\n");
+  for (k = 0; k < kn; k += 16) {
+    size_t b, e = k + 16 < kn ? k + 16 : kn;
+    fprintf(f, "  ");
+    for (b = k; b < e; b++)
+      fprintf(f, "%s0x%02x", b != k ? ", " : "", keyset[b]);
+    fprintf(f, ",\n");
+  }
+  fprintf(f, "};\n");
+  fprintf(f,
+    "static const sd_upd_trust k_trust = { k_roots, (uint32_t)(sizeof(k_roots) / sizeof(k_roots[0])), k_keyset,\n"
+    "                                      sizeof(k_keyset) };\n");
+  return rk_close(f);
+}
+
+/* sd-release keyring --roots ROOTS --keyset KEYSET --out-setup INC --out-trust INC */
+static int cmd_keyring(int argc, char **argv)
+{
+  const char *roots_p = opt(argc, argv, "--roots"), *keyset_p = opt(argc, argv, "--keyset");
+  const char *out_setup = opt(argc, argv, "--out-setup"), *out_trust = opt(argc, argv, "--out-trust");
+  sd_upd_root roots[SD_UPD_MAX_ROOTS];
+  uint32_t nroots = 0;
+  unsigned char *keyset;
+  size_t kn = 0;
+  sd_upd_keyset ks;
+  sd_upd_res r;
+  if (roots_p == NULL || keyset_p == NULL || out_setup == NULL || out_trust == NULL)
+    return fail(RC_USAGE, "usage: sd-release keyring --roots ROOTS --keyset KEYSET --out-setup INC --out-trust INC");
+  if (rk_parse_roots(roots_p, roots, &nroots) != 0)
+    return RC_IO;
+  keyset = read_file(keyset_p, SD_UPD_KEYSET_MAX, &kn);
+  if (keyset == NULL)
+    return fail(RC_IO, "cannot read the keyset (64 KB max)");
+  r = sd_upd_keyset_verify(keyset, kn, roots, nroots, 0, &ks);
+  if (r != SD_UPD_OK) {
+    free(keyset);
+    if (r == SD_UPD_E_KEYSET_SIGNATURE || r == SD_UPD_E_SIGNATURE)
+      return fail(RC_VERIFY, "the keyset does not verify against the roots of roots.txt");
+    fprintf(stderr, "sd-release: the keyset does not parse (%s)\n", sd_upd_res_name(r));
+    return RC_IO;
+  }
+  if (rk_write_setup_inc(out_setup, &ks) != 0 || rk_write_trust_inc(out_trust, roots, nroots, keyset, kn) != 0) {
+    free(keyset);
+    return fail(RC_IO, "cannot write the generated include files");
+  }
+  free(keyset);
+  printf("keyring roots %u keys %u\n", nroots, ks.nkeys);
+  return RC_OK;
+}
+
 /* SESSION.txt: what an offline signing session compares before it signs (04 §12.3 steps 5 and 7, D42). It lists
    the SHA-256 of every file; with exactly one body (not sums), it also gives the digest of the signed message,
    domain || body, which the signing machine prints again after signing. */
@@ -1218,7 +1436,7 @@ static int cmd_session(int argc, char **argv)
 
 static void usage(void)
 {
-  fprintf(stderr, "usage: sd-release hash|sums|table|check-table|manifest|sign|verify|pubkey|session|gates ... "
+  fprintf(stderr, "usage: sd-release hash|sums|table|check-table|manifest|sign|verify|pubkey|keyring|session|gates ... "
                   "(see the header of tools/sd-release/sd-release.c)\n");
 }
 
@@ -1244,6 +1462,8 @@ int main(int argc, char **argv)
     return cmd_verify(argc, argv);
   if (strcmp(argv[1], "pubkey") == 0)
     return cmd_pubkey(argc, argv);
+  if (strcmp(argv[1], "keyring") == 0)
+    return cmd_keyring(argc, argv);
   if (strcmp(argv[1], "session") == 0)
     return cmd_session(argc, argv);
   if (strcmp(argv[1], "gates") == 0)

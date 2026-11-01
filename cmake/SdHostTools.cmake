@@ -1,6 +1,7 @@
 # Build-time tools for cross-compiled trees (ARM64 and ARM32, 04 §1.1, §2.5).
 #
-# The tools that run during the build (sdl10n, sd-importcheck, sd-admxgen, sd-payload) must run on the build
+# The tools that run during the build (sdl10n, sd-importcheck, sd-admxgen, sd-payload, and sd-release for the keyring
+# step of 04 §9.3, cmake/SdKeyring.cmake) must run on the build
 # host. An ARM64 or ARM32 tree cannot run them: its executables are ARM and Windows 11 on x64 does not run ARM
 # binaries. So an ARM64 or ARM32 configure builds them in a nested x64 configure of this same source tree
 # (SD_HOST_TOOLS_ONLY=ON, see the root CMakeLists.txt) through the ExternalProject target sd_host_tools, and the
@@ -14,7 +15,7 @@
 # packaging/msi runs, and sd-test-msi, which the msi.* CTests run on the package (tests/msi). So an ARM tree builds its
 # MSI and checks it on this host, the way an x86 or x64 tree does (04 §8, D31).
 
-set(SD_HOST_TOOLS_NAMES sdl10n sd-importcheck sd-admxgen sd-payload)
+set(SD_HOST_TOOLS_NAMES sdl10n sd-importcheck sd-admxgen sd-payload sd-release)
 set(SD_HOST_TOOLS_MSI_NAMES sd-msigen sd-msiembed sd-test-msi)
 
 function(sd_host_tools_setup)

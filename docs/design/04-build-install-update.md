@@ -1375,7 +1375,12 @@ manifests and payload tables only and cannot change who is trusted.
 - Key ID = first 8 bytes of SHA-256(public key). Key labels (key file names, keyset comments, CI secret
   descriptions) are reverse-DNS (D45): `com.librestatic.shelldrive.root-a`, `.root-b`, `.release-stable`,
   `.release-beta`. The two **root public keys** and the keyset current at build
-  time (`installer/keys/`) are compiled into every binary and stub.
+  time (`installer/keys/`) are compiled into every binary and stub: at build time `sd-release keyring
+  --roots installer/keys/roots.txt --keyset installer/keys/keyset.txt` verifies the keyset against the roots of
+  `roots.txt` (the two root lines in the keyset's `root <key-id> <pubkey-base64>` encoding; `#` comments and blank
+  lines allowed) and writes the two include files deterministically into the build tree (the stub's
+  `setup_keyring.inc`, the host's `update_trust.inc`). A build without `installer/keys/` compiles the
+  placeholders in the source tree, so no payload verifies and every update verification fails closed.
 - **Keyset format** (`keyset.txt`, same line syntax and size limit as the manifest):
 
   ```
