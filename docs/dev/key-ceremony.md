@@ -80,7 +80,8 @@ never survive, and the script refuses to run over existing seeds to enforce that
 
 - Store `release-beta.seed` as the secret of the protected GitHub environment `beta-signing` (required
   reviewer: the maintainer). This is the seed's single transfer off the secret media; delete any working
-  copy after the import and keep only the media copies.
+  copy after the import and keep only the media copies. How the release workflow and
+  `tools/release/package-beta.ps1` use that seed for a beta pre-release: `docs/dev/release-beta.md`.
 - For beta pre-releases (D48) the release workflow performs the equivalent of the two offline signing
   sessions (§12.3 steps 5 and 7, D42) with that key behind the environment, and the maintainer approves the
   run: payload tables first (`sd-release sign --kind payload`), then `SHA256SUMS` + `SHA256SUMS.sig` and
