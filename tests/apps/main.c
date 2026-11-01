@@ -9,6 +9,7 @@ SD_TEST_DECL(cli_parse_profile_hostkey_status);
 SD_TEST_DECL(cli_parse_hostkey_add_machine);
 SD_TEST_DECL(cli_parse_secret_proxy);
 SD_TEST_DECL(smoke_hostkey_add_machine);
+SD_TEST_DECL(smoke_service_list_denied_vs_unavailable);
 SD_TEST_DECL(smoke_hostkey_add_offers);
 SD_TEST_DECL(smoke_version_help_usage);
 SD_TEST_DECL(smoke_mount_prompts_and_errors);
@@ -64,6 +65,7 @@ SD_TEST_DECL(hooks_webdav_tune_records_absence_and_repeat_apply_keeps_originals)
 SD_TEST_DECL(hooks_webdav_tune_revert_without_state_is_a_noop);
 SD_TEST_DECL(hooks_webdav_tune_refuses_a_damaged_state);
 SD_TEST_DECL(hooks_webdav_tune_refuses_a_value_of_another_type);
+SD_TEST_DECL(smoke_service_scm_denials);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -75,6 +77,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_parse_hostkey_add_machine),
   SD_TEST_ENTRY(cli_parse_secret_proxy),
   SD_TEST_ENTRY(smoke_hostkey_add_machine),
+  SD_TEST_ENTRY(smoke_service_list_denied_vs_unavailable),
   SD_TEST_ENTRY(smoke_version_help_usage),
   SD_TEST_ENTRY(smoke_mount_prompts_and_errors),
   SD_TEST_ENTRY(smoke_mount_m2_flags_and_prompts),
@@ -130,6 +133,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(hooks_webdav_tune_revert_without_state_is_a_noop),
   SD_TEST_ENTRY(hooks_webdav_tune_refuses_a_damaged_state),
   SD_TEST_ENTRY(hooks_webdav_tune_refuses_a_value_of_another_type),
+  SD_TEST_ENTRY(smoke_service_scm_denials),
 };
 
 int main(int argc, char **argv)

@@ -83,8 +83,10 @@ sd_add_app(shelldrive-host
           ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_scm.h
           ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_repair.h
           ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_status.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_gw.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_gw.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/svc_gw_attach.c ${CMAKE_CURRENT_SOURCE_DIR}/svc_gw_attach.h
           "${SD_SVC_EVENTS_DIR}/svc_events.rc"
   DEPS sd_mount ${_backend_lib} sd_ipc sd_state sd_secret sd_ssh sd_config sd_update sd_policy sd_platform sd_base
-       sd_l10n sd_l10n_catalog_svc ole32 shell32 user32 advapi32)
+       sd_l10n sd_l10n_catalog_svc ole32 shell32 user32 advapi32 mpr)
 target_include_directories(shelldrive-host PRIVATE "${SD_SVC_EVENTS_DIR}")
 add_dependencies(shelldrive-host sd_svc_events)

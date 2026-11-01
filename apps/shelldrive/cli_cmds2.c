@@ -640,9 +640,10 @@ static int hk_announced(const cli_args *a, int machine)
   sd_json *res = NULL;
   int rc = 0;
   if (machine) {
-    if (!connect_service(&c)) {
-      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-      return 8;
+    {
+      sd_err ce = connect_service(&c);
+      if (ce != SD_OK)
+        return service_connect_fail(a, ce);
     }
   } else if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
     /* no agent: nobody holds an announcement */
@@ -907,9 +908,10 @@ static int hk_accept(const cli_args *a, int machine)
   int rc;
   sd_err e;
   if (machine) {
-    if (!connect_service(&c)) {
-      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-      return 8;
+    {
+      sd_err ce = connect_service(&c);
+      if (ce != SD_OK)
+        return service_connect_fail(a, ce);
     }
   } else if (sd_ipc_connect(SD_IPC_AGENT, quiet_hello(&hello), 0, 5000, &c) != SD_OK) {
     return fail_code(a, "agent_unavailable", "cannot connect to the agent", NULL);
@@ -997,9 +999,10 @@ static int hk_accept_offer(const cli_args *a, const char *id, int machine)
   sd_err e;
   int rc;
   if (machine) {
-    if (!connect_service(&c)) {
-      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-      return 8;
+    {
+      sd_err ce = connect_service(&c);
+      if (ce != SD_OK)
+        return service_connect_fail(a, ce);
     }
   } else {
     rc = connect_agent(a, 1, &c, NULL);
@@ -1043,7 +1046,7 @@ static void hk_reject_offer(const cli_args *a, const char *id, int machine)
   sd_err e;
   int rc;
   if (machine) {
-    if (!connect_service(&c))
+    if (connect_service(&c) != SD_OK)
       return;
   } else {
     rc = connect_agent(a, 1, &c, NULL);
@@ -1101,11 +1104,11 @@ static int hk_add_user(const cli_args *a, int machine)
   memset(&ec, 0, sizeof(ec));
   ec.host = host;                                         /* UTF-8, for {host} */
   if (machine) {
-    if (!connect_service(&c)) {
+    e = connect_service(&c);
+    if (e != SD_OK) {
       sd_free(type8);
       sd_free(expect8);
-      say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
-      return 8;
+      return service_connect_fail(a, e);
     }
   } else {
     rc = connect_agent(a, 1, &c, &ec);

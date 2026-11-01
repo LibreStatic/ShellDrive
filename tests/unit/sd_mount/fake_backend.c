@@ -1108,6 +1108,20 @@ static uint16_t f_webdav_port(const sd_webdav_mount *m)
   return 49321;
 }
 
+/* 02 §7.7 attach: a well-formed remote name so that the service's reply can be checked without a server. */
+static sd_err f_webdav_remote(const sd_webdav_mount *m, BOOL xp_form, wchar_t *out, size_t cap)
+{
+  SD_UNUSED(m);
+  if (out == NULL || cap == 0)
+    return SD_E_INVALID_PARAM;
+  if (xp_form)
+    wcscpy_s(out, cap, L"http://localhost:49321/s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  else
+
+    wcscpy_s(out, cap, L"\\\\localhost@49321\\DavWWWRoot\\s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  return SD_OK;
+}
+
 void fake_backend_set_wb_dirty(UINT64 bytes) { InterlockedExchange(&g_wb_dirty, (LONG)bytes); }
 uint32_t fake_backend_refresh_calls(void) { return (uint32_t)g_refresh_calls; }
 uint32_t fake_backend_cache_clears(int *disk_too) { if (disk_too) *disk_too = (int)g_clear_disk; return (uint32_t)g_cache_clears; }
@@ -1123,7 +1137,7 @@ static sd_err f_session_create_wrap(const sd_ssh_config *ssh, const sd_ssh_callb
   return e;
 }
 
-static const sd_mount_backend k_fake = {
+static sd_mount_backend k_fake = {
   "fake",
   f_global_init,
   f_kh_open,
@@ -1160,11 +1174,14 @@ static const sd_mount_backend k_fake = {
   f_vfs_cache_clear,
   f_wb_bytes,
   f_webdav_port,
+  /* hk_conn_create .. hk_conn_destroy and webdav_remote: zero here, set by the hostkey table and by the
+     initializer below (positional C initialization cannot skip, so the tail is filled after k_fake). */
 };
 
 const sd_mount_backend *fake_backend(void)
 {
   ensure();
+  k_fake.webdav_remote = f_webdav_remote;   /* the tail of the table, after the positional initializer */
   return &k_fake;
 }
 
@@ -1394,6 +1411,7 @@ static void fk_destroy(sd_ssh_conn *cc)
 const sd_mount_backend *fake_backend_hostkeys(void)
 {
   ensure();
+  k_fake.webdav_remote = f_webdav_remote;   /* the table is copied below; the tail is set here */
   if (!k_fake_hk_ready) {
     k_fake_hk_table = k_fake;
     k_fake_hk_table.prompt_answer_hostkey = fk_prompt_answer_hostkey;

@@ -2,6 +2,7 @@
  * checks of 03 §2.2 (TM-R25/R26 basics). Every test uses its own instance suffix so it never
  * touches a running agent. */
 #include <windows.h>
+#include <aclapi.h>
 #include <sddl.h>
 #include <string.h>
 
@@ -607,6 +608,124 @@ SD_TEST(ipc_client_rejects_squatted_pipe)
   CancelIo(squat);
   if (ov.hEvent) CloseHandle(ov.hEvent);
   CloseHandle(squat);
+}
+
+/* A pipe that exists but whose DACL refuses us (2.2, here a squatter granting only SYSTEM): the connect fails with
+   access_denied, not not_found, so the CLI reports it as access denied instead of "not running or not installed"
+   (03 §6.2). */
+SD_TEST(ipc_connect_denied_is_access_denied)
+{
+  wchar_t sid[192], name[512];
+  DWORD session = 0;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  SECURITY_ATTRIBUTES sa;
+  HANDLE squat;
+  sd_ipc_conn *c = NULL;
+  unique_suffix();
+  SD_REQUIRE(sd_ipc_current_identity(sid, SD_COUNTOF(sid), &session) == SD_OK);
+  SD_REQUIRE(sd_ipc_pipe_name(SD_IPC_AGENT, sid, session, name, SD_COUNTOF(name)) == SD_OK);
+  SD_REQUIRE(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)", SDDL_REVISION_1, &sd, NULL));
+  sa.nLength = sizeof(sa);
+  sa.lpSecurityDescriptor = sd;
+  sa.bInheritHandle = FALSE;
+  squat = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                           PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE, 4, 4096, 4096, 0, &sa);
+  LocalFree(sd);
+  SD_REQUIRE(squat != INVALID_HANDLE_VALUE);
+  SD_CHECK(connect_client(0, 2000, &c) == SD_E_ACCESS_DENIED);
+  SD_CHECK(c == NULL);
+  CloseHandle(squat);
+}
+
+/* The service pipe's security descriptor matches the design (03 §2.2, carried in 05): SYSTEM and Administrators
+   full control, interactive users read/write, network logons denied, protected DACL. The logon-type SIDs are the
+   boundary: a member of service_access in a batch (S-1-5-3) or service logon is refused at the pipe on purpose,
+   and the service then authorizes every method per profile. The DACL is checked structurally (ACE types, SIDs and
+   access masks in order); the SDDL text round trip does not keep the generic masks. */
+SD_TEST(service_pipe_sd_matches_design)
+{
+  /* Same layout as ACCESS_ALLOWED/DENIED_ACE; named locally because the SDK headers spell the
+     mask member differently (Mask on MinGW, AccessMask on MSVC). */
+  typedef struct test_ace {
+    ACE_HEADER Header;
+    DWORD Mask;
+    DWORD SidStart;
+  } test_ace;
+  srv_ctx ctx;
+  sd_ipc_server *s = NULL;
+  wchar_t sid[192], name[512], *own = NULL;
+  DWORD session = 0, got = 0, i;
+  BYTE tbuf[64];
+  HANDLE tok = NULL, h;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  PACL dacl = NULL;
+  BOOL present = FALSE, defaulted = FALSE;
+  WORD ctl = 0;
+  DWORD rev = 0;
+  ACL_SIZE_INFORMATION sz;
+  PSID nu = NULL, sy = NULL, ba = NULL, iu = NULL;
+  SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+  unique_suffix();
+  /* The owner is replaced with ours (test hook, tests/unit/sd_svc does the same): a client may then verify the
+     pipe, and this process can read the DACL back as its owner. The DACL is the design one either way. */
+  SD_REQUIRE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok));
+  SD_REQUIRE(GetTokenInformation(tok, TokenUser, tbuf, sizeof(tbuf), &got));
+  CloseHandle(tok);
+  SD_REQUIRE(ConvertSidToStringSidW(((TOKEN_USER *)tbuf)->User.Sid, &own) != 0 && own != NULL);
+  sd_ipc_test_set_service_owner(own);
+  LocalFree(own);
+  SD_REQUIRE(sd_ipc_current_identity(sid, SD_COUNTOF(sid), &session) == SD_OK);
+  SD_REQUIRE(sd_ipc_pipe_name(SD_IPC_SERVICE, sid, session, name, SD_COUNTOF(name)) == SD_OK);
+  memset(&ctx, 0, sizeof(ctx));
+  SD_REQUIRE(sd_ipc_server_start(SD_IPC_SERVICE, handler, &ctx, &s) == SD_OK);
+  h = CreateFileW(name, READ_CONTROL, 0, NULL, OPEN_EXISTING,
+                  SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+  SD_REQUIRE(h != INVALID_HANDLE_VALUE);
+  SD_REQUIRE(GetSecurityInfo(h, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd) ==
+             ERROR_SUCCESS);
+  SD_REQUIRE(GetSecurityDescriptorControl(sd, &ctl, &rev));
+  SD_CHECK((ctl & SE_DACL_PROTECTED) != 0);        /* protected DACL, no inherited ACEs */
+  SD_REQUIRE(GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) && present && dacl != NULL);
+  SD_REQUIRE(AllocateAndInitializeSid(&nt, 1, SECURITY_NETWORK_RID, 0, 0, 0, 0, 0, 0, 0, &nu));
+  SD_REQUIRE(AllocateAndInitializeSid(&nt, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &sy));
+  SD_REQUIRE(AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+                                      0, 0, 0, 0, 0, 0, &ba));
+  SD_REQUIRE(AllocateAndInitializeSid(&nt, 1, SECURITY_INTERACTIVE_RID, 0, 0, 0, 0, 0, 0, 0, &iu));
+  SD_REQUIRE(GetAclInformation(dacl, &sz, sizeof(sz), AclSizeInformation));
+  SD_CHECK_EQ_INT((int)sz.AceCount, 4);
+  for (i = 0; i < sz.AceCount && i < 4; i++) {
+    void *ace = NULL;
+    test_ace *a;
+    BYTE want_type;
+    PSID want_sid;
+    DWORD want_mask;
+    const char *what;
+    wchar_t *got_sid = NULL;
+    SD_REQUIRE(GetAce(dacl, i, &ace));
+    a = (test_ace *)ace;
+    /* design order: deny NU first, then the allows (03 §2.2 SDDL, verbatim); the SDDL parser maps the generic
+       masks through the file/pipe generic mapping, so GA is FILE_ALL_ACCESS and GRGW is read|write generic */
+    if (i == 0)      { want_type = ACCESS_DENIED_ACE_TYPE;  want_sid = nu; want_mask = FILE_ALL_ACCESS; what = "deny NU GA"; }
+    else if (i == 1) { want_type = ACCESS_ALLOWED_ACE_TYPE; want_sid = sy; want_mask = FILE_ALL_ACCESS; what = "allow SY GA"; }
+    else if (i == 2) { want_type = ACCESS_ALLOWED_ACE_TYPE; want_sid = ba; want_mask = FILE_ALL_ACCESS; what = "allow BA GA"; }
+    else             { want_type = ACCESS_ALLOWED_ACE_TYPE; want_sid = iu;
+                       want_mask = FILE_GENERIC_READ | FILE_GENERIC_WRITE; what = "allow IU GRGW"; }
+    (void)ConvertSidToStringSidW((PSID)&a->SidStart, &got_sid);
+    if (!(a->Header.AceType == want_type && got_sid != NULL && EqualSid((PSID)&a->SidStart, want_sid) &&
+          a->Mask == want_mask))
+      sd_test_fail(sd_t_, __FILE__, __LINE__, "ace %lu, want %s (mask %08lx): got type=%u mask=%08lx sid=%ls",
+                   (unsigned long)i, what, (unsigned long)want_mask, (unsigned)a->Header.AceType,
+                   (unsigned long)a->Mask, got_sid ? got_sid : L"?");
+    LocalFree(got_sid);
+  }
+  FreeSid(nu);
+  FreeSid(sy);
+  FreeSid(ba);
+  FreeSid(iu);
+  CloseHandle(h);
+  LocalFree(sd);
+  sd_ipc_test_set_service_owner(NULL);
+  sd_ipc_server_stop(s);
 }
 
 SD_TEST(ipc_connect_without_server)

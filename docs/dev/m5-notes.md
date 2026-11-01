@@ -922,7 +922,10 @@ for its 30 raw instances and its administrator, since an unelevated test process
   a real client race.
 - The hello deadline (5 s) is this build's choice; 03 §2.2 gives none. A slow client on a loaded machine is the case to
   measure in the lab (TST-23 in 05 §7).
-- **Heap corruption on a second mount of the same profile (unit test, not isolated).** In `unit.svc`, two mounts of the
+- **Heap corruption on a second mount of the same profile — CLOSED 2026-10-30, see "Part 14" below: it was a double
+  free in the test harness (`wait_state` kept a status reply that the next call freed again), fixed by `json_drop` in
+  `e2c3df5`, with the regression test `svc_one_profile_mounted_twice_keeps_both_announcements`. The original record:**
+  In `unit.svc`, two mounts of the
   `rotate` profile one after the other (each raising an UpdateHostKeys announcement, each then unmounted) end the test
   process with 0xC0000374 after the second announcement callback, before the second `wait_state`. It happens with the
   policy ask (1) in both mounts, with no reject, and with the machine-store write stubbed out, so it is not the
@@ -1178,3 +1181,186 @@ The mapping mirrors `lang_from_langid` in `src/sd_l10n/l10n.c`, which selects th
 `.bin` files are named MSG<LCID> by mc.exe and are not listed as build outputs. `unit.svc` checks that the table has
 every LANGID of the required list (including es-ES 0x0C0A, es-MX 0x080A, pt-PT 0x0816, fr-CA 0x0C0C, de-AT 0x0C07,
 it-CH 0x0810, en-GB 0x0809) and that each id resolves in each LANGID to the text of its block.
+
+## Part 14: threat-model review, the double-mount diagnosis, the service attach stack (2026-10-30)
+
+This round closes three of the four items the M5 brief ranked before the live lab run: the threat-model review that
+`00-integration-review.md` §4/§6 asks for, the undiagnosed heap corruption of Part 10, and the service half of the
+WebDAV attach path (02 §7.7). The live global Dokany mount still needs `sd-win10-ltsc21-x64`, which `m3-lab` holds.
+
+### 1. Threat-model review (05 §12)
+
+`docs/design/05-threat-model.md` gains section 12: per surface — named pipes, loopback WebDAV, the Dokany requestor
+check, update signatures, DPAPI, the Event Log, and the service's own inputs — the property the design claims, the
+code that carries it with `file:line`, and a verdict: carried, partial or absent. Nothing in it is normative; the
+gaps become eight "no code" findings and six proposed `TM-R40`-`TM-R45` that the owning documents must accept.
+
+The findings that matter most:
+
+- **The updater has no trust roots in this build.** `apps/shelldrive-host/update_ipc.c:30-31` passes
+  `{ NULL, 0, NULL, 0 }`. The verifier in `sd_update` is complete (ed25519 over the exact manifest bytes, keyset,
+  channel, `expires`, anti-rollback, host allow-list, size and digest), but with an empty root set no manifest can
+  verify, so the product has no update signature property at all. Proposed `TM-R40`: compile the roots in and fail
+  the build when a release configuration has none.
+- **Crash dumps do not exist.** No `MiniDumpWriteDump` and no `sd_dump_mark_sensitive` anywhere; `agent.c:3643` says
+  "come later". 03 §10.4, TM-R30 and TST-28 have nothing behind them.
+- **Event 3100 has no code.** 1200, 2300, 3101 and 3102 are written and localized; 3100 appears in no source file,
+  header or catalog entry.
+- **The WebDAV server cannot authorize a group.** `wd_server.c:466` (before this change) compared the authenticated SID with a single
+  owner SID and `:541` passed no token groups, so a `service_access` entry that names a group could never match.
+  That was the blocking gap for the attach path and is fixed here (section 3).
+- Fast user switching/RDP sessions are logged only (`service.c:3485-3486`), the admin session list of 2.6 does
+  not exist, `--elevated-view` has no implementation, `settings.ini` is never read by the service, and the machine
+  `known_hosts` keeps its check-to-use window. These were already "Left" items; the review now records them as
+  claims with no code behind them rather than as work in progress.
+
+### 2. The double mount of Part 10 was a test-harness double free
+
+Root cause: `wait_state(c, id, want, timeout, &st)` kept the status reply in a static and freed the previous one;
+tests that called it twice without dropping `st` in between (the announcement tests did) freed the same `sd_json`
+twice, and the debug CRT ended the process with 0xC0000374 *before* the second `wait_state` — exactly the "after the
+second announcement callback" signature Part 10 recorded. It was in the test process only; `service.c` and
+`sd_mount` were not involved, which is why the machine-store stub and the reject path made no difference.
+
+`e2c3df5` added `json_drop(&st)` (free and clear the pointer) and the regression test
+`svc_one_profile_mounted_twice_keeps_both_announcements`, which mounts the `rotate` profile twice, checks that both
+mount ids and both announcement ids differ, and unmounts both. Verified 2026-10-30: that test passes on its own and
+the whole `sd-test-svc.exe` suite passes in a Debug build (97 tests, 0 failed) — see section 4.
+
+### 3. The service attach stack (02 §7.7, 03 §1.3, D11)
+
+Implemented in the shape the spike chose: the service hosts the export, each user's agent maps it in its own logon
+session. `system` and `link` stay unbuilt and the compiled table still has no GO cell (`svc_gw.c`), so `auto`
+resolves to attach.
+
+**What was built**
+
+| Path | What |
+|---|---|
+| `src/sd_webdav/sd_webdav.h`, `wd_server.c`, `wd_server.h`, `wd_auth.c`, `wd_client.c` | `service_mode` on the server: the connection-level owner check yields to the per-request `sd_vfs` check, and the authenticated connection carries the token's enabled, non-deny-only groups (`wd_auth_step` grows `groups`/`n_groups`, `wd_groups_free`); `no_map` on the mount (host the export, map nothing); `sd_webdav_mount_remote` for the export's UNC |
+| `src/sd_mount/sd_mount.h`, `mount.c`, `mount_real.c` | `webdav_remote` backend entry; `sd_mount_attach.webdav_remote` / `.webdav_remote_xp`; a global WebDAV mount is hosted with `no_map` and reports its export |
+| `apps/shelldrive-host/svc_access.c` | `backend = webdav` is a valid service profile again (the mechanism is chosen at mount time) |
+| `apps/shelldrive-host/service.c` | `job_start` uses the WebDAV backend for a profile that asks for it; `svc_on_state` records the export; `mount.attach_info` for a member of `service_access`; feature name |
+| `apps/shelldrive-host/agent.c` | `mount.attach` (asks the service, maps with `svc_gw_attach_real_ops`) and `attach_global_webdav()` at logon (lists the service's mounts, attaches each `unc`) |
+| `apps/shelldrive-host/CMakeLists.txt`, `tests/apps/CMakeLists.txt` | `svc_gw_attach.c` and `mpr` in the host and in the fake-host test |
+| `tests/unit/sd_svc/test_service.c`, `test_access.c`, `main.c`; `tests/unit/sd_mount/fake_backend.c` | two fixture profiles, two tests, the fake backend's `webdav_remote`, the profile count 18 → 20 |
+
+**Flow.** At logon the agent lists the service's mounts (the reply already hides the ones the caller is not in
+`service_access` for), asks `mount.attach_info` for each, and maps the `unc`/`xp_url` it gets back. The service
+decides from `svc_decide(use)`, so a non-member gets `access_denied` and no token leaves the service. The mapping is
+not persistent; it is cancelled with every other `\\localhost@port` mapping of the session at agent start and at
+stop (`cleanup_webdav_mappings`). The server binds loopback only, and every request is checked per export by
+`sd_vfs` against `service_access`/`service_access_write` with the caller's SID and groups (02 §6.7 rules, G7).
+
+**Three rules added after review** (before the commit, on a second read of the first draft):
+
+- *The mount-start cleanup would have cancelled the attach.* `sd_webdav_mount_start` removes every
+  `\\localhost@port` mapping of the session before it binds the agent's own server (TM-R17 d). A user who mounted a
+  per-user WebDAV profile after logon would have lost the global drive. `sd_webdav_preserve_port` (backend entry
+  `webdav_preserve_port`) now registers the service's port after a successful attach, and only that internal
+  cleanup skips it; the agent's explicit start and stop cleanups still remove the mapping. An agent crash leaves
+  the attach mapping in place, which is not the T-32 squat case: the port belongs to the running service, not to
+  the dead agent. The next agent start removes it and attaches again.
+- *Anonymous, Guest, LOCAL SERVICE, NETWORK SERVICE* (02 §7.7 "rejected always ... unless listed"). In service mode
+  `wd_server.c` refuses with 403 an anonymous token, a Guest account (RID 501) and any member of `BUILTIN\Guests`,
+  before `sd_vfs` sees them. LOCAL SERVICE and NETWORK SERVICE keep their user SID but lose their groups, so a group
+  entry (Everyone, Users) never admits them; only an explicit SID entry in `service_access` does.
+- *The mechanism decision is wired.* `job_start` asks `svc_gw_decide` (mode `auto`: the service does not read
+  `settings.ini`) before a WebDAV global mount. Attach is used; a refusal (OS family unknown, WebClient missing or
+  disabled) fails the mount with `usage` and the reason; a `system` or `link` verdict — possible only after a lab run
+  flips a table cell — is refused as "not in this build" instead of being served as attach. `svc_gw.c` is now part
+  of the shipping host.
+
+**G1-G7, what is covered without a second logon**
+
+| # | Criterion | State |
+|---|---|---|
+| G1 | Visibility in every session | not testable here (needs a second logon); attach is per session by construction |
+| G2 | The server sees each user's own SID, no shared connection | unit: `mount.attach_info` returns the export only to a member, and the server keeps one SSPI context per TCP connection (`wd_auth`); **the two-user test is a lab item** |
+| G3 | WebClient/service restart, sleep/resume | no: lab |
+| G4 | No security-setting changes | attach changes none; WebClient start is the existing path |
+| G5 | Function (1 GiB copy, Office locks) | no: lab. The export is the same `sd_webdav` the per-user path uses |
+| G6 | Before logon | not claimed for attach (D11: only Dokany is pre-logon) |
+| G7 | Negative access | unit: a caller outside `service_access` gets `access_denied` from the service and `403` from the server; groups now reach `sd_vfs`. Membership-change timing (60 s) and the session-0 case: lab |
+
+**Tests added** (`unit.svc`, all in-process, no second session):
+
+- `svc_webdav_mount_reports_its_attach_point`: a `backend = webdav` global profile mounts, `mount.attach_info`
+  returns `backend = webdav`, `attach = true`, the `\\localhost@49321\DavWWWRoot\s-<26>` UNC, the XP `http://` form
+  and the port; a Dokany global mount answers `attach = false` with no UNC.
+- `svc_attach_info_refuses_a_caller_outside_service_access`: a profile whose `service_access` names a SID this
+  process does not carry mounts, and `mount.attach_info` answers `access_denied` with no UNC.
+
+And in `unit.webdav`, against a real loopback server with real SSPI (the test user's own token):
+
+- `webdav_service_server_admits_a_member`: a global vfs whose `service_access` is the test user, a server owned by
+  SYSTEM in service mode: the authenticated PROPFIND answers 207 (the per-user server answers 403 for the same
+  owner, `webdav_server_rejects_other_sid`).
+- `webdav_service_server_refuses_a_non_member`: the same server with `service_access` naming LOCAL SERVICE:
+  authentication succeeds and `sd_vfs` refuses, so no listing reaches a non-member.
+
+**Not done, and why**
+
+- The service's own `AcceptSecurityContext` as LocalSystem, and the token groups of a real user token, are not
+  exercised: the tests use the fake backend and no real SSPI session. This is the lab half of G2/G7.
+- `system`/`link` mechanisms, `--elevated-view`, and the per-request fallback of 02 §7.7 (switch to
+  `Connection: close` on an OS where the redirector shares connections) are untouched.
+- The XP form (`http://localhost:PORT/s-<token>`, provider "Web Client Network") is compiled but unrun; `attach` on
+  XP is a lab item.
+- `sd_webdav` and `sd_mount` are outside the paths the brief listed as this lane's; the two changes there are the
+  minimum the 02 §7.7 design needs (the server authorization gap of 05 §12.2 and the hosted-not-mapped export).
+  `apps/shelldrive-ui`, `src/sd_update`, `apps/shelldrive-setup` and `packaging/` were not touched.
+
+### 4. Verification
+
+- `x64-modern` Debug: full build, 0 errors, 0 warnings; `unit.webdav` 28/28 (26 existing, 2 new) after the service-mode change (the
+  first run caught a double free of the user SID in the 403 branch, fixed).
+- `sd-test-svc.exe` (Debug): 97 tests, 0 failed, including both new tests and the double-mount regression test.
+- `logpriv.source_check`: no problems (one `%lu` in a new agent log line was changed to `%u`).
+- `unit.webdav` adds the two service-server tests above (real SSPI against a real loopback server).
+- Local gate, 2026-10-30, `tools\ci-local.ps1 -Pipeline` (Release and Debug, `-LE "matrix|bench|repro"`): x64-modern,
+  x64-xp, x86-ia32, x86-sse2 and x64-analysis all pass, every test passes; the only skips are the expected
+  `dokany.mount` ones under WOW64 on the two x86 flavours. `repro.x64-modern` (the label the gate excludes and CI
+  runs) passes too.
+- Gate trap: the WSL sshd fixture is shared between checkouts. When it already runs, `start.sh` exits before it
+  writes this checkout's `tests/fixtures/wsl-sshd/state/`, the interop tests skip, and `ci-local.ps1` fails the
+  preset on the skip. Copying `env` and the two client keys from the checkout that started the fixture (the
+  folder is gitignored) fixes it without restarting a fixture other sessions use.
+
+### 5. Left after this round
+
+- The live global Dokany mount on `sd-win10-ltsc21-x64` ran on 2026-10-30, attempt 13, log
+  `D:\sdlab\logs\m5-20261030-233947.log` (the procedure is the appendix of `docs/dev/lab-results.md`): PASS on
+  install/start as SYSTEM (after `58d6b68`), machine profile load and host key, the global mount (Event 1100),
+  G1 batch and B1/B2 console logons (two live sessions), G5 (1 GiB write 74.6 s, read 17.6 s, SHA-256 match),
+  G7 including the drop-member mutation, G3 stop/start and VM save/resume, and uninstall. Per-item results with
+  the quoted log lines are in the 2026-10-30 section of `docs/dev/lab-results.md`. The run left four product
+  gaps; all four are fixed on this branch and the fixes were checked by a second live run (2026-10-31, log
+  `D:\sdlab\logs\m5-20261031-025507.log`):
+  - Fixed (`5780848`): `autostart = boot` was not applied by the service (03 §3.4.1). The service now mounts
+    those profiles after loading them (start, config reload, data-folder repair) through the same queue as a
+    `mount` request. Live: both phase-B reboots log `pre-logon-state OK … list=[Z:  GlobalDokan  mounted]` and
+    `boot-autostart OK mounted by the service at boot, 33 s after boot` (35 s on the second), so the pre-logon
+    (G6) claim now holds for Dokany; a service stop unmounts Z: cleanly and the restart brings it back.
+  - Fixed (`b478b45`): a standard user's `shelldrive service list` exited 8 "not running or not installed"
+    from a batch session. 03 §2.2 grants the service pipe to interactive users only
+    (`O:SYD:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`), so a batch logon is refused by design; the
+    defect was the report. The CLI now says "Access to the ShellDrive service is denied." with exit 9, and
+    exit 8 only when the service is really absent. Live: `service_list_rc=9` from the batch session,
+    `list-after-uninstall rc=8`.
+  - Fixed (`7f4538c`): `service mount|unmount|status <name>` errors now name the profile ("There is no profile
+    named nosuch.").
+  - Fixed (`7f4538c`): `scm_error` tells a caller that is not elevated (exit 9, "Managing the ShellDrive service
+    needs an elevated console") from an elevated console whose SCM call was refused (exit 1, with the Win32
+    code).
+  - Found by the second run and fixed (`9b26bfc`): the first autostart mount after install fails until the
+    machine host key is added, and its final `failed` record then made `service mount` answer already_mounted
+    (exit 10). A new mount of the profile now replaces a final failed record (03 §1.11: failed is terminal);
+    a live mount is still refused. Live: phase A `service-mount` brings Z: up after the key is added.
+  - Note only: Get-Volume (MSFT_Volume) does not list the Dokany Z: ("No MSFT_Volume objects found with
+    property 'DriveLetter' equal to 'Z'."); `dir` and Explorer work.
+  - Not covered by the runs: RDP/FUS second interactive session (G2 proper), Server 2022 + Secure Boot (the
+    Gen2 media problem of lab-results' 2026-10-29 night section).
+- Everything in 05 §12.8 that has no code: release roots, crash dumps, Event 3100, the FUS/RDP session list,
+  `--elevated-view`, `settings.ini` checks, discovered-proxy detection.
+- The per-user identity test (two users, each mapping the other's UNC) and the rest of G1-G7.

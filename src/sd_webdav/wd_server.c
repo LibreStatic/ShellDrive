@@ -413,11 +413,14 @@ static void mark_token_conn(wd_conn *c)
   sd_mutex_unlock(&s->mu);
 }
 
-static void set_authed(wd_conn *c, PSID user)
+static void set_authed(wd_conn *c, PSID user, PSID *groups, UINT n_groups)
 {
   sd_webdav_server *s = c->srv;
   sd_free(c->user);
   c->user = user;
+  wd_groups_free(c->groups, c->n_groups);
+  c->groups = groups;
+  c->n_groups = n_groups;
   if (!c->authed) {
     c->authed = 1;
     sd_mutex_lock(&s->mu);
@@ -429,6 +432,50 @@ static void set_authed(wd_conn *c, PSID user)
   }
 }
 
+/* 1 when sid is in the NT authority (S-1-5-...) with exactly n sub-authorities, the first one rid0 and, for n == 2,
+   the second one rid1. */
+static int sid_is_nt(PSID sid, DWORD n, DWORD rid0, DWORD rid1)
+{
+  static const BYTE nt[6] = { 0, 0, 0, 0, 0, 5 };    /* SECURITY_NT_AUTHORITY */
+  if (sid == NULL || !IsValidSid(sid) || *GetSidSubAuthorityCount(sid) != n)
+    return 0;
+  if (memcmp(GetSidIdentifierAuthority(sid)->Value, nt, sizeof(nt)) != 0 || *GetSidSubAuthority(sid, 0) != rid0)
+    return 0;
+  return n == 1 || *GetSidSubAuthority(sid, 1) == rid1;
+}
+
+/* A Guest account of the machine or a domain: S-1-5-21-<a>-<b>-<c>-501. */
+static int sid_is_guest(PSID sid)
+{
+  static const BYTE nt[6] = { 0, 0, 0, 0, 0, 5 };
+  DWORD n;
+  if (sid == NULL || !IsValidSid(sid) || (n = *GetSidSubAuthorityCount(sid)) < 2)
+    return 0;
+  return memcmp(GetSidIdentifierAuthority(sid)->Value, nt, sizeof(nt)) == 0 &&
+         *GetSidSubAuthority(sid, 0) == SECURITY_NT_NON_UNIQUE && *GetSidSubAuthority(sid, n - 1) == DOMAIN_USER_RID_GUEST;
+}
+
+/* 02 §7.7, service servers. Returns 0 for a caller that never reaches the per-request check: anonymous, a Guest
+   account, a member of BUILTIN\Guests. LOCAL SERVICE and NETWORK SERVICE are admitted "only if listed": their groups
+   are dropped (*groups NULL, *n_groups 0), so a group entry such as Everyone or Users never lets them in and only an
+   explicit SID entry in service_access does. SYSTEM goes on to sd_vfs, which admits it only with allow_system. */
+static int service_caller_ok(PSID user, PSID **groups, UINT *n_groups)
+{
+  UINT i;
+  if (sid_is_nt(user, 1, SECURITY_ANONYMOUS_LOGON_RID, 0) || sid_is_guest(user))
+    return 0;
+  for (i = 0; *groups && i < *n_groups; i++)
+    if (sid_is_nt((*groups)[i], 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_GUESTS) ||
+        sid_is_nt((*groups)[i], 1, SECURITY_ANONYMOUS_LOGON_RID, 0))
+      return 0;
+  if (sid_is_nt(user, 1, SECURITY_LOCAL_SERVICE_RID, 0) || sid_is_nt(user, 1, SECURITY_NETWORK_SERVICE_RID, 0)) {
+    wd_groups_free(*groups, *n_groups);
+    *groups = NULL;
+    *n_groups = 0;
+  }
+  return 1;
+}
+
 /* Returns 1 when the request may proceed. */
 static int authenticate(wd_rq *q)
 {
@@ -437,7 +484,8 @@ static int authenticate(wd_rq *q)
   const wd_hdr *ah = wd_req_header(&q->r, "Authorization", &cnt);
   enum { OUT_CAP = 1024 * 64 / 3 + 64 };
   char *out;
-  PSID user = NULL;
+  PSID user = NULL, *groups = NULL;
+  UINT n_groups = 0;
   int rc, ok = 0;
   if (cnt > 1) {
     respond_simple(q, 400, 1);
@@ -456,23 +504,30 @@ static int authenticate(wd_rq *q)
     respond_simple(q, 500, 1);
     return 0;
   }
-  rc = wd_auth_step(&c->auth, ah->val, ah->vlen, out, OUT_CAP, &user);
+  rc = wd_auth_step(&c->auth, ah->val, ah->vlen, out, OUT_CAP, &user, &groups, &n_groups);
   if (rc == WD_AUTH_CONTINUE) {
     challenge(q, out);
   } else if (rc != WD_AUTH_OK) {
     c->authed = 0;
     q->close_after = 1;
     challenge(q, NULL);
-  } else if (!EqualSid(user, c->srv->owner)) {
+  } else if (!c->srv->service_mode && !EqualSid(user, c->srv->owner)) {
     SD_LOGW(WD_LOG, "rejected a caller whose SID is not the mount owner");
-    sd_free(user);
+    respond_simple(q, 403, 1);        /* user and groups are freed below, where every path frees them */
+  } else if (c->srv->service_mode && !service_caller_ok(user, &groups, &n_groups)) {
+    SD_LOGW(WD_LOG, "rejected an anonymous or guest caller of a service server");
     respond_simple(q, 403, 1);
   } else {
     if (out[0] && strlen(out) < sizeof(c->auth_reply))
       memcpy(c->auth_reply, out, strlen(out) + 1);
-    set_authed(c, user);
+    set_authed(c, user, groups, n_groups);   /* ownership moves to the connection */
+    user = NULL;
+    groups = NULL;
+    n_groups = 0;
     ok = 1;
   }
+  wd_groups_free(groups, n_groups);
+  sd_free(user);
   sd_free(out);
   return ok;
 }
@@ -538,8 +593,10 @@ static void handle(wd_rq *q)
     q->caller.sid = c->user;
   }
   q->caller.can_write = q->ex ? !q->ex->read_only : FALSE;
-  q->caller.groups = NULL;              /* M5: no token groups on the per-user SSPI path (matched by SID) */
-  q->caller.n_groups = 0;
+  /* 02 §7.7: a service server hands the token's enabled groups to sd_vfs, so service_access may name a group.
+     A per-user server keeps matching by SID only: the owner is the only caller it admits. */
+  q->caller.groups = c->srv->service_mode ? c->groups : NULL;
+  q->caller.n_groups = c->srv->service_mode ? (uint32_t)c->n_groups : 0;
   q->vpath = wd_path_to_vfs(&q->path, 1);
   if (q->vpath == NULL) {
     respond_simple(q, 400, 0);
@@ -646,6 +703,7 @@ static unsigned __stdcall conn_main(void *arg)
   conn_unlink(c);
   wd_auth_reset(&c->auth);
   sd_free(c->user);
+  wd_groups_free(c->groups, c->n_groups);
   sd_free(c->ib);
   sd_free(c);
   if (InterlockedDecrement(&s->live) == 0)
@@ -874,6 +932,7 @@ sd_err sd_webdav_server_start(const sd_webdav_server_cfg *cfg, sd_webdav_server 
   s->max_unauth = cfg->max_unauth ? cfg->max_unauth : 8u;
   s->max_unauth_pp = cfg->max_unauth_per_process ? cfg->max_unauth_per_process : 4u;
   s->max_conn = cfg->max_connections ? cfg->max_connections : 64u;
+  s->service_mode = cfg->service_mode ? TRUE : FALSE;
   for (attempt = 0; attempt < 16; attempt++) {
     struct sockaddr_in a;
     int al = sizeof(a);

@@ -85,7 +85,66 @@ static PSID token_user(HANDLE tok)
   return copy;
 }
 
-int wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap, PSID *user)
+void wd_groups_free(PSID *groups, UINT n_groups)
+{
+  UINT i;
+  if (groups == NULL)
+    return;
+  for (i = 0; i < n_groups; i++)
+    sd_free(groups[i]);
+  sd_free(groups);
+}
+
+/* Enabled, non-deny-only groups of the token (02 §7.7: service_access may name a group). A failure to copy one
+   entry drops that entry, never the whole set: the user SID still matches a user entry, and a missing group can
+   only deny. Returns 0 when the group set could not be read at all (out stays empty). */
+static int token_groups(HANDLE tok, PSID **out, UINT *n_out)
+{
+  DWORD len = 0, i, n = 0;
+  BYTE *buf;
+  TOKEN_GROUPS *tg;
+  PSID *arr;
+  *out = NULL;
+  *n_out = 0;
+  if (!GetTokenInformation(tok, TokenGroups, NULL, 0, &len) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    return 0;
+  if (len == 0)
+    return 0;
+  buf = (BYTE *)sd_alloc(len);
+  if (buf == NULL)
+    return 0;
+  if (!GetTokenInformation(tok, TokenGroups, buf, len, &len)) {
+    sd_free(buf);
+    return 0;
+  }
+  tg = (TOKEN_GROUPS *)buf;
+  arr = (PSID *)sd_calloc(tg->GroupCount ? tg->GroupCount : 1, sizeof(PSID));
+  if (arr == NULL) {
+    sd_free(buf);
+    return 0;
+  }
+  for (i = 0; i < tg->GroupCount; i++) {
+    DWORD a = tg->Groups[i].Attributes, sl;
+    PSID s;
+    if (!(a & SE_GROUP_ENABLED) || (a & SE_GROUP_USE_FOR_DENY_ONLY))
+      continue;
+    s = tg->Groups[i].Sid;
+    sl = GetLengthSid(s);
+    arr[n] = sd_alloc(sl);
+    if (arr[n] == NULL || !CopySid(sl, arr[n], s)) {
+      sd_free(arr[n]);
+      continue;
+    }
+    n++;
+  }
+  sd_free(buf);
+  *out = arr;
+  *n_out = n;
+  return 1;
+}
+
+int wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap, PSID *user,
+                 PSID **groups, UINT *n_groups)
 {
   size_t sl = 0, tl = 0;
   const char *scheme;
@@ -98,6 +157,10 @@ int wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap,
   int rc = WD_AUTH_FAIL;
   out[0] = 0;
   *user = NULL;
+  if (groups)
+    *groups = NULL;
+  if (n_groups)
+    *n_groups = 0;
   if (!wd_auth_available())
     return WD_AUTH_FAIL;
   while (sl < n && value[sl] != ' ')
@@ -149,6 +212,8 @@ int wd_auth_step(wd_auth *a, const char *value, size_t n, char *out, size_t cap,
     HANDLE tok = NULL;
     if (g_ft->QuerySecurityContextToken((PCtxtHandle)a->ctx, &tok) == SEC_E_OK && tok) {
       *user = token_user(tok);
+      if (*user && groups && n_groups)
+        (void)token_groups(tok, groups, n_groups);
       CloseHandle(tok);
     }
     rc = *user ? WD_AUTH_OK : WD_AUTH_FAIL;

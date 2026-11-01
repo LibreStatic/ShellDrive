@@ -160,10 +160,9 @@ SD_TEST(validate_profile_refusals)
   p.jump[0] = 0;
   p.proxy[0].kind = SD_PROFILE_PROXY_NONE;
 
-  /* not in this build: global WebDAV (D11) */
+  /* M5 (02 §7.7): a global WebDAV profile loads; the mechanism (attach in this build) is chosen at mount time */
   p.backend = SD_PROFILE_BACKEND_WEBDAV;
-  SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_E_INVALID_PARAM);
-  SD_CHECK_STR(key, "mount.backend");
+  SD_CHECK_EQ_INT(svc_validate_profile(&p, &key, &why), SD_OK);
   p.backend = SD_PROFILE_BACKEND_AUTO;
 
   /* D35: no service_access, no drive */

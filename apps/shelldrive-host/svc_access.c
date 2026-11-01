@@ -205,9 +205,6 @@ sd_err svc_validate_profile(const sd_profile *p, const char **bad_key, const cha
   } else if (p->auth_methods & SD_PROFILE_AUTH_KBDINT) {
     k = "auth.methods";
     w = "keyboard-interactive needs a user at the console (2.6)";
-  } else if (p->backend == SD_PROFILE_BACKEND_WEBDAV) {
-    k = "mount.backend";
-    w = "global WebDAV drives are not in this build (D11)";
   }
   if (k != NULL) {
     if (bad_key) *bad_key = k;

@@ -86,6 +86,8 @@ static int make_chain_profiles(void);
 #define T_ID_SYSPROXY  "00000000000000000000000000000016"
 #define T_ID_SYSBASIC  "00000000000000000000000000000017"
 #define T_ID_HKCHAIN   "00000000000000000000000000000018"
+#define T_ID_WEBDAV    "00000000000000000000000000000019"
+#define T_ID_WEBDAVDENY "0000000000000000000000000000001a"
 
 /* proxy = system seam (svc_opts.sysproxy_ops): a stub machine configuration; the test changes allow to refuse by policy */
 static svc_sysproxy_ops g_sysops;
@@ -307,6 +309,20 @@ static int make_chain_profiles(void)
   identity_of(&p);
   strcpy_s(p.jump, sizeof(p.jump), "hkjump.untrusted.test");
   if (!write_profile(L"t-hkchain.ini", &p)) return 0;
+
+  /* 02 §7.7 attach: a global WebDAV profile (hosted by the service, mapped per user) and one whose service_access
+     names nobody this test can be (the attach reply must refuse it) */
+  p = base_profile(T_ID_WEBDAV, "webdav", "webdav.example");
+  identity_of(&p);
+  p.backend = SD_PROFILE_BACKEND_WEBDAV;
+  if (!write_profile(L"u-webdav.ini", &p)) return 0;
+  fake_backend_pre_trust("webdav.example");
+
+  p = base_profile(T_ID_WEBDAVDENY, "webdavdeny", "webdav.example");
+  identity_of(&p);
+  p.backend = SD_PROFILE_BACKEND_WEBDAV;
+  strcpy_s(p.service_access, sizeof(p.service_access), "S-1-5-21-1-2-3-4");   /* valid SID, matches no token */
+  if (!write_profile(L"v-webdavdeny.ini", &p)) return 0;
   return 1;
 }
 
@@ -472,13 +488,14 @@ static int wait_state(sd_ipc_conn *c, const char *mount_id, const char *want, ui
     sd_json *res = call(c, "status", params, &err, &e);
     if (res) {
       const char *st = sd_json_get_str(res, "state");
+      int hit = st != NULL && strcmp(st, want) == 0;   /* compared before res is freed: st points into it */
       if (last) {
         if (*last) sd_json_free(*last);
         *last = res;
       } else {
         sd_json_free(res);
       }
-      if (st && strcmp(st, want) == 0)
+      if (hit)
         return 1;
     } else if (strcmp(err.code, "not_mounted") == 0 && strcmp(want, "gone") == 0) {
       return 1;
@@ -559,16 +576,16 @@ SD_TEST(svc_loads_only_valid_service_profiles)
   const sd_json *loaded;
   SD_REQUIRE(ensure_core());
   SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
-  /* 18 valid: mounted, nosub, tofu, pwprompt, adminonly, the M5 hostkey and rotate profiles and the M5 chain and proxy
-     profiles (a chain is checked per hop at mount time, not at load). Refused: pageant (D17). Not loaded: the user
-     profile. */
+  /* 20 valid: mounted, nosub, tofu, pwprompt, adminonly, the M5 hostkey and rotate profiles, the M5 chain and proxy
+     profiles and the two global WebDAV profiles (a chain is checked per hop at mount time, not at load). Refused:
+     pageant (D17). Not loaded: the user profile. */
   res = call(c, "config.reload", NULL, &err, &e);
   SD_REQUIRE(res != NULL);
   loaded = sd_json_get(res, "profiles");
   {
     int64_t n = -1;
     SD_CHECK(sd_json_get_int64(loaded, "loaded", &n));
-    SD_CHECK_EQ_INT(n, 18);
+    SD_CHECK_EQ_INT(n, 20);
   }
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1474,7 +1491,7 @@ SD_TEST(svc_status_method_reports_the_scm_the_pipe_and_the_machine_folder)
   SD_CHECK(sd_json_get_int64(o, "prompts", &n) && n == 0);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 20);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   SD_CHECK(sd_json_get_str(o, "reason") == NULL);
   sd_json_free(res);
   sd_ipc_close(c);
@@ -1533,7 +1550,7 @@ SD_TEST(svc_repair_is_busy_while_a_global_drive_exists)
   SD_REQUIRE(res != NULL);
   o = sd_json_get(res, "machine");
   SD_CHECK_STR(sd_json_get_str(o, "state"), "ok");
-  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 18);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
+  SD_CHECK(sd_json_get_int64(o, "profiles", &n) && n == 20);  /* the fixture's valid profiles (svc_loads_only_valid_service_profiles) */
   sd_json_free(res);
   SD_CHECK(unmount_id(c, mid));
   SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
@@ -1810,6 +1827,72 @@ SD_TEST(svc_hostkey_add_through_an_unknown_jump_host_is_refused)
   sd_ipc_close(c);
 }
 
+/* 02 §7.7 attach (G2/G7 shape): a global WebDAV profile is hosted by the service and reports the export a member's
+   agent maps. The reply carries the UNC with the path token and the letter, and no credential. The mount is hosted,
+   not mapped, so it needs no second session. */
+SD_TEST(svc_webdav_mount_reports_its_attach_point)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "";
+  int attach = 0;
+  int64_t port = 0;
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  fake_backend_set_webclient(SD_WD_CLIENT_RUNNING, 1);
+  SD_REQUIRE(mount_and_wait(c, "webdav", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"webdav\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK_STR(sd_json_get_str(res, "backend"), "webdav");
+  SD_CHECK(sd_json_get_bool(res, "attach", &attach) && attach);
+  SD_CHECK_STR(sd_json_get_str(res, "unc"), "\\\\localhost@49321\\DavWWWRoot\\s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  SD_CHECK_STR(sd_json_get_str(res, "xp_url"), "http://localhost:49321/s-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+  SD_CHECK(sd_json_get_int64(res, "port", &port) && port == 49321);
+  sd_json_free(res);
+  /* a Dokany global mount has no export: the same method reports nothing to attach */
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  SD_REQUIRE(mount_and_wait(c, "mounted", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"mounted\"}", &err, &e);
+  SD_REQUIRE(res != NULL);
+  SD_CHECK_STR(sd_json_get_str(res, "backend"), "dokany");
+  attach = 1;
+  SD_CHECK(sd_json_get_bool(res, "attach", &attach) && attach == 0);
+  SD_CHECK(sd_json_get(res, "unc") == NULL);
+  sd_json_free(res);
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
+/* 02 §7.7 G7 / TM-R18: the attach information is only for a caller in service_access. A profile whose list names a
+   SID this process does not carry answers access_denied, and no UNC leaves the service. */
+SD_TEST(svc_attach_info_refuses_a_caller_outside_service_access)
+{
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  char mid[16] = "";
+  SD_REQUIRE(ensure_core());
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  fake_backend_set_webclient(SD_WD_CLIENT_RUNNING, 1);
+  SD_REQUIRE(mount_and_wait(c, "webdavdeny", "mounted", mid, sizeof(mid), &st));
+  json_drop(&st);
+  res = call(c, "mount.attach_info", "{\"profile\":\"webdavdeny\"}", &err, &e);
+  SD_CHECK(res == NULL);
+  if (res)
+    sd_json_free(res);
+  SD_CHECK_STR(err.code, "access_denied");
+  SD_CHECK(unmount_id(c, mid));
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));
+  sd_ipc_close(c);
+}
+
 /* Regression: one profile mounted twice in one process, each mount raising its own UpdateHostKeys announcement (the
    mount slot, the announcement records and the status replies of the first mount must not leak into the second). */
 SD_TEST(svc_one_profile_mounted_twice_keeps_both_announcements)
@@ -1964,5 +2047,307 @@ SD_TEST(svc_refuses_a_machine_folder_with_a_foreign_owner_at_start)
   SD_CHECK(GetFileAttributesW(sub) == INVALID_FILE_ATTRIBUTES);
   _snwprintf_s(sub, SD_COUNTOF(sub), _TRUNCATE, L"%s\\profiles", root);
   SD_CHECK(GetFileAttributesW(sub) == INVALID_FILE_ATTRIBUTES);
+  RemoveDirectoryW(root);
+}
+
+/* ---- boot autostart (1.8, 3.4.1): the service mounts autostart = boot profiles at start ----
+   Each test runs a core of its own on a fresh machine root after the shared one has stopped: the profiles are
+   in place before the start, so what the test sees is the start-time autostart. */
+
+#define T_ID_BOOTAUTO  "00000000000000000000000000000020"
+#define T_ID_BOOTLOGON "00000000000000000000000000000021"
+
+/* write_profile plus the [mount] autostart key, which sd_profile_to_ini does not write (the editor writes the
+   key into the file itself): the service reads it back when it loads the profiles. */
+static int write_profile_autostart(const wchar_t *root, const wchar_t *file, const sd_profile *p,
+                                   const char *autostart)
+{
+  sd_ini *ini = NULL;
+  sd_wr w;
+  wchar_t path[MAX_PATH];
+  int ok = 0;
+  _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\profiles\\%s", root, file);
+  sd_wr_init(&w, 4096);
+  if (sd_profile_to_ini(p, &ini) == SD_OK && sd_ini_set(ini, "mount", "autostart", autostart) == SD_OK &&
+      sd_ini_serialize(ini, &w) == SD_OK)
+    ok = write_file(path, (const char *)w.p, w.len);
+  sd_ini_free(ini);
+  sd_wr_free(&w);
+  return ok;
+}
+
+static HANDLE g_boot_running;
+static HANDLE g_boot_thread;
+static int g_boot_rc = -1;
+
+static void boot_core_running(void *ctx)
+{
+  SetEvent((HANDLE)ctx);
+}
+
+static DWORD WINAPI boot_core_main(LPVOID arg)
+{
+  g_boot_rc = svc_run((svc_opts *)arg);
+  return 0;
+}
+
+/* Starts a core of its own on root (the seams of the shared core) and returns once it listens; the test talks
+   to it over the pipe and stops it with stop_boot_core. */
+static int start_boot_core(svc_opts *o, const wchar_t *root)
+{
+  wchar_t sid[256], suffix[64];
+  memset(o, 0, sizeof(*o));
+  o->backend = fake_backend_hostkeys();
+  o->machine_root = root;
+  o->owner_trusted = owner_trust_all;
+  o->test_all_admin = 1;
+  o->dacl_extra_ace = L"(A;OICI;FA;;;OW)";
+  o->on_running = boot_core_running;
+  if (sd_ipc_current_identity(sid, SD_COUNTOF(sid), NULL) != SD_OK)
+    return 0;
+  _snwprintf_s(suffix, SD_COUNTOF(suffix), _TRUNCATE, L"svc%lu", (unsigned long)GetCurrentProcessId());
+  sd_ipc_set_instance_suffix(suffix);
+  sd_ipc_test_set_expected_owner(sid);
+  sd_ipc_test_set_service_owner(sid);
+  g_boot_running = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (g_boot_running == NULL)
+    return 0;
+  o->ctx = g_boot_running;
+  g_boot_rc = -1;
+  g_boot_thread = CreateThread(NULL, 0, boot_core_main, o, 0, NULL);
+  if (g_boot_thread == NULL) {
+    CloseHandle(g_boot_running);
+    g_boot_running = NULL;
+    return 0;
+  }
+  return WaitForSingleObject(g_boot_running, 15000) == WAIT_OBJECT_0;
+}
+
+static void stop_boot_core(void)
+{
+  svc_request_stop();
+  (void)WaitForSingleObject(g_boot_thread, 30000);
+  CloseHandle(g_boot_thread);
+  g_boot_thread = NULL;
+  CloseHandle(g_boot_running);
+  g_boot_running = NULL;
+}
+
+/* Counts the records of the two autostart profiles in a list reply; mid keeps the mount id of the boot one. */
+static void boot_list_scan(sd_json *res, int *n_boot, int *n_logon, char *mid, size_t mid_cap)
+{
+  const sd_json *mounts = sd_json_get(res, "mounts");
+  int i;
+  *n_boot = 0;
+  *n_logon = 0;
+  for (i = 0; mounts && i < (int)sd_json_count(mounts); i++) {
+    const sd_json *m = sd_json_at(mounts, i);
+    const char *pid = sd_json_get_str(m, "profile");
+    if (pid == NULL)
+      continue;
+    if (strcmp(pid, T_ID_BOOTAUTO) == 0) {
+      copy_str(mid, mid_cap, sd_json_get_str(m, "mount_id"));
+      (*n_boot)++;
+    } else if (strcmp(pid, T_ID_BOOTLOGON) == 0) {
+      (*n_logon)++;
+    }
+  }
+}
+
+/* Waits until the boot profile is mounted through the start autostart (the mount comes up asynchronously) and
+   the logon profile has no record; scans the list each round. Returns 1 when seen. */
+static int wait_boot_list(sd_ipc_conn *c, int *n_boot, int *n_logon, char *mid, size_t mid_cap)
+{
+  sd_ipc_error err;
+  sd_err e;
+  uint32_t waited = 0;
+  for (;;) {
+    sd_json *res = call(c, "list", NULL, &err, &e);
+    int seen = 0;
+    if (res != NULL) {
+      boot_list_scan(res, n_boot, n_logon, mid, mid_cap);
+      sd_json_free(res);
+      seen = *n_boot == 1 && *n_logon == 0 && mid[0] != 0;
+      if (seen) {
+        /* the record exists; mounted is what makes it the autostart the docs ask for */
+        char params[64];
+        sd_json *st;
+        _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"mount_id\":\"%s\"}", mid);
+        st = call(c, "status", params, &err, &e);
+        if (st != NULL) {
+          const char *got = sd_json_get_str(st, "state");
+          seen = got != NULL && strcmp(got, "mounted") == 0;
+          sd_json_free(st);
+        }
+      }
+    }
+    if (seen)
+      return 1;
+    if (waited >= 10000)
+      return 0;
+    Sleep(100);
+    waited += 100;
+  }
+}
+
+/* A fresh machine root for one boot-autostart core: the profiles folder and the service key the profiles carry.
+   The key must live under this root's own service folder (TM-R27): an identity outside it is refused at mount. */
+static int make_boot_root(const wchar_t *root, wchar_t *key, size_t key_cch)
+{
+  wchar_t d[MAX_PATH];
+  if (!make_run_root((wchar_t *)root, MAX_PATH))
+    return 0;
+  _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\profiles", root);
+  if (!CreateDirectoryW(d, NULL))
+    return 0;
+  _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\service", root);
+  if (!CreateDirectoryW(d, NULL))
+    return 0;
+  _snwprintf_s(d, MAX_PATH, _TRUNCATE, L"%s\\service\\keys", root);
+  if (!CreateDirectoryW(d, NULL))
+    return 0;
+  _snwprintf_s(key, key_cch, _TRUNCATE, L"%s\\service\\keys\\key1.ppk", root);
+  return write_file(key, "fixture-key", 11);
+}
+
+/* A service profile of the boot fixture: the shared base on `host`, the identity under root's own service folder
+   and the [mount] autostart value. */
+static int write_boot_profile(const wchar_t *root, const wchar_t *file, const char *id, const char *name,
+                              const char *host, const char *autostart)
+{
+  sd_profile p = base_profile(id, name, host);
+  char utf8[MAX_PATH * 3];
+  wchar_t key[MAX_PATH];
+  _snwprintf_s(key, MAX_PATH, _TRUNCATE, L"%s\\service\\keys\\key1.ppk", root);
+  utf8_of(key, utf8, sizeof(utf8));
+  strcpy_s(p.identity, sizeof(p.identity), utf8);
+  return write_profile_autostart(root, file, &p, autostart);
+}
+
+SD_TEST(svc_autostart_boot_is_mounted_at_start_and_logon_is_not)
+{
+  static svc_opts o;
+  wchar_t root[MAX_PATH], key[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  int n_boot = -1, n_logon = -1;
+  char mid[16] = "";
+  SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "trusted.example", "boot"));
+  SD_REQUIRE(write_boot_profile(root, L"b-bootlogon.ini", T_ID_BOOTLOGON, "bootlogon", "trusted.example", "logon"));
+  fake_backend_pre_trust("trusted.example");   /* own trust: the test also runs alone (--filter) */
+  SD_REQUIRE(start_boot_core(&o, root));
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  /* the service mounts the boot profile by itself; autostart = logon is the agent's business (3.4.1) */
+  SD_CHECK(wait_boot_list(c, &n_boot, &n_logon, mid, sizeof(mid)));
+  SD_CHECK_EQ_INT(n_boot, 1);
+  SD_CHECK_EQ_INT(n_logon, 0);
+  /* the autostart record is the one mount: a second one for the same profile is refused */
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "already_mounted");
+  sd_ipc_close(c);
+  stop_boot_core();
+  SD_CHECK_EQ_INT(g_boot_rc, 0);
+  RemoveDirectoryW(root);           /* best effort: the root holds the profile files */
+}
+
+SD_TEST(svc_autostart_reload_does_not_double_mount)
+{
+  static svc_opts o;
+  wchar_t root[MAX_PATH], key[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res;
+  int n_boot = -1, n_logon = -1;
+  char mid[16] = "", mid2[16] = "";
+  SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "trusted.example", "boot"));
+  fake_backend_pre_trust("trusted.example");   /* own trust: the test also runs alone (--filter) */
+  SD_REQUIRE(start_boot_core(&o, root));
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  SD_REQUIRE(wait_boot_list(c, &n_boot, &n_logon, mid, sizeof(mid)));
+  /* config.reload loads the profiles again: the mounted profile keeps its one mount, id included */
+  res = call(c, "config.reload", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  sd_json_free(res);
+  res = call(c, "list", NULL, &err, &e);
+  SD_REQUIRE(res != NULL);
+  boot_list_scan(res, &n_boot, &n_logon, mid2, sizeof(mid2));
+  sd_json_free(res);
+  SD_CHECK_EQ_INT(n_boot, 1);
+  SD_CHECK_STR(mid2, mid);
+  /* and the manual mount of the same profile is still refused */
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "already_mounted");
+  sd_ipc_close(c);
+  stop_boot_core();
+  SD_CHECK_EQ_INT(g_boot_rc, 0);
+  RemoveDirectoryW(root);
+}
+
+/* The live lab defect of the boot autostart: the start mount runs before the machine host key exists and ends
+   failed; its record stays for list and status (03 1.11). When the key is added, a mount of the same profile must
+   replace the failed record (a new mount id, the same letter) instead of answering already_mounted, while a live
+   mount of the profile still answers already_mounted. */
+SD_TEST(svc_autostart_failed_mount_is_replaced_by_a_new_mount)
+{
+  static svc_opts o;
+  wchar_t root[MAX_PATH], key[MAX_PATH];
+  sd_ipc_conn *c = NULL;
+  sd_ipc_error err;
+  sd_err e;
+  sd_json *res, *st = NULL;
+  int n_boot = -1, n_logon = -1;
+  uint32_t waited = 0;
+  char mid[16] = "", mid2[16] = "", tgt1[4] = "", tgt2[4] = "";
+  SD_REQUIRE(make_boot_root(root, key, SD_COUNTOF(key)));
+  /* no key for late.example in the machine store yet: the autostart mount fails (TOFU refused, 2.6 rule 2) */
+  SD_REQUIRE(write_boot_profile(root, L"a-bootauto.ini", T_ID_BOOTAUTO, "bootauto", "late.example", "boot"));
+  SD_REQUIRE(start_boot_core(&o, root));
+  SD_REQUIRE(connect_as("testadmin", 0, &c) == SD_OK);
+  for (;;) {
+    res = call(c, "list", NULL, &err, &e);
+    if (res != NULL) {
+      boot_list_scan(res, &n_boot, &n_logon, mid, sizeof(mid));
+      sd_json_free(res);
+      if (mid[0] != 0)
+        break;
+    }
+    SD_REQUIRE(waited < 10000);
+    Sleep(100);
+    waited += 100;
+  }
+  SD_CHECK(wait_state(c, mid, "failed", 10000, &st));
+  if (st) {
+    copy_str(tgt1, sizeof(tgt1), sd_json_get_str(st, "target"));
+    json_drop(&st);
+  }
+  /* the admin adds the host key and mounts again: the failed record does not answer already_mounted */
+  fake_backend_pre_trust("late.example");
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res != NULL);
+  if (res != NULL) {
+    copy_str(mid2, sizeof(mid2), sd_json_get_str(res, "mount_id"));
+    copy_str(tgt2, sizeof(tgt2), sd_json_get_str(res, "target"));
+    sd_json_free(res);
+  }
+  SD_CHECK(mid2[0] != 0 && strcmp(mid2, mid) != 0);        /* a new mount id */
+  SD_CHECK_STR(tgt2, tgt1);                                /* the same letter comes back */
+  SD_CHECK(wait_state(c, mid, "gone", 10000, NULL));       /* the failed record was released */
+  SD_CHECK(wait_state(c, mid2, "mounted", 20000, NULL));   /* the drive is up without an unmount */
+  /* a live mount of the profile is still refused */
+  res = mount_profile(c, T_ID_BOOTAUTO, &err, &e);
+  SD_CHECK(res == NULL);
+  SD_CHECK_STR(err.code, "already_mounted");
+  SD_CHECK(unmount_id(c, mid2));
+  SD_CHECK(wait_state(c, mid2, "gone", 10000, NULL));
+  sd_ipc_close(c);
+  stop_boot_core();
+  SD_CHECK_EQ_INT(g_boot_rc, 0);
   RemoveDirectoryW(root);
 }

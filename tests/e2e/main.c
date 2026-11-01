@@ -6,6 +6,7 @@ SD_TEST_DECL(e2e_status_without_an_installed_service_does_not_query_the_pipe);
 SD_TEST_DECL(e2e_service_mount_and_unmount_need_elevation);
 SD_TEST_DECL(e2e_hostkey_offer_is_listed_and_accepted_into_the_machine_store);
 SD_TEST_DECL(e2e_secret_set_and_delete_machine_proxy_through_the_service);
+SD_TEST_DECL(e2e_service_mount_error_names_the_profile);
 SD_TEST_DECL(e2e_core_stops_and_the_cli_no_longer_reaches_the_pipe);
 
 static const sd_test_case k_tests[] = {
@@ -14,6 +15,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(e2e_service_mount_and_unmount_need_elevation),
   SD_TEST_ENTRY(e2e_hostkey_offer_is_listed_and_accepted_into_the_machine_store),
   SD_TEST_ENTRY(e2e_secret_set_and_delete_machine_proxy_through_the_service),
+  SD_TEST_ENTRY(e2e_service_mount_error_names_the_profile),
   SD_TEST_ENTRY(e2e_core_stops_and_the_cli_no_longer_reaches_the_pipe),
 };
 

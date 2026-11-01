@@ -46,8 +46,12 @@ int can_prompt(const cli_args *a);
 /* Answers one prompt.request event of this connection (cli_cmds.c; mount and profile test). */
 void handle_prompt(const cli_args *a, sd_ipc_conn *c, const sd_json *d);
 int connect_agent(const cli_args *a, int start, sd_ipc_conn **c, const err_ctx *ec);
-/* The service control pipe (cli_service.c), for the --machine commands: 1 when connected, 0 when it is not running. */
-int connect_service(sd_ipc_conn **c);
+/* The service control pipe (cli_service.c), for the --machine commands: SD_OK when connected, otherwise the reason
+   (SD_E_ACCESS_DENIED when the pipe's DACL refuses this logon session, 2.2). */
+sd_err connect_service(sd_ipc_conn **c);
+/* Reports a failed connect_service (03 §6.2) and returns the exit code: the pipe refusing this session is its own
+   outcome (access_denied, 9); every other reason is "not running or not installed" (8). */
+int service_connect_fail(const cli_args *a, sd_err e);
 int subscribe(sd_ipc_conn *c, const char *topic);
 const sd_ipc_hello *quiet_hello(sd_ipc_hello *h);
 /* Sends prompt.answer. save: keep the secret (with the localized comment) after a successful login. */

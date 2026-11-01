@@ -45,9 +45,11 @@
 #include "sd_secret/sd_secret.h"
 #include "sd_ssh/sd_known_hosts.h"
 #include "sd_platform/sd_log.h"
+#include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_thread.h"
 #include "sd_platform/sd_time.h"
 
+#include "svc_gw_attach.h"
 #include "log_ring.h"
 #include "agent_events.h"
 #include "state_producer.h"
@@ -153,7 +155,8 @@ typedef struct host_mount {
 /* Feature names of the hello reply (03 §7, 2.8): only what this build implements. */
 static const char *const k_agent_features[] = {
   "status", "config.reload", "log.tail", "selftest", "prompt.list", "prompt.queued",
-  "refresh", "cache.clear", "profile.test", "mount.attach_info", "status.stats", "status.proxy_legs",
+  "refresh", "cache.clear", "profile.test", "mount.attach_info", "mount.attach", "status.stats",
+  "status.proxy_legs",
   "config.changed", "agent.stopping", "update", "update.check", "update.apply", "diag.collect", "events.recent", NULL
 };
 
@@ -2308,6 +2311,8 @@ static void start_autostart(const char *id)
   sd_free(prof);
 }
 
+static void attach_global_webdav(void);   /* mount.attach: the service-hosted global WebDAV drives (02 §7.7) */
+
 static void work_autostart(void *arg)
 {
   autostart_list *l;
@@ -2321,6 +2326,7 @@ static void work_autostart(void *arg)
   for (i = 0; i < l->n; i++)
     start_autostart(l->id[i]);
   sd_free(l);
+  attach_global_webdav();               /* 02 §7.7: the global WebDAV drives of this logon session */
 }
 
 static sd_err handle_profile_test(sd_ipc_client *client, const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
@@ -2685,6 +2691,136 @@ static sd_err handle_attach_info(const sd_json *params, sd_json_writer *res, sd_
   }
   sd_mutex_unlock(&g.lock);
   return SD_OK;
+}
+
+/* mount.attach {mount_id | target | profile} (02 §7.7 attach, 03 §1.3, D11): map the global WebDAV drive the
+   service hosts into this logon session. The service answers with the export only for a caller in that profile's
+   service_access (mount.attach_info), and the reply carries the UNC with the path token, never a credential. The
+   mapping is not persistent (no CONNECT_UPDATE_PROFILE); the agent's start, stop and crash paths cancel it with
+   every other \\localhost@port mapping of this session (TM-R17). */
+/* Maps the export of one mount.attach_info reply in this logon session. SD_E_UNSUPPORTED: nothing to attach (a
+   Dokany global mount, or an XP session with no http form). *werr carries the WNet error on SD_E_FAILURE. */
+static sd_err attach_map_reply(const sd_json *info, DWORD *werr)
+{
+  const char *unc = sd_json_get_str(info, "unc");
+  const char *xp = sd_json_get_str(info, "xp_url");
+  const char *tgt = sd_json_get_str(info, "target");
+  wchar_t remote[104];                           /* the size of sd_mount_attach.webdav_remote */
+  int xp_form = !sd_os_at_least(6, 0, 0) ? 1 : 0;   /* XP/2003: the http form and the Web Client Network provider */
+  int64_t port = 0;
+  sd_err e;
+  if (unc == NULL || unc[0] == 0)
+    return SD_E_UNSUPPORTED;
+  if (tgt == NULL || tgt[0] < 'A' || tgt[0] > 'Z' || tgt[1] != ':')
+    return SD_E_INVALID_PARAM;
+  if (xp_form && (xp == NULL || xp[0] == 0))
+    return SD_E_UNSUPPORTED;
+  if (!wide_from_utf8(xp_form ? xp : unc, remote, SD_COUNTOF(remote)))
+    return SD_E_INVALID_PARAM;
+  e = svc_gw_attach_map(&svc_gw_attach_real_ops, (wchar_t)tgt[0], remote, xp_form, werr);
+  /* the service's port is live, not stale: a later per-user WebDAV mount of this agent must not cancel this
+     mapping when it starts its own server (TM-R17 d cleanup); the agent's stop and start cleanups still do */
+  if ((e == SD_OK || e == SD_E_EXISTS) && sd_json_get_int64(info, "port", &port) && port > 0 && port <= 65535 &&
+      host_backend()->webdav_preserve_port)
+    host_backend()->webdav_preserve_port((uint16_t)port, TRUE);
+  return e;
+}
+
+static sd_err handle_attach(const sd_json *params, sd_json_writer *res, sd_ipc_error *err)
+{
+  sd_ipc_hello hello;
+  sd_ipc_conn *c = NULL;
+  sd_json *r = NULL;
+  sd_ipc_error serr;
+  sd_err e;
+  DWORD werr = 0;
+  const char *tgt;
+  memset(&hello, 0, sizeof(hello));
+  hello.client_kind = "agent";
+  hello.client_version = SD_VERSION_STRING;
+  hello.lang = "en";
+  memset(&serr, 0, sizeof(serr));
+  e = sd_ipc_connect(SD_IPC_SERVICE, &hello, 0, 5000, &c);
+  if (e != SD_OK)
+    return fail(err, e, "service_unavailable", "the ShellDrive service is not reachable");
+  e = sd_ipc_call(c, "mount.attach_info", params, 5000, &r, &serr);
+  sd_ipc_close(c);
+  if (e != SD_OK) {
+    sd_json_free(r);
+    return fail(err, e, serr.code[0] ? serr.code : "service_unavailable",
+                serr.code[0] ? serr.detail : "the service did not answer");
+  }
+  e = attach_map_reply(r, &werr);
+  if (e == SD_E_UNSUPPORTED) {
+    sd_json_free(r);
+    return fail(err, e, "not_attachable", "this global mount has nothing to attach in this session");
+  }
+  if (e != SD_OK) {
+    char detail[96];
+    _snprintf_s(detail, sizeof(detail), _TRUNCATE, "the mapping was refused (win32 %lu)", (unsigned long)werr);
+    sd_json_free(r);
+    return fail(err, e, e == SD_E_EXISTS ? "target_in_use" : "attach_failed", detail);
+  }
+  tgt = sd_json_get_str(r, "target");
+  sd_jw_obj_begin(res);
+  sd_jw_key(res, "mount_id"); sd_jw_cstr(res, sd_json_get_str(r, "mount_id"));
+  sd_jw_key(res, "target"); sd_jw_cstr(res, tgt);
+  sd_jw_key(res, "mapped"); sd_jw_bool(res, 1);
+  sd_jw_obj_end(res);
+  sd_json_free(r);
+  return SD_OK;
+}
+
+/* 02 §7.7 attach: at logon, map every global WebDAV drive the service hosts and this user may use. The service's
+   list already hides the mounts the caller is not in service_access for, and mount.attach_info is the per-mount
+   check. Best effort: no service, no such drive, or a refused mapping only logs; nothing here fails the agent. */
+static void attach_global_webdav(void)
+{
+  sd_ipc_hello hello;
+  sd_ipc_conn *c = NULL;
+  sd_json *list = NULL, *info = NULL;
+  sd_ipc_error err;
+  const sd_json *mounts;
+  size_t i, n;
+  memset(&hello, 0, sizeof(hello));
+  hello.client_kind = "agent";
+  hello.client_version = SD_VERSION_STRING;
+  hello.lang = "en";
+  if (sd_ipc_connect(SD_IPC_SERVICE, &hello, 0, 3000, &c) != SD_OK)
+    return;                                        /* no service: Dokany drives, if any, are the service's */
+  memset(&err, 0, sizeof(err));
+  if (sd_ipc_call(c, "list", NULL, 5000, &list, &err) != SD_OK || list == NULL) {
+    sd_json_free(list);
+    sd_ipc_close(c);
+    return;
+  }
+  mounts = sd_json_get(list, "mounts");
+  n = mounts ? sd_json_count(mounts) : 0;
+  for (i = 0; i < n; i++) {
+    const sd_json *m = sd_json_at(mounts, i);
+    const char *id = sd_json_get_str(m, "mount_id");
+    char params[64];
+    DWORD werr = 0;
+    sd_err e;
+    if (id == NULL || id[0] == 0 || strchr(id, '"') != NULL)
+      continue;
+    _snprintf_s(params, sizeof(params), _TRUNCATE, "{\"mount_id\":\"%s\"}", id);
+    memset(&err, 0, sizeof(err));
+    info = NULL;
+    if (sd_ipc_call_raw(c, "mount.attach_info", params, strlen(params), 5000, &info, &err) != SD_OK) {
+      continue;
+    }
+    e = attach_map_reply(info, &werr);
+    if (e == SD_OK)
+      SD_LOGI("agent", "attached global WebDAV mount %s", id);
+    else if (e != SD_E_UNSUPPORTED)
+      SD_LOGW("agent", "global WebDAV mount %s: the mapping was refused (%s, win32 %u)", id, sd_err_name(e),
+              (unsigned)werr);
+    sd_json_free(info);
+    info = NULL;
+  }
+  sd_json_free(list);
+  sd_ipc_close(c);
 }
 
 /* selftest {}: the in-process checks of `shelldrive-host --selftest` plus the live pipe (03 §6.1). */
@@ -3473,6 +3609,7 @@ static sd_err ipc_handler(void *ctx, sd_ipc_client *client, const char *method, 
   if (strcmp(method, "refresh") == 0) return handle_refresh(params, res, err);
   if (strcmp(method, "cache.clear") == 0) return handle_cache_clear(params, res, err);
   if (strcmp(method, "mount.attach_info") == 0) return handle_attach_info(params, res, err);
+  if (strcmp(method, "mount.attach") == 0) return handle_attach(params, res, err);
   if (strcmp(method, "log.tail") == 0) return handle_log_tail(params, res, err);
   if (strcmp(method, "config.reload") == 0) return handle_config_reload(params, res, err);
   if (strcmp(method, "prompt.answer") == 0) return handle_prompt_answer(client, params, res, err);

@@ -231,7 +231,9 @@ static DWORD scm_set_failure_actions(void *ctx, const svc_install_spec *s)
   fa.dwResetPeriod = s->reset_period_s;
   fa.cActions = SVC_SCM_RESTART_COUNT;
   fa.lpsaActions = acts;
-  e = open_service(SC_MANAGER_CONNECT, SERVICE_CHANGE_CONFIG, &scm, &svc);
+  /* SC_ACTION_RESTART needs SERVICE_START on the handle as well, or ChangeServiceConfig2 fails with
+     ERROR_ACCESS_DENIED even for SYSTEM (and the install rolls back) */
+  e = open_service(SC_MANAGER_CONNECT, SERVICE_CHANGE_CONFIG | SERVICE_START, &scm, &svc);
   if (e != 0)
     return e;
   if (!ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS, &fa))

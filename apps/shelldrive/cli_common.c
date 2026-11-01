@@ -224,6 +224,22 @@ int fail_code(const cli_args *a, const char *code, const char *detail, const err
   return xc;
 }
 
+/* Reports a failed connect_service (03 §6.2). The service pipe's DACL (2.2) admits interactive sessions only, so a
+   script in a batch logon gets a refusal, and it must not read as "not running or not installed" (exit 8, TM): the
+   exit code is 9, the JSON code access_denied. */
+int service_connect_fail(const cli_args *a, sd_err e)
+{
+  if (e == SD_E_ACCESS_DENIED) {
+    if (a->json)
+      json_err("access_denied", "the ShellDrive service pipe denies this logon session", 9);
+    else
+      say(SD_MSG_CLI_SERVICE_ACCESS_DENIED, NULL, 0, 1);
+    return 9;
+  }
+  say(SD_MSG_CLI_SERVICE_UNAVAILABLE, NULL, 0, 1);
+  return 8;
+}
+
 /* ---- elevation ---- */
 
 /* Changing a global drive or the machine store needs an elevated token (6.1). On XP the query is unavailable:

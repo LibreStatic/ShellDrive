@@ -143,6 +143,8 @@ static const sd_mount_backend k_real = {
   real_hk_conn_connect,
   real_hk_conn_fetch,
   real_hk_conn_destroy,
+  sd_webdav_mount_remote,
+  sd_webdav_preserve_port,
 };
 
 const sd_mount_backend *sd_mount_backend_real(void)

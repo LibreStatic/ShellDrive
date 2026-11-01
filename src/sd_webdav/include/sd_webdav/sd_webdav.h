@@ -73,6 +73,11 @@ typedef struct sd_webdav_server_cfg {
   uint32_t max_unauth_per_process;  /* 4 */
   uint32_t max_connections;    /* 64 */
   BOOL token_only;             /* TM-R19: started for a token-only export, which needs no SSPI to start */
+  /* 02 §7.7: a service (global) server. The owner check is not applied at the connection: any user that
+     authenticates reaches the per-request sd_vfs check, which decides per export from service_access. The
+     caller's enabled, non-deny-only token groups are passed to that check, so group entries match. Never set
+     together with token_only, which TM-R19 forbids for global mounts. */
+  BOOL service_mode;
 } sd_webdav_server_cfg;
 
 sd_err   sd_webdav_server_start(const sd_webdav_server_cfg *cfg, sd_webdav_server **out);
@@ -107,6 +112,11 @@ sd_err sd_webdav_cleanup_mappings(uint16_t keep_port, uint16_t only_port, uint32
 /* Crash filter (TM-R17 b): cancels the mappings made by this process. Safe to call in an exception
    filter (no allocation, no locks beyond a try-lock). */
 void   sd_webdav_emergency_unmap(void);
+/* 02 §7.7 attach: the port of a server this process does not own (the service's) whose mappings are live, not
+   stale. The cleanup that sd_webdav_mount_start runs before it binds skips these ports (up to 4); the explicit
+   sd_webdav_cleanup_mappings calls of the host (start, stop, watchers) do not, so a stopping agent still removes
+   them. on = 0 forgets the port. Any thread. */
+void   sd_webdav_preserve_port(uint16_t port, BOOL on);
 
 /* ---- one-call mount used by sd_mount (process-wide server, started on first use) ---- */
 
@@ -121,6 +131,9 @@ typedef struct sd_webdav_mount_cfg {
   BOOL global;                 /* a service (global) mount: token-only is always refused */
   BOOL token_only;             /* request token-only mode (TM-R19); the host asked the user first */
   BOOL token_only_confirmed;   /* the user confirmed this enable in the host dialog (03 7.5) */
+  /* 02 §7.7 attach: the service hosts the export and maps nothing. The drive letter is still carried (it is
+     the letter users see); no connection is made and no MountPoints2 entry is written. */
+  BOOL no_map;
 } sd_webdav_mount_cfg;
 
 /* Starts the process server if needed (cleaning stale mappings first), adds the export, maps the
@@ -129,6 +142,9 @@ sd_err sd_webdav_mount_start(sd_vfs *vfs, const sd_webdav_mount_cfg *cfg, sd_web
 /* Unmaps, removes the export, stops the server with the last mount. Frees m. */
 sd_err sd_webdav_mount_stop(sd_webdav_mount *m);
 uint16_t sd_webdav_mount_port(const sd_webdav_mount *m);
+/* The remote name of the export: Vista+ \\localhost@PORT\DavWWWRoot\s-<token>, XP http://localhost:PORT/s-<token>.
+   A service mount hands this to the agent over mount.attach_info; the token is the capability. */
+sd_err sd_webdav_mount_remote(const sd_webdav_mount *m, BOOL xp_form, wchar_t *out, size_t cap);
 
 /* ---- token-only mode (TM-R19, 02 §7.4) ----
    Used when the redirector cannot authenticate. Never switched on by sd_webdav itself: the host asks the

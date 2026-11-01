@@ -57,8 +57,9 @@ sd_err svc_acl_build(const sd_profile *p, svc_resolve_fn resolve, void *ctx, svc
 
 /* Machine profile checks at load and before every mount (2.6 rule 1, D17, 03 §3.4.1). Returns SD_OK, or SD_E_INVALID_PARAM
    with *bad_key naming the offending key and *why a short English reason (for logs). Refused: scope other than service,
-   no user, agent-based authentication (auth.agent = pageant or openssh, D17), kbdint (2.6), WebDAV backend (the global
-   WebDAV spike is not in this build, D11). Jump hosts and proxies are checked per hop when the chain is built
+   no user, agent-based authentication (auth.agent = pageant or openssh, D17), kbdint (2.6). A WebDAV backend is
+   accepted: 02 §7.7 hosts the export in the service and attaches it per user at logon (the mechanism is chosen at
+   mount time, never mapped by LocalSystem). Jump hosts and proxies are checked per hop when the chain is built
    (svc_chain_hop_check, svc_proxy_leg_check). */
 sd_err svc_validate_profile(const sd_profile *p, const char **bad_key, const char **why);
 

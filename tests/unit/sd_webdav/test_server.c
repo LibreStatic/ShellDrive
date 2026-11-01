@@ -441,6 +441,98 @@ SD_TEST(webdav_server_rejects_other_sid)
   fx_down(&f);
 }
 
+/* 02 §7.7: a service (global) server. The vfs is global with access_sid as the only service_access entry, the
+   server's owner is SYSTEM and service_mode is on, so the connection-level owner check is off and sd_vfs decides. */
+static int fx_up_service(fixture *f, PSID access_sid)
+{
+  sd_vfs_options o;
+  sd_webdav_server_cfg sc;
+  sd_webdav_export_cfg ec;
+  static uint8_t system_sid[SECURITY_MAX_SID_SIZE];
+  DWORD sl = sizeof(system_sid);
+  PSID acc[1];
+  memset(f, 0, sizeof(*f));
+  if (!CreateWellKnownSid(WinLocalSystemSid, NULL, system_sid, &sl))
+    return -1;
+  f->s = fake_session_create(NULL);
+  fake_put(f->s, "/home/user/hello.txt", "hello world", 11, 0644);
+  memset(&o, 0, sizeof(o));
+  o.struct_size = sizeof(o);
+  o.request_timeout_ms = 50000;
+  o.volume_label = L"SD Global";
+  o.global_mount = TRUE;
+  acc[0] = access_sid;
+  o.access_sids = acc;
+  o.n_access = 1;
+  if (sd_vfs_mount(f->s, &o, NULL, NULL, &f->v) != SD_VFS_OK)
+    return -1;
+  memset(&sc, 0, sizeof(sc));
+  sc.struct_size = sizeof(sc);
+  sc.owner_sid = (PSID)system_sid;
+  sc.service_mode = TRUE;
+  if (sd_webdav_server_start(&sc, &f->srv) != SD_OK)
+    return -1;
+  f->port = sd_webdav_server_port(f->srv);
+  memset(&ec, 0, sizeof(ec));
+  ec.struct_size = sizeof(ec);
+  ec.label = L"Global";
+  if (sd_webdav_export_add(f->srv, f->v, &ec, &f->ex) != SD_OK)
+    return -1;
+  strcpy_s(f->prefix, sizeof(f->prefix), sd_webdav_export_prefix(f->ex));
+  return 0;
+}
+
+/* The token user of this process, in a static buffer. */
+static PSID self_sid(void)
+{
+  static uint8_t buf[256];
+  HANDLE tok = NULL;
+  DWORD n = 0;
+  PSID s = NULL;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+    if (GetTokenInformation(tok, TokenUser, buf, sizeof(buf), &n))
+      s = ((TOKEN_USER *)buf)->User.Sid;
+    CloseHandle(tok);
+  }
+  return s;
+}
+
+/* 02 §7.7, G7 shape: a member of service_access reaches the export of a service server whose owner is SYSTEM (the
+   per-user server answers 403 here, webdav_server_rejects_other_sid). */
+SD_TEST(webdav_service_server_admits_a_member)
+{
+  fixture f;
+  tc_conn *c;
+  PSID me = self_sid();
+  SD_REQUIRE(me != NULL);
+  SD_REQUIRE(fx_up_service(&f, me) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  SD_CHECK_EQ_INT(tc_authenticate(c, f.port, f.prefix), 207);
+  conn_free(c);
+  fx_down(&f);
+}
+
+/* 02 §7.7, G7: the same server, a service_access list that names someone else. Authentication succeeds (the server
+   no longer checks an owner), and sd_vfs refuses the request: no listing reaches a non-member. */
+SD_TEST(webdav_service_server_refuses_a_non_member)
+{
+  fixture f;
+  tc_conn *c;
+  uint8_t other[SECURITY_MAX_SID_SIZE];
+  DWORD sl = sizeof(other);
+  int st;
+  SD_REQUIRE(CreateWellKnownSid(WinLocalServiceSid, NULL, other, &sl));
+  SD_REQUIRE(fx_up_service(&f, (PSID)other) == 0);
+  c = conn_new(f.port);
+  SD_REQUIRE(c != NULL);
+  st = tc_authenticate(c, f.port, f.prefix);
+  SD_CHECK(st == 403 || st == 404);
+  SD_CHECK(st != 207);
+  conn_free(c);
+  fx_down(&f);
+}
+
 SD_TEST(webdav_server_read_only_export)
 {
   fixture f;
