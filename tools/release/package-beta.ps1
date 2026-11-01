@@ -8,7 +8,7 @@
   defaults ON, 04 section 10), builds the setup EXEs and per-machine MSIs of the flavours this repository can
   produce, verifies the upstream Dokany files against installer/dokany/dokany.lock (sd-release dokany verify,
   TM-R23; it never downloads anything), produces the payload tables and, when -Seed is given, signs them and
-  reattaches the payloads with PAYLOAD_SIG (SD_PAYLOAD_SIG, TM-R38) plus the DOKANY_X64/X86 resources (04 §7.3).
+  reattaches the payloads with PAYLOAD_SIG (SD_PAYLOAD_SIG, TM-R38) plus the DOKANY_X64/X86 resources (04 section 7.3).
   Then SHA256SUMS + SHA256SUMS.sig and the signed beta manifest (TM-R36: at most 14 days), and every signature is
   verified again with sd-release verify. Without -Seed it stops after the UNSIGNED artifacts and
   payload-tables.txt, so the signing can happen elsewhere (an offline session, a CI signing job).
@@ -19,7 +19,7 @@
       the repository yet (docs/dev/m4-notes.md, M4 row audit).
     - the MSIs need WiX 3.14; without it every per-machine MSI is skipped.
     - Dokany rides only in the x86-ia32 setup EXE (DOKANY_X64 + DOKANY_X86): the lock pins no ARM64 installer and
-      there is no ARM32 one upstream (04 §7.1).
+      there is no ARM32 one upstream (04 section 7.1).
 
   Exit code: 0 ok, 1 a check or build step failed.
 
@@ -44,7 +44,7 @@
   artifacts and payload-tables.txt.
 
 .PARAMETER Gates
-  The release gates record (04 §12.3; default installer\keys\release-gates.txt). Required with -Seed: every
+  The release gates record (04 section 12.3; default installer\keys\release-gates.txt). Required with -Seed: every
   sd-release sign refuses to sign unless the record validates for this version and commit.
 
 .PARAMETER BuildNumber
@@ -131,7 +131,7 @@ function Write-LfText([string]$Path, [string]$Text) {
 }
 
 # Configures the fresh beta tree of a preset (a tree configured for another channel is removed first, so the
-# SD_SETUP_PRERELEASE_NOTICE default is evaluated for beta, 04 §10).
+# SD_SETUP_PRERELEASE_NOTICE default is evaluated for beta, 04 section 10).
 function New-BetaTree([string]$Tree, [string]$PresetName) {
   if ($script:Configured.ContainsKey($Tree)) { return }
   $cache = Join-Path $Tree 'CMakeCache.txt'
@@ -153,7 +153,7 @@ function New-BetaTree([string]$Tree, [string]$PresetName) {
   $script:Configured[$Tree] = $true
 }
 
-# The updater's per-flavour minimum OS (04 §9.2; ARM32 is Windows 10+ best effort, D5).
+# The updater's per-flavour minimum OS (04 section 9.2; ARM32 is Windows 10+ best effort, D5).
 function Get-MinOs([string]$Flavour) {
   switch ($Flavour) {
     'x86-ia32'   { '5.1' }
@@ -164,6 +164,45 @@ function Get-MinOs([string]$Flavour) {
     'arm32'      { '10.0' }
     default      { Fail ("no min-os known for flavour " + $Flavour) }
   }
+}
+
+# Reads one RT_RCDATA resource of a PE file (as a data file, nothing is executed); $null when it is not there.
+function Get-ExeResource([string]$Path, [string]$Name) {
+  if (-not ('SdBetaRes' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class SdBetaRes {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr LoadLibraryExW(string f, IntPtr h, uint flags);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr FindResourceW(IntPtr m, string name, IntPtr type);
+  [DllImport("kernel32.dll")] static extern uint SizeofResource(IntPtr m, IntPtr r);
+  [DllImport("kernel32.dll")] static extern IntPtr LoadResource(IntPtr m, IntPtr r);
+  [DllImport("kernel32.dll")] static extern IntPtr LockResource(IntPtr r);
+  [DllImport("kernel32.dll")] static extern bool FreeLibrary(IntPtr m);
+  public static byte[] Get(string path, string name) {
+    IntPtr m = LoadLibraryExW(path, IntPtr.Zero, 2);
+    if (m == IntPtr.Zero) throw new Exception("cannot load " + path);
+    try {
+      IntPtr r = FindResourceW(m, name, (IntPtr)10);
+      if (r == IntPtr.Zero) return null;
+      uint n = SizeofResource(m, r);
+      byte[] b = new byte[n];
+      Marshal.Copy(LockResource(LoadResource(m, r)), b, 0, (int)n);
+      return b;
+    } finally { FreeLibrary(m); }
+  }
+}
+"@
+  }
+  return [SdBetaRes]::Get($Path, $Name)
+}
+
+function Test-BytesEqual([byte[]]$A, [byte[]]$B) {
+  if ($null -eq $A -or $null -eq $B -or $A.Length -ne $B.Length) { return $false }
+  for ($i = 0; $i -lt $A.Length; $i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+  return $true
 }
 
 function Invoke-Summary {
@@ -225,7 +264,7 @@ if (Test-Path $OutDir) { Remove-Item (Join-Path $OutDir '*') -Recurse -Force -Co
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 # The flavours: setup EXEs only where the repository builds a setup stub and payload; MSIs for every flavour the
-# packaging supports (the x64 pair and the x86 pair share one UpgradeCode, 04 §8.2).
+# packaging supports (the x64 pair and the x86 pair share one UpgradeCode, 04 section 8.2).
 $flavours = @(
   @{ Preset = 'x64-modern'; Flavour = 'x64-modern'; Setup = $false; Msi = $true },
   @{ Preset = 'x64-xp';     Flavour = 'x64-xp';     Setup = $false; Msi = $true },
@@ -236,7 +275,7 @@ $flavours = @(
 )
 $setupFlavours = @('x86-ia32', 'arm64', 'arm32')   # presets whose apps/shelldrive-setup builds a stub + payload
 foreach ($f in $flavours | Where-Object { -not $_.Setup }) {
-  Skip ("the setup EXE of $($_.Flavour): no payload target for that preset; the universal EXE assembly is release-pipeline work not in the repository yet (m4-notes, M4 row audit)")
+  Skip ("the setup EXE of $($f.Flavour): no payload target for that preset; the universal EXE assembly is release-pipeline work not in the repository yet (m4-notes, M4 row audit)")
 }
 
 $script:ReleaseFiles = New-Object System.Collections.ArrayList
@@ -287,6 +326,7 @@ foreach ($f in $flavours | Where-Object { $_.Msi -and $script:HaveWix }) {
 $unsigned = Join-Path $work 'unsigned'
 New-Item -ItemType Directory -Force $unsigned | Out-Null
 $msiFiles = @{}
+$msiSources = @{}
 foreach ($f in $flavours) {
   $tree = Join-Path $BuildRoot ('beta-' + $f.Preset)
   if ($f.Setup) {
@@ -298,6 +338,7 @@ foreach ($f in $flavours) {
     $msis = @(Get-ChildItem -Path (Join-Path $tree 'msi\Release') -Filter '*.msi' -File -ErrorAction SilentlyContinue)
     if ($msis.Count -eq 0) { Fail ("no MSI built in " + (Join-Path $tree 'msi\Release')) }
     $msiFiles[$f.Flavour] = "ShellDrive-$Version-$($f.Flavour).msi"
+    $msiSources[$f.Flavour] = $msis[0].FullName
     [void]$script:ReleaseFiles.Add($msiFiles[$f.Flavour])
   }
 }
@@ -306,6 +347,8 @@ foreach ($name in $script:ReleaseFiles) {
   if ($name -like '*.exe') {
     $flavour = $name -replace [regex]::Escape("ShellDrive-$Version-setup-"), '' -replace '\.exe$', ''
     $src = Join-Path (Join-Path $BuildRoot ('beta-' + $flavour)) 'bin\Release\shelldrive-setup.exe'
+  } elseif ($name -like '*.msi') {
+    $src = $msiSources[($name -replace [regex]::Escape("ShellDrive-$Version-"), '' -replace '\.msi$', '')]
   }
   Copy-Item $src (Join-Path $unsigned $name) -Force
 }
@@ -394,7 +437,7 @@ Invoke-Checked 'SHA256SUMS' $sdRelease (@('sums', '--out', $sumsPath) + $release
 $sumsSig = Join-Path $OutDir 'SHA256SUMS.sig'
 Invoke-Checked 'sign SHA256SUMS' $sdRelease (@('sign', '--kind', 'sums', '--seed', $Seed, '--in', $sumsPath, '--out', $sumsSig, '--sig-only') + $gatesArgs)
 
-# The update manifest of the beta channel (04 §9.2; TM-R36: beta expires within 14 days).
+# The update manifest of the beta channel (04 section 9.2; TM-R36: beta expires within 14 days).
 $keysetVersion = '1'
 foreach ($line in (Get-Content $keysetTxt)) {
   if ($line -match '^version (\d+)$') { $keysetVersion = $Matches[1] }
@@ -448,6 +491,37 @@ foreach ($flavour in $tables.Keys) {
 }
 Invoke-Checked 'verify SHA256SUMS' $sdRelease @('verify', '--kind', 'sums', '--pub', $pubFile, '--in', $sumsPath, '--sig', $sumsSig)
 Invoke-Checked 'verify manifest' $sdRelease @('verify', '--kind', 'manifest', '--pub', $pubFile, '--in', $manifestPath)
+
+# The final setup EXEs themselves: their embedded PAYLOAD_TABLE and PAYLOAD_SIG must be exactly the bytes that were
+# signed (PAYLOAD_SIG covers the exact PAYLOAD_TABLE bytes, TM-R38), verify against the release-beta key that is in
+# the compiled-in keyring (checked against keyset.txt above), and the embedded Dokany files must be the lock's.
+foreach ($flavour in $tables.Keys) {
+  $exe = Join-Path $OutDir ("ShellDrive-$Version-setup-$flavour.exe")
+  $resTable = Get-ExeResource $exe 'PAYLOAD_TABLE'
+  $resSig = Get-ExeResource $exe 'PAYLOAD_SIG'
+  if (-not (Test-BytesEqual $resTable ([IO.File]::ReadAllBytes($tables[$flavour].Table)))) {
+    Fail ("PAYLOAD_TABLE inside $exe is not the signed table of $flavour")
+  }
+  if (-not (Test-BytesEqual $resSig ([IO.File]::ReadAllBytes($sigs[$flavour])))) {
+    Fail ("PAYLOAD_SIG inside $exe is not the signature made over the table of $flavour")
+  }
+  $xTable = Join-Path $work "embedded-$flavour.table"
+  $xSig = Join-Path $work "embedded-$flavour.sig"
+  [IO.File]::WriteAllBytes($xTable, $resTable)
+  [IO.File]::WriteAllBytes($xSig, $resSig)
+  Invoke-Checked ("verify the PAYLOAD_SIG embedded in the setup EXE ($flavour)") $sdRelease @('verify', '--kind', 'payload', '--pub', $pubFile, '--in', $xTable, '--sig', $xSig)
+  $hasD64 = $null -ne (Get-ExeResource $exe 'DOKANY_X64')
+  $hasD86 = $null -ne (Get-ExeResource $exe 'DOKANY_X86')
+  $wantDokany = ($flavour -eq 'x86-ia32')
+  if ($wantDokany) {
+    if (-not (Test-BytesEqual (Get-ExeResource $exe 'DOKANY_X64') ([IO.File]::ReadAllBytes($dokany64))) -or
+        -not (Test-BytesEqual (Get-ExeResource $exe 'DOKANY_X86') ([IO.File]::ReadAllBytes($dokany86)))) {
+      Fail ("the Dokany resources inside $exe are not the verified lock files")
+    }
+  } elseif ($hasD64 -or $hasD86) {
+    Fail ("$exe embeds a Dokany resource it must not carry")
+  }
+}
 
 # ---- 10. the release notes ------------------------------------------------------------------
 
