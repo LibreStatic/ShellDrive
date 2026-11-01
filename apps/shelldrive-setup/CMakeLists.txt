@@ -11,6 +11,17 @@
 
 include(SdPayload)
 
+# Pre-release notice on the setup's first page (04 §10, D48): beta-channel setups are public pre-releases whose
+# cryptography no external review has covered yet, so their welcome page warns; stable builds say nothing.
+# On by default for the beta channel, off otherwise; the cache keeps an explicit -D value over a channel change.
+if(SD_SETUP_CHANNEL STREQUAL "beta")
+  set(_sd_notice_default ON)
+else()
+  set(_sd_notice_default OFF)
+endif()
+option(SD_SETUP_PRERELEASE_NOTICE "Show the pre-release cryptography notice on the setup's welcome page (04 §10, D48)"
+       "${_sd_notice_default}")
+
 sd_add_l10n_catalog(installer DOMAINS installer)
 
 sd_setup_generate_regtable(SD_SETUP_REGTABLE_C)
@@ -47,6 +58,10 @@ add_library(sd_setup_core STATIC
 target_include_directories(sd_setup_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(sd_setup_core PRIVATE "${_sd_setup_host_dir}")
 target_link_libraries(sd_setup_core PUBLIC sd_headers sd_l10n sd_l10n_catalog_installer sd_base sd_payload_sig)
+if(SD_SETUP_PRERELEASE_NOTICE)
+  # PUBLIC: the stub's own files (setup_main.c, setup_ui.c) see it through sd_setup_core, like SD_SETUP_BUILD_CHANNEL.
+  target_compile_definitions(sd_setup_core PUBLIC "SD_SETUP_PRERELEASE_NOTICE=1")
+endif()
 set_target_properties(sd_setup_core PROPERTIES FOLDER "apps")
 
 if(SD_FLAVOUR STREQUAL "x86-ia32" OR SD_FLAVOUR STREQUAL "arm64" OR SD_FLAVOUR STREQUAL "arm32")

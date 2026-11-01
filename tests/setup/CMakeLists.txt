@@ -11,3 +11,9 @@ sd_add_unit_test(engine
   DEPS sd_setup_core sd_crypto)
 # test_trust.c uses the service's svc_repair.h seam (the same owner rule as tests/unit/sd_svc/test_repair.c).
 target_include_directories(sd-test-engine PRIVATE "${CMAKE_SOURCE_DIR}/apps/shelldrive-host")
+
+# The pre-release notice exists in all six catalogs (04 §10, D48); the flow logic is covered by unit.engine.
+add_test(NAME setup.l10n.prerelease_notice
+         COMMAND "${CMAKE_COMMAND}" "-DPO_DIR=${CMAKE_SOURCE_DIR}/l10n/installer"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/check_prerelease_notice.cmake")
+set_tests_properties(setup.l10n.prerelease_notice PROPERTIES LABELS setup)

@@ -438,3 +438,8 @@ msgstr "L'installazione per tutti gli utenti non è riuscita con il codice {code
 msgctxt "installer.error.payload_signature"
 msgid "The setup program's release signature could not be verified. Download it again."
 msgstr "Impossibile verificare la firma di rilascio del programma di installazione. Scaricalo di nuovo."
+
+#. Visible warning on the welcome page of beta builds: the cryptography is not externally reviewed yet (04 §10, D48).
+msgctxt "installer.welcome.prerelease"
+msgid "Pre-release: the cryptography in this version has not yet been reviewed externally. Use it with test servers and test keys."
+msgstr "Versione preliminare: la crittografia di questa versione non è ancora stata revisionata esternamente. Usala con server e chiavi di prova."

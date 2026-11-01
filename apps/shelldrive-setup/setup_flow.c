@@ -12,6 +12,11 @@ sd_flow_page sd_flow_first(const sd_flow_input *in)
   return SD_FLOW_WELCOME;
 }
 
+int sd_flow_welcome_notice(const sd_flow_input *in, int enabled)
+{
+  return enabled != 0 && !in->quiet && !in->passive && !in->uninstall;
+}
+
 /* The page that follows the mode decision: the destination for a portable copy without a folder, the Dokany
    page for the all-users choice, otherwise the progress page. */
 static sd_flow_page after_mode(const sd_flow_input *in, sd_setup_mode mode)

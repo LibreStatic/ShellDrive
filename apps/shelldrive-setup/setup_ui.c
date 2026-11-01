@@ -52,6 +52,7 @@ struct sd_setup_ui {
   wchar_t uninstall_dir[MAX_PATH];
   sd_setup_dokany_plan dokany_plan;
   sd_setup_mode default_mode;
+  int welcome_notice;            /* the build carries the pre-release notice and the welcome page shows it */
 };
 
 /* Folder dialog and item-list helpers: shell32 and ole32 entry points resolved at run time (04 §2.4). */
@@ -222,9 +223,13 @@ static void set_buttons(sd_setup_ui *ui, int show, int back_on, sd_msg_id next_l
 static void build_welcome(sd_setup_ui *ui, int back_on)
 {
   wchar_t buf[512];
+  int x = SD_UI_MARGIN, w = SD_UI_CLIENT_W - 2 * SD_UI_MARGIN;
   add_heading(ui, SD_MSG_INSTALLER_WELCOME_TITLE);
-  add_text(ui, text_of(SD_MSG_INSTALLER_WELCOME_TEXT, NULL, buf, SD_SETUP_COUNTOF(buf)), SD_UI_MARGIN, 48,
-           SD_UI_CLIENT_W - 2 * SD_UI_MARGIN, 80, SD_ID_BODY);
+  add_text(ui, text_of(SD_MSG_INSTALLER_WELCOME_TEXT, NULL, buf, SD_SETUP_COUNTOF(buf)), x, 48, w, 80, SD_ID_BODY);
+  /* Beta builds before crypto review pass 1 (04 §10, D48): a visible warning, not a tooltip. */
+  if (ui->welcome_notice)
+    add_text(ui, text_of(SD_MSG_INSTALLER_WELCOME_PRERELEASE, NULL, buf, SD_SETUP_COUNTOF(buf)), x, 150, w, 72,
+             SD_ID_NOTE);
   set_buttons(ui, 1, back_on, SD_MSG_INSTALLER_BUTTON_NEXT);
 }
 
@@ -474,6 +479,7 @@ int sd_setup_ui_run_pages(sd_setup_ui *ui, const sd_flow_input *in, const sd_set
   StringCchCopyW(ui->portable_dir, SD_SETUP_COUNTOF(ui->portable_dir), d->portable_dir ? d->portable_dir : L"");
   ui->dokany_plan = d->dokany_plan;
   ui->default_mode = d->mode;
+  ui->welcome_notice = sd_flow_welcome_notice(in, SD_SETUP_PRERELEASE_NOTICE);
 
   out->mode = (d->mode == SD_SETUP_MODE_AUTO) ? SD_SETUP_MODE_USER : d->mode;
   StringCchCopyW(out->portable_dir, SD_SETUP_COUNTOF(out->portable_dir), ui->portable_dir);
@@ -531,6 +537,7 @@ int sd_setup_ui_test_pages(sd_setup_ui *ui, const sd_flow_input *in, const sd_se
   StringCchCopyW(ui->portable_dir, SD_SETUP_COUNTOF(ui->portable_dir), d->portable_dir ? d->portable_dir : L"");
   ui->dokany_plan = d->dokany_plan;
   ui->default_mode = d->mode;
+  ui->welcome_notice = sd_flow_welcome_notice(in, SD_SETUP_PRERELEASE_NOTICE);
   c.mode = (d->mode == SD_SETUP_MODE_AUTO) ? SD_SETUP_MODE_USER : d->mode;
 
   ui->failed = 0;

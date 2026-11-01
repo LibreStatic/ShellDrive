@@ -230,6 +230,7 @@ typedef struct sd_setup_install_opts {
   int autostart;
   int force;
   int update;
+  int notice_shown;              /* a page showed the pre-release notice (04 §10, D48); silent runs log it instead */
   int skip_shortcut;
   int skip_hooks;
   int skip_agents;               /* tests only: never signal or wait for running agents */
@@ -244,6 +245,7 @@ typedef struct sd_setup_uninstall_opts {
   const wchar_t *install_dir;    /* NULL = the InstallDir value of the account registration */
   const wchar_t *programs_dir;
   int force;
+  int notice_shown;              /* a page showed the pre-release notice (04 §10, D48); silent runs log it instead */
   int skip_shortcut;
   int skip_hooks;
   int skip_agents;               /* tests only: never signal or wait for running agents */

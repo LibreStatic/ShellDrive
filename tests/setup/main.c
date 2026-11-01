@@ -36,6 +36,7 @@ SD_TEST_DECL(setup_flow_terminates_for_every_input);
 SD_TEST_DECL(setup_flow_dokany_view_states);
 SD_TEST_DECL(setup_flow_dokany_plan_by_mode);
 SD_TEST_DECL(setup_flow_names_and_titles);
+SD_TEST_DECL(setup_flow_welcome_notice);
 SD_TEST_DECL(setup_programdata_trust);
 SD_TEST_DECL(setup_stage_dir_fresh_names);
 SD_TEST_DECL(setup_dokany_pe_vcr_state);
@@ -121,6 +122,7 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(setup_flow_dokany_view_states),
   SD_TEST_ENTRY(setup_flow_dokany_plan_by_mode),
   SD_TEST_ENTRY(setup_flow_names_and_titles),
+  SD_TEST_ENTRY(setup_flow_welcome_notice),
   SD_TEST_ENTRY(setup_programdata_trust),
   SD_TEST_ENTRY(setup_stage_dir_fresh_names),
   SD_TEST_ENTRY(setup_dokany_pe_vcr_state),
