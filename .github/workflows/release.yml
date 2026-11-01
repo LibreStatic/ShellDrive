@@ -283,9 +283,10 @@ jobs:
     permissions:
       contents: write
       actions: read
-    environment: beta-signing
+    # No environment here: the seed secret of beta-signing is not exposed to this job (it was approved at sign-beta).
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download the signed beta release of this run
         shell: pwsh
