@@ -2,6 +2,7 @@
  *
  *   sd-payload --base <stub.exe> --out <setup.exe> --flavour <x86-ia32|...> --cab <payload.cab>
  *              [--channel <stable|beta>] [--sig <sig.txt>]
+ *              [--dokany-x64 <Dokan_x64.msi>] [--dokany-x86 <Dokan_x86.msi>]
  *
  * Writes the stub to <setup.exe> and adds RT_RCDATA resources with UpdateResourceW:
  *   PAYLOAD_<FLAVOUR>  the CAB bytes (the flavour name in upper case, '-' replaced by '_');
@@ -10,6 +11,8 @@
  *                      without it, the legacy single line (the stub refuses it: no signature can match).
  *   PAYLOAD_SIG        --sig: the one-line "sig ed25519 ..." signature of the table (TM-R38), made by
  *                      tools/sd-release sign --domain payload.
+ *   DOKANY_X64/X86     --dokany-x64/--dokany-x86: the upstream Dokany installer of that architecture, unmodified
+ *                      (04 §6.1, §7.3; the lock's size and SHA-256 are checked by the caller, at embed time).
  * Build-time tool, never shipped; the console and the CRT are fine here, unlike in the stub. */
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <windows.h>
@@ -53,10 +56,12 @@ static unsigned char *read_file(const char *path, size_t *size)
 int main(int argc, char **argv)
 {
   const char *base = NULL, *out = NULL, *flavour = NULL, *cab = NULL, *channel = NULL, *sigpath = NULL;
+  const char *dok64path = NULL, *dok86path = NULL;
   wchar_t resname[64];
   wchar_t wflav[32];
   unsigned char *cab_bytes, *stub_bytes = NULL, *sig_bytes = NULL;
-  size_t cab_size = 0, stub_size = 0, sig_size = 0;
+  unsigned char *dok64_bytes = NULL, *dok86_bytes = NULL;
+  size_t cab_size = 0, stub_size = 0, sig_size = 0, dok64_size = 0, dok86_size = 0;
   unsigned char sha[32];
   char hex[65];
   char table[512];
@@ -80,11 +85,16 @@ int main(int argc, char **argv)
       channel = argv[i + 1];
     else if (strcmp(argv[i], "--sig") == 0)
       sigpath = argv[i + 1];
+    else if (strcmp(argv[i], "--dokany-x64") == 0)
+      dok64path = argv[i + 1];
+    else if (strcmp(argv[i], "--dokany-x86") == 0)
+      dok86path = argv[i + 1];
     else
       return fail("unknown option");
   }
   if (base == NULL || out == NULL || flavour == NULL || cab == NULL)
-    return fail("usage: sd-payload --base <stub> --out <exe> --flavour <name> --cab <cab> [--channel c] [--sig f]");
+    return fail("usage: sd-payload --base <stub> --out <exe> --flavour <name> --cab <cab> "
+                "[--channel c] [--sig f] [--dokany-x64 f] [--dokany-x86 f]");
   if (strlen(flavour) >= sizeof(wflav) / sizeof(wflav[0]) - 1)
     return fail("flavour name too long");
   if (channel != NULL && strcmp(channel, "stable") != 0 && strcmp(channel, "beta") != 0)
@@ -97,6 +107,16 @@ int main(int argc, char **argv)
     sig_bytes = read_file(sigpath, &sig_size);
     if (sig_bytes == NULL || sig_size == 0 || sig_size > 256)
       return fail("cannot read the signature file");
+  }
+  if (dok64path != NULL) {
+    dok64_bytes = read_file(dok64path, &dok64_size);
+    if (dok64_bytes == NULL || dok64_size == 0)
+      return fail("cannot read the Dokany x64 package");
+  }
+  if (dok86path != NULL) {
+    dok86_bytes = read_file(dok86path, &dok86_size);
+    if (dok86_bytes == NULL || dok86_size == 0)
+      return fail("cannot read the Dokany x86 package");
   }
   stub_bytes = read_file(base, &stub_size);
   if (stub_bytes == NULL || stub_size == 0)
@@ -147,16 +167,28 @@ int main(int argc, char **argv)
   if (!UpdateResourceW(upd, RT_RCDATA, resname, 0, cab_bytes, (DWORD)cab_size) ||
       !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_TABLE", 0, table, (DWORD)strlen(table)) ||
       (sig_bytes != NULL &&
-       !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_SIG", 0, sig_bytes, (DWORD)sig_size))) {
+       !UpdateResourceW(upd, RT_RCDATA, L"PAYLOAD_SIG", 0, sig_bytes, (DWORD)sig_size)) ||
+      (dok64_bytes != NULL &&
+       !UpdateResourceW(upd, RT_RCDATA, L"DOKANY_X64", 0, dok64_bytes, (DWORD)dok64_size)) ||
+      (dok86_bytes != NULL &&
+       !UpdateResourceW(upd, RT_RCDATA, L"DOKANY_X86", 0, dok86_bytes, (DWORD)dok86_size))) {
     EndUpdateResourceW(upd, TRUE);
     return fail("UpdateResource failed");
   }
   if (!EndUpdateResourceW(upd, FALSE))
     rc = fail("EndUpdateResource failed");
 
-  if (rc == 0)
+  if (rc == 0) {
     printf("sd-payload: %s (%lu bytes, sha256 %s)\n", out, (unsigned long)cab_size, hex);
+    if (dok64_bytes != NULL)
+      printf("sd-payload: %s DOKANY_X64 (%lu bytes)\n", out, (unsigned long)dok64_size);
+    if (dok86_bytes != NULL)
+      printf("sd-payload: %s DOKANY_X86 (%lu bytes)\n", out, (unsigned long)dok86_size);
+  }
   free(cab_bytes);
   free(stub_bytes);
+  free(sig_bytes);
+  free(dok64_bytes);
+  free(dok86_bytes);
   return rc;
 }

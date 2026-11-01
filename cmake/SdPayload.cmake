@@ -14,7 +14,9 @@
 #       cabinet, and sd-payload embeds the CAB and its hash in shelldrive-setup.exe, so the build clock
 #       would break the reproducible-build check (04 §12.2). Then tools/sd-payload attaches the CAB and the
 #       PAYLOAD_TABLE hash to a copy of the stub as RT_RCDATA, with --channel SD_SETUP_CHANNEL and, when
-#       SD_PAYLOAD_SIG names a file, the PAYLOAD_SIG resource made offline by tools/sd-release (TM-R38).
+#       SD_PAYLOAD_SIG names a file, the PAYLOAD_SIG resource made offline by tools/sd-release (TM-R38). When
+#       SD_PAYLOAD_DOKANY_X64/X86 name the upstream files (checked against installer/dokany/dokany.lock by the
+#       caller, 04 §7.3), their DOKANY_X64/X86 resources are attached too.
 #       Result: <out_exe>, a custom target shelldrive-setup depends on it.
 
 # Channel of the payload table (stable or beta; the stub refuses a table of the other channel, TM-R38).
@@ -29,6 +31,11 @@ endif()
 # One-line signature of the payload table (sd-release sign --kind payload --sig-only). Empty: no PAYLOAD_SIG, and the
 # stub refuses the payload until one is attached (the release pipeline supplies it).
 set(SD_PAYLOAD_SIG "" CACHE FILEPATH "Signature file of the payload table (PAYLOAD_SIG); empty: none")
+# The upstream Dokany installers embedded as DOKANY_X64 / DOKANY_X86 (04 §6.1, §7.3, TM-R23). The caller has checked
+# them against installer/dokany/dokany.lock (sd-release dokany verify) at embed time; sd-payload embeds them unmodified.
+# Empty: the resource is not attached (the stub then offers no Dokany install of that architecture).
+set(SD_PAYLOAD_DOKANY_X64 "" CACHE FILEPATH "Dokan_x64.msi embedded as DOKANY_X64 (04 §7.3); empty: none")
+set(SD_PAYLOAD_DOKANY_X86 "" CACHE FILEPATH "Dokan_x86.msi embedded as DOKANY_X86 (04 §7.3); empty: none")
 
 function(sd_setup_generate_regtable out_var)
   set(_src "${CMAKE_SOURCE_DIR}/packaging/registration.txt")
@@ -199,12 +206,21 @@ ${_ddf_members}")
   add_dependencies(shelldrive-setup-payload-${flavour} shelldrive shelldrive-host ${_ui_targets} ${stub_target} ${_msi_target} ${_x86_target})
   set_target_properties(shelldrive-setup-payload-${flavour} PROPERTIES FOLDER "apps")
 
-  # The table channel and, when given, the PAYLOAD_SIG file (tools/sd-release sign --kind payload --sig-only).
+  # The table channel and, when given, the PAYLOAD_SIG file (tools/sd-release sign --kind payload --sig-only) and the
+  # Dokany installers (DOKANY_X64 / DOKANY_X86, 04 §7.3).
   set(_sig_args "")
   set(_sig_deps "")
   if(NOT SD_PAYLOAD_SIG STREQUAL "")
-    set(_sig_args --sig "${SD_PAYLOAD_SIG}")
-    set(_sig_deps "${SD_PAYLOAD_SIG}")
+    list(APPEND _sig_args --sig "${SD_PAYLOAD_SIG}")
+    list(APPEND _sig_deps "${SD_PAYLOAD_SIG}")
+  endif()
+  if(NOT SD_PAYLOAD_DOKANY_X64 STREQUAL "")
+    list(APPEND _sig_args --dokany-x64 "${SD_PAYLOAD_DOKANY_X64}")
+    list(APPEND _sig_deps "${SD_PAYLOAD_DOKANY_X64}")
+  endif()
+  if(NOT SD_PAYLOAD_DOKANY_X86 STREQUAL "")
+    list(APPEND _sig_args --dokany-x86 "${SD_PAYLOAD_DOKANY_X86}")
+    list(APPEND _sig_deps "${SD_PAYLOAD_DOKANY_X86}")
   endif()
 
   set(_final "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shelldrive-setup.exe")
