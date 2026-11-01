@@ -1170,6 +1170,13 @@ static int dk_file_line(dk_lock *l, const char *rest, size_t n, unsigned lineno)
   return 0;
 }
 
+/* 1 when the first kl characters of line (NUL-terminated) are exactly key. */
+static int dk_key_is(const char *line, size_t kl, const char *key)
+{
+  size_t n = strlen(key);
+  return kl == n && strncmp(line, key, n) == 0;
+}
+
 /* Parses a whole lock (the caller has checked the bytes). 0 on success; -1 with a message. */
 static int dk_parse(const char *s, size_t n, dk_lock *l)
 {
@@ -1199,7 +1206,7 @@ static int dk_parse(const char *s, size_t n, dk_lock *l)
     kl = p != NULL ? (size_t)(p - line) : len;
     vl = p != NULL ? len - kl - 1 : 0;
     if (!l->have_magic) {
-      if (kl != 11 || memcmp(line, "dokany-lock", 11) != 0)
+      if (!dk_key_is(line, kl, "dokany-lock"))
         return dk_bad(lineno, "the first line must be: dokany-lock 1");
       if (vl != 1 || p[1] != '1')
         return dk_bad(lineno, "the first line must be: dokany-lock 1");
@@ -1208,42 +1215,42 @@ static int dk_parse(const char *s, size_t n, dk_lock *l)
     }
     if (p == NULL)
       return dk_bad(lineno, "a key line is: key value");
-    if (kl == 7 && memcmp(line, "version", 7) == 0) {
+    if (dk_key_is(line, kl, "version")) {
       if (l->have_version++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->version, sizeof(l->version)) != 0 || !dk_valid_version(p + 1, vl))
         return dk_bad(lineno, "the version is 1 to 4 dot-separated numbers");
-    } else if (kl == 7 && memcmp(line, "min-api", 7) == 0) {
+    } else if (dk_key_is(line, kl, "min-api")) {
       if (l->have_min_api++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->min_api, sizeof(l->min_api)) != 0 || !dk_valid_version(p + 1, vl))
         return dk_bad(lineno, "min-api is 1 to 4 dot-separated numbers");
-    } else if (kl == 9 && memcmp(line, "signer-cn", 9) == 0) {
+    } else if (dk_key_is(line, kl, "signer-cn")) {
       if (l->have_signer_cn++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->signer_cn, sizeof(l->signer_cn)) != 0)
         return dk_bad(lineno, "signer-cn is too long");
-    } else if (kl == 16 && memcmp(line, "signer-issuer-cn", 16) == 0) {
+    } else if (dk_key_is(line, kl, "signer-issuer-cn")) {
       if (l->have_signer_issuer++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->signer_issuer, sizeof(l->signer_issuer)) != 0)
         return dk_bad(lineno, "signer-issuer-cn is too long");
-    } else if (kl == 12 && memcmp(line, "url-upstream", 12) == 0) {
+    } else if (dk_key_is(line, kl, "url-upstream")) {
       if (l->have_url_upstream++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->url_upstream, sizeof(l->url_upstream)) != 0)
         return dk_bad(lineno, "url-upstream is too long");
-    } else if (kl == 10 && memcmp(line, "url-mirror", 10) == 0) {
+    } else if (dk_key_is(line, kl, "url-mirror")) {
       if (l->have_url_mirror++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->url_mirror, sizeof(l->url_mirror)) != 0)
         return dk_bad(lineno, "url-mirror is too long");
-    } else if (kl == 7 && memcmp(line, "checked", 7) == 0) {
+    } else if (dk_key_is(line, kl, "checked")) {
       if (l->have_checked++)
         return dk_bad(lineno, "duplicate key");
       if (dk_value(p + 1, vl, l->checked, sizeof(l->checked)) != 0 || !dk_valid_date(p + 1, vl))
         return dk_bad(lineno, "checked is a YYYY-MM-DD date");
-    } else if (kl == 4 && memcmp(line, "file", 4) == 0) {
+    } else if (dk_key_is(line, kl, "file")) {
       if (dk_file_line(l, p + 1, vl, lineno) != 0)
         return -1;
     } else {
