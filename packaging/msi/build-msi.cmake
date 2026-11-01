@@ -7,8 +7,8 @@
 #
 # Variables (all required):
 #   SD_MSI_FLAVOUR, SD_MSI_FAMILY (the UpgradeCode family: x86, x64, arm32, arm64), SD_MSI_VERSION
-#   SD_MSI_ARCH (candle -arch: x86, x64, arm64), SD_MSI_INSTALLER_VERSION (301 or 500), SD_MSI_PF (the
-#   Program Files folder property), SD_MSI_WIN64 (yes or no), SD_MSI_LAUNCH (none or win10),
+#   SD_MSI_ARCH (candle -arch: x86, x64, arm, arm64), SD_MSI_INSTALLER_VERSION (301 or 500), SD_MSI_PF (the
+#   Program Files folder property), SD_MSI_WIN64 (yes or no), SD_MSI_LAUNCH (none, win10 or arm32),
 #   SD_MSI_WITH_SERVICE (0 or 1), SD_MSI_UPGRADE_CODE
 #   SD_MSI_BIN (the folder of the four binaries), SD_MSI_ICON, SD_MSI_SRC (packaging/msi), SD_MSI_GEN (build
 #   folder for generated files), SD_MSI_OUT (the final package is SD_MSI_OUT/ShellDrive-<version>-<flavour>.msi),
@@ -16,12 +16,14 @@
 #   SD_MSI_LICENSE (the LICENSE file of the repository: the license page of the dialog set), SD_MSIGEN, SD_MSIEMBED
 #   (tool paths), SD_MSI_SHELLEXT32 (1 on the x64 flavours: the x86-sse2 shell extension goes to INSTALLDIR and
 #   is registered in the 32-bit view, 04 §8.3; 0 otherwise) and SD_MSI_BIN32 (the folder of that x86 DLL; any
-#   non-empty folder when SD_MSI_SHELLEXT32 is 0).
+#   non-empty folder when SD_MSI_SHELLEXT32 is 0), SD_MSI_UI (1: the package carries the UI, the shell extension
+#   and the Start menu shortcut; 0 on ARM32, CLI and host only, 04 §5.1) and SD_MSI_DOKANY (1: the options page
+#   offers the Dokany backend; 0 on ARM32, which has no Dokany, 04 §7.1).
 
 foreach(_v IN ITEMS SD_MSI_FLAVOUR SD_MSI_FAMILY SD_MSI_VERSION SD_MSI_ARCH SD_MSI_INSTALLER_VERSION SD_MSI_PF
                     SD_MSI_WIN64 SD_MSI_LAUNCH SD_MSI_WITH_SERVICE SD_MSI_UPGRADE_CODE SD_MSI_BIN SD_MSI_ICON
                     SD_MSI_SRC SD_MSI_GEN SD_MSI_OUT SD_MSI_REG SD_MSI_PO SD_MSI_WIX SD_MSI_LICENSE SD_MSIGEN SD_MSIEMBED
-                    SD_MSI_SHELLEXT32 SD_MSI_BIN32)
+                    SD_MSI_SHELLEXT32 SD_MSI_BIN32 SD_MSI_UI SD_MSI_DOKANY)
   if("${${_v}}" STREQUAL "")
     message(FATAL_ERROR "build-msi.cmake: ${_v} is not set")
   endif()
@@ -93,9 +95,14 @@ if(SD_MSI_SHELLEXT32 STREQUAL "1")
 else()
   set(_shellext32_yes no)
 endif()
+if(SD_MSI_UI STREQUAL "1")
+  set(_ui_yes yes)
+else()
+  set(_ui_yes no)
+endif()
 sd_msi_step("sd-msigen registry" "${SD_MSIGEN}" registry --in "${SD_MSI_REG}" --out "${_work}/Registry.wxi"
             --flavour "${SD_MSI_FLAVOUR}" --family "${SD_MSI_FAMILY}" --win64 "${SD_MSI_WIN64}"
-            --shellext32 "${_shellext32_yes}")
+            --shellext32 "${_shellext32_yes}" --ui "${_ui_yes}")
 
 # 2b. The license page (WixUILicenseRtf): the LICENSE file of the repository, converted to RTF for this build. The text
 #     is the only source; no RTF copy is checked in. Backslash, braces and line ends are escaped as RTF needs.
@@ -133,6 +140,7 @@ sd_msi_step("candle" "${_candle}" -nologo -arch "${SD_MSI_ARCH}"
             "-dSD_PF_DIR=${SD_MSI_PF}" "-dSD_WIN64=${SD_MSI_WIN64}" "-dSD_BIN_DIR=${SD_MSI_BIN}"
             "-dSD_ICON=${SD_MSI_ICON}" "-dSD_LAUNCH=${SD_MSI_LAUNCH}" "-dSD_WITH_SERVICE=${SD_MSI_WITH_SERVICE}"
             "-dSD_SHELLEXT32=${SD_MSI_SHELLEXT32}" "-dSD_BIN32_DIR=${SD_MSI_BIN32}"
+            "-dSD_UI=${SD_MSI_UI}" "-dSD_DOKANY=${SD_MSI_DOKANY}"
             "-dSD_LICENSE_RTF=${_license_rtf}"
             -out "${_obj}" "${SD_MSI_SRC}/ShellDrive.wxs")
 

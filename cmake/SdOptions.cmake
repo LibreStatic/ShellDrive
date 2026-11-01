@@ -7,6 +7,7 @@ set(SD_FLAVOUR "" CACHE STRING "Build flavour (x86-ia32, x86-sse2, x64-modern, x
 set_property(CACHE SD_FLAVOUR PROPERTY STRINGS x86-ia32 x86-sse2 x64-modern x64-xp x64-analysis arm64 arm32)
 # Internal: the nested x64 configure that builds the build-time tools for an ARM64 or ARM32 tree (cmake/SdHostTools.cmake).
 option(SD_HOST_TOOLS_ONLY "Internal: configure only the build-time tools for an ARM64 or ARM32 tree" OFF)
+option(SD_HOST_TOOLS_MSI "Internal: the host tools also include the MSI tools (the ARM tree has SD_BUILD_MSI)" OFF)
 # Internal: the nested x86 configure that builds only the 32-bit shell extension for an x64 MSI (cmake/SdShellExtX86.cmake).
 option(SD_SHELLEXT_ONLY "Internal: configure only the x86 shell extension for the x64 MSI" OFF)
 set(SD_X86_ARCH "" CACHE STRING "x86 flavours: code generation floor (IA32 or SSE2, decisions.md D4)")

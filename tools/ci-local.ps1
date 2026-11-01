@@ -11,8 +11,9 @@
 
   arm64 (04 §1.1, M6) and arm32 (04 §1.1, §5.1, D5) are optional, build-only presets: they are not in the default
   list. Each cross-compiles Release and Debug on this x64 machine (the build-time tools come from a nested x64 build)
-  and runs no tests, because ARM binaries cannot run here (04 §11.4). Run them with -Presets arm64 or -Presets arm32,
-  or with the default list plus the ARM preset.
+  and runs no unit tests, because ARM binaries cannot run here (04 §11.4). With WiX 3.14 installed they also build
+  their MSI (D31) and run its msi.* checks in Release: the check tool is the x64 one of the nested build. Run them
+  with -Presets arm64 or -Presets arm32, or with the default list plus the ARM preset.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\ci-local.ps1
@@ -88,6 +89,9 @@ if (-not $NoFixture -and -not $BuildOnly) {
   }
 }
 
+# WiX 3.14 present: the MSI presets below configure with SD_BUILD_MSI.
+$wix = Test-Path (Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14\bin\candle.exe')
+
 $results = @()
 foreach ($preset in $Presets) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -115,9 +119,9 @@ foreach ($preset in $Presets) {
     if (-not $TestOnly) {
       Write-Host "== [$preset] configure"
       # The per-machine MSI (04 section 8) and its table/admin-image tests are built on one x86 and one x64 flavour
-      # when WiX 3.14 is installed; without this the msi.* tests are not even registered.
+      # and on both ARM flavours (D31) when WiX 3.14 is installed; without this the msi.* tests are not even registered.
       $cfgArgs = @('--preset', $preset)
-      if ($preset -in @('x86-ia32', 'x64-modern') -and (Test-Path (Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14\bin\candle.exe'))) {
+      if ($preset -in @('x86-ia32', 'x64-modern', 'arm64', 'arm32') -and $wix) {
         $cfgArgs += '-DSD_BUILD_MSI=ON'
       }
       & $cmake @cfgArgs | Out-Host
@@ -139,8 +143,9 @@ foreach ($preset in $Presets) {
         if ($warn) { throw "build $cfg reported $warn warnings/errors" }
       }
       if ($BuildOnly) { continue }
-      if ($preset -in @('arm64', 'arm32')) {
-        # Build only: ARM test binaries cannot run on this x64 host (04 §11.4); the ARM ctest presets select no tests, so ctest is skipped.
+      if ($preset -in @('arm64', 'arm32') -and (-not $wix -or $cfg -like '*-debug')) {
+        # Build only: ARM test binaries cannot run on this x64 host (04 §11.4). The ARM ctest presets select only the
+        # msi.* checks (x64 tool, Release), so without WiX or in Debug ctest is skipped.
         $note += "$preset $cfg built, not tested (build only); "
         continue
       }

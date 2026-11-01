@@ -291,12 +291,12 @@
     },
     {
       "name": "arm64",
-      "description": "Build-only flavour: ARM64 test binaries cannot run on x64 hosts (04 section 11.4). This preset selects no tests, so ctest exits 0 and reports nothing to run.",
+      "description": "ARM64 test binaries cannot run on x64 hosts (04 section 11.4). This preset selects only the msi.* checks, which run the x64 sd-test-msi of the nested host-tools build on the package (-DSD_BUILD_MSI=ON); without the MSI it selects nothing and ctest exits 0.",
       "configurePreset": "arm64",
       "configuration": "Release",
       "filter": {
         "include": {
-          "name": "^$"
+          "name": "^msi[.]"
         }
       },
       "execution": {
@@ -305,12 +305,12 @@
     },
     {
       "name": "arm32",
-      "description": "Build-only flavour: ARM32 test binaries cannot run on x64 hosts (04 section 11.4). This preset selects no tests, so ctest exits 0 and reports nothing to run.",
+      "description": "ARM32 test binaries cannot run on x64 hosts (04 section 11.4). This preset selects only the msi.* checks, which run the x64 sd-test-msi of the nested host-tools build on the package (-DSD_BUILD_MSI=ON); without the MSI it selects nothing and ctest exits 0.",
       "configurePreset": "arm32",
       "configuration": "Release",
       "filter": {
         "include": {
-          "name": "^$"
+          "name": "^msi[.]"
         }
       },
       "execution": {

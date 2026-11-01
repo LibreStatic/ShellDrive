@@ -59,6 +59,11 @@ SD_TEST_DECL(diag_deny_parse_truncates_at_the_capacity);
 SD_TEST_DECL(diag_netloc_compare_token_lists);
 SD_TEST_DECL(cli_parse_location_verbs);
 SD_TEST_DECL(smoke_location_verbs);
+SD_TEST_DECL(hooks_webdav_tune_apply_and_revert_restore_originals);
+SD_TEST_DECL(hooks_webdav_tune_records_absence_and_repeat_apply_keeps_originals);
+SD_TEST_DECL(hooks_webdav_tune_revert_without_state_is_a_noop);
+SD_TEST_DECL(hooks_webdav_tune_refuses_a_damaged_state);
+SD_TEST_DECL(hooks_webdav_tune_refuses_a_value_of_another_type);
 
 static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(cli_split_follows_msvc_rules),
@@ -120,6 +125,11 @@ static const sd_test_case k_tests[] = {
   SD_TEST_ENTRY(diag_netloc_compare_token_lists),
   SD_TEST_ENTRY(cli_parse_location_verbs),
   SD_TEST_ENTRY(smoke_location_verbs),
+  SD_TEST_ENTRY(hooks_webdav_tune_apply_and_revert_restore_originals),
+  SD_TEST_ENTRY(hooks_webdav_tune_records_absence_and_repeat_apply_keeps_originals),
+  SD_TEST_ENTRY(hooks_webdav_tune_revert_without_state_is_a_noop),
+  SD_TEST_ENTRY(hooks_webdav_tune_refuses_a_damaged_state),
+  SD_TEST_ENTRY(hooks_webdav_tune_refuses_a_value_of_another_type),
 };
 
 int main(int argc, char **argv)

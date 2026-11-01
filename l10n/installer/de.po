@@ -373,6 +373,11 @@ msgctxt "msi.os.required"
 msgid "This package of ShellDrive needs Windows 10 or later. Use the package for your version of Windows."
 msgstr "Dieses ShellDrive-Paket benötigt Windows 10 oder neuer. Nimm das Paket für deine Windows-Version."
 
+#. WiX string OsArm32 of the ARM32 MSI (launch condition, 04 §5.1): Windows 10 on ARM or Windows 11 up to 23H2.
+msgctxt "msi.os.arm32"
+msgid "This package of ShellDrive needs Windows 10 on ARM or Windows 11 version 23H2 or earlier: later versions of Windows no longer run 32-bit ARM apps. Use the ARM64 package."
+msgstr "Dieses ShellDrive-Paket benötigt Windows 10 auf ARM oder Windows 11 Version 23H2 oder älter: Neuere Windows-Versionen führen keine 32-Bit-ARM-Apps mehr aus. Nimm das ARM64-Paket."
+
 # WiX string OptionsTitle of the options page of the Change dialog set (04 §6.7).
 msgctxt "msi.options.title"
 msgid "Options of this installation"

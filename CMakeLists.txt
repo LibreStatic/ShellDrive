@@ -33,6 +33,12 @@ if(SD_HOST_TOOLS_ONLY)
   add_subdirectory(tools/sd-importcheck)
   add_subdirectory(tools/sd-admxgen)
   add_subdirectory(tools/sd-payload)
+  if(SD_HOST_TOOLS_MSI)
+    # The MSI tools of an ARM tree with SD_BUILD_MSI (packaging/msi, tests/msi).
+    add_subdirectory(tools/sd-msigen)
+    add_subdirectory(tools/sd-msiembed)
+    add_subdirectory(tests/msi)
+  endif()
   return()
 endif()
 

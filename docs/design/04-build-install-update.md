@@ -400,8 +400,9 @@ or pre-Windows 10 x64 machines; the MSI launch conditions (§8.2) refuse the wro
 - Implementation status (`wip/r7-arm32`, M6 notes "ARM32 flavour"): the `arm32` preset builds Release and Debug
   with no warnings; the UI, the shell extension and their tests are not built; the setup stub is native ARM32 and
   installs the `PAYLOAD_ARM32` CAB (CLI, host, uninstall.exe). CI and `tools/ci-local.ps1` build it without tests.
-  Not implemented yet: the Windows 11 24H2 and RT/IoT refusals below, the ARM32 MSI (D31), and the ARM32
-  constant-time gate and test run (open items in the M6 notes).
+  The ARM32 MSI (D31) is built by the `arm32` preset with `-DSD_BUILD_MSI=ON` (§8, open item 9): CLI and host only,
+  with the 24H2 and RT refusal as its launch condition. Not implemented yet: the same refusals in the setup EXE, and
+  the ARM32 constant-time gate and test run (open items in the M6 notes).
 - Targets, with their limits:
   - **Windows 10 on ARM64 and Windows 11 up to 23H2 (ARM64 hardware)** run ARM32 desktop apps and include
     Windows Installer 5.0 and WebClient. This is the only realistic target and the one the lab tests.
@@ -1255,8 +1256,13 @@ to the lab (11.4).
    repair or maintenance keeps them. Still open: the lab check of the Installer key and of the ownership rules (install, Change,
    repair, uninstall, and a pre-existing value), and the Dokany driver, which the package does not install or remove.
 8. Reproducibility (12.2): the summary `Created` and `LastSaved` times vary between builds; `SOURCE_DATE_EPOCH` is not applied yet.
-9. ARM32 (D31): no `arm32` preset, so the package is not built. The ARM64 package needs the M6 host-tools path, because an ARM64
-   tree cannot run the MSI tools. `packaging/msi/CMakeLists.txt` refuses `SD_BUILD_MSI` on ARM64 trees.
+9. ARM64 and ARM32 (D31): built (M4). An `arm64` or `arm32` tree with `-DSD_BUILD_MSI=ON` takes `sd-msigen`, `sd-msiembed`
+   and `sd-test-msi` from its nested x64 host-tools build (§2.5, `cmake/SdHostTools.cmake`), so the package and its
+   `msi.<flavour>.*` checks run on the x64 build host. ARM64: `Arm64` template, the x64 parameters otherwise, plus the
+   x86-sse2 shell extension in the 32-bit view. ARM32: `Arm` template, Program Files folder of 32-bit packages, `Core` and
+   `Autostart` only, no Dokany option, launch condition `SD_OSMAJOR >= 10 AND SD_OSBUILD < 26100`. Open: the lab items of
+   §5.1 (template acceptance, install folder, the build cut-off), and the x64 shell extension that x64 apps under emulation
+   on ARM64 would load (§11 row 11).
 10. Lab checks: the install-time behaviour of the hooks, of `ENABLELINKEDCONNECTIONS` (setup returns 3010, 8.4), of the
     `DOKANY` and `UPDATE*` settings, and of the uninstall removal (TST-27) is not verified on this machine.
 
