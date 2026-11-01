@@ -1,0 +1,30 @@
+# installer/dokany/dokany.lock: the pinned Dokany release (docs/design/04-build-install-update.md section 7.3, D32,
+# TM-R23). The package job checks size and SHA-256 of every file below at embed time; setup checks them again, plus
+# the Authenticode signer, right before msiexec or the bundle runs. Files are upstream, byte for byte, never modified.
+#
+# Recorded 2026-11-01 from the files of the upstream release v2.3.1.1000, supplied by the maintainer:
+#   size and SHA-256: Get-FileHash -Algorithm SHA256
+#   signer: Get-AuthenticodeSignature (Status Valid on all three files), full subject:
+#     CN=LEOSAC, O=LEOSAC, STREET=39 rue Principale, PostalCode=67220, L=Breitenau, S=Bas-Rhin, C=FR,
+#     SERIALNUMBER=919 690 420 00014, businessCategory=Private Organization
+#     issuer CN=Certum Extended Validation Code Signing 2021 CA, O=Asseco Data Systems S.A., C=PL
+#   upgrade-code and product version: the Property table of each MSI (WindowsInstaller.Installer, read-only)
+#   vcruntime: dumpbin /dependents on dokan2.dll (File key DokanDLL) extracted from each MSI's Dokan.cab; x64 and
+#     x86 import only KERNEL32, USER32, ADVAPI32 and SHELL32 (no VC++ runtime), so the setup EXEs embed the MSI form.
+#     dokan2.dll SHA-256: x64 75600aba867acbdfdb85fcd142b524da769bdc611b855a760aeb0c6e2eaae17a,
+#                         x86 516da99d541961260888631c8cad3869a9e4e5021904560aa6534ac7ae549c75
+# ARM64: Dokan_arm64.msi was not part of the supplied files; ARM64 setups offer WebDAV only until a row is added.
+#
+# Line format: "<key> <value...>", one per line; "file" lines are
+#   file <arch> <form> <name> <size> <sha256> <upgrade-code|-> <vcruntime none|required|->
+dokany-lock 1
+version 2.3.1.1000
+min-api 2.1.0
+signer-cn LEOSAC
+signer-issuer-cn Certum Extended Validation Code Signing 2021 CA
+url-upstream https://github.com/dokan-dev/dokany/releases/download/v2.3.1.1000/
+url-mirror -
+checked 2026-11-01
+file x64 msi Dokan_x64.msi 9269248 69ff8cb37bfec3a75921c85ffd1c6370b50a9ec4ecef2cf3a009d488dcbf5465 {31A8F445-2AC6-494B-819C-4F4E1B2AECF1} none
+file x86 msi Dokan_x86.msi 5128192 c833fd51f67c44a467eeade419b8934033445ee847119f82cbef1fddc84ef618 {B08DE90A-F064-4ADC-99AC-2EC933417CC5} none
+file all bundle DokanSetup.exe 19194904 bf602263a594f595b4fdd8c4e822172b103de93f07fd6a51a8ff69569bfd1460 - -
