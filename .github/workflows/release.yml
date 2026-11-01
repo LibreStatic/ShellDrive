@@ -1,16 +1,22 @@
-# Release pipeline skeleton (docs/design/04 §12.3, §11.2; D42, TM-R38, TM-R39).
+# Release pipeline (docs/design/04 §12.3, §11.2; D42, D48, TM-R38, TM-R39).
 #
-# Status: SKELETON. The jobs that build and test the release presets are complete, and check-gates validates the release
-# gates record (installer/keys/release-gates.txt, 04 §12.3) before the signing sessions. The jobs after package stop with
-# an error until the parts they need exist in the repository (installer/dokany/dokany.lock, payload packaging; see
-# docs/dev/m4-notes.md). Every such step fails closed, so no draft release can come out of this file yet.
+# Two channels, chosen with the workflow_dispatch input `channel`:
 #
-# Secrets: none are referenced. Signing never runs in CI. The two offline signing sessions (D42) are maintainer steps on
-# the offline machine; the jobs signing-session-1 and signing-session-2 are approval gates (a protected environment with a
-# required reviewer, configured in the repository settings) and print the checklist of 04 §12.3.
+#   beta (default): public pre-release (D48). build -> package (unsigned artifacts + payload tables) ->
+#   check-gates -> sign-beta -> publish-beta. The offline signing sessions of the stable flow are replaced by the
+#   job sign-beta: it runs tools/release/package-beta.ps1 with the release-beta seed in the protected `beta-signing`
+#   environment (secret RELEASE_BETA_SEED, required reviewer = maintainer; 04 §9.3, docs/dev/release-beta.md).
+#   review-pass1 and authenticode may be waived for beta in installer/keys/release-gates.txt (D48); every other
+#   gate of §12.3 still applies, and check-gates validates the record before anything is signed or published.
 #
-# Actions: only first-party actions, pinned by commit SHA (TM-R39, same pins as ci.yml). No actions/cache is used.
-# Triggers: workflow_dispatch only. The tag trigger (v*) is added when the signed-tag gate exists (TM-R39).
+#   stable: keeps every gate of §12.3, and signing never runs in CI. The two offline signing sessions (D42) are
+#   maintainer steps on the offline machine; the jobs signing-session-1, finalize and signing-session-2 are the
+#   approval gates and checklists. The package and finalize jobs fail closed for stable until the stable packaging
+#   exists in the repository (docs/dev/m4-notes.md): no stable draft release can come out of this file yet.
+#
+# Actions: only first-party actions, pinned by commit SHA (TM-R39, same pins as ci.yml). No caches anywhere in
+# this file (TM-R39): the pinned Dokany files are downloaded fresh in every job that needs them and verified
+# against installer/dokany/dokany.lock; artifacts only move files between the jobs of this one run.
 
 name: release
 
@@ -20,6 +26,11 @@ on:
       version:
         description: "Version to release (must match VERSION, for example 0.1.0)"
         required: true
+        type: string
+      channel:
+        description: "Release channel: beta (public pre-release, D48) or stable"
+        required: false
+        default: beta
         type: string
 
 permissions:
@@ -31,21 +42,25 @@ concurrency:
 
 jobs:
   verify-gates:
-    name: verify version and release gates
+    name: verify version, channel and release gates
     runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
     timeout-minutes: 15
     env:
       SD_INPUT_VERSION: ${{ inputs.version }}
+      SD_INPUT_CHANNEL: ${{ inputs.channel }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Check the version input against VERSION
+      - name: Check the inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:SD_INPUT_CHANNEL -ne 'beta' -and $env:SD_INPUT_CHANNEL -ne 'stable') {
+            throw "channel must be beta or stable, got '$env:SD_INPUT_CHANNEL'."
+          }
           $fileVersion = (Get-Content -Raw VERSION).Trim()
           if ($fileVersion -ne $env:SD_INPUT_VERSION) {
             throw "VERSION is '$fileVersion' but the input is '$env:SD_INPUT_VERSION'."
@@ -92,7 +107,8 @@ jobs:
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check-repro.ps1 -Preset ${{ matrix.preset }}
 
-      # Unsigned binaries only: the payload tables are signed in the offline session (D42), never here.
+      # Unsigned binaries only: the payload tables are signed in the offline session (D42, stable) or in the
+      # protected beta-signing environment (D48, beta), never in the build jobs.
       - name: Upload binaries
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -102,24 +118,59 @@ jobs:
             build/${{ matrix.preset }}/bin/Release/*.pdb
           if-no-files-found: error
 
+  # 04 §12.3 step 10 / D48 for beta: the Dokany files are downloaded fresh here (never from a cache, TM-R39) and
+  # package-beta.ps1 verifies them against installer/dokany/dokany.lock before embedding any of them. It then
+  # produces the unsigned beta artifacts and payload-tables.txt, so the release set exists and is checked before
+  # the protected environment is involved. Stable keeps failing closed here until its packaging exists.
   package:
-    name: package (payload CABs, MSIs, setup EXEs)
+    name: package (payload CABs, MSIs, setup EXEs, tables)
     needs: build
     runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Not implemented yet. Needed: installer/dokany/dokany.lock with the verified Dokany files (TM-R23, D32), the payload
-      # CAB and PAYLOAD_TABLE step (tools/sd-payload), the MSIs (packaging/msi, SD_BUILD_MSI with WiX 3.14 on this runner),
-      # sd-msilang transforms and the sd-release manifest tool (tools/sd-release does not exist yet).
-      - name: Stop until packaging exists
+      - name: Stable packaging is not implemented yet
+        if: inputs.channel == 'stable'
         shell: pwsh
         run: |
-          throw 'package is not implemented: payload packaging, the Dokany lock and tools/sd-release are not in the repository yet (docs/dev/m4-notes.md).'
+          throw 'package is not implemented for the stable channel yet: it needs the offline sessions of 04 section 12.3 (docs/dev/m4-notes.md). The stable path stays fail-closed.'
+
+      - name: Download the pinned Dokany files
+        if: inputs.channel == 'beta'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = (Select-String -Path installer/dokany/dokany.lock -Pattern '^url-upstream (.+)$').Matches[0].Groups[1].Value.Trim()
+          $files = @(Select-String -Path installer/dokany/dokany.lock -Pattern '^file \S+ \S+ (\S+) ').Matches |
+            ForEach-Object { $_.Groups[1].Value }
+          $files = @($files | Select-Object -Unique)
+          if ($files.Count -eq 0) { throw 'no file lines found in installer/dokany/dokany.lock' }
+          New-Item -ItemType Directory -Force build/dokany | Out-Null
+          foreach ($f in $files) {
+            $u = $url + $f
+            Write-Host "downloading $u"
+            Invoke-WebRequest -Uri $u -OutFile (Join-Path 'build/dokany' $f)
+          }
+
+      - name: Package the unsigned beta artifacts
+        if: inputs.channel == 'beta'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/package-beta.ps1 `
+            -Version '${{ inputs.version }}' -Commit '${{ github.sha }}' -BuildNumber '${{ github.run_number }}' `
+            -DokanyDir build/dokany -OutDir dist/beta
+
+      - name: Upload the unsigned beta artifacts
+        if: inputs.channel == 'beta'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: beta-release-unsigned
+          path: dist/beta/*
+          if-no-files-found: error
 
   # 04 §12.3 release gates: sd-release validates installer/keys/release-gates.txt for this version and commit. The
   # record is maintainer-edited and CODEOWNERS-protected; the check reads it and uses no secrets. Refusal fails the job.
@@ -153,9 +204,116 @@ jobs:
           & $exe.FullName gates check installer/keys/release-gates.txt --version $env:SD_INPUT_VERSION --commit $env:SD_COMMIT
           if ($LASTEXITCODE -ne 0) { throw "release gates check failed (exit $LASTEXITCODE): see 04 section 12.3." }
 
+  # Beta signing (D48, 04 §9.3): the only step that holds the release-beta seed. The protected beta-signing
+  # environment (required reviewer = maintainer) must be approved; the seed arrives as the RELEASE_BETA_SEED
+  # secret, is written to a temp file for the packaging script, and is deleted afterwards. It is never printed.
+  sign-beta:
+    name: sign the beta release (release-beta key)
+    needs: [package, check-gates]
+    if: inputs.channel == 'beta'
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 120
+    environment: beta-signing
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the pinned Dokany files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = (Select-String -Path installer/dokany/dokany.lock -Pattern '^url-upstream (.+)$').Matches[0].Groups[1].Value.Trim()
+          $files = @(Select-String -Path installer/dokany/dokany.lock -Pattern '^file \S+ \S+ (\S+) ').Matches |
+            ForEach-Object { $_.Groups[1].Value }
+          $files = @($files | Select-Object -Unique)
+          if ($files.Count -eq 0) { throw 'no file lines found in installer/dokany/dokany.lock' }
+          New-Item -ItemType Directory -Force build/dokany | Out-Null
+          foreach ($f in $files) {
+            $u = $url + $f
+            Write-Host "downloading $u"
+            Invoke-WebRequest -Uri $u -OutFile (Join-Path 'build/dokany' $f)
+          }
+
+      - name: Write the release-beta seed to a temp file
+        shell: pwsh
+        env:
+          SD_RELEASE_BETA_SEED: ${{ secrets.RELEASE_BETA_SEED }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:SD_RELEASE_BETA_SEED)) {
+            throw 'RELEASE_BETA_SEED is not configured in the beta-signing environment.'
+          }
+          $seedFile = Join-Path ([IO.Path]::GetTempPath()) ("sd-release-beta-" + [guid]::NewGuid().ToString('N') + ".seed")
+          [IO.File]::WriteAllText($seedFile, $env:SD_RELEASE_BETA_SEED.Trim() + "`n")
+          Add-Content -Path $env:GITHUB_ENV -Value "SD_BETA_SEED_FILE=$seedFile"
+
+      - name: Package and sign the beta release
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/package-beta.ps1 `
+            -Version '${{ inputs.version }}' -Commit '${{ github.sha }}' -BuildNumber '${{ github.run_number }}' `
+            -DokanyDir build/dokany -OutDir dist/beta -Seed $env:SD_BETA_SEED_FILE
+
+      - name: Delete the seed file
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:SD_BETA_SEED_FILE -and (Test-Path $env:SD_BETA_SEED_FILE)) {
+            Remove-Item -Force $env:SD_BETA_SEED_FILE
+            Write-Host 'the seed file was deleted'
+          }
+
+      - name: Upload the signed beta release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: beta-release-signed
+          path: dist/beta/*
+          if-no-files-found: error
+
+  # The only job with contents: write (TM-R39): it fetches the signed set of this run and creates the public
+  # pre-release with all files and the notes from package-beta.ps1.
+  publish-beta:
+    name: publish the beta pre-release
+    needs: sign-beta
+    if: inputs.channel == 'beta'
+    runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    # No environment here: the seed secret of beta-signing is not exposed to this job (it was approved at sign-beta).
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download the signed beta release of this run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh run download ${{ github.run_id }} -n beta-release-signed -D dist/beta
+          $files = @(Get-ChildItem dist/beta -File)
+          if ($files.Count -lt 6) { throw "the signed release set is incomplete ($($files.Count) files)." }
+          foreach ($must in @('SHA256SUMS', 'SHA256SUMS.sig', 'manifest.txt', 'release-notes.md')) {
+            if (-not (Test-Path (Join-Path 'dist/beta' $must))) { throw "missing $must in the signed release set" }
+          }
+
+      - name: Create the public pre-release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v${{ inputs.version }}-beta"
+          $assets = @(Get-ChildItem dist/beta -File | Where-Object { $_.Name -ne 'release-notes.md' } |
+            ForEach-Object { $_.FullName })
+          gh release create $tag --prerelease --title $tag `
+            --notes-file dist/beta/release-notes.md --target ${{ github.sha }} @assets
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)." }
+
   signing-session-1:
     name: offline signing session 1 of 2 (maintainer, D42)
     needs: [package, check-gates]
+    if: inputs.channel == 'stable'
     runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
     timeout-minutes: 30
     environment: release-stable-session-1
@@ -171,21 +329,23 @@ jobs:
   finalize:
     name: finalize (draft release, manually approved)
     needs: signing-session-1
+    if: inputs.channel == 'stable'
     runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
     timeout-minutes: 60
-    # The only job with write access: it creates the draft release and nothing else (TM-R39).
+    # The only stable job with write access: it creates the draft release and nothing else (TM-R39).
     permissions:
       contents: write
     environment: release-finalize
     steps:
-      - name: Stop until packaging exists
+      - name: Stop until stable packaging exists
         shell: pwsh
         run: |
-          throw 'finalize is not implemented: PAYLOAD_SIG insertion, SHA256SUMS, manifest.txt and the draft release need the package job first.'
+          throw 'finalize is not implemented for the stable channel yet: PAYLOAD_SIG insertion, SHA256SUMS, manifest.txt and the draft release need the stable package job first (docs/dev/m4-notes.md).'
 
   signing-session-2:
     name: offline signing session 2 of 2 (maintainer, D42)
     needs: finalize
+    if: inputs.channel == 'stable'
     runs-on: ${{ vars.SD_BUILD_RUNNER || 'windows-2022' }}
     timeout-minutes: 30
     environment: release-stable-session-2

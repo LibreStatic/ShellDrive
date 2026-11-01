@@ -107,7 +107,8 @@ Content-Length above the manifest size; digest mismatch with nothing kept; setup
 
 - **Release roots:** no root public key is compiled into this build. The release build must add the two root keys and
   the keyset current at build time (`installer/keys/`, 04 §9.3); until then every verification fails closed
-  (`update_verify_failed`). The `k_trust` table in `update_ipc.c` is the single place to change.
+  (`update_verify_failed`). The trust is `update_trust.inc` (update_ipc.c includes it): `sd-release keyring` generates
+  it from `installer/keys/` at build time (cmake/SdKeyring.cmake), and the placeholder in the source tree holds none.
 - **Bootstrap URLs:** only the GitHub URL is the default. The HTTP mirror (`http://dl.<our-domain>/...`) needs the domain
   (D30, an operational choice); until then, testers set `manifest_url`. The `manifest_alt` slot exists for it.
 - **Beta:** there is no default beta manifest URL; a beta user sets `manifest_url` and `channel = beta`.
@@ -431,7 +432,7 @@ lint). Rows 20 to 22 of the table move as follows.
 |---|---|---|---|
 | 20 | Release pipeline | Partial (unchanged) | `release.yml` still stops at `package` and `finalize`; its header says `sd-release` is missing, which is no longer true. The `workflow-lint` job is in `ci.yml` and `nightly.yml`. |
 | 21 | Two offline signing sessions (D42) | Partial | `sd-release session` writes `SESSION.txt` with the file hashes and the digest of the signed message; `sd-release sign` and `verify` do the signing and the checks. The steps stay manual (no signing in CI). `resign` is missing (see open items). |
-| 22 | `PAYLOAD_SIG` and signed payload tables (TM-R38) | Done in the stub; the keyring and the package step are open | `apps/shelldrive-setup/setup_payload_sig.c|h`, one call site in `setup_main.c` (`run_install`, after the table lookup). Tests: `tests/setup/test_payload_sig.c` (14 tests, generated test keys). |
+| 22 | `PAYLOAD_SIG` and signed payload tables (TM-R38) | Done in the stub; the keyring generator is done (`sd-release keyring`, test `release.keyring`), the real `installer/keys/` and the package step are open | `apps/shelldrive-setup/setup_payload_sig.c|h`, one call site in `setup_main.c` (`run_install`, after the table lookup). Tests: `tests/setup/test_payload_sig.c` (14 tests, generated test keys). |
 
 ### What the stub checks now (04 section 6.1, 9.3; TM-R38)
 
@@ -444,7 +445,9 @@ lint). Rows 20 to 22 of the table move as follows.
   `SD_SETUP_BUILD_CHANNEL` (default `stable`).
 - Any failure returns a refusal with `SD_MSG_INSTALLER_ERROR_PAYLOAD_DAMAGED`. Fail closed.
 - The keyring is `apps/shelldrive-setup/setup_keyring.inc`. The repository holds only a revoked placeholder, so the stub
-  refuses every payload until the release pipeline generates the file from `installer/keys/keyset.txt`.
+  refuses every payload until the release build generates the file with `sd-release keyring` from
+  `installer/keys/keyset.txt` (cmake/SdKeyring.cmake puts the generated directory first on the include path;
+  `tests/release/keyring_flow.cmake`, ctest `release.keyring`, covers the generator).
 - `sd_setup_core` now links `sd_payload_sig` (sd_crypto only). `shelldrive-setup-stub.exe` still passes
   `importcheck.stub.knowndlls` and `isacheck` on `x86-ia32`.
 
@@ -465,7 +468,9 @@ Commands: `hash`, `sums`, `table` (one flavour per setup EXE), `check-table` (ta
 (unsigned body: `file` lines hashed from a directory; the TM-R36 limits are enforced: stable at most 30 days, beta at
 most 14 days from `released` to `expires`), `sign` (body + sig line, or the sig line alone with `--sig-only`; a manifest
 is parsed with `sd_upd_manifest_parse` before it is written), `verify` (checks the sig and the key ID; a manifest is
-parsed in full), `pubkey`, `session` (`SESSION.txt` for the offline sessions). No network code; no key in the tree.
+parsed in full), `pubkey`, `keyring` (04 §9.3: verifies keyset.txt against installer/keys/roots.txt and writes
+`setup_keyring.inc` and `update_trust.inc`, deterministically), `session` (`SESSION.txt` for the offline sessions). No
+network code; no key in the tree.
 `sd-updsign` (earlier, from the update work) overlaps `sign` and `verify`; merge or retire one of them.
 
 Test: `tests/release/release_flow.cmake` (ctest `release.flow`, label `release`). It generates two TEST seeds in the script,
@@ -482,7 +487,11 @@ manifest with 15 days, and a file name with a separator are all refused. Passing
 
 ### Open items after this change
 
-1. `installer/keys/` (root public keys, `keyset.txt`) and the generated `setup_keyring.inc`. Until then no payload verifies.
+1. `installer/keys/` (roots.txt with the two root public keys, keyset.txt) is still missing; the key ceremony writes it.
+   The build-time generator exists: `sd-release keyring` verifies the keyset against the roots and generates
+   `setup_keyring.inc` and `update_trust.inc` into the build tree (cmake/SdKeyring.cmake wires it into the stub and
+   shelldrive-host; test `release.keyring`). Until the files exist the placeholders are compiled in and no payload
+   verifies.
 2. `cmake/SdPayload.cmake` and the `package` job: pass `--channel` and `--sig` to `sd-payload`, with the signature made
    by session 1 of 2 (`sd-release sign --kind payload --sig-only`).
 3. No test of the positive path through the stub's resources (`sd_setup_payload_sig_check` with a real `PAYLOAD_SIG`).
@@ -782,7 +791,7 @@ another milestone. Evidence paths are relative to the repository root.
 | Dokany chaining (C31, D32) | **Partial** | `setup_dokany.c`: decision, PE import reader, command lines and run gate, 5 tests. Nothing calls `sd_setup_dokany_run`; no `DOKANY_<ARCH>` payload member, no `installer/dokany/dokany.lock`, no post-install `--selftest` probe. C31 fixes the form: official per-arch MSIs |
 | `webdav-tune` and the other installer hooks | **Partial → webdav-tune closed here** | `signal-shutdown`, `user-cleanup` and `programdata-secure` implemented; `modern-menu` is a deliberate no-op until the sparse package exists (D27); `webdav-tune` was a silent no-op and is implemented in this change (below) |
 | Upgrade with running processes (C3, C4) | **Partial** | C3 step 1 done and tested: the agent creates the manual-reset `Global\…\agent.shutdown.<SID>.<session>` event with the `user, SY, BA` DACL, waits on it (`agent_shutdown_event_stops_agent`), setup signals it and waits 15 s (`setup_host.c`, `setup_install.c`), locked files are renamed aside. Missing: the Restart Manager step 2 and C4's versioned `shellext\<version>\` directory (the fixed path plus rename-aside is used). Lab pending |
-| Signed manifest | **Done; blocked on the release roots** | `src/sd_update` (parse, chain, rollback, freshness, tests). `k_trust` in `update_ipc.c` is empty, so every verification fails closed until `installer/keys` exists |
+| Signed manifest | **Done; blocked on the release roots** | `src/sd_update` (parse, chain, rollback, freshness, tests). The trust (`update_trust.inc`, generated by `sd-release keyring`, test `release.keyring`) is empty until `installer/keys` exists, so every verification fails closed |
 | Static HTTP mirror (D30) | **Partial; blocked on the domain** | `manifest_alt` fallback after a network error and the redirect allow list exist; the default URL is the GitHub release URL only. The mirror URL is an operational choice (D30) |
 | Updater UI and rollback | **Done** | `apps/shelldrive-ui/ui_update.c` (Settings group, consent dialog, tray balloon) over `update.check` / `update.apply`; `update_engine.c` apply with `.rollback`, `--selftest` and byte-for-byte restore, covered by the update tests |
 | ADMX/ADML for every 03 §3.5 policy | **Done** | 21 policies in `res/policy/policies.txt`; `tools/sd-admxgen` emits the ADMX, six ADML files, `sd_policy_ids.h`/`sd_policy_table.h`; `policy.*`, `unit.admxgen`, `unit.policy`, `l10n.policy_catalogs_complete` |
@@ -791,7 +800,7 @@ another milestone. Evidence paths are relative to the repository root.
 | Service installed and enabled by default per machine (D6) | **Blocked (M5)** | `SD_MSI_WITH_SERVICE=0` until the service binary exists; the `ServiceInstall`/`ServiceControl` authoring is behind the define |
 | `ENABLELINKEDCONNECTIONS` (D24) | **Done** | MSI property default 0; `AppSearch` ownership rules so an admin's pre-existing value is neither written nor removed; `msi.<flavour>.tables` |
 | `DEFAULTPROFILES` (C9) | **Done (authored); install lab pending** | `MoveFile` custom table and `C_DefaultProfiles` in `packaging/msi/ShellDrive.wxs` |
-| Signed payload tables (TM-R38) | **Partial; blocked on the keys** | Verifier, domain separation, resource check and 14 tests (`tests/setup/test_payload_sig.c`). `setup_keyring.inc` holds a revoked placeholder; `installer/keys`, the generated keyring and the package step's `--sig` input are release work |
+| Signed payload tables (TM-R38) | **Partial; blocked on the keys** | Verifier, domain separation, resource check and 14 tests (`tests/setup/test_payload_sig.c`). The keyring generator is done (`sd-release keyring`, cmake/SdKeyring.cmake, test `release.keyring`); `setup_keyring.inc` still holds a revoked placeholder until `installer/keys` exists, and the package step's `--sig` input is release work |
 | Release pipeline and two offline signing sessions (D42) | **Partial** | `.github/workflows/release.yml` skeleton stops at `package`/`finalize`; `sd-release session/sign/verify/gates` exist with tests; `resign` and `installer/` (keys, `release-gates.txt`, `dokany.lock`) are missing; the workflow lint reports the missing `CODEOWNERS` |
 | Security-test support TST-29/31/32 | **Partial** | `tools/check-workflows.ps1` (TST-32) runs in `ci.yml` and `nightly.yml`; `tools/sd-msilang --dump-sequences` (TST-29) does not exist; the TST-27/31 lab checks were not run |
 
@@ -901,3 +910,29 @@ Open (lab or later):
   `x64-modern`, `arm64` and `arm32` with the runner's WiX 3.14, runs their `msi.*` checks and uploads the packages.
   The `x64-modern` and `arm64` jobs now also install `v141_xp` for the x86 shell extension, which adds several
   minutes to each.
+
+## Beta pre-release notice on the welcome page (D48, 04 §10)
+
+`SD_SETUP_PRERELEASE_NOTICE` (new CMake option in `apps/shelldrive-setup/CMakeLists.txt`) defaults to ON when
+`SD_SETUP_CHANNEL` is `beta` and OFF otherwise, on a fresh configure; as with every `option()`, a value already
+in the CMake cache (including the default computed for another channel) is kept, so pass `-D` explicitly or use
+a fresh build dir when switching the channel in place. When on, it compiles `SD_SETUP_PRERELEASE_NOTICE=1` into
+`sd_setup_core` (PUBLIC, so the stub's `setup_main.c` and `setup_ui.c` see it too). The welcome page then shows
+`installer.welcome.prerelease` (new string, all six catalogs, appended at the end of each `.po`) as a visible
+warning above the buttons; the pure switch is `sd_flow_welcome_notice` (setup_flow.c, covered by `unit.engine`),
+and `/quiet`, `/passive` and the removal flow log the English text instead (`notice.prerelease` line via the
+new `notice_shown` field of the install and uninstall opts). Stable builds never show it. The setup stub is the
+only surface: the MSI's strings share the catalog (`msi.*`) but its dialogs are unchanged. Tests:
+`setup.l10n.prerelease_notice` (the string exists in all six `.po`, msgstr non-empty outside en) and
+`unit.engine`'s `setup_flow_welcome_notice`.
+
+## Beta release packaging (D48, 2026-11-01)
+
+Update of audit rows 20, 21 and 22 of the M4 row audit above, for the beta channel (public GitHub pre-releases,
+D48). The flow and its GitHub prerequisites are documented in `docs/dev/release-beta.md`.
+
+| Row | Status | Evidence and remaining work |
+|---|---|---|
+| 20 Release pipeline | Partial → beta path works; stable still fail-closed | `tools/release/package-beta.ps1`: fresh `-DSD_SETUP_CHANNEL=beta` trees (notice defaults ON), payload CABs, MSIs, `sd-release table`/`check-table`, `sums`/`manifest`, every signature re-verified with `sd-release verify`; without `-Seed` it stops after the unsigned artifacts and `payload-tables.txt`. `.github/workflows/release.yml` gained the `channel` input: `package` downloads the pinned Dokany files fresh from the lock's `url-upstream` (no caches, TM-R39) and the script verifies them with the new `sd-release dokany verify` (`installer/dokany/dokany.lock`, test `release.dokany`); `check-gates` unchanged; `sign-beta` (environment `beta-signing`, secret `RELEASE_BETA_SEED`, temp file deleted afterwards) and `publish-beta` (`gh release create v<V>-beta --prerelease`, the only `contents: write` job) automate §12.3 step 10. The stable path keeps the offline-session jobs (D42) and `package`/`finalize` throw for stable. Remaining: the stable packaging, the signed-tag gate and the tag trigger |
+| 21 Two offline signing sessions (D42) | Partial → beta replaces them with `sign-beta`; stable keeps the manual sessions | For beta there is no offline session: the payload-table, `SHA256SUMS` and manifest signatures are made by the release-beta key inside the protected `beta-signing` environment (04 §9.3), and `sd-release verify` runs over the whole release set before publication. The stable sessions stay manual (offline machine, `sd-release session`/`sign`) |
+| 22 `PAYLOAD_SIG` and signed payload tables (TM-R38) | Done for beta; the real keys are the maintainer's step | `package-beta.ps1` signs each table (`sd-release sign --kind payload --gates ... --version ... --commit ...`) and reattaches the payloads round 2 with `-DSD_PAYLOAD_SIG` (cmake/SdPayload.cmake), so the shipped setups carry `PAYLOAD_TABLE` + `PAYLOAD_SIG`; `SD_PAYLOAD_DOKANY_X64/X86` embed the lock-verified upstream Dokan MSIs as `DOKANY_X64`/`DOKANY_X86` (tools/sd-payload). The beta release still needs the maintainer's key ceremony outputs committed (`installer/keys/`) and the `RELEASE_BETA_SEED` secret configured. Open: the stub does not chain the embedded Dokany packages yet (nothing calls `sd_setup_dokany_run`), and the x64/x86-sse2 payload CABs plus the universal EXE assembly are still release-pipeline work — `package-beta.ps1` reports both as skipped instead of faking them |

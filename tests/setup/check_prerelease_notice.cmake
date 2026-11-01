@@ -1,0 +1,32 @@
+# ctest helper for setup.l10n.prerelease_notice (tests/setup/CMakeLists.txt, 04 §10, D48).
+# Expects -DPO_DIR=<l10n/installer>. The pre-release notice must exist in all six catalogs: the English
+# msgid (the source of truth), and a non-empty msgstr in the five translations.
+set(_langs "en;es;fr;pt-BR;it;de")
+set(_ctx "msgctxt \"installer.welcome.prerelease\"")
+foreach(_lang IN LISTS _langs)
+  set(_po "${PO_DIR}/${_lang}.po")
+  if(NOT EXISTS "${_po}")
+    message(FATAL_ERROR "missing catalog: ${_po}")
+  endif()
+  file(READ "${_po}" _text)
+  string(FIND "${_text}" "${_ctx}" _at)
+  if(_at LESS 0)
+    message(FATAL_ERROR "${_lang}.po has no installer.welcome.prerelease entry")
+  endif()
+  # The entry sits before the license section, so a window past it covers its msgid and msgstr lines.
+  string(SUBSTRING "${_text}" ${_at} 400 _entry)
+  string(REGEX MATCH "msgid \"[^\"]+\"" _msgid "${_entry}")
+  if(NOT _msgid)
+    message(FATAL_ERROR "${_lang}.po: installer.welcome.prerelease has no msgid")
+  endif()
+  string(REGEX MATCH "msgstr \"([^\"]*)\"" _msgstr "${_entry}")
+  set(_translation "${CMAKE_MATCH_1}")
+  if(_lang STREQUAL "en")
+    # en.po keeps msgstr empty; the msgid is the English text.
+    if(NOT _translation STREQUAL "")
+      message(FATAL_ERROR "en.po: installer.welcome.prerelease must keep msgstr empty")
+    endif()
+  elseif(_translation STREQUAL "")
+    message(FATAL_ERROR "${_lang}.po: installer.welcome.prerelease has an empty msgstr")
+  endif()
+endforeach()

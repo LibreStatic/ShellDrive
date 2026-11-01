@@ -24,6 +24,13 @@
 /* The all-users choice is offered (04 §6.3). It needs the payload MSI at run time (packaging/msi, SD_BUILD_MSI). */
 #define SD_FLOW_MACHINE_AVAILABLE 1
 
+/* The pre-release notice on the welcome page (04 §10, D48): the build turns it on with the
+   SD_SETUP_PRERELEASE_NOTICE CMake option (on for the beta channel, off otherwise). 0 when undefined, so
+   stable builds carry no notice. */
+#ifndef SD_SETUP_PRERELEASE_NOTICE
+#define SD_SETUP_PRERELEASE_NOTICE 0
+#endif
+
 typedef enum sd_flow_page {
   SD_FLOW_NONE = 0,              /* no more pages: the caller goes on with the work */
   SD_FLOW_WELCOME,
@@ -52,6 +59,11 @@ typedef struct sd_flow_choice {
 
 /* The page a run starts with: SD_FLOW_NONE for /quiet, SD_FLOW_PROGRESS for /passive. */
 sd_flow_page sd_flow_first(const sd_flow_input *in);
+
+/* Whether the welcome page shows the pre-release notice (04 §10, D48): only when the build carries it
+   (enabled is SD_SETUP_PRERELEASE_NOTICE) and a welcome page exists at all, that is an interactive
+   install. Quiet, passive and removal runs never show it; their log carries the notice instead. */
+int sd_flow_welcome_notice(const sd_flow_input *in, int enabled);
 
 /* The page after cur, given the choices so far. SD_FLOW_NONE after the last page. */
 sd_flow_page sd_flow_next(const sd_flow_input *in, const sd_flow_choice *c, sd_flow_page cur);

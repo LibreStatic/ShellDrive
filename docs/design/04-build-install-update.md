@@ -1375,7 +1375,12 @@ manifests and payload tables only and cannot change who is trusted.
 - Key ID = first 8 bytes of SHA-256(public key). Key labels (key file names, keyset comments, CI secret
   descriptions) are reverse-DNS (D45): `com.librestatic.shelldrive.root-a`, `.root-b`, `.release-stable`,
   `.release-beta`. The two **root public keys** and the keyset current at build
-  time (`installer/keys/`) are compiled into every binary and stub.
+  time (`installer/keys/`) are compiled into every binary and stub: at build time `sd-release keyring
+  --roots installer/keys/roots.txt --keyset installer/keys/keyset.txt` verifies the keyset against the roots of
+  `roots.txt` (the two root lines in the keyset's `root <key-id> <pubkey-base64>` encoding; `#` comments and blank
+  lines allowed) and writes the two include files deterministically into the build tree (the stub's
+  `setup_keyring.inc`, the host's `update_trust.inc`). A build without `installer/keys/` compiles the
+  placeholders in the source tree, so no payload verifies and every update verification fails closed.
 - **Keyset format** (`keyset.txt`, same line syntax and size limit as the manifest):
 
   ```
@@ -1568,7 +1573,10 @@ real certificate by adding secrets.
   this is the strongest reason to obtain a certificate before a public 1.0.
 - Windows 11 modern context menu: see §10.1.
 
-**Interim rules while binaries are unsigned (TM-R38, T-71, D38).** Users who learn to click through "Windows
+**Interim rules while binaries are unsigned (TM-R38, T-71, D38; relaxed for beta by D48).** D48 (2026-11-01) allows
+beta-channel builds as **public GitHub pre-releases** of this repository before Authenticode signing and before crypto
+review pass 1; the rules below then apply to them as well, except the first one (no public links), and the release
+notes repeat the "not yet externally reviewed" notice. Stable keeps every rule. Users who learn to click through "Windows
 protected your PC" cannot tell a trojaned look-alike from our build. Until the Authenticode certificate exists:
 
 - **No public download links.** No GitHub release is published as public, no mirror path is linked from the
@@ -1584,7 +1592,9 @@ protected your PC" cannot tell a trojaned look-alike from our build. Until the A
 - The setup stub verifies its own payload table against the compiled-in keyset and refuses on mismatch (§6.1);
   existing installs update only through the signed manifest (§9).
 - Before crypto review pass 1 (end of M2, D38) tester builds show "pre-release, cryptography not yet externally
-  reviewed" on the first setup page, and tester instructions recommend test servers and test keys.
+  reviewed" on the first setup page, and tester instructions recommend test servers and test keys. The setup
+  carries the notice when it is built with the `SD_SETUP_PRERELEASE_NOTICE` CMake option (on by default for the
+  beta channel, off otherwise); a silent run logs the notice in English instead.
 - The gates for wider distribution are in §12.3 ("Release gates").
 
 ### 10.1 Sparse MSIX package for the Windows 11 modern context menu (D27)
@@ -1845,6 +1855,7 @@ Shipping code must not use `__DATE__`, `__TIME__`, `__TIMESTAMP__` or `__FILE__`
 
 | Distribution | Requires |
 |---|---|
+| **Public beta pre-release** (D48) | Lab pass; `review-pass1` and `authenticode` may be waived; the rules of §10 except "no public links"; `SHA256SUMS` + `SHA256SUMS.sig`; before crypto pass 1, the "not yet externally reviewed" notice in setup and in the release notes |
 | Named testers (private) | Lab pass; interim rules of §10 while unsigned; before crypto pass 1, the "not yet externally reviewed" notice |
 | **Public beta** (public links, public beta manifest) | External crypto review **pass 1** (end of M2: all SSH and crypto code, D38) completed and its findings closed; **and** Authenticode signing in place (TM-R38: no public download links for unsigned builds) |
 | **1.0 and later stable** | Crypto review **pass 2** closed (D38, TST-33); certificate (D29); all P3 tests of 05 §7; independent maintainer rebuild (TM-R39) |
@@ -1880,8 +1891,8 @@ approved FacuM 2026-10-28
 |---|---|---|---|
 | `ci-local` | required | required | never |
 | `lab` | required | required | beta only (named testers and beta VM runs); stable never |
-| `review-pass1` | required | required | never |
-| `authenticode` | required | required | never (TM-R38) |
+| `review-pass1` | required | required | beta only (D48: public pre-releases before pass 1); stable never |
+| `authenticode` | required | required | beta only (D48); stable never (TM-R38) |
 | `review-pass2` | not allowed | required | never |
 | `p3-tests` | not allowed | required | never |
 | `rebuild` | not allowed | required | never |

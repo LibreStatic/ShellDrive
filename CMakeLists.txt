@@ -21,6 +21,7 @@ include(SdVersion)   # VERSION file, git commit, generated sd/version.h
 include(SdModule)    # sd_add_module, sd_add_unit_test, sd_add_app helpers
 include(SdL10n)      # sdl10n catalog generation (03 §9)
 include(SdHostTools) # build-time tools of cross-compiled (ARM64, ARM32) trees (04 §2.5)
+include(SdKeyring)   # compiled-in release keys of installer/keys/ (04 §9.3)
 
 # Group Policy headers and ADMX/ADML outputs (03 §3.5); generated under generated/policy/.
 set(SD_POLICY_DIR "${SD_GENERATED_DIR}/policy")
@@ -33,6 +34,17 @@ if(SD_HOST_TOOLS_ONLY)
   add_subdirectory(tools/sd-importcheck)
   add_subdirectory(tools/sd-admxgen)
   add_subdirectory(tools/sd-payload)
+  # sd-release now also runs during the build (`sd-release keyring`, cmake/SdKeyring.cmake): it verifies against the
+  # modules of the update engine and the pure payload table signature verifier (sd_payload_sig_text, without the
+  # keyring: the keyring library of the stub depends on this very tool).
+  add_subdirectory(src/sd_base)
+  add_subdirectory(src/sd_platform)
+  add_subdirectory(src/sd_crypto)
+  add_subdirectory(src/sd_update)
+  add_library(sd_payload_sig_text STATIC "${CMAKE_SOURCE_DIR}/apps/shelldrive-setup/setup_payload_sig.c")
+  target_include_directories(sd_payload_sig_text PUBLIC "${CMAKE_SOURCE_DIR}/apps/shelldrive-setup")
+  target_link_libraries(sd_payload_sig_text PUBLIC sd_crypto sd_headers)
+  add_subdirectory(tools/sd-release)
   if(SD_HOST_TOOLS_MSI)
     # The MSI tools of an ARM tree with SD_BUILD_MSI (packaging/msi, tests/msi).
     add_subdirectory(tools/sd-msigen)
@@ -77,7 +89,12 @@ if(NOT SD_ARM64 AND NOT SD_ARM32)
   add_subdirectory(tools/sd-isacheck)
 endif()
 add_subdirectory(tools/sd-updsign)
-add_subdirectory(tools/sd-release)
+# In a cross-compiled tree sd-release is a host tool (cmake/SdHostTools.cmake): the imported x64 binary runs the
+# keyring step, and this tree must not define a second target of that name. sd_keyring_setup needs it below.
+if(NOT SD_CROSS_HOST_TOOLS)
+  add_subdirectory(tools/sd-release)
+endif()
+sd_keyring_setup()
 
 # Test harness (needed by module unit tests).
 add_subdirectory(tests/harness)

@@ -538,6 +538,7 @@ static int run_install(HINSTANCE inst, const sd_setup_args *args, const wchar_t 
     io.autostart = args->autostart;
     io.force = args->force;
     io.update = args->update;
+    io.notice_shown = interactive;   /* the wizard showed the welcome page with its pre-release notice (04 §10) */
     io.log_path = args->log_path[0] != L'\0' ? args->log_path : NULL;
     io.progress = progress_cb;
     io.progress_ctx = ui;

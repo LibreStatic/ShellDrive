@@ -8,6 +8,8 @@
    failed extraction never touches the installed files. */
 #include "setup_int.h"
 
+#include "setup_flow.h"          /* SD_SETUP_PRERELEASE_NOTICE */
+
 #include <shlobj.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -582,6 +584,13 @@ int sd_setup_install(const sd_setup_install_opts *o, sd_setup_result *r)
        (int)o->mode, sd_setup_flavour_name(o->flavour) ? sd_setup_flavour_name(o->flavour) : L"none",
        o->version ? o->version : L"0.0.0", (unsigned)host.native_machine, host.sse2, host.os_major, host.os_minor,
        host.is_admin);
+#if SD_SETUP_PRERELEASE_NOTICE
+  /* No page showed the pre-release notice (04 §10, D48): a silent run logs it, in English like every log line. */
+  if (!o->notice_shown)
+    sd_setup_log("notice.prerelease",
+                 L"Pre-release: the cryptography in this version has not yet been reviewed externally. "
+                 L"Use it with test servers and test keys.");
+#endif
 
   if (o->payload == NULL || o->payload->data == NULL || o->flavour == SD_SETUP_FL_NONE) {
     sd_setup_fail(r, SD_SETUP_EXIT_FATAL, SD_MSG_INSTALLER_ERROR_PAYLOAD_MISSING, 0);
@@ -628,6 +637,13 @@ int sd_setup_uninstall(const sd_setup_uninstall_opts *o, sd_setup_result *r)
 
   open_log_for(o->log_path);
   setup_logf("uninstall.start", L"force=%d", o->force);
+#if SD_SETUP_PRERELEASE_NOTICE
+  /* The removal pages carry no pre-release notice (04 §10, D48): the log carries it, in English. */
+  if (!o->notice_shown)
+    sd_setup_log("notice.prerelease",
+                 L"Pre-release: the cryptography in this version has not yet been reviewed externally. "
+                 L"Use it with test servers and test keys.");
+#endif
 
   if (o->install_dir != NULL && o->install_dir[0] != L'\0') {
     StringCchCopyW(dir, SD_SETUP_COUNTOF(dir), o->install_dir);

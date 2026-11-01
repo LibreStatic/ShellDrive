@@ -1,8 +1,9 @@
 /* shelldrive-host update methods (see update_ipc.h). Configuration precedence (04 §9.1, 03 §3.5):
  *   policy (sd_policy: HKLM, then HKCU; the update policies of 03 §3.5) > settings.ini [update] of the user
  *   (or of <exe dir>\data for a portable install) > settings.ini [update] of the machine (%ProgramData%) > defaults.
- * Defaults: enabled, channel stable, the GitHub bootstrap manifest. Trust: the release roots are compiled in by the
- * release build (04 §9.3); this build carries none, so every verification fails closed until they are added. */
+ * Defaults: enabled, channel stable, the GitHub bootstrap manifest. Trust (update_trust.inc, 04 §9.3): cmake/SdKeyring.cmake
+ * generates it with `sd-release keyring` from installer/keys/ when the repository carries those files; the placeholder
+ * in this directory holds none, so every verification fails closed until then. */
 #include <windows.h>
 #include <process.h>
 #include <stdio.h>
@@ -27,8 +28,10 @@
 /* One check or apply at a time, per agent. */
 static volatile LONG g_busy;
 
-/* No release roots in this build (see the header comment). */
-static const sd_upd_trust k_trust = { NULL, 0, NULL, 0 };
+/* The update trust: roots array, its count, and the exact keyset.txt bytes (sd_upd_trust, sd_update.h). Generated
+   into the build tree from installer/keys/ (update_trust.inc), or the placeholder with none (see the header
+   comment). Angle include: the generated directory, when present, comes first on the include path. */
+#include <update_trust.inc>
 
 typedef struct upd_cfg {
   int         enabled;                     /* 0: checks disabled (reason says why) */

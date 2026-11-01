@@ -109,6 +109,22 @@ string(REPLACE "gate ci-local pass 2026-10-26 FacuM" "gate ci-local waived 2026-
 put(waived_ci_beta.txt "${t}")
 rel(3 out gates check waived_ci_beta.txt --version 1.0.0 --commit ${C})
 
+# D48: review-pass1 and authenticode may be waived on beta (public pre-releases), never on stable.
+string(REPLACE "gate review-pass1 pass 2026-06-12 FacuM
+gate authenticode pass 2026-10-20 FacuM"
+       "gate review-pass1 waived 2026-06-12 FacuM D48 pre-release
+gate authenticode waived 2026-10-20 FacuM D48 unsigned" t "${BETA_OK}")
+put(waived_d48_beta.txt "${t}")
+rel(0 out gates check waived_d48_beta.txt --version 1.0.0 --commit ${C})
+
+string(REPLACE "gate review-pass1 pass 2026-06-12 FacuM" "gate review-pass1 waived 2026-06-12 FacuM D48" t "${STABLE_OK}")
+put(waived_pass1_stable.txt "${t}")
+rel(3 out gates check waived_pass1_stable.txt --version 1.0.0 --commit ${C})
+
+string(REPLACE "gate authenticode pass 2026-10-20 FacuM" "gate authenticode waived 2026-10-20 FacuM D48" t "${STABLE_OK}")
+put(waived_authenticode_stable.txt "${t}")
+rel(3 out gates check waived_authenticode_stable.txt --version 1.0.0 --commit ${C})
+
 # A waived lab gate needs its note (malformed, 2).
 string(REPLACE "gate lab waived 2026-10-27 FacuM two VMs deferred to the next beta" "gate lab waived 2026-10-27 FacuM" t "${BETA_OK}")
 put(waived_no_note.txt "${t}")

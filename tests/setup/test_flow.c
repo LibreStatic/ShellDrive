@@ -210,3 +210,30 @@ SD_TEST(setup_flow_names_and_titles)
   /* The all-users choice is offered (04 §6.3); its install runs the elevated stages with the progress view. */
   SD_CHECK_EQ_INT(SD_FLOW_MACHINE_AVAILABLE, 1);
 }
+
+SD_TEST(setup_flow_welcome_notice)
+{
+  sd_flow_input in;
+  int built_notice = SD_SETUP_PRERELEASE_NOTICE;
+
+  /* The flag is a 0/1 build switch (SD_SETUP_PRERELEASE_NOTICE, on for the beta channel). */
+  SD_CHECK(built_notice == 0 || built_notice == 1);
+
+  /* Off in the build (stable): no command line shows it (04 §10, D48). */
+  memset(&in, 0, sizeof(in));
+  SD_CHECK(!sd_flow_welcome_notice(&in, 0));
+  in.quiet = in.passive = in.uninstall = 1;
+  SD_CHECK(!sd_flow_welcome_notice(&in, 0));
+
+  /* On (beta): the welcome page shows it; a run without a welcome page logs it instead. */
+  memset(&in, 0, sizeof(in));
+  SD_CHECK(sd_flow_welcome_notice(&in, 1) == 1);
+  in.quiet = 1;
+  SD_CHECK(!sd_flow_welcome_notice(&in, 1));            /* /quiet shows no page at all */
+  in.quiet = 0;
+  in.passive = 1;
+  SD_CHECK(!sd_flow_welcome_notice(&in, 1));            /* /passive shows the progress only */
+  in.passive = 0;
+  in.uninstall = 1;
+  SD_CHECK(!sd_flow_welcome_notice(&in, 1));            /* the removal pages carry no notice */
+}

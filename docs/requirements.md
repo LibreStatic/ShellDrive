@@ -11,7 +11,7 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
   bignum, ML-KEM, SHA-3 and every other primitive are written by us. Papers, RFCs and specs may be read; no code
   is copied. Assurance comes from Wycheproof and RFC vectors, differential tests against CNG in CI, fuzzing,
   constant-time timing tests and an external crypto review in two passes: pass 1 at the end of M2 (all SSH and
-  crypto code), pass 2 before 1.0. No public betas before pass 1 (D38).
+  crypto code), pass 2 before 1.0. No public betas before pass 1 (D38), except the public beta-channel pre-releases of D48.
 - Never break Windows signing policy: no test-signing, no unsigned drivers. The only allowed kernel component is
   an existing, already-signed, open-source driver: **Dokany** (redistributed as published upstream, never forked).
 - Self-installing. Also runs portable.
@@ -148,7 +148,8 @@ Design decisions that refine these requirements are recorded in `docs/design/dec
   and records rotations and revocations; release keys sign only manifests of their channel. Clients keep an
   anti-rollback serial per channel, refuse expired manifests (at most 30 days stable, 14 days beta; re-signed every
   two weeks) and warn when update information is stale. Stable releases use two offline signing sessions (payload
-  tables, then the manifest over the final EXEs, D42). No public download links before Authenticode signing.
+  tables, then the manifest over the final EXEs, D42). No public download links before Authenticode signing, except the beta-channel pre-releases of D48 (ed25519-signed
+  `SHA256SUMS`, key fingerprints in the README, a "not yet externally reviewed" notice).
 - Code signing via SignPath Foundation, else Certum OSS, obtained before a public 1.0.
 
 ## Project
