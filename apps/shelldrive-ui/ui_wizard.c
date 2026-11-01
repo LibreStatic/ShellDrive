@@ -20,6 +20,7 @@
 #include "ui_dlg.h"
 #include "ui_int.h"
 #include "ui_measure.h"
+#include "ui_win.h"
 #include "ui_wizard.h"
 #include "ui_wizard_model.h"
 
@@ -432,7 +433,8 @@ void ui_wizard_run(HWND owner)
   }
   memset(&hdr, 0, sizeof(hdr));
   hdr.dwSize = sizeof(hdr);
-  hdr.dwFlags = PSH_WIZARD97 | PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP;
+  hdr.dwFlags = PSH_WIZARD97 | PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+  hdr.pfnCallback = ui_win_sheet_callback;
   hdr.hwndParent = owner;
   hdr.hInstance = g_app.inst;
   hdr.pszCaption = sd_l10n_get(SD_MSG_UI_WIZARD_CAPTION);

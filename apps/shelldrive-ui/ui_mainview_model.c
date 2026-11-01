@@ -199,6 +199,17 @@ ui_mv_status ui_mv_status_of(const char *state, const char *session, int attempt
   return UI_MV_ST_UNKNOWN;
 }
 
+int ui_mv_is_mounted(const char *state, const char *session, int attempt)
+{
+  ui_mv_status st = ui_mv_status_of(state, session, attempt);
+  return st == UI_MV_ST_MOUNTED || st == UI_MV_ST_RECONNECTING;
+}
+
+int ui_mv_is_failed(const char *state, const char *session, int attempt)
+{
+  return ui_mv_status_of(state, session, attempt) == UI_MV_ST_FAILED;
+}
+
 ui_mv_icon ui_mv_status_icon(ui_mv_status st)
 {
   switch (st) {

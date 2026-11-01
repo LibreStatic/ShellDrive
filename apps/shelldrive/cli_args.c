@@ -608,9 +608,8 @@ cli_usage_err cli_parse(int argc, wchar_t **argv, cli_args *a)
     if (!a->positional)
       return set_err(a, CLI_E_MISSING_ARGUMENT, a->cmd_name, NULL);
     if (wcscmp(a->positional, L"list") == 0) {
-      /* with --announced the pending updates are listed without a host (03 §6.1) */
-      if (!a->arg2 && !a->announced)
-        return set_err(a, CLI_E_MISSING_ARGUMENT, a->positional, NULL);
+      /* the host is optional (03 §6.1): without it every stored key is listed; with --announced
+         the pending updates, also without a host */
       if (a->hk_type || a->from || a->add_only)
         return set_err(a, CLI_E_UNKNOWN_OPTION, a->hk_type ? L"--type" : a->from ? L"--from" : L"--add-only", NULL);
       /* --machine is the service's list with --announced (03 §5.6, §6.1); a plain list has no machine form */

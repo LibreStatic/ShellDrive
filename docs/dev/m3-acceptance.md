@@ -5,9 +5,10 @@ from the `wip/m2-backend` tree at `635832b` plus the uncommitted acceptance doc.
 
 The run covers the local CI gate (build, warnings, import audit and CTest with the interop tests) and the
 automated UI, shell-extension, state, agent and localization evidence. The M3 demoable outcome is a
-GUI flow in Spanish and German at 150 % DPI on Windows 11, and the Explorer behaviours of 03 §8. Neither was
-run here, because the agent cannot be isolated from the user's configuration (see "End-to-end through the agent").
-They are listed under "Not covered" and "Known gaps".
+GUI flow in Spanish and German at 150 % DPI, and the Explorer behaviours of 03 §8: that part ran later in the
+disposable Hyper-V lab on 2026-10-30 (harness runs 6–9) and is recorded in the "Lab acceptance" section below.
+The local run could not cover it because the agent cannot be isolated from the user's configuration
+(see "End-to-end through the agent"); its "Not covered" list stands as the record of this local run.
 
 ## Environment
 
@@ -161,6 +162,79 @@ through `shelldrive status`. It needs a disposable Windows user account, or a la
 | Offline tray state | not run; the notification rate limit is covered by `unit.ui` |
 | Unmount from the drive context menu | not run; covered by the snapshot and menu tests only |
 | 32-bit app file dialog shows the menu | not run; the x86 DLL is built and tested, but not registered on WOW64 (see gaps) |
+
+Every one of these steps was later exercised in the Hyper-V lab (runs 6–9, 2026-10-30); see "Lab acceptance".
+
+## Lab acceptance — GUI flow, Explorer and the host-key prompt (2026-10-30)
+
+The GUI flow and the Explorer behaviours of 03 §8 ran in the disposable Hyper-V lab: a Windows 10 IoT
+Enterprise LTSC 2021 VM (10.0.19044, 1920×1080 at 150 % DPI) restored from a clean snapshot per run, with the
+WSL sshd fixture (port 2222) reachable from the guest. Four harness runs on the day: runs 6–8 (afternoon) and
+run 9 (evening; interrupted once, resumed over the saved state, then re-run green after a one-line harness
+fix). The evidence is the harness logs, the UIA dumps and about 85 screenshots in the lab tree, which is not
+committed (machine-specific paths are not recorded here); the copy-worthy findings live in the repo's
+`lab-results.md` maintenance notes.
+
+### Demo steps, verified and not verified
+
+| Demo step (00 §6, M3) | Status |
+|---|---|
+| Full GUI flow in Spanish (voseo) and German at 150 % DPI | **verified.** The wizard was driven to the end in Spanish and in German; the German pass reached full depth at 1920×1080 (wizard pages 1–4, the profile editor with all five tabs, tab-order dumps, main window and tray menu). |
+| Create a profile in the editor | **verified** (run 7): the Spanish wizard created the profile "Laboratorio SFTP". |
+| The profile appears under "Network locations" | **verified** (run 7): "Laboratorio SFTP" shows under "Ubicaciones de red" in This PC. |
+| Mount from the This PC context menu | **verified** (run 8): This PC ▸ "Mount with ShellDrive" ▸ "Laboratorio SFTP" mounted the drive; tray menu showed "Desmontar Z: (Laboratorio SFTP)"; main window status bar "1 unidad montada."; dark mode on at 150 %. |
+| Host-key prompt before the first mount | **verified agent-side, not fully verified in the UI** — see the verdict below. |
+| Offline tray state | **verified** (run 9): with the network down, `status` reports reconnecting, the drive menu gains "Reconnect", the main-window row shows "Reconectando"; on recovery the mount reconnects and the agent verifies the stored key. |
+| Unmount from the drive context menu | **verified**: the menu item removed the drive within seconds and the Network location shortcut retargets to the `places\` path. |
+| 32-bit app file dialog shows the menu | **not verified: reproduced defect (c).** The 32-bit common Open dialog opens and reaches This PC, but UIA does not find the Z: item there (reproduced twice in run 9). |
+
+### Host-key prompt verdict (TM-R03)
+
+**No TM-R03 violation. The agent never trusted a key without an accepted user answer.** In run 8 the prompt
+died unanswered and the agent's log shows the handshake parked — no key exchange, no authentication, no
+"host key stored" — until the connection timed out and the mount failed. In run 9 and its green re-run the
+harness clicked "Confiar y conectar" within about a second; the agent then completed the handshake, stored
+the key exactly once, and every later connection verified against the stored fingerprint (which equals the
+fixture server's key). The store entry is visible through `shelldrive hostkey list`.
+
+Not verified: the prompt dialog itself. In run 8 it vanished unanswered about two seconds after appearing
+(caught mid-walk by the UIA dump); the cause is unidentified and the immediate-answer harness of run 9 cannot
+reproduce it by design. A no-answer probe run (leave the prompt open for more than five seconds and record its
+lifetime) is needed. This is open defect (a).
+
+### Explorer context-menu language
+
+**Defect, not per-design.** With `SHELLDRIVE_LANG=es` inherited by Explorer, the This PC submenu and the drive
+menu stayed English while the tray followed Spanish. 03 §9.3 ranks `SHELLDRIVE_LANG` above the user UI
+language for every catalog-loaded binary, and 03 §9.1 leaves no Windows-loaded exception for these verbs. The
+shell extension passed a NULL override to `sd_l10n_init` and never read the variable; fixed on
+`wip/m3-acceptance` (the shell-extension language commit). **Lab re-verification pending.**
+
+### Accessibility and dark mode
+
+From the UIA and tab-order dumps of runs 9 and the re-run: all wizard and editor controls expose names (the
+labels mirror the edit fields) with the documented control ids, the editor's tab order cycles without traps,
+and the host-key dialog exposes its texts and three buttons with mnemonics, initial focus on the fingerprint
+edit and no default button. Observation, not audited deeper: with system apps dark, the ShellDrive main
+window rendered light-themed in the same session — worth a follow-up if the app is expected to follow dark
+mode on Windows 10.
+
+### Open defects (follow-ups)
+
+- **(a) Host-key prompt self-close.** The dialog can vanish unanswered ~2 s after appearing (run 8). Agent
+  behaviour is correct (no trust without an answer); the UI-side cause is unidentified and needs a no-answer
+  probe run.
+- **(b) Status mismatch.** While the agent's mount state was `failed`, the tray and the main-window status bar
+  reported "1 unidad montada." and "Desmontar Z: (Laboratorio SFTP)" (run 8); the DataGrid row itself showed
+  "Falló" correctly. The counters and status bar follow stale state.
+- **(c) WOW64 drive item.** The 32-bit common Open dialog shows This PC but the Z: drive item is not found by
+  UIA in that view (reproduced twice in run 9); the drive-menu step cannot run there.
+
+### Doc skew found by the harness
+
+`shelldrive hostkey list` requires `<host[:port]>` in the build under test (`hostkey list --json` without a
+host exits 2 with usage), while 03 §6.1 documents the host argument as optional. The harness adapted; the
+design doc needs updating.
 
 ## Reviewer commands
 

@@ -103,6 +103,29 @@ SD_TEST(mainview_status_kinds_and_icons)
   SD_CHECK_EQ_INT((int)ui_mv_sec_icon(UI_MV_SEC_TERRAPIN), (int)UI_MV_ICON_WARN);
 }
 
+/* The tray tooltip, the tray menu and the status bar follow the state the agent reports (03 §1.11, §7.2): a failed
+   mount is not a mounted drive and offers no Unmount item; a reconnecting one stays a mounted drive. */
+SD_TEST(mainview_mounted_count_follows_the_real_state)
+{
+  SD_CHECK(ui_mv_is_mounted("mounted", "ready", 0));
+  SD_CHECK(ui_mv_is_mounted("offline", "reconnect_wait", 3));    /* reconnecting counts as mounted */
+  SD_CHECK(!ui_mv_is_mounted("offline", "reconnect_wait", 0));   /* offline without a retry does not */
+  SD_CHECK(!ui_mv_is_mounted("offline", "disconnected", 2));
+  SD_CHECK(!ui_mv_is_mounted("failed", "failed", 0));
+  SD_CHECK(!ui_mv_is_mounted("connecting", "", 0));
+  SD_CHECK(!ui_mv_is_mounted("authenticating", "", 0));
+  SD_CHECK(!ui_mv_is_mounted("auth_required", "", 0));
+  SD_CHECK(!ui_mv_is_mounted("unmounting", "", 0));
+  SD_CHECK(!ui_mv_is_mounted("", "", 0));
+  SD_CHECK(!ui_mv_is_mounted(NULL, NULL, 0));
+  /* the tray menu drops its Unmount item for a failed mount only */
+  SD_CHECK(ui_mv_is_failed("failed", "failed", 0));
+  SD_CHECK(!ui_mv_is_failed("mounted", "ready", 0));
+  SD_CHECK(!ui_mv_is_failed("offline", "disconnected", 2));
+  SD_CHECK(!ui_mv_is_failed("", "", 0));
+  SD_CHECK(!ui_mv_is_failed(NULL, NULL, 0));
+}
+
 SD_TEST(mainview_groups_follow_the_scope)
 {
   SD_CHECK_EQ_INT((int)ui_mv_group_of_scope(SD_PROFILE_SCOPE_USER), (int)UI_MV_GROUP_MINE);

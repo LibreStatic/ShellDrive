@@ -22,6 +22,7 @@
 #include "sd_platform/sd_platform.h"
 #include "sd_platform/sd_time.h"
 #include "ui_int.h"
+#include "ui_mainview_model.h"
 #include "ui_notice_model.h"
 #include "ui_notify_model.h"
 #include "ui_win.h"
@@ -113,7 +114,8 @@ static void ensure_sizes(void)
 static void fill_nid(ui_nid *nid)
 {
   wchar_t *count_text = NULL;
-  size_t n = g_app.model.count;
+  /* The tooltip counts the drives that are mounted: reconnecting ones count, failed ones do not (03 §7.2). */
+  size_t n = ui_model_mounted_count(&g_app.model);
 
   memset(nid, 0, sizeof(*nid));
   nid->cbSize = (DWORD)g_nid_size;
@@ -553,7 +555,7 @@ static void show_menu(void)
   HMENU menu;
   POINT pt;
   UINT cmd;
-  size_t i, n = g_app.model.count;
+  size_t i, n = g_app.model.count, n_unmount = 0;
   wchar_t drives[UI_MAX_MOUNTS][3];
 
   menu = CreatePopupMenu();
@@ -566,14 +568,21 @@ static void show_menu(void)
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
   }
   for (i = 0; i < n; i++) {
-    wchar_t *t = unmount_item_text(g_app.model.items[i].drive, g_app.model.items[i].profile);
-    wcscpy_s(drives[i], SD_COUNTOF(drives[i]), g_app.model.items[i].drive);
+    const ui_mount *it = &g_app.model.items[i];
+    wchar_t *t;
+    /* A failed mount is not a mounted drive (03 §1.11): it offers no Unmount item; the Reconnect the design
+       gives it has no agent method in this build yet. */
+    if (ui_mv_is_failed(it->state, it->session, it->attempt))
+      continue;
+    t = unmount_item_text(it->drive, it->profile);
+    wcscpy_s(drives[n_unmount], SD_COUNTOF(drives[n_unmount]), it->drive);
     if (t != NULL) {
-      AppendMenuW(menu, MF_STRING, UI_CMD_UNMOUNT_BASE + (UINT)i, t);
+      AppendMenuW(menu, MF_STRING, UI_CMD_UNMOUNT_BASE + (UINT)n_unmount, t);
       sd_free(t);
     }
+    n_unmount++;
   }
-  if (n == 0)
+  if (n_unmount == 0)
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, sd_l10n_get(SD_MSG_UI_TRAY_NO_DRIVES));
   else
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
@@ -604,7 +613,7 @@ static void show_menu(void)
     (void)ui_svc_launch_admin(g_app.main);
   } else if (cmd == UI_CMD_EXIT) {
     ui_app_quit();
-  } else if (cmd >= UI_CMD_UNMOUNT_BASE && cmd < UI_CMD_UNMOUNT_BASE + n) {
+  } else if (cmd >= UI_CMD_UNMOUNT_BASE && cmd < UI_CMD_UNMOUNT_BASE + n_unmount) {
     /* The drive letter was captured when the menu was built; the list may have changed meanwhile. */
     ui_ipc_unmount(drives[cmd - UI_CMD_UNMOUNT_BASE]);
   }

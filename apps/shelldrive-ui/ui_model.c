@@ -209,6 +209,15 @@ void ui_model_remove(ui_model *m, ui_mount *item)
   memset(&m->items[m->count], 0, sizeof(ui_mount));
 }
 
+size_t ui_model_mounted_count(const ui_model *m)
+{
+  size_t i, n = 0;
+  for (i = 0; i < m->count; i++)
+    if (ui_mv_is_mounted(m->items[i].state, m->items[i].session, m->items[i].attempt))
+      n++;
+  return n;
+}
+
 const wchar_t *ui_model_state_text(const ui_mount *item)
 {
   const char *s = item->state;

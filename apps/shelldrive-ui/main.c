@@ -528,16 +528,23 @@ void ui_app_on_event(sd_json *ev)
   sd_json_free(ev);
 }
 
+/* the list carries the same fields as prompt.request: a prompt this UI does not show becomes a dialog
+   (ui_prompt.c keeps the dialog of one that is already open, so none is shown twice) */
+static void prompts_from_list(const sd_json *result)
+{
+  const sd_json *arr = sd_json_get(result, "prompts");
+  size_t i, n = sd_json_count(arr);
+  for (i = 0; i < n; i++)
+    ui_prompt_on_request(sd_json_at(arr, i));
+}
+
 void ui_app_on_prompt_list(sd_json *result)
 {
   ui_prompt_on_list(result);
-  if (g_app.elevated_admin) {
-    /* the admin mode shows every open service prompt: the list carries the same fields as prompt.request */
-    const sd_json *arr = sd_json_get(result, "prompts");
-    size_t i, n = sd_json_count(arr);
-    for (i = 0; i < n; i++)
-      ui_prompt_on_request(sd_json_at(arr, i));
-  }
+  /* the agent's list (every mode) and the service's list (admin mode, ui_svc.c) both carry every prompt
+     their sender still holds: one that was showing when the connection dropped is shown again, with its
+     remaining deadline (03 §2.1 prompt.list) */
+  prompts_from_list(result);
   sd_json_free(result);
 }
 

@@ -3,6 +3,7 @@
  * Fonts follow the message font scaled to the window DPI (7.3), as the main window does. Windows are created
  * on demand and destroyed when closed; the process keeps none of them alive. */
 #include <windows.h>
+#include <commctrl.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -147,6 +148,25 @@ static BOOL CALLBACK set_font_cb(HWND child, LPARAM font)
 void ui_win_apply_font(HWND wnd, HFONT font)
 {
   EnumChildWindows(wnd, set_font_cb, (LPARAM)font);
+}
+
+/* Control ids of the property sheet buttons (comctl32; the SDK headers do not name them). */
+#define SHEET_ID_BACK   0x3023
+#define SHEET_ID_NEXT   0x3024
+#define SHEET_ID_FINISH 0x3025
+
+int CALLBACK ui_win_sheet_callback(HWND sheet, UINT msg, LPARAM lp)
+{
+  (void)lp;
+  if (msg == PSCB_INITIALIZED) {
+    /* a missing button (Back and Next on a plain sheet, OK on a wizard) is skipped by SetDlgItemTextW */
+    SetDlgItemTextW(sheet, IDOK, sd_l10n_get(SD_MSG_UI_SHEET_OK));
+    SetDlgItemTextW(sheet, IDCANCEL, sd_l10n_get(SD_MSG_UI_SHEET_CANCEL));
+    SetDlgItemTextW(sheet, SHEET_ID_BACK, sd_l10n_get(SD_MSG_UI_SHEET_BACK));
+    SetDlgItemTextW(sheet, SHEET_ID_NEXT, sd_l10n_get(SD_MSG_UI_SHEET_NEXT));
+    SetDlgItemTextW(sheet, SHEET_ID_FINISH, sd_l10n_get(SD_MSG_UI_SHEET_FINISH));
+  }
+  return 0;
 }
 
 /* ---- commands and glue ---- */

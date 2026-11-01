@@ -39,7 +39,7 @@
 /* Command ids of the tray menu and the main window controls. */
 #define UI_CMD_OPEN          1001
 #define UI_CMD_EXIT          1002
-#define UI_CMD_UNMOUNT_BASE  2000       /* + index of the mount in the model */
+#define UI_CMD_UNMOUNT_BASE  2000       /* + index of the tray menu's unmount item (drive captured at build time) */
 #define UI_CMD_MOUNT         3001
 #define UI_CMD_UNMOUNT       3002
 #define UI_CMD_REFRESH       3003
@@ -150,6 +150,9 @@ void        ui_model_set_list(ui_model *m, const sd_json *result);
 ui_mount   *ui_model_find_id(ui_model *m, const char *id);
 ui_mount   *ui_model_find_drive(ui_model *m, const wchar_t *drive);
 void        ui_model_remove(ui_model *m, ui_mount *item);
+/* The drives that count as mounted (tray tooltip, tray menu, status bar): really mounted or reconnecting
+   (ui_mv_is_mounted); a failed mount is not one (03 §1.11, §7.2). */
+size_t      ui_model_mounted_count(const ui_model *m);
 /* connection.session and connection.attempt of a list item or a mount.state event. */
 void        ui_model_set_connection(ui_mount *it, const sd_json *data);
 const wchar_t *ui_model_state_text(const ui_mount *item);

@@ -73,6 +73,15 @@ typedef enum ui_mv_status {
    RECONNECTING. */
 ui_mv_status ui_mv_status_of(const char *state, const char *session, int attempt);
 
+/* The mount counts as a mounted drive for the tray tooltip, the tray menu and the status bar: really mounted, or
+   reconnecting (03 §7.2 counts a reconnecting drive among the connected ones). Connecting, authenticating, offline,
+   auth_required, failed and unmounting mounts do not count. */
+int ui_mv_is_mounted(const char *state, const char *session, int attempt);
+
+/* The mount is failed: the tray offers no Unmount item for it (03 §1.11 offers Reconnect there, which needs an
+   agent method this build does not have yet). */
+int ui_mv_is_failed(const char *state, const char *session, int attempt);
+
 typedef enum ui_mv_icon { UI_MV_ICON_NONE = 0, UI_MV_ICON_OK, UI_MV_ICON_IDLE, UI_MV_ICON_WARN } ui_mv_icon;
 ui_mv_icon ui_mv_status_icon(ui_mv_status st);
 ui_mv_icon ui_mv_sec_icon(unsigned sec);

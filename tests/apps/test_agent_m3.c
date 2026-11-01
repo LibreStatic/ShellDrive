@@ -749,6 +749,78 @@ SD_TEST(m3_initiator_gone_without_ui_cancels)
   sd_ipc_close(x);
 }
 
+/* Run 8 regression: a prompt delivered to a UI whose pipe dropped has no queued copy, so a new
+   subscriber is not sent it again; the UI that (re)connects takes it from prompt.list, which carries the
+   prompt.request fields (03 §2.1 row 11), and answering it completes the mount. */
+SD_TEST(m3_prompt_list_offers_delivered_prompt_again)
+{
+  sd_ipc_conn *u = NULL, *v = NULL;
+  sd_json *res = NULL;
+  sd_ipc_error err;
+  evlog ul, vl;
+  char pid[32], buf[160];
+  const sd_json *p0;
+  memset(&ul, 0, sizeof(ul));
+  memset(&vl, 0, sizeof(vl));
+  SD_REQUIRE(setup_agent(L"again", NULL, NULL, NULL));
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &u) == SD_OK);
+  subscribe(u, "\"prompt\",\"mount\"");
+  SD_REQUIRE(call(u, "mount", "{\"adhoc\":{\"host\":\"new5.test\",\"user\":\"alice\"}}", &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(u, &ul, "prompt.request", NULL, 1, 10000));
+  prompt_id_of(&ul, "prompt.request", 0, pid);
+
+  /* the reconnecting UI subscribes: nothing is queued, so it is sent nothing (the run 8 gap) */
+  SD_REQUIRE(connect_as("ui", SD_IPC_CAP_PROMPTS_UI, &v) == SD_OK);
+  subscribe(v, "\"prompt\",\"mount\"");
+  pump_idle(v, &vl, 300);
+  SD_CHECK(count_ev(&vl, "prompt.request", NULL) == 0);
+
+  /* the first UI's pipe drops while v is subscribed: the prompt is not cancelled (decision 5) */
+  sd_ipc_close(u);
+  u = NULL;
+  Sleep(300);
+  pump_idle(v, &vl, 300);
+  SD_CHECK(count_ev(&vl, "prompt.request", NULL) == 0);
+  SD_CHECK(count_ev(&vl, "prompt.closed", NULL) == 0);
+
+  /* the list offers the prompt with the fields the dialog needs */
+  SD_REQUIRE(call(v, "prompt.list", "{}", &res, &err) == SD_OK);
+  SD_CHECK_EQ_U64(sd_json_count(sd_json_get(res, "prompts")), 1);
+  p0 = sd_json_at(sd_json_get(res, "prompts"), 0);
+  SD_CHECK_STR(sd_json_get_str(p0, "kind"), "hostkey_unknown");
+  SD_CHECK_STR(sd_json_get_str(p0, "host"), "new5.test");
+  SD_CHECK_STR(sd_json_get_str(p0, "user"), "alice");
+  SD_CHECK(sd_json_get_str(p0, "fingerprint") != NULL);
+  SD_CHECK(jbool3(p0, "queued", NULL) == 0);
+  SD_CHECK(jint3(p0, "deadline_ms", NULL) > 0);
+  strcpy_s(pid, sizeof(pid), sd_json_get_str(p0, "prompt_id"));
+  sd_json_free(res);
+  res = NULL;
+
+  /* answering the offered prompt completes the mount */
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"accept\"");
+  SD_REQUIRE(call(v, "prompt.answer", buf, &res, &err) == SD_OK);
+  SD_CHECK(jbool3(res, "accepted", NULL) == 1);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(v, &vl, "prompt.request", NULL, 1, 10000));
+  prompt_id_of(&vl, "prompt.request", 0, pid);
+  answer_json(buf, sizeof(buf), pid, "\"action\":\"answer\",\"responses\":[\"secret\"]");
+  SD_REQUIRE(call(v, "prompt.answer", buf, &res, &err) == SD_OK);
+  sd_json_free(res);
+  res = NULL;
+  SD_REQUIRE(pump_until(v, &vl, "mount.state", "mounted", 1, 15000));
+  SD_REQUIRE(pump_until(v, &vl, "prompt.closed", NULL, 2, 5000));
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&vl, "prompt.closed", NULL, 0)), "reason"), "answered");
+  SD_CHECK_STR(sd_json_get_str(ev_data(nth_ev(&vl, "prompt.closed", NULL, 1)), "answered_by"), "ui");
+  free_log(&ul);
+  free_log(&vl);
+  shutdown_agent(v);
+  sd_ipc_close(v);
+}
+
 /* The read-only methods and the reply shapes that changed in M3, plus the hello features. */
 SD_TEST(m3_new_methods_and_list_warnings)
 {

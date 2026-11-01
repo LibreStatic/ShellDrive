@@ -159,7 +159,8 @@ SD_TEST(cli_parse_profile_hostkey_status)
   SD_CHECK(parse_line(L"sd hostkey list good.test", &a) == CLI_OK && a.cmd == CLI_CMD_HOSTKEY &&
            wcscmp(a.subverb, L"list") == 0 && wcscmp(a.arg2, L"good.test") == 0);
   SD_CHECK(parse_line(L"sd hostkey list good.test --announced", &a) == CLI_OK && a.announced);
-  SD_CHECK(parse_line(L"sd hostkey list", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey list", &a) == CLI_OK);   /* 03 §6.1: the host is optional */
+  SD_CHECK(parse_line(L"sd hostkey list --json", &a) == CLI_OK && a.json && a.arg2 == NULL);
   SD_CHECK(parse_line(L"sd hostkey list --announced", &a) == CLI_OK && a.announced && a.arg2 == NULL);
   SD_CHECK(parse_line(L"sd hostkey list h --type ed", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--type") == 0);
   SD_CHECK(parse_line(L"sd hostkey import", &a) == CLI_E_MISSING_ARGUMENT);
@@ -204,7 +205,8 @@ SD_TEST(cli_parse_hostkey_add_machine)
   SD_CHECK(parse_line(L"sd hostkey list h --machine", &a) == CLI_E_UNKNOWN_OPTION && wcscmp(a.bad, L"--machine") == 0);
   /* the service's pending list (M5): list --announced --machine, without a host */
   SD_CHECK(parse_line(L"sd hostkey list --announced --machine", &a) == CLI_OK && a.announced && a.machine);
-  SD_CHECK(parse_line(L"sd hostkey list --machine", &a) == CLI_E_MISSING_ARGUMENT);
+  SD_CHECK(parse_line(L"sd hostkey list --machine", &a) == CLI_E_UNKNOWN_OPTION &&
+           wcscmp(a.bad, L"--machine") == 0);   /* a plain list has no machine form, with or without a host */
   SD_CHECK(parse_line(L"sd hostkey remove h --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);
   SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --machine", &a) == CLI_OK && a.machine);
   SD_CHECK(parse_line(L"sd hostkey accept-announced a-1 --expect SHA256:abcdefgh", &a) == CLI_E_UNKNOWN_OPTION);

@@ -373,7 +373,8 @@ static void set_status_text(void)
     SendMessageW(g_app.status, SB_SETTEXTW, 0, (LPARAM)text);
     return;
   }
-  t = ui_format_count(SD_MSG_UI_STATUS_COUNT, (long long)g_app.model.count);
+  /* The status bar counts the drives that are mounted (reconnecting included), like the tray (03 §7.2). */
+  t = ui_format_count(SD_MSG_UI_STATUS_COUNT, (long long)ui_model_mounted_count(&g_app.model));
   if (t != NULL) {
     SendMessageW(g_app.status, SB_SETTEXTW, 0, (LPARAM)t);
     sd_free(t);

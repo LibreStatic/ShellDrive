@@ -75,7 +75,13 @@ static void sx_l10n_ready(void)
 {
   unsigned spins;
   if (InterlockedCompareExchange(&g_l10n_state, 1, 0) == 0) {
-    sd_l10n_init(&sd_l10n_catalog_shell, NULL);
+    /* Language resolution (03 §9.3): a shell extension has no command line, so SHELLDRIVE_LANG (a user
+       variable, inherited by Explorer) ranks before the user UI language, as in the CLI and the tray app. */
+    wchar_t lang[32];
+    if (GetEnvironmentVariableW(L"SHELLDRIVE_LANG", lang, SD_COUNTOF(lang)) - 1u < SD_COUNTOF(lang) - 1u)
+      sd_l10n_init(&sd_l10n_catalog_shell, lang);
+    else
+      sd_l10n_init(&sd_l10n_catalog_shell, NULL);
     InterlockedExchange(&g_l10n_state, 2);
     return;
   }
