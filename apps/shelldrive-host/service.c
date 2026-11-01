@@ -162,6 +162,7 @@ static struct svc_state {
   const svc_scm_ops *scm_ops;       /* svc_opts seams of service.status and service.repair_data */
   const svc_repair_ops *repair_ops;
   const svc_sysproxy_ops *sysproxy; /* proxy = system seams (svc_opts.sysproxy_ops); the shipping ops refuse by policy */
+  DWORD (WINAPI *logical_drives)(void); /* svc_opts.logical_drives; GetLogicalDrives when the opts give none */
   const wchar_t *repair_base;
   int running, stopping;
   int test_all_admin;               /* SD_SVC_TEST_HOOKS only, see caller_is_admin */
@@ -685,7 +686,7 @@ static int letter_taken_locked(wchar_t l)
 /* The drive letter an auto mount takes: the highest free letter from Z: down to D: (0 when none). */
 static wchar_t pick_letter_locked(void)
 {
-  DWORD used = GetLogicalDrives();
+  DWORD used = g.logical_drives();
   wchar_t l;
   for (l = L'Z'; l >= L'D'; l--) {
     DWORD bit = 1ul << (l - L'A');
@@ -2613,7 +2614,7 @@ static sd_err svc_mount_queue(const char *key, const char *tgt, char out_id[16],
   }
   if (letter == 0)
     letter = pick_letter_locked();
-  if (letter == 0 || letter_taken_locked(letter) || (GetLogicalDrives() & (1ul << (letter - L'A')))) {
+  if (letter == 0 || letter_taken_locked(letter) || (g.logical_drives() &(1ul << (letter - L'A')))) {
     sd_mutex_unlock(&g.lock);
     sd_free(copy);
     *code = "target_in_use";
@@ -3424,6 +3425,7 @@ int svc_run(const svc_opts *o)
   g.repair_ops = o ? o->repair_ops : NULL;
   g.repair_base = o ? o->repair_base : NULL;
   g.sysproxy = (o && o->sysproxy_ops) ? o->sysproxy_ops : &k_sysproxy_shipping;
+  g.logical_drives = (o && o->logical_drives) ? o->logical_drives : GetLogicalDrives;
 #ifdef SD_SVC_TEST_HOOKS
   g.test_all_admin = o ? o->test_all_admin : 0;
   g.dacl_extra = o ? o->dacl_extra_ace : NULL;
